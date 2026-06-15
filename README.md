@@ -1,53 +1,55 @@
-<img width="480" height="360" alt="Screenshot_20260612_165305" src="https://github.com/user-attachments/assets/b532a49f-195b-41c8-a5c2-819b10a6960a" />
-<img width="480" height="360" alt="Screenshot_20260612_165211" src="https://github.com/user-attachments/assets/53fda29d-a73b-4daf-a413-53bcb6768fdf" />
-<img width="480" height="360" alt="Screenshot_20260612_165113" src="https://github.com/user-attachments/assets/b442dd2a-779a-4589-be2f-22b1ee9d4fdd" />
-<img width="3024" height="4032" alt="IMG_0197" src="https://github.com/user-attachments/assets/db935999-1054-4487-8979-60e2e8e547a9" />
-<img width="470" height="359" alt="스크린샷 2026-06-10 232901" src="https://github.com/user-attachments/assets/dda1f81e-2a86-401a-a2ba-7c3c246ee2da" />
-<img width="473" height="357" alt="스크린샷 2026-06-10 232931" src="https://github.com/user-attachments/assets/58917453-8ef8-45b0-b555-83d6ab6d5798" />
-<img width="476" height="353" alt="스크린샷 2026-06-10 232835" src="https://github.com/user-attachments/assets/bba82be3-81a9-4e00-b4ce-141fbe3b5431" />
-<img width="475" height="354" alt="스크린샷 2026-06-10 233044" src="https://github.com/user-attachments/assets/79c51331-aa14-4b01-bbf3-051531f79d2c" />
-<img width="475" height="353" alt="스크린샷 2026-06-10 233120" src="https://github.com/user-attachments/assets/fe30d13f-308d-465b-a2e7-435ed61a6421" />
-<img width="473" height="358" alt="스크린샷 2026-06-10 233009" src="https://github.com/user-attachments/assets/976ca048-4755-49cb-b4d2-913c76f84694" />
-
-현재 만들고 있는 런처입니다
-JJ Launcher
-
-주요기능
-
-1.자체 미디어 스캐너로 빠른 음악 라이브러리 자동 분류 가능
-
-2.셔플, 반복 재생 및 기기 내장 이퀄라이저(EQ) 프리셋 설정 가능
-
-3.앱 내 어느 화면에서든 물리 버튼을 이용해 이전/다음 곡 넘기기 가능
-
-4.재생 중인 곡 변경 시 메인 화면의 앨범 아트 및 곡 정보 실시간 연동
-
-5.파일 복사를 통해 무한대로 나만의 커스텀 테마(색상) 추가 및 변경 가능
-
-6.현재 재생 중인 앨범 아트를 활용한 고화질 블러 메인 배경화면 제공
-
-7.런처 설정 창을 나갈 필요 없이 블루투스 기기 직접 스캔 및 페어링 가능
-
-8.자체 휠 전용 키보드를 이용한 와이파이 암호 입력 및 다이렉트 연결 가능
-
-9.와이파이 웹 서버 기능을 통한 무선 PC 파일(음악) 업로드 가능
-
- 
-설치 방법
-록 박스를 설치하고 설치하셔야 전원종료 기능을 모두 사용하실 수 있습니다 
-1. 록박스 설치
-2. Reboot to Stock Firmware
-3. adb tool로 새로운 런처설치
-  adb install app-release.apk
-4. 기본 런처 막기
-  adb shell pm disable com.innioasis.y1
-5. 재부팅
-
-adb tool
-https://dl.google.com/android/repository/platform-tools-latest-windows.zip?hl=ko
+<img width="480" height="360" alt="Screenshot_20260615_172845" src="https://github.com/user-attachments/assets/d804a2a5-a2c8-4a0e-ad16-d1da7551d5fd" />
+<img width="480" height="360" alt="Screenshot_20260615_172516" src="https://github.com/user-attachments/assets/5b76d3c5-2d62-4119-8c01-49b9b79c055d" />
+<img width="480" height="360" alt="Screenshot_20260615_172415" src="https://github.com/user-attachments/assets/b072b3c4-78b6-4c24-8e27-08193779ac96" />
+<img width="480" height="360" alt="Screenshot_20260615_172223" src="https://github.com/user-attachments/assets/e1ef1c7f-cec3-4613-b228-4f413136a42d" />
+<img width="480" height="360" alt="Screenshot_20260615_172109" src="https://github.com/user-attachments/assets/39b8fa44-c7a0-4c40-8a37-36e087874099" />
 
 
-주의 사항
-1. 블루투스 헤드폰이 없어서 아직 테스트를 못해봤습니다
-2. 일부 한국어로 되어있는 것이 있는데 나중에 모두 영어로 바꿀 예정입니다
-3. 스크린이 꺼진 상태에서 휠이나 버튼은 작동하지 않습니다
+# JJ Launcher (MO-ON Launcher)
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Platform">
+  <img src="https://img.shields.io/badge/Status-Beta-Orange?style=flat-square" alt="Status">
+</p>
+
+---
+
+## 🌟 Key Features
+
+1. **Custom Embedded Media Scanner**
+   * Automatically and rapidly categorizes large music libraries without relying on the Android system scanner.
+2. **Advanced Playback & EQ Controls**
+   * Full support for shuffle, repeat modes, and built-in device Equalizer (EQ) presets.
+3. **Global Hardware Key Mapping**
+   * Skip to the previous or next track using physical hardware buttons from any screen within the app.
+4. **Real-time Main Screen Sync**
+   * The album art and track information on the main screen sync instantly whenever the active song changes.
+5. **Infinite Custom Themes**
+   * Easily add and apply your own custom color themes simply by copying files.
+6. **Dynamic HD Blur Background**
+   * Generates a high-definition blurred wallpaper dynamically matching the currently playing album art.
+7. **In-App Bluetooth Pairing**
+   * Scan and pair Bluetooth devices instantly within the launcher settings without needing to leave the app.
+8. **Wheel-Optimized Virtual Keyboard**
+   * Type Wi-Fi passwords and connect directly using a specialized keyboard tailored for wheel-input devices.
+9. **Wireless PC File Upload**
+   * Host a local Wi-Fi Web Server to wirelessly upload music files directly from your PC browser without cables.
+
+---
+
+## 💾 Installation Guide
+
+> ⚠️ **Important:** You must install **Rockbox** beforehand to fully utilize all power-off functionalities.
+
+### 🛠️ Step-by-Step Installation
+1. Install **Rockbox** on your device.
+2. Choose **Reboot to Stock Firmware** to boot into the stock system.
+3. Connect the device to your PC and install the new launcher using the **ADB Tool**:
+   ```bash
+   adb install app-release.apk
+4. adb shell pm disable com.innioasis.y1
+5. Reboot the device to complete the setup.
+
+---
+## ⚠️ Caveats / Notes
+1. Regarding Bluetooth Headphones: Due to the lack of a Bluetooth test device in the developer's environment, this specific feature has not been fully tested yet. Please keep this in mind during use.
