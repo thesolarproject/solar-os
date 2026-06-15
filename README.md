@@ -18,7 +18,8 @@
 3. Fixed visual rendering issues in File Explorer (Resolved slowdowns when loading a large number of songs)
 4. Removed radio buttons
 5. Replaced battery indicator with an icon
-6. Optimized performance and fixed bugs
+6. Auto-Download Album Art via Wi-Fi
+7. Optimized performance and fixed bugs
 
 ---
 
