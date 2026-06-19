@@ -82,8 +82,7 @@ import android.renderscript.RenderScript;
 import android.renderscript.ScriptIntrinsicBlur;
 
 public class MainActivity extends Activity {
-    private static final String OTA_GITHUB_REPO = BuildConfig.OTA_GITHUB_REPO;
-    private static final String OTA_GITHUB_TOKEN = BuildConfig.OTA_GITHUB_TOKEN;
+    private static final String OTA_UPDATES_URL = BuildConfig.OTA_UPDATES_URL;
     // 💡 [추가] 퀵 스크롤 (알파벳 인덱스) 관련 변수들
     private TextView tvFastScrollLetter;
     private Handler fastScrollHandler = new Handler();
@@ -464,9 +463,16 @@ public class MainActivity extends Activity {
     private FrameLayout settingsMenuHost;
     private View settingsPreviewPane;
     private boolean centerLongPressHandled = false;
-    /** Hold past this KeyEvent repeat count, then release — sleep (com.innioasis.y1 LongDownCenterUtil). */
-    private boolean centerPrepareSleep = false;
-    private static final int CENTER_SLEEP_REPEAT = 50;
+    private long centerKeyDownTime = 0;
+    private static final long CENTER_SLEEP_HOLD_MS = 300;
+    private final Runnable centerSleepRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (centerLongPressHandled || centerKeyDownTime == 0) return;
+            centerLongPressHandled = true;
+            performScreenSleep(false);
+        }
+    };
     private long backKeyDownTime = 0;
     private boolean backLongPressHandled = false;
     private static final long BACK_LONG_PRESS_MS = 600;
@@ -6567,33 +6573,30 @@ public class MainActivity extends Activity {
         } catch (Exception e) {}
     }
 
-    private void handleCenterLongPress() {
-        lockScreen();
-    }
-
-    /** Center/OK hold — arm sleep on release after repeat threshold (stock Y1 / LongDownCenterUtil). */
+    /** Center/OK hold ~0.3s — sleep while pressed or on release after threshold. */
     private boolean trackCenterKeyDown(KeyEvent event, boolean fromContextMenu) {
         if (fromContextMenu) {
             suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
         }
         if (event.getRepeatCount() == 0) {
             centerLongPressHandled = false;
-            centerPrepareSleep = false;
-        } else if (event.getRepeatCount() >= CENTER_SLEEP_REPEAT) {
-            centerPrepareSleep = true;
+            centerKeyDownTime = System.currentTimeMillis();
+            clockHandler.removeCallbacks(centerSleepRunnable);
+            clockHandler.postDelayed(centerSleepRunnable, CENTER_SLEEP_HOLD_MS);
         }
         return true;
     }
 
     private boolean handleCenterKeyUp(KeyEvent event, boolean fromContextMenu) {
-        if (centerPrepareSleep && !centerLongPressHandled) {
-            centerPrepareSleep = false;
-            handleCenterLongPress();
-            centerLongPressHandled = true;
+        long heldMs = centerKeyDownTime > 0 ? System.currentTimeMillis() - centerKeyDownTime : 0;
+        clockHandler.removeCallbacks(centerSleepRunnable);
+        centerKeyDownTime = 0;
+        if (centerLongPressHandled) {
+            centerLongPressHandled = false;
             return true;
         }
-        if (centerLongPressHandled) {
-            centerPrepareSleep = false;
+        if (heldMs >= CENTER_SLEEP_HOLD_MS) {
+            performScreenSleep(false);
             return true;
         }
         if (fromContextMenu) {
@@ -7142,33 +7145,46 @@ public class MainActivity extends Activity {
         addContextAction(getString(R.string.context_action_lock_screen), "keyLockOn", null, new Runnable() {
             @Override
             public void run() {
-                lockScreen();
+                performScreenSleep(true);
             }
         });
     }
 
-    private void lockScreen() {
-        clickFeedback();
+    /** Screen off — su power key first (Y1), then goToSleep; shared by hold-center and context menu. */
+    private void performScreenSleep(boolean feedback) {
+        if (feedback) clickFeedback();
+        if (trySuScreenOff()) return;
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
             java.lang.reflect.Method goToSleep = PowerManager.class.getMethod(
                     "goToSleep", long.class);
             goToSleep.invoke(pm, android.os.SystemClock.uptimeMillis());
-            boolean on = true;
-            try {
-                if (android.os.Build.VERSION.SDK_INT >= 20) on = pm.isInteractive();
-                else on = pm.isScreenOn();
-            } catch (Exception ignored) {}
-            if (!on) return;
+            if (!isScreenInteractive()) return;
         } catch (Exception ignored) {}
-        // ponytail: /system/app APK is not android.uid.system on Y1 — root power key works
+        if (trySuScreenOff()) return;
+        Toast.makeText(this, getString(R.string.context_action_lock_failed), Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean isScreenInteractive() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (android.os.Build.VERSION.SDK_INT >= 20) return pm.isInteractive();
+            return pm.isScreenOn();
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** ponytail: Y1 system APK is not android.uid.system — root power key is the fast path */
+    private boolean trySuScreenOff() {
         for (String su : new String[] {"/system/xbin/su", "su"}) {
             try {
                 Process p = Runtime.getRuntime().exec(new String[] {su, "-c", "input keyevent 26"});
-                if (p.waitFor() == 0) return;
+                if (p.waitFor() != 0) continue;
+                if (!isScreenInteractive()) return true;
             } catch (Exception ignored) {}
         }
-        Toast.makeText(this, getString(R.string.context_action_lock_failed), Toast.LENGTH_SHORT).show();
+        return false;
     }
 
     private void restartCurrentPodcast() {
@@ -8366,22 +8382,21 @@ public class MainActivity extends Activity {
         loadingRow.setEnabled(false);
         containerSettingsItems.addView(loadingRow);
 
-        loadGitHubReleaseList(localCode, localName, loadingRow);
+        loadOtaReleaseList(localCode, localName, loadingRow);
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
         }
     }
 
-    private void loadGitHubReleaseList(final int localCode, final String localName, final View loadingView) {
-        final String repo = OTA_GITHUB_REPO != null && !OTA_GITHUB_REPO.trim().isEmpty()
-                ? OTA_GITHUB_REPO.trim() : SolarUpdateClient.DEFAULT_REPO;
-        final String token = OTA_GITHUB_TOKEN;
+    private void loadOtaReleaseList(final int localCode, final String localName, final View loadingView) {
+        final String updatesUrl = OTA_UPDATES_URL != null && !OTA_UPDATES_URL.trim().isEmpty()
+                ? OTA_UPDATES_URL.trim() : SolarUpdateClient.DEFAULT_UPDATES_URL;
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
                     final List<SolarUpdateClient.ReleaseInfo> releases =
-                            SolarUpdateClient.fetchReleases(repo, token);
+                            SolarUpdateClient.fetchUpdates(updatesUrl);
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -8482,11 +8497,8 @@ public class MainActivity extends Activity {
                     okhttp3.Request.Builder rb = new okhttp3.Request.Builder()
                             .url(apkUrl)
                             .header("User-Agent", "SolarLauncher/1.0")
-                            .header("Accept", "application/octet-stream")
+                            .header("Accept", "application/vnd.android.package-archive,*/*")
                             .header("Accept-Encoding", "identity");
-                    if (OTA_GITHUB_TOKEN != null && !OTA_GITHUB_TOKEN.trim().isEmpty()) {
-                        rb.header("Authorization", "Bearer " + OTA_GITHUB_TOKEN.trim());
-                    }
                     okhttp3.Response resp = client.newCall(rb.build()).execute();
                     if (!resp.isSuccessful() || resp.body() == null) {
                         int code = resp.code();
