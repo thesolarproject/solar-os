@@ -1,0 +1,20 @@
+name: Nightly release
+
+on:
+  push:
+    branches: [nightly]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: solar-release-nightly
+  cancel-in-progress: true
+
+jobs:
+  release:
+    uses: ./.github/workflows/release-build.yml
+    with:
+      channel: nightly
+    secrets: inherit
