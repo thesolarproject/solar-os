@@ -46,36 +46,15 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Cache Android SDK packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            /usr/local/lib/android/sdk/platform-tools
-            /usr/local/lib/android/sdk/platforms
-            /usr/local/lib/android/sdk/build-tools
-          key: android-sdk-${{ runner.os }}-35-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'app/build.gradle') }}
-          restore-keys: |
-            android-sdk-${{ runner.os }}-35-
-
       - name: Install SDK packages
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Cache apt packages
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-cache
-          key: apt-${{ runner.os }}-rom-deps-v1
-          restore-keys: |
-            apt-${{ runner.os }}-rom-deps-
-
       - name: Install ROM build dependencies
         run: |
-          mkdir -p "${{ runner.temp }}/apt-cache"
           sudo apt-get update
-          sudo apt-get install -y -o dir::cache::archives="${{ runner.temp }}/apt-cache" \
-            unzip zip e2fsprogs curl util-linux kmod openssl
+          sudo apt-get install -y unzip zip e2fsprogs curl util-linux kmod openssl
           sudo modprobe loop || true
 
       - name: Cache Rockbox-Y1 base firmware
