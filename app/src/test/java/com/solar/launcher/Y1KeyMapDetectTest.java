@@ -6,6 +6,13 @@ import static org.junit.Assert.assertEquals;
 
 public class Y1KeyMapDetectTest {
 
+    private static Y1KeyMap.KlLines lines(String l103, String l105) {
+        Y1KeyMap.KlLines k = new Y1KeyMap.KlLines();
+        k.l103 = l103;
+        k.l105 = l105;
+        return k;
+    }
+
     @Test
     public void classifyStockMtkKpd() {
         assertEquals(Y1KeyMap.LAYOUT_STOCK,
@@ -30,5 +37,20 @@ public class Y1KeyMapDetectTest {
     public void classifyRockboxClassicBase() {
         assertEquals(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC,
                 Y1KeyMap.classifyMtkLines("key 103   DPAD_UP", "key 105   DPAD_LEFT"));
+    }
+
+    @Test
+    public void classifyStockWhenGenericHasMediaPrevious() {
+        Y1KeyMap.KlLines mtk = lines("key 103   DPAD_UP", "key 105   DPAD_LEFT");
+        Y1KeyMap.KlLines gen = lines("key 103   DPAD_LEFT", "key 105   MEDIA_PREVIOUS");
+        assertEquals(Y1KeyMap.LAYOUT_STOCK, Y1KeyMap.classifyLayoutFromKlFiles(mtk, gen));
+    }
+
+    @Test
+    public void classifyRockboxWhenBothAgree() {
+        Y1KeyMap.KlLines mtk = lines("key 103   DPAD_UP", "key 105   DPAD_LEFT");
+        Y1KeyMap.KlLines gen = lines("key 103   DPAD_UP", "key 105   DPAD_LEFT");
+        assertEquals(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC,
+                Y1KeyMap.classifyLayoutFromKlFiles(mtk, gen));
     }
 }

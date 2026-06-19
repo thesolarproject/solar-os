@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/env.sh"
 
+EXIT_CODE=0
+
 classify_layout() {
     local l103="$1"
     local l105="$2"
@@ -22,32 +24,72 @@ classify_layout() {
     fi
 }
 
+print_keycodedisp_table() {
+    echo ""
+    echo "-- Expected KeyCodeDisp (Solar Rockbox ROM) --"
+    echo "| Control      | Keycode name       | Code |"
+    echo "| Wheel CCW    | DPAD_UP            | 19   |"
+    echo "| Wheel CW     | DPAD_DOWN          | 20   |"
+    echo "| Prev button  | DPAD_LEFT          | 21   |"
+    echo "| Next button  | DPAD_RIGHT         | 22   |"
+    echo "| Bottom       | MEDIA_PLAY_PAUSE   | 85   |"
+    echo "| Top          | BACK               | 4    |"
+    echo ""
+    echo "If wheel shows DPAD_LEFT/RIGHT (21/22), Generic.kl is still stock — reflash or run push-rockbox-keylayout-adb.sh"
+}
+
 echo "== Y1 input verification =="
 if ! adb get-state >/dev/null 2>&1; then
     echo "No adb device — connect Y1 to dump live keylayout"
     echo ""
     echo "Reference layouts in repo:"
-    echo "  Stock sideload: solar-rom/scripts/mtk-kpd.kl"
-    echo "  Rockbox ROM:    solar-rom/scripts/mtk-kpd-rockbox.kl"
+    echo "  Stock sideload: solar-rom/scripts/mtk-kpd.kl + Stock.kl"
+    echo "  Rockbox ROM:    solar-rom/scripts/Generic-rockbox.kl + mtk-kpd-rockbox.kl"
     grep -E '^key (103|105|106|108)' "$ROOT/solar-rom/scripts/mtk-kpd.kl" || true
     echo "---"
-    grep -E '^key (103|105|106|108)' "$ROOT/solar-rom/scripts/mtk-kpd-rockbox.kl" || true
+    grep -E '^key (103|105|106|108)' "$ROOT/solar-rom/scripts/Generic-rockbox.kl" || true
+    print_keycodedisp_table
     exit 0
 fi
 
 echo ""
-echo "-- mtk-kpd.kl scancodes 103–106 (wheel + prev/next) --"
+echo "-- mtk-kpd.kl scancodes 103–108 --"
 L103="$(adb shell "grep '^key 103' /system/usr/keylayout/mtk-kpd.kl" 2>/dev/null | tr -d '\r' | head -1)"
 L105="$(adb shell "grep '^key 105' /system/usr/keylayout/mtk-kpd.kl" 2>/dev/null | tr -d '\r' | head -1)"
 adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/mtk-kpd.kl" 2>/dev/null | tr -d '\r' || echo "(mtk-kpd.kl not readable)"
 
 echo ""
-echo "-- Generic.kl scancodes 103–106 (must match mtk-kpd on ROM) --"
-run_adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/Generic.kl" | tr -d '\r' || echo "(Generic.kl not readable)"
+echo "-- Generic.kl scancodes 103–108 (must match mtk-kpd on ROM) --"
+G103="$(adb shell "grep '^key 103' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' | head -1)"
+G108="$(adb shell "grep '^key 108' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' | head -1)"
+adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' || echo "(Generic.kl not readable)"
+
+echo ""
+echo "-- Keylayout consistency --"
+if [[ -n "$L103" && -n "$G103" && "$L103" != "$G103" ]]; then
+    echo "FAIL: mtk-kpd vs Generic mismatch on scancode 103"
+    echo "  mtk-kpd: $L103"
+    echo "  Generic: $G103"
+    echo "  Fix: reflash Solar ROM (nightly with Generic-rockbox.kl) or ./scripts/push-rockbox-keylayout-adb.sh"
+    EXIT_CODE=1
+elif [[ "$G103" == *DPAD_LEFT* ]]; then
+    echo "FAIL: Generic.kl wheel still stock (103 -> DPAD_LEFT) — Solar ROM menus will not scroll"
+    EXIT_CODE=1
+elif [[ -n "$L103" && -n "$G103" ]]; then
+    echo "OK: mtk-kpd and Generic agree on wheel scancode 103"
+fi
+
+if [[ "$L103" == *DPAD_UP* && "$G103" == *DPAD_UP* ]]; then
+    echo "OK: Rockbox ROM wheel mapping (103/108 -> UP/DOWN)"
+elif [[ "$L103" == *DPAD_LEFT* && "$G103" == *DPAD_LEFT* ]]; then
+    echo "INFO: Stock sideload wheel mapping (103/108 -> LEFT/RIGHT)"
+fi
 
 echo ""
 echo "-- Detected layout (Y1KeyMap rules) --"
 classify_layout "$L103" "$L105"
+
+print_keycodedisp_table
 
 echo ""
 echo "-- org.rockbox package --"
@@ -67,15 +109,6 @@ else
     echo "(pref not readable — app may use auto-detect defaults)"
 fi
 
-echo ""
-echo "-- Expected Solar 1.0 behavior --"
-echo "| Role            | Stock keycodes | Rockbox keycodes |"
-echo "| Wheel up/down   | 21 / 22        | 19 / 20          |"
-echo "| Media prev/next | 88 / 87        | 21 / 22          |"
-echo "| BT remotes      | MEDIA_* keys   | same             |"
-echo ""
-echo "Settings -> Debug -> Rockbox button mapping shows layout label when toggled manually."
-
 if [[ "${1:-}" == "--getevent" ]]; then
     echo ""
     echo "-- getevent (5s sample — spin wheel / press prev/next) --"
@@ -83,4 +116,9 @@ if [[ "${1:-}" == "--getevent" ]]; then
 fi
 
 echo ""
-echo "Done. Compare keycodes: adb logcat -s SolarKoensayr MainActivity"
+if [[ "$EXIT_CODE" -eq 0 ]]; then
+    echo "Done. Keylayout looks consistent."
+else
+    echo "Done with ERRORS — fix keylayout before expecting Solar GUI input to work."
+fi
+exit "$EXIT_CODE"

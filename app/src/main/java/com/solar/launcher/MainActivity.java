@@ -3168,28 +3168,49 @@ UserToast.show(this, getString(R.string.theme_removed, theme.name), Toast.LENGTH
 
     private void reconcileRockboxKeymapFromDevice() {
         try {
-            if (Y1KeyMap.reconcileRockboxKeymapPref(this, prefs)) {
-                rockboxKeymap = Y1KeyMap.shouldUseRockboxKeymap(this);
-            } else {
+            Y1KeyMap.reconcileRockboxKeymapPref(this, prefs);
+            if (prefs.getBoolean(Y1KeyMap.PREF_ROCKBOX_KEYMAP_MANUAL, false)) {
                 rockboxKeymap = Y1KeyMap.isRockboxKeymap(prefs);
+            } else {
+                rockboxKeymap = Y1KeyMap.shouldUseRockboxKeymap(this);
             }
         } catch (Exception ignored) {}
     }
 
+    private int keyScanCode(KeyEvent event) {
+        return event != null ? event.getScanCode() : 0;
+    }
+
+    private int mapWheelToMenuMove(int keyCode, KeyEvent event) {
+        return Y1KeyMap.wheelDelta(keyCode, keyScanCode(event), rockboxKeymap);
+    }
+
     private int mapWheelToMenuMove(int keyCode) {
-        return Y1KeyMap.wheelDelta(keyCode, rockboxKeymap);
+        return mapWheelToMenuMove(keyCode, null);
+    }
+
+    private boolean isWheelKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isWheelKey(keyCode, keyScanCode(event), rockboxKeymap);
     }
 
     private boolean isWheelKey(int keyCode) {
-        return Y1KeyMap.isWheelKey(keyCode, rockboxKeymap);
+        return isWheelKey(keyCode, null);
+    }
+
+    private boolean isWheelUpKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isWheelUp(keyCode, keyScanCode(event), rockboxKeymap);
     }
 
     private boolean isWheelUpKey(int keyCode) {
-        return Y1KeyMap.isWheelUp(keyCode, rockboxKeymap);
+        return isWheelUpKey(keyCode, null);
+    }
+
+    private boolean isWheelDownKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isWheelDown(keyCode, keyScanCode(event), rockboxKeymap);
     }
 
     private boolean isWheelDownKey(int keyCode) {
-        return Y1KeyMap.isWheelDown(keyCode, rockboxKeymap);
+        return isWheelDownKey(keyCode, null);
     }
 
     private void restoreHomeScreenEditorFocus(final int targetFocusIndex) {
@@ -3392,14 +3413,18 @@ UserToast.show(this, getString(R.string.theme_removed, theme.name), Toast.LENGTH
                 && (isThemeGalleryActive() || isThemeVariantPickerActive());
     }
 
-    private void dispatchThemeListKey(int keyCode) {
-        if (isWheelUpKey(keyCode)) {
+    private void dispatchThemeListKey(int keyCode, KeyEvent event) {
+        if (isWheelUpKey(keyCode, event)) {
             listThemes.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP));
             listThemes.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP));
-        } else if (isWheelDownKey(keyCode)) {
+        } else if (isWheelDownKey(keyCode, event)) {
             listThemes.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
             listThemes.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN));
         }
+    }
+
+    private void dispatchThemeListKey(int keyCode) {
+        dispatchThemeListKey(keyCode, null);
     }
 
     private void clearThemeGalleryPreview() {
@@ -11731,22 +11756,26 @@ toast(R.string.library_queue_empty);
         });
     }
 
-    private boolean routeWheelToOverlayList(int keyCode) {
-        if (!isWheelKey(keyCode)) return false;
+    private boolean routeWheelToOverlayList(int keyCode, KeyEvent event) {
+        if (!isWheelKey(keyCode, event)) return false;
         if (currentScreenState == STATE_SETTINGS && isMusicQueueEditorScreen()
                 && musicQueueMoveFrom < 0
                 && listMusicQueue != null && listMusicQueue.getVisibility() == View.VISIBLE) {
             if (getCurrentFocus() == null) ensureMusicQueueListFocused();
-            return moveMusicQueueFocus(mapWheelToMenuMove(keyCode));
+            return moveMusicQueueFocus(mapWheelToMenuMove(keyCode, event));
         }
         if (currentScreenState == STATE_SETTINGS && isThemeListActive()) {
             if (getCurrentFocus() == null) {
                 scrollThemesToListPos(Math.max(0, themeBrowserFocus));
             }
-            dispatchThemeListKey(keyCode);
+            dispatchThemeListKey(keyCode, event);
             return true;
         }
         return false;
+    }
+
+    private boolean routeWheelToOverlayList(int keyCode) {
+        return routeWheelToOverlayList(keyCode, null);
     }
 
     private void ensureFirstFocusableIn(ViewGroup container) {
@@ -16928,16 +16957,28 @@ toastError(R.string.toast_audio_permission);
         if (isMusicQueueEditorScreen()) syncMusicQueueEditorAfterPlaybackChange();
     }
 
+    private boolean isMediaNextKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isMediaNext(keyCode, keyScanCode(event), rockboxKeymap);
+    }
+
     private boolean isMediaNextKey(int keyCode) {
-        return Y1KeyMap.isMediaNext(keyCode, rockboxKeymap);
+        return isMediaNextKey(keyCode, null);
+    }
+
+    private boolean isMediaPrevKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isMediaPrevious(keyCode, keyScanCode(event), rockboxKeymap);
     }
 
     private boolean isMediaPrevKey(int keyCode) {
-        return Y1KeyMap.isMediaPrevious(keyCode, rockboxKeymap);
+        return isMediaPrevKey(keyCode, null);
+    }
+
+    private boolean isMediaSkipKey(int keyCode, KeyEvent event) {
+        return Y1KeyMap.isMediaSkip(keyCode, keyScanCode(event), rockboxKeymap);
     }
 
     private boolean isMediaSkipKey(int keyCode) {
-        return Y1KeyMap.isMediaSkip(keyCode, rockboxKeymap);
+        return isMediaSkipKey(keyCode, null);
     }
 
     private boolean isMediaPlayPauseKey(int keyCode) {
@@ -17200,9 +17241,9 @@ toastError(R.string.toast_audio_permission);
 
     /** Hold prev/next to scrub; short press skips track. Player only — not on home/menu. */
     boolean handleMediaSkipKeyDown(int keyCode, KeyEvent event) {
-        if (!isMediaSkipKey(keyCode)) return false;
+        if (!isMediaSkipKey(keyCode, event)) return false;
         if (currentScreenState != STATE_PLAYER) return false;
-        final boolean next = isMediaNextKey(keyCode);
+        final boolean next = isMediaNextKey(keyCode, event);
         if (event.getRepeatCount() == 0) {
             if (next) {
                 mediaNextKeyDownTime = System.currentTimeMillis();
@@ -17230,9 +17271,9 @@ toastError(R.string.toast_audio_permission);
     }
 
     boolean handleMediaSkipKeyUp(int keyCode, KeyEvent event) {
-        if (!isMediaSkipKey(keyCode)) return false;
+        if (!isMediaSkipKey(keyCode, event)) return false;
         if (currentScreenState != STATE_PLAYER) return false;
-        final boolean next = isMediaNextKey(keyCode);
+        final boolean next = isMediaNextKey(keyCode, event);
         final boolean scrubbing = next ? mediaNextScrubActive : mediaPrevScrubActive;
         if (next) mediaNextScrubActive = false;
         else mediaPrevScrubActive = false;
@@ -17278,6 +17319,9 @@ toastError(R.string.toast_audio_permission);
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (Y1KeyMap.noteHardwareKey(event)) {
+            reconcileRockboxKeymapFromDevice();
+        }
 
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         boolean isScreenOn = true;
@@ -17298,7 +17342,7 @@ toastError(R.string.toast_audio_permission);
             }
 
             if (isScreenOffControlEnabled && currentScreenState == STATE_PLAYER) {
-                if (isWheelUpKey(keyCode)) {
+                if (isWheelUpKey(keyCode, event)) {
                     // 🚀 방어막: 곡 넘김 직후 0.3초(300ms) 안에는 볼륨 조절을 차단합니다!
                     if (System.currentTimeMillis() - lastTrackChangeTime > 300) {
                         adjustVolume(false);
@@ -17306,14 +17350,14 @@ toastError(R.string.toast_audio_permission);
                     }
                     return true;
                 }
-                if (isWheelDownKey(keyCode)) {
+                if (isWheelDownKey(keyCode, event)) {
                     if (System.currentTimeMillis() - lastTrackChangeTime > 300) {
                         adjustVolume(true);
                         clickFeedback();
                     }
                     return true;
                 }
-                if (isMediaSkipKey(keyCode)) {
+                if (isMediaSkipKey(keyCode, event)) {
                     return handleMediaSkipKeyDown(keyCode, event);
                 }
                 if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126) {
@@ -17348,9 +17392,9 @@ toastError(R.string.toast_audio_permission);
         }
 
         if (themedContextMenu != null && themedContextMenu.isShowing()) {
-            if (isWheelKey(keyCode)) {
+            if (isWheelKey(keyCode, event)) {
                 if (themedContextMenu.focusZone() == ThemedContextMenu.FocusZone.SLIDER && audioManager != null) {
-                    adjustVolume(isWheelDownKey(keyCode));
+                    adjustVolume(isWheelDownKey(keyCode, event));
                     int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
                     int cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
                     themedContextMenu.showSlider(getString(R.string.context_quick_volume), max, cur);
@@ -17363,12 +17407,12 @@ toastError(R.string.toast_audio_permission);
                     return true;
                 }
             }
-            if (isWheelUpKey(keyCode)) {
+            if (isWheelUpKey(keyCode, event)) {
                 themedContextMenu.moveFocus(-1);
                 clickFeedback();
                 return true;
             }
-            if (isWheelDownKey(keyCode)) {
+            if (isWheelDownKey(keyCode, event)) {
                 themedContextMenu.moveFocus(1);
                 clickFeedback();
                 return true;
@@ -17388,7 +17432,7 @@ toastError(R.string.toast_audio_permission);
         }
 
         if (currentScreenState == STATE_WIFI_KEYBOARD) {
-            if (isMediaSkipKey(keyCode)) {
+            if (isMediaSkipKey(keyCode, event)) {
                 if (event.getRepeatCount() == 0) {
                     keyboardMediaSkipDownAt = System.currentTimeMillis();
                 }
@@ -17405,7 +17449,7 @@ toastError(R.string.toast_audio_permission);
                 }
                 return true;
             }
-            if (isWheelUpKey(keyCode)) {
+            if (isWheelUpKey(keyCode, event)) {
                 if (event.getRepeatCount() > 0) {
                     handleKeyboardMediaDel();
                     return true;
@@ -17415,7 +17459,7 @@ toastError(R.string.toast_audio_permission);
                 clickFeedback();
                 return true;
             }
-            if (isWheelDownKey(keyCode)) {
+            if (isWheelDownKey(keyCode, event)) {
                 keyboardIndex = (keyboardIndex + 1) % KEYBOARD_CHARS.length;
                 updateKeyboardUI();
                 clickFeedback();
@@ -17432,12 +17476,12 @@ toastError(R.string.toast_audio_permission);
             return true;
         }
 
-        if (isMediaSkipKey(keyCode)) {
+        if (isMediaSkipKey(keyCode, event)) {
             return handleMediaSkipKeyDown(keyCode, event);
         }
 
         if (currentScreenState == STATE_PLAYER) {
-            if (isWheelUpKey(keyCode)) {
+            if (isWheelUpKey(keyCode, event)) {
                 if (playerScrubCursorActive) {
                     movePlayerScrubCursor(-MEDIA_SCRUB_STEP_MS);
                 } else {
@@ -17446,7 +17490,7 @@ toastError(R.string.toast_audio_permission);
                 clickFeedback();
                 return true;
             }
-            if (isWheelDownKey(keyCode)) {
+            if (isWheelDownKey(keyCode, event)) {
                 if (playerScrubCursorActive) {
                     movePlayerScrubCursor(MEDIA_SCRUB_STEP_MS);
                 } else {
@@ -17459,13 +17503,13 @@ toastError(R.string.toast_audio_permission);
         }
 
         if (currentScreenState == STATE_BRIGHTNESS) {
-            if (isWheelUpKey(keyCode)) {
+            if (isWheelUpKey(keyCode, event)) {
                 currentSystemBrightness = Math.max(10, currentSystemBrightness - 15);
                 updateBrightness(currentSystemBrightness);
                 clickFeedback();
                 return true;
             }
-            if (isWheelDownKey(keyCode)) {
+            if (isWheelDownKey(keyCode, event)) {
                 currentSystemBrightness = Math.min(255, currentSystemBrightness + 15);
                 updateBrightness(currentSystemBrightness);
                 clickFeedback();
@@ -17486,8 +17530,8 @@ toastError(R.string.toast_audio_permission);
                 || currentScreenState == STATE_SETTINGS || currentScreenState == STATE_BLUETOOTH
                 || currentScreenState == STATE_WIFI || currentScreenState == STATE_PODCASTS
                 || currentScreenState == STATE_SOULSEEK) {
-            if (isWheelKey(keyCode)) {
-                if (routeWheelToOverlayList(keyCode)) {
+            if (isWheelKey(keyCode, event)) {
+                if (routeWheelToOverlayList(keyCode, event)) {
                     clickFeedback();
                     return true;
                 }
@@ -17514,14 +17558,14 @@ toastError(R.string.toast_audio_permission);
                     char currentChar = getInitialChar(currentScrollIndexList.get(currentPos));
                     int targetPos = currentPos;
 
-                    if (isWheelDownKey(keyCode)) { // 휠 아래로 휙! 돌릴 때 (다음 알파벳 찾기)
+                    if (isWheelDownKey(keyCode, event)) { // 휠 아래로 휙! 돌릴 때 (다음 알파벳 찾기)
                         for (int i = currentPos + 1; i < currentScrollIndexList.size(); i++) {
                             if (getInitialChar(currentScrollIndexList.get(i)) != currentChar) {
                                 targetPos = i;
                                 break;
                             }
                         }
-                    } else if (isWheelUpKey(keyCode)) { // 휠 위로 휙! 돌릴 때 (이전 알파벳 시작점 찾기)
+                    } else if (isWheelUpKey(keyCode, event)) { // 휠 위로 휙! 돌릴 때 (이전 알파벳 시작점 찾기)
                         char targetChar = currentChar;
                         boolean foundPrevChar = false;
                         for (int i = currentPos - 1; i >= 0; i--) {
@@ -17545,13 +17589,13 @@ toastError(R.string.toast_audio_permission);
                     return true;
                 } else {
                     // 🐢🐢 [일반 주행 모드] 평소처럼 천천히 정확하게 1곡씩 이동!
-                    if (isWheelUpKey(keyCode)) {
+                    if (isWheelUpKey(keyCode, event)) {
                         listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP));
                         listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP));
                         clickFeedback();
                         return true;
                     }
-                    if (isWheelDownKey(keyCode)) {
+                    if (isWheelDownKey(keyCode, event)) {
                         listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
                         listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN));
                         clickFeedback();
@@ -17562,7 +17606,7 @@ toastError(R.string.toast_audio_permission);
             // 🚀 [여기까지 덮어쓰기 완료!]
             if (currentScreenState == STATE_SETTINGS && isHomeScreenArrangeScreen()
                     && homeScreenMoveModeId != null) {
-                int delta = mapWheelToMenuMove(keyCode);
+                int delta = mapWheelToMenuMove(keyCode, event);
                 if (delta != 0) {
                     List<String> ids = HomeMenuConfig.loadHomeOrderIds(prefs);
                     int idx = ids.indexOf(homeScreenMoveModeId);
@@ -17581,7 +17625,7 @@ toastError(R.string.toast_audio_permission);
             }
             if (currentScreenState == STATE_SETTINGS && isHomeMoreArrangeScreen()
                     && homeMoreMoveModeId != null) {
-                int delta = mapWheelToMenuMove(keyCode);
+                int delta = mapWheelToMenuMove(keyCode, event);
                 if (delta != 0) {
                     List<String> ids = HomeMenuConfig.loadMoreOrderIds(prefs);
                     int idx = ids.indexOf(homeMoreMoveModeId);
@@ -17600,7 +17644,7 @@ toastError(R.string.toast_audio_permission);
             }
             if (currentScreenState == STATE_SETTINGS && isMusicQueueEditorScreen()
                     && musicQueueMoveFrom >= 0) {
-                int delta = mapWheelToMenuMove(keyCode);
+                int delta = mapWheelToMenuMove(keyCode, event);
                 if (delta != 0) {
                     int newIdx = nextMusicQueueMoveIndex(musicQueueMoveFrom, delta);
                     if (newIdx != musicQueueMoveFrom) {
@@ -17610,8 +17654,8 @@ toastError(R.string.toast_audio_permission);
                     return true;
                 }
             }
-            if (currentScreenState == STATE_MENU && isWheelKey(keyCode)) {
-                if (moveHomeMenuFocus(mapWheelToMenuMove(keyCode))) {
+            if (currentScreenState == STATE_MENU && isWheelKey(keyCode, event)) {
+                if (moveHomeMenuFocus(mapWheelToMenuMove(keyCode, event))) {
                     clickFeedback();
                     return true;
                 }
@@ -17622,14 +17666,14 @@ toastError(R.string.toast_audio_permission);
                 c = getCurrentFocus();
             }
             if (c != null) {
-                if (isWheelUpKey(keyCode)) { // 휠 위로 돌릴 때 (UP)
+                if (isWheelUpKey(keyCode, event)) { // 휠 위로 돌릴 때 (UP)
                     android.view.ViewGroup parent = (android.view.ViewGroup) c.getParent();
                     if (parent == listMusicQueue && isMusicQueueEditorScreen()) {
                         if (moveMusicQueueFocus(-1)) clickFeedback();
                         return true;
                     }
                     if (parent == listThemes && isThemeListActive()) {
-                        dispatchThemeListKey(keyCode);
+                        dispatchThemeListKey(keyCode, event);
                         clickFeedback();
                         return true;
                     }
@@ -17658,14 +17702,14 @@ toastError(R.string.toast_audio_permission);
                     clickFeedback();
                     return true;
                 }
-                if (isWheelDownKey(keyCode)) { // 휠 아래로 돌릴 때 (DOWN)
+                if (isWheelDownKey(keyCode, event)) { // 휠 아래로 돌릴 때 (DOWN)
                     android.view.ViewGroup parent = (android.view.ViewGroup) c.getParent();
                     if (parent == listMusicQueue && isMusicQueueEditorScreen()) {
                         if (moveMusicQueueFocus(1)) clickFeedback();
                         return true;
                     }
                     if (parent == listThemes && isThemeListActive()) {
-                        dispatchThemeListKey(keyCode);
+                        dispatchThemeListKey(keyCode, event);
                         clickFeedback();
                         return true;
                     }
@@ -17693,8 +17737,8 @@ toastError(R.string.toast_audio_permission);
                     clickFeedback();
                     return true;
                 }
-            } else if (isWheelKey(keyCode)) {
-                if (routeWheelToOverlayList(keyCode)) {
+            } else if (isWheelKey(keyCode, event)) {
+                if (routeWheelToOverlayList(keyCode, event)) {
                     clickFeedback();
                     return true;
                 }
@@ -17721,12 +17765,12 @@ toastError(R.string.toast_audio_permission);
                 || (System.currentTimeMillis() - lastScreenOnTime < 500);
 
         if (isWakingUp) {
-            if (isMediaSkipKey(keyCode)) return handleMediaSkipKeyUp(keyCode, event);
+            if (isMediaSkipKey(keyCode, event)) return handleMediaSkipKeyUp(keyCode, event);
             return true;
         }
 
         // 💡 [핵심 차단 구역] 휠 조작(21, 22)을 '뗄 때'
-        if (isWheelKey(keyCode)) {
+        if (isWheelKey(keyCode, event)) {
             return true;
         }
 
@@ -17752,9 +17796,9 @@ toastError(R.string.toast_audio_permission);
         }
 
         if (currentScreenState == STATE_WIFI_KEYBOARD) {
-            if (isMediaSkipKey(keyCode)) {
+            if (isMediaSkipKey(keyCode, event)) {
                 if (System.currentTimeMillis() - keyboardMediaSkipDownAt < MEDIA_SKIP_LONG_PRESS_MS) {
-                    if (isMediaNextKey(keyCode)) handleKeyboardMediaSpace();
+                    if (isMediaNextKey(keyCode, event)) handleKeyboardMediaSpace();
                     else handleKeyboardMediaDel();
                 }
                 return true;
@@ -17771,7 +17815,7 @@ toastError(R.string.toast_audio_permission);
         if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == 85 || keyCode == 86) {
             return true;
         }
-        if (isMediaSkipKey(keyCode)) {
+        if (isMediaSkipKey(keyCode, event)) {
             return handleMediaSkipKeyUp(keyCode, event);
         }
         return super.onKeyUp(keyCode, event);
@@ -18200,11 +18244,11 @@ MainActivity.this.toastError(R.string.toast_time_failed);
                         MainActivity.instance.clickFeedback();
                     }
                     // 🔊 혹시 기기가 휠 조작(21, 22)을 미디어 신호로 보내줄 경우를 대비한 방어 코드
-                    else if (MainActivity.instance.isWheelUpKey(keyCode)) {
+                    else if (MainActivity.instance.isWheelUpKey(keyCode, event)) {
                         MainActivity.instance.adjustVolume(false);
                         MainActivity.instance.clickFeedback();
                     }
-                    else if (MainActivity.instance.isWheelDownKey(keyCode)) {
+                    else if (MainActivity.instance.isWheelDownKey(keyCode, event)) {
                         MainActivity.instance.adjustVolume(true);
                         MainActivity.instance.clickFeedback();
                     }

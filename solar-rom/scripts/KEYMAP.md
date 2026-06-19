@@ -1,75 +1,86 @@
 # Y1 hardware keymaps (Solar 1.0 input)
 
-Solar listens to **Android keycodes** (`KeyEvent`), not kernel scancodes. The system file `/system/usr/keylayout/mtk-kpd.kl` maps physical controls to keycodes; **`Y1KeyMap`** maps keycodes to UI roles (wheel, skip, play/pause).
+Solar listens to **Android keycodes** (`KeyEvent`), with **kernel scancodes** (103/108 wheel, 105/106 skip) as a safety net when keylayout files disagree.
 
 ## Physical controls → keycodes
 
-| Control | Scancode | Stock mtk-kpd (`mtk-kpd.kl`) | Rockbox mtk-kpd (`mtk-kpd-rockbox.kl`) |
-|---------|----------|------------------------------|----------------------------------------|
+| Control | Scancode | Stock (`mtk-kpd.kl` / `Stock.kl`) | Rockbox ROM (`mtk-kpd-rockbox.kl` + `Generic-rockbox.kl`) |
+|---------|----------|-----------------------------------|-----------------------------------------------------------|
 | Wheel CCW | 103 | DPAD_LEFT (21) | DPAD_UP (19) |
 | Wheel CW | 108 | DPAD_RIGHT (22) | DPAD_DOWN (20) |
 | Prev | 105 | MEDIA_PREVIOUS (88) | DPAD_LEFT (21) |
 | Next | 106 | MEDIA_NEXT (87) | DPAD_RIGHT (22) |
 | Center | 232 | DPAD_CENTER | same |
 | Play/pause | 164 | MEDIA_PLAY_PAUSE | same |
-| Top / menu | 229 etc. | MENU | same |
+| Top | — | BACK (4) | BACK (4) |
 
-## Solar app semantics (both modes feel identical)
+## Solar app semantics (both modes feel identical in UI)
 
 | Role | Stock keycodes | Rockbox keycodes |
 |------|----------------|------------------|
 | Wheel up / down | 21 / 22 | 19 / 20 |
-| Media prev / next | 88 / 87 (+ 165/163) | 21 / 22 (treated as skip in player) |
+| Media prev / next | 88 / 87 (+ 165/163) | 21 / 22 |
 | BT remotes | MEDIA_* via Koensayr | same |
 
-## Auto-detect (`Y1KeyMap.detectMtkLayout`)
+## Why three keylayout files matter
 
-Reads live `/system/usr/keylayout/mtk-kpd.kl` lines for keys **103** and **105**:
+Y1 InputReader loads **both** `mtk-kpd.kl` and `Generic.kl` (identical to `Stock.kl` on Solar ROM). Patching only `mtk-kpd.kl` leaves the wheel at stock 21/22 — menus appear dead because Solar expects 19/20.
+
+**Solar ROM install** ([`apply-rockbox-keylayout.sh`](apply-rockbox-keylayout.sh)) copies:
+
+| Repo file | Device path |
+|-----------|-------------|
+| [`Generic-rockbox.kl`](Generic-rockbox.kl) | `/system/usr/keylayout/Generic.kl` and `Stock.kl` |
+| [`mtk-kpd-rockbox.kl`](mtk-kpd-rockbox.kl) | `/system/usr/keylayout/mtk-kpd.kl` |
+
+All patching happens at **ROM build time** in [`build-rom.sh`](build-rom.sh) — no boot-time or app-side `.kl` writes. Koensayr (`AVRCP.kl`, BT stack) is separate and also ROM-build-only.
+
+## Auto-detect (`Y1KeyMap`)
+
+Reads **`mtk-kpd.kl` and `Generic.kl`** lines 103/105, plus runtime hints from first hardware keys (keyboard/dpad source only — not BT):
 
 | Condition | Layout | Rockbox mode |
 |-----------|--------|--------------|
-| `105` → `MEDIA_PREVIOUS` | Stock Y1 | off |
-| `103` → `MEDIA_PREVIOUS` | Sideload swap | on (wheel 88/87, skip 21/22) |
-| `103` LEFT + `105` UP | Rockbox ROM variant | on |
-| `103` UP alone (canonical base) | Rockbox classic | on |
-| Ambiguous + enabled `org.rockbox` | fallback | on |
+| `105` → `MEDIA_PREVIOUS` on either file | Stock Y1 | off |
+| `103` → `MEDIA_PREVIOUS` | Sideload swap | on |
+| `103` UP + `105` LEFT (mtk-kpd) | Rockbox ROM variant | on |
+| `103` UP + `105` LEFT | Rockbox classic | on |
+| Wheel scancode 103 → keycode UP | Runtime Rockbox | on |
+| Wheel scancode 103 → keycode LEFT | Runtime Stock | off |
 
-Settings → Debug → **Rockbox button mapping** can override auto-detect; preview shows layout label (e.g. `On · Rockbox classic · auto`).
+Settings → Debug → **Rockbox button mapping** overrides auto-detect when set manually.
 
 ## ROM vs sideload
 
-| Install path | mtk-kpd + Generic.kl | org.rockbox |
-|--------------|----------------------|-------------|
-| **Solar ROM** (`build-rom.sh`) | `mtk-kpd-rockbox.kl` **and** patched `Generic.kl`/`Stock.kl` via `patch-kl-rockbox-y1-controls.sh` | kept from Rockbox-Y1 base |
-| **adb sideload** (`clean_install_system.sh`) | stock `mtk-kpd.kl` via `apply-stock-keylayout.sh` pattern | not removed if present |
+| Install path | Keylayout |
+|--------------|-----------|
+| **Solar ROM** | `apply-rockbox-keylayout.sh` → `Generic-rockbox.kl` + `mtk-kpd-rockbox.kl` |
+| **adb sideload** | `apply-stock-keylayout.sh` pattern in `clean_install_system.sh` |
 
-`apply-rockbox-keylayout.sh` must patch `Generic.kl` wheel lines (103/108 → UP/DOWN). Copying `Stock.kl` alone leaves wheel at stock 21/22 while `mtk-kpd.kl` says 19/20 — Solar auto-detects Rockbox but InputReader still emits 21/22 and menus appear dead.
-
-Push canonical Rockbox layout to a test device without reflashing:
-
-```bash
-./scripts/push-rockbox-keylayout-adb.sh
-```
-
-## AVRCP / Bluetooth remotes
-
-Car stereos send **MEDIA_*** keycodes through normal Activity dispatch (`dispatchKeyEvent` → `onKeyDown`). Koensayr (`Y1Bridge.apk` + patched BT stack) exposes metadata via the legacy `y1-track-info` path.
+Push Rockbox layout without reflashing: `./scripts/push-rockbox-keylayout-adb.sh`
 
 ## Verify on device
 
 ```bash
 ./scripts/verify-y1-input.sh
-./scripts/verify-y1-input.sh --getevent   # optional 5s capture
-adb shell grep -E '^key (103|105|106|108)' /system/usr/keylayout/mtk-kpd.kl
 ```
+
+Expected **KeyCodeDisp** on Solar Rockbox ROM:
+
+| Control | Keycode |
+|---------|---------|
+| Wheel CCW | DPAD_UP (19) |
+| Wheel CW | DPAD_DOWN (20) |
+| Prev button | DPAD_LEFT (21) |
+| Next button | DPAD_RIGHT (22) |
+| Bottom | MEDIA_PLAY_PAUSE (85) |
+| Top | BACK (4) |
 
 ## Related scripts
 
 | Script | Purpose |
 |--------|---------|
-| `solar-rom/scripts/apply-rockbox-keylayout.sh` | Rockbox mtk-kpd on ROM mount |
-| `solar-rom/scripts/apply-stock-keylayout.sh` | Stock mtk-kpd (adb sideload) |
-| `scripts/push-rockbox-keylayout-adb.sh` | Push Rockbox mtk-kpd via `su` |
-| `scripts/push-koensayr-adb.sh` | Install Koensayr stack via `su` |
-| `scripts/stage-koensayr-prep.sh` | Build patched blobs for push / APK assets |
-| `scripts/verify-y1-input.sh` | Dump layout + org.rockbox + expected table |
+| `apply-rockbox-keylayout.sh` | Install Generic-rockbox + mtk-kpd-rockbox on ROM mount |
+| `apply-stock-keylayout.sh` | Stock keylayout (adb sideload) |
+| `scripts/push-rockbox-keylayout-adb.sh` | Push both `.kl` files via `su` |
+| `scripts/verify-y1-input.sh` | Dump layout, Generic/mtk-kpd consistency, KeyCodeDisp table |

@@ -9,17 +9,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 die() { echo "error: $*" >&2; exit 1; }
 
 [ -n "$MOUNT_SYS" ] && [ -d "$MOUNT_SYS" ] || die "usage: $0 /path/to/mounted/system"
-[ -f "$SCRIPT_DIR/Stock.kl" ] || die "missing $SCRIPT_DIR/Stock.kl"
+[ -f "$SCRIPT_DIR/Generic-rockbox.kl" ] || die "missing $SCRIPT_DIR/Generic-rockbox.kl"
 [ -f "$SCRIPT_DIR/mtk-kpd-rockbox.kl" ] || die "missing $SCRIPT_DIR/mtk-kpd-rockbox.kl"
 
 KL_DIR="$MOUNT_SYS/usr/keylayout"
 sudo mkdir -p "$KL_DIR"
 
-echo "==> Rockbox keylayout (Generic.kl + Stock.kl + mtk-kpd-rockbox.kl)"
-sudo cp "$SCRIPT_DIR/Stock.kl" "$KL_DIR/Stock.kl"
-sudo cp "$SCRIPT_DIR/Stock.kl" "$KL_DIR/Generic.kl"
-chmod +x "$SCRIPT_DIR/patch-kl-rockbox-y1-controls.sh"
-"$SCRIPT_DIR/patch-kl-rockbox-y1-controls.sh" --sudo "$KL_DIR/Stock.kl" "$KL_DIR/Generic.kl"
+echo "==> Rockbox keylayout (Generic-rockbox.kl + mtk-kpd-rockbox.kl)"
+sudo cp "$SCRIPT_DIR/Generic-rockbox.kl" "$KL_DIR/Stock.kl"
+sudo cp "$SCRIPT_DIR/Generic-rockbox.kl" "$KL_DIR/Generic.kl"
 sudo cp "$SCRIPT_DIR/mtk-kpd-rockbox.kl" "$KL_DIR/mtk-kpd.kl"
 sudo rm -f "$KL_DIR/Rockbox.kl"
 sudo chmod 644 "$KL_DIR/Stock.kl" "$KL_DIR/Generic.kl" "$KL_DIR/mtk-kpd.kl"
