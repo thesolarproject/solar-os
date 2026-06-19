@@ -38,10 +38,12 @@ Settings → Debug → **Rockbox button mapping** can override auto-detect; prev
 
 ## ROM vs sideload
 
-| Install path | mtk-kpd | org.rockbox |
-|--------------|---------|-------------|
-| **Solar ROM** (`build-rom.sh`) | `mtk-kpd-rockbox.kl` via `apply-rockbox-keylayout.sh` | kept from Rockbox-Y1 base |
+| Install path | mtk-kpd + Generic.kl | org.rockbox |
+|--------------|----------------------|-------------|
+| **Solar ROM** (`build-rom.sh`) | `mtk-kpd-rockbox.kl` **and** patched `Generic.kl`/`Stock.kl` via `patch-kl-rockbox-y1-controls.sh` | kept from Rockbox-Y1 base |
 | **adb sideload** (`clean_install_system.sh`) | stock `mtk-kpd.kl` via `apply-stock-keylayout.sh` pattern | not removed if present |
+
+`apply-rockbox-keylayout.sh` must patch `Generic.kl` wheel lines (103/108 → UP/DOWN). Copying `Stock.kl` alone leaves wheel at stock 21/22 while `mtk-kpd.kl` says 19/20 — Solar auto-detects Rockbox but InputReader still emits 21/22 and menus appear dead.
 
 Push canonical Rockbox layout to a test device without reflashing:
 

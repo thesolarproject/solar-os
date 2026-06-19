@@ -42,6 +42,10 @@ L105="$(adb shell "grep '^key 105' /system/usr/keylayout/mtk-kpd.kl" 2>/dev/null
 adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/mtk-kpd.kl" 2>/dev/null | tr -d '\r' || echo "(mtk-kpd.kl not readable)"
 
 echo ""
+echo "-- Generic.kl scancodes 103–106 (must match mtk-kpd on ROM) --"
+run_adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/Generic.kl" | tr -d '\r' || echo "(Generic.kl not readable)"
+
+echo ""
 echo "-- Detected layout (Y1KeyMap rules) --"
 classify_layout "$L103" "$L105"
 

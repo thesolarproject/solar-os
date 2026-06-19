@@ -17198,9 +17198,10 @@ toastError(R.string.toast_audio_permission);
         } catch (Exception ignored) {}
     }
 
-    /** Hold prev/next to scrub; short press skips track. */
+    /** Hold prev/next to scrub; short press skips track. Player only — not on home/menu. */
     boolean handleMediaSkipKeyDown(int keyCode, KeyEvent event) {
         if (!isMediaSkipKey(keyCode)) return false;
+        if (currentScreenState != STATE_PLAYER) return false;
         final boolean next = isMediaNextKey(keyCode);
         if (event.getRepeatCount() == 0) {
             if (next) {
@@ -17230,6 +17231,7 @@ toastError(R.string.toast_audio_permission);
 
     boolean handleMediaSkipKeyUp(int keyCode, KeyEvent event) {
         if (!isMediaSkipKey(keyCode)) return false;
+        if (currentScreenState != STATE_PLAYER) return false;
         final boolean next = isMediaNextKey(keyCode);
         final boolean scrubbing = next ? mediaNextScrubActive : mediaPrevScrubActive;
         if (next) mediaNextScrubActive = false;

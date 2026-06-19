@@ -318,6 +318,14 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
+    if ! grep -q '^key 103   DPAD_UP' "$sys_mount/usr/keylayout/Generic.kl" \
+            || ! grep -q '^key 108   DPAD_DOWN' "$sys_mount/usr/keylayout/Generic.kl" \
+            || ! grep -q '^key 105   DPAD_LEFT' "$sys_mount/usr/keylayout/Generic.kl" \
+            || ! grep -q '^key 106   DPAD_RIGHT' "$sys_mount/usr/keylayout/Generic.kl"; then
+        echo "audit fail: Generic.kl wheel/prev-next not Rockbox (must match mtk-kpd)" >&2
+        errors=$((errors + 1))
+    fi
+
     if [ -f "$sys_mount/usr/keylayout/Rockbox.kl" ]; then
         echo "audit fail: Rockbox.kl still present" >&2
         errors=$((errors + 1))

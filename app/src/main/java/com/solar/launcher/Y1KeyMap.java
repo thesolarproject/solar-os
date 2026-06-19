@@ -128,7 +128,10 @@ public final class Y1KeyMap {
     }
 
     private static int layoutFor(boolean rockboxKeymap) {
-        return rockboxKeymap ? detectMtkLayout() : LAYOUT_STOCK;
+        // ponytail: always trust live mtk-kpd; pref must not force stock semantics on Rockbox ROM
+        int detected = detectMtkLayout();
+        if (detected != LAYOUT_STOCK) return detected;
+        return LAYOUT_STOCK;
     }
 
     public static boolean isWheelUp(int keyCode, boolean rockboxKeymap) {

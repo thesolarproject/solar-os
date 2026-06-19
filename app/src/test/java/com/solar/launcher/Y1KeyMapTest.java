@@ -53,4 +53,12 @@ public class Y1KeyMapTest {
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
         assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
     }
+
+    @Test
+    public void rockboxHardwareWorksWhenPrefOff() {
+        Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC);
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, false));
+        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_DOWN, false));
+        assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, false));
+    }
 }

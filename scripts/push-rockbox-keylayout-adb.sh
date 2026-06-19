@@ -31,13 +31,22 @@ sleep 1
 adb remount 2>/dev/null || run_su "mount -o remount,rw /system" || die "cannot remount /system"
 
 echo "==> Push Rockbox keylayout (Generic.kl + Stock.kl + mtk-kpd-rockbox.kl)"
-adb push "$STOCK_KL" /data/local/tmp/Stock.kl
-adb push "$KL" /data/local/tmp/mtk-kpd.kl
-run_su "mkdir -p /system/usr/keylayout && cp /data/local/tmp/Stock.kl /system/usr/keylayout/Stock.kl && cp /data/local/tmp/Stock.kl /system/usr/keylayout/Generic.kl && cp /data/local/tmp/mtk-kpd.kl /system/usr/keylayout/mtk-kpd.kl && rm -f /system/usr/keylayout/Rockbox.kl && chmod 644 /system/usr/keylayout/Stock.kl /system/usr/keylayout/Generic.kl /system/usr/keylayout/mtk-kpd.kl && chown root:root /system/usr/keylayout/Stock.kl /system/usr/keylayout/Generic.kl /system/usr/keylayout/mtk-kpd.kl && rm -f /data/local/tmp/Stock.kl /data/local/tmp/mtk-kpd.kl"
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+cp "$STOCK_KL" "$STAGE/Stock.kl"
+cp "$STOCK_KL" "$STAGE/Generic.kl"
+chmod +x "$ROOT/solar-rom/scripts/patch-kl-rockbox-y1-controls.sh"
+"$ROOT/solar-rom/scripts/patch-kl-rockbox-y1-controls.sh" "$STAGE/Stock.kl" "$STAGE/Generic.kl"
+cp "$KL" "$STAGE/mtk-kpd.kl"
+adb push "$STAGE/Stock.kl" /data/local/tmp/Stock.kl
+adb push "$STAGE/Generic.kl" /data/local/tmp/Generic.kl
+adb push "$STAGE/mtk-kpd.kl" /data/local/tmp/mtk-kpd.kl
+run_su "mkdir -p /system/usr/keylayout && cp /data/local/tmp/Stock.kl /system/usr/keylayout/Stock.kl && cp /data/local/tmp/Generic.kl /system/usr/keylayout/Generic.kl && cp /data/local/tmp/mtk-kpd.kl /system/usr/keylayout/mtk-kpd.kl && rm -f /system/usr/keylayout/Rockbox.kl && chmod 644 /system/usr/keylayout/Stock.kl /system/usr/keylayout/Generic.kl /system/usr/keylayout/mtk-kpd.kl && chown root:root /system/usr/keylayout/Stock.kl /system/usr/keylayout/Generic.kl /system/usr/keylayout/mtk-kpd.kl && rm -f /data/local/tmp/Stock.kl /data/local/tmp/Generic.kl /data/local/tmp/mtk-kpd.kl"
 run_su "sync"
 
-echo "==> Verify mtk-kpd scancodes 103–106"
+echo "==> Verify mtk-kpd + Generic.kl scancodes 103–106"
 adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/mtk-kpd.kl" | tr -d '\r' || true
+adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/Generic.kl" | tr -d '\r' || true
 
 if [[ "$NO_REBOOT" -eq 0 ]]; then
     echo "==> Rebooting (InputReader reloads keylayout at boot)"
