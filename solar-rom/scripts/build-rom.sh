@@ -221,17 +221,29 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
-    if [ -f "$sys_mount/app/org.rockbox.apk" ]; then
-        echo "audit fail: org.rockbox.apk still present" >&2
+    if [ ! -f "$sys_mount/app/org.rockbox.apk" ]; then
+        echo "audit fail: org.rockbox.apk missing (Rockbox-Y1 base not preserved)" >&2
         errors=$((errors + 1))
     fi
 
+    local koensayr_expected="${KOENSAYR_APPLIED:-0}"
+
     if [ ! -f "$sys_mount/usr/keylayout/AVRCP.kl" ]; then
-        echo "audit warn: AVRCP.kl missing (Koensayr patches not applied?)" >&2
+        if [ "$koensayr_expected" = "1" ]; then
+            echo "audit fail: AVRCP.kl missing (Koensayr apply failed)" >&2
+            errors=$((errors + 1))
+        else
+            echo "audit warn: AVRCP.kl missing (Koensayr patches not applied?)" >&2
+        fi
     fi
 
     if [ ! -f "$sys_mount/app/Y1Bridge.apk" ]; then
-        echo "audit warn: Y1Bridge.apk missing (Koensayr patches not applied?)" >&2
+        if [ "$koensayr_expected" = "1" ]; then
+            echo "audit fail: Y1Bridge.apk missing (Koensayr apply failed)" >&2
+            errors=$((errors + 1))
+        else
+            echo "audit warn: Y1Bridge.apk missing (Koensayr patches not applied?)" >&2
+        fi
     fi
 
     if [ ! -f "$sys_mount/lib/libextavrcp_jni.so" ]; then
@@ -292,6 +304,25 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
+    if [ ! -f "$sys_mount/usr/keylayout/mtk-kpd.kl" ]; then
+        echo "audit fail: mtk-kpd.kl missing (Y1 wheel / prev-next)" >&2
+        errors=$((errors + 1))
+    elif ! cmp -s "$sys_mount/usr/keylayout/mtk-kpd.kl" "$SCRIPT_DIR/mtk-kpd-rockbox.kl"; then
+        echo "audit fail: mtk-kpd.kl does not match solar-rom/scripts/mtk-kpd-rockbox.kl" >&2
+        errors=$((errors + 1))
+    elif ! grep -q '^key 105   DPAD_LEFT' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 106   DPAD_RIGHT' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 103   DPAD_UP' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 108   DPAD_DOWN' "$sys_mount/usr/keylayout/mtk-kpd.kl"; then
+        echo "audit fail: mtk-kpd.kl is not Rockbox layout (103/108 UP/DOWN, 105/106 LEFT/RIGHT)" >&2
+        errors=$((errors + 1))
+    fi
+
+    if [ -f "$sys_mount/usr/keylayout/Rockbox.kl" ]; then
+        echo "audit fail: Rockbox.kl still present" >&2
+        errors=$((errors + 1))
+    fi
+
     if [ -n "$(find "$user_mount" -maxdepth 1 -name '*_launcher.apk' ! -name 'com.solar.launcher.apk' -print -quit 2>/dev/null)" ]; then
         echo "audit fail: legacy launcher APK in userdata" >&2
         errors=$((errors + 1))
@@ -299,11 +330,6 @@ audit_rom_contents() {
 
     if [ -f "$user_mount/com.innioasis.y1.apk" ]; then
         echo "audit fail: com.innioasis.y1.apk present in userdata" >&2
-        errors=$((errors + 1))
-    fi
-
-    if [ -d "$user_mount/org.rockbox" ]; then
-        echo "audit fail: /data/org.rockbox still present" >&2
         errors=$((errors + 1))
     fi
 
@@ -383,11 +409,10 @@ for apk in "$MOUNT_SYS/app"/com.*.apk; do
     sudo rm -f "$apk"
 done
 
-sudo rm -f "$MOUNT_SYS/app/org.rockbox.apk"
-sudo rm -f "$MOUNT_SYS/lib/librockbox.so"
 sudo rm -f "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
 sudo rm -f "$MOUNT_SYS/etc/init.d/99Y1LauncherInit.sh"
 sudo rm -f "$MOUNT_SYS/etc/install-recovery.sh"
+# ponytail: keep org.rockbox.apk + librockbox.so from Rockbox-Y1 base for dual-app ROM
 
 sudo mkdir -p "$MOUNT_SYS/app" "$MOUNT_SYS/usr/keylayout"
 sudo cp "$STAGING_APK" "$MOUNT_SYS/app/$SYSTEM_APK_NAME"
@@ -408,11 +433,6 @@ sudo cp "$REPO_ROOT/solar-rom/system/99SolarInit.sh" "$MOUNT_SYS/etc/init.d/99So
 sudo chmod 755 "$MOUNT_SYS/etc/init.d/99SolarInit.sh"
 sudo chown root:root "$MOUNT_SYS/etc/init.d/99SolarInit.sh"
 
-sudo cp "$SCRIPT_DIR/Stock.kl" "$MOUNT_SYS/usr/keylayout/Stock.kl"
-sudo cp "$SCRIPT_DIR/Stock.kl" "$MOUNT_SYS/usr/keylayout/Generic.kl"
-sudo chmod 644 "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Generic.kl"
-sudo chown root:root "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Generic.kl"
-
 BOOT_ASSETS="$SCRIPT_DIR/../assets/innioasis-boot"
 if [ -d "$BOOT_ASSETS" ] && [ -f "$BOOT_ASSETS/boot.img" ]; then
     echo "==> Innioasis boot splash (replace Rockbox boot.img / logo / bootanimation)"
@@ -422,22 +442,28 @@ else
     echo "==> Skipping Innioasis boot splash (missing $BOOT_ASSETS)"
 fi
 
+KOENSAYR_APPLIED=0
 if [ -d "$REPO_ROOT/solar-rom/koensayr/src/patches" ] || [ -n "${KOENSAYR_DIR:-}" ]; then
     echo "==> Koensayr AVRCP + Bluetooth patches"
+    KOENSAYR_APPLIED=1
     chmod +x "$SCRIPT_DIR/apply-koensayr-avrcp.sh"
     "$SCRIPT_DIR/apply-koensayr-avrcp.sh" "$MOUNT_SYS"
 else
     echo "==> Skipping Koensayr AVRCP (clone koensayr into solar-rom/koensayr or set KOENSAYR_DIR)"
 fi
 
+echo "==> Rockbox-Y1 keylayout (wheel 19/20, prev/next 21/22)"
+chmod +x "$SCRIPT_DIR/apply-rockbox-keylayout.sh"
+"$SCRIPT_DIR/apply-rockbox-keylayout.sh" "$MOUNT_SYS"
+
 echo "==> Patching userdata partition"
-sudo rm -rf "$MOUNT_USER/org.rockbox"
 sudo rm -f "$MOUNT_USER/com.innioasis.y1.apk"
 sudo rm -f "$MOUNT_USER/data/com.innioasis.y1.apk"
 sudo rm -f "$MOUNT_USER"/*_launcher.apk
 sudo rm -f "$MOUNT_USER/data/*_launcher_initialized"
 sudo rm -f "$MOUNT_USER/data/initialized"
 
+export KOENSAYR_APPLIED
 audit_rom_contents "$BASE_DIR" "$MOUNT_SYS" "$MOUNT_USER"
 
 echo "==> Unmounting images"

@@ -25,6 +25,14 @@ local.properties
 Screenshot_*.png
 /ci-keys/
 .ci-cache/
+/backups/
+
+# Koensayr clone (CI checks out; local: git clone into solar-rom/koensayr)
+/solar-rom/koensayr/*
+!/solar-rom/koensayr/README.md
+
+# Generated at build time when koensayr is present
+/app/src/main/assets/koensayr/
 
 # ROM build outputs (local)
 /rom.zip

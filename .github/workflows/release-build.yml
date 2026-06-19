@@ -101,21 +101,23 @@ jobs:
           echo "SOLAR_PLATFORM_KEY_PK8=$GITHUB_WORKSPACE/.ci-keys/platform.pk8" >> "$GITHUB_ENV"
           echo "SOLAR_PLATFORM_KEY_PEM=$GITHUB_WORKSPACE/.ci-keys/platform.x509.pem" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME }}
-          ANDROID_HOME: ${{ env.ANDROID_HOME }}
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
-        run: |
-          chmod +x gradlew scripts/build.sh
-          ./scripts/build.sh
-
       - name: Checkout Koensayr (AVRCP patches)
         uses: actions/checkout@v4
         with:
           repository: SeanathanVT/koensayr
           path: solar-rom/koensayr
           fetch-depth: 1
+
+      - name: Build signed release APK
+        env:
+          JAVA_HOME: ${{ env.JAVA_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          SOLAR_ROM_BASE_CACHE: ${{ env.SOLAR_ROM_BASE_CACHE }}
+        run: |
+          chmod +x gradlew scripts/build.sh scripts/extract-koensayr-stock-sys.sh scripts/stage-koensayr-prep.sh
+          chmod +x solar-rom/scripts/koensayr-apply-to-tree.sh
+          ./scripts/build.sh
 
       - name: Build ROM images
         env:

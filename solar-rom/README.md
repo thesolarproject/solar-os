@@ -30,6 +30,8 @@ Each ROM includes, on the **system** partition:
 | Path | Purpose |
 |------|---------|
 | `/system/app/com.solar.launcher.apk` | Solar launcher (platform-signed) |
+| `/system/app/org.rockbox.apk` | Rockbox-Y1 app (preserved from base; not removed by Solar ROM build) |
+| `/system/usr/keylayout/mtk-kpd.kl` | **Rockbox** wheel/prev-next map (103/108 UP/DOWN, 105/106 LEFT/RIGHT) |
 | `/system/lib/libconscrypt_jni.so` | Conscrypt JNI for TLS 1.2+ (Reach, podcasts, themes via OkHttp) |
 | `/system/etc/security/cacerts/*.0` | Modern CA roots (Let's Encrypt, etc.) for **MediaPlayer** HTTPS and all apps |
 | `/system/etc/init.d/99SolarInit.sh` | Boot: create `Music` / `Podcasts` / `Themes` on SD; AVRCP track-info dir; log if TLS prep missing |
@@ -66,11 +68,14 @@ Future custom Solar boot media: [`solar-rom/assets/solar-boot/`](solar-rom/asset
 
 ```bash
 ./scripts/build.sh
-./scripts/clean_install_system.sh    # full: remove old launchers + APK + TLS prep
+./scripts/clean_install_system.sh    # stock keylayout + Solar APK + TLS prep
+./scripts/push-rockbox-keylayout-adb.sh   # optional: canonical Rockbox mtk-kpd for dev
 # or quick update:
 ./scripts/install.sh --system
 ./scripts/install_modern_cacerts.sh  # cacerts only
 ```
+
+Solar ROMs ship **Rockbox keymap** + `org.rockbox.apk`. Stock Innioasis wheel/media layout is applied only via `clean_install_system.sh` (adb sideload). See [`solar-rom/scripts/KEYMAP.md`](solar-rom/scripts/KEYMAP.md).
 
 Override release repo for ROM downloads: `SOLAR_GITHUB_REPO=thatwitchgirl/solar` (default).
 

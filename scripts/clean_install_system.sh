@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
 # Remove third-party launchers from Y1 (root) and install Solar as /system/app.
+# Optional: --with-koensayr (auto when solar-rom/koensayr is cloned)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/env.sh"
 APK="$ROOT/app/build/outputs/apk/release/app-release.apk"
+
+WITH_KOENSAYR=0
+for arg in "$@"; do
+  [[ "$arg" == "--with-koensayr" ]] && WITH_KOENSAYR=1
+done
+if [[ -d "$ROOT/solar-rom/koensayr/src/patches" ]]; then
+  WITH_KOENSAYR=1
+fi
 
 [[ -f "$APK" ]] || {
   echo "Missing $APK — run ./scripts/build.sh first" >&2
@@ -33,7 +42,6 @@ adb shell pm list packages 2>/dev/null | grep -iE 'solar|launcher' || true
 echo "== System APK dir =="
 adb shell "ls -la /system/app/ 2>/dev/null" | grep -iE 'solar|launcher' || echo "(none matched)"
 
-# User uninstall (data partition); ponytail: any non-Solar launcher package on device
 while IFS= read -r pkg; do
   [[ -z "$pkg" ]] && continue
   if adb shell pm path "$pkg" 2>/dev/null | grep -q .; then
@@ -47,7 +55,14 @@ echo "== Remove launcher APKs from /system/app =="
 adb shell "ls /system/app/ 2>/dev/null" | tr -d '\r' | while read -r f; do
   [[ -z "$f" ]] && continue
   case "$f" in
-    *[Ss]olar*|*[Ll]auncher*|*innioasis*|*[Yy]1*)
+    Y1Bridge.apk|Y1Bridge)
+      continue
+      ;;
+    com.solar.launcher.apk)
+      echo "rm /system/app/$f"
+      run_su "rm -rf /system/app/$f" || true
+      ;;
+    *innioasis*|*rockbox*|*[Ll]auncher*)
       echo "rm /system/app/$f"
       run_su "rm -rf /system/app/$f" || true
       ;;
@@ -58,7 +73,10 @@ echo "== Remove from /system/priv-app (if any) =="
 adb shell "ls /system/priv-app/ 2>/dev/null" | tr -d '\r' | while read -r f; do
   [[ -z "$f" ]] && continue
   case "$f" in
-    *[Ss]olar*|*[Ll]auncher*|*innioasis*|*[Yy]1*)
+    Y1Bridge.apk|Y1Bridge)
+      continue
+      ;;
+    *innioasis*|*rockbox*|*[Ll]auncher*)
       echo "rm /system/priv-app/$f"
       run_su "rm -f /system/priv-app/$f" || true
       ;;
@@ -66,7 +84,6 @@ adb shell "ls /system/priv-app/ 2>/dev/null" | tr -d '\r' | while read -r f; do
 done
 
 echo "== Install Solar system APK + TLS prep (Conscrypt JNI + modern CA roots) =="
-# ponytail: Y1 PackageManager only scans flat /system/app/*.apk — JNI must live in /system/lib
 TLS_STAGING="$(mktemp -d)"
 trap 'rm -rf "$TLS_STAGING"' EXIT
 chmod +x "$ROOT/scripts/stage-y1-system-prep.sh" "$ROOT/scripts/push-y1-system-prep.sh" "$ROOT/scripts/apply-y1-system-prep.sh"
@@ -83,10 +100,24 @@ else
   "$ROOT/scripts/push-y1-system-prep.sh" "$TLS_STAGING" || echo "WARN: TLS prep push failed" >&2
 fi
 
+echo "== Stock keylayout (wheel + prev/next for sideload dev) =="
+chmod +x "$ROOT/solar-rom/scripts/apply-stock-keylayout.sh"
+adb push "$ROOT/solar-rom/scripts/Stock.kl" /data/local/tmp/Stock.kl
+adb push "$ROOT/solar-rom/scripts/mtk-kpd.kl" /data/local/tmp/mtk-kpd.kl
+run_su "cp /data/local/tmp/Stock.kl /system/usr/keylayout/Stock.kl && cp /data/local/tmp/Stock.kl /system/usr/keylayout/Generic.kl && cp /data/local/tmp/mtk-kpd.kl /system/usr/keylayout/mtk-kpd.kl && rm -f /system/usr/keylayout/Rockbox.kl && chmod 644 /system/usr/keylayout/Stock.kl /system/usr/keylayout/Generic.kl /system/usr/keylayout/mtk-kpd.kl"
+run_su "rm -f /data/local/tmp/Stock.kl /data/local/tmp/mtk-kpd.kl" || true
+
 echo "== After =="
 adb shell "ls -la /system/app/com.solar.launcher.apk /system/lib/libconscrypt_jni.so"
 adb shell pm list packages 2>/dev/null | grep -iE 'solar|launcher' || true
 
-echo "== Rebooting =="
-adb reboot
-echo "DONE: Solar + TLS prep + boot init — device rebooting"
+if [[ "$WITH_KOENSAYR" -eq 1 ]]; then
+  echo "== Koensayr AVRCP stack =="
+  chmod +x "$ROOT/scripts/push-koensayr-adb.sh"
+  "$ROOT/scripts/push-koensayr-adb.sh"
+  echo "DONE: Solar + TLS + stock keylayout + Koensayr — device rebooting"
+else
+  echo "== Rebooting =="
+  adb reboot
+  echo "DONE: Solar + TLS prep + stock keylayout — device rebooting"
+fi
