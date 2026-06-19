@@ -9,15 +9,16 @@ source "$ROOT/scripts/env.sh"
 EXIT_CODE=0
 
 classify_layout() {
-    local l103="$1"
-    local l105="$2"
-    if [[ "$l105" == *MEDIA_PREVIOUS* ]]; then
+    local mtk103="$1"
+    local mtk105="$2"
+    local gen105="${3:-}"
+    if [[ "$mtk105" == *MEDIA_PREVIOUS* ]] || [[ "$gen105" == *MEDIA_PREVIOUS* ]]; then
         echo "Stock Y1 (wheel 21/22, media skip 88/87)"
-    elif [[ "$l103" == *MEDIA_PREVIOUS* ]]; then
+    elif [[ "$mtk103" == *MEDIA_PREVIOUS* ]]; then
         echo "Rockbox sideload swap (wheel 88/87, skip 21/22)"
-    elif [[ "$l105" == *DPAD_UP* && "$l103" == *DPAD_LEFT* ]]; then
+    elif [[ "$mtk105" == *DPAD_UP* && "$mtk103" == *DPAD_LEFT* ]]; then
         echo "Rockbox ROM variant (wheel 19/20, skip 21/22)"
-    elif [[ "$l103" == *DPAD_UP* ]]; then
+    elif [[ "$mtk103" == *DPAD_UP* ]]; then
         echo "Rockbox classic / canonical (wheel 19/20, skip 21/22)"
     else
         echo "Unknown — check mtk-kpd.kl manually"
@@ -61,7 +62,7 @@ adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/mtk-kpd.kl" 2>
 echo ""
 echo "-- Generic.kl scancodes 103–108 (must match mtk-kpd on ROM) --"
 G103="$(adb shell "grep '^key 103' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' | head -1)"
-G108="$(adb shell "grep '^key 108' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' | head -1)"
+G105="$(adb shell "grep '^key 105' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' | head -1)"
 adb shell "grep -E '^key (103|105|106|108)' /system/usr/keylayout/Generic.kl" 2>/dev/null | tr -d '\r' || echo "(Generic.kl not readable)"
 
 echo ""
@@ -87,7 +88,7 @@ fi
 
 echo ""
 echo "-- Detected layout (Y1KeyMap rules) --"
-classify_layout "$L103" "$L105"
+classify_layout "$L103" "$L105" "$G105"
 
 print_keycodedisp_table
 

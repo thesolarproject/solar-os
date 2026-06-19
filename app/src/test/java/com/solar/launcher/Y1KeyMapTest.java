@@ -92,26 +92,24 @@ public class Y1KeyMapTest {
 
     @Test
     public void noteHardwareKeyWheelUpSetsRockboxHint() {
-        KeyEvent ev = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP,
-                0, 0, 0, Y1KeyMap.SCAN_WHEEL_CCW, 0, InputDevice.SOURCE_KEYBOARD);
-        assertTrue(Y1KeyMap.noteHardwareKey(ev));
+        assertTrue(Y1KeyMap.noteHardwareKeyInput(InputDevice.SOURCE_KEYBOARD,
+                Y1KeyMap.SCAN_WHEEL_CCW, KeyEvent.KEYCODE_DPAD_UP));
         assertEquals(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC, Y1KeyMap.getRuntimeLayoutHintForTest());
     }
 
     @Test
     public void noteHardwareKeyWheelLeftSetsStockHint() {
-        KeyEvent ev = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT,
-                0, 0, 0, Y1KeyMap.SCAN_WHEEL_CCW, 0, InputDevice.SOURCE_KEYBOARD);
-        assertTrue(Y1KeyMap.noteHardwareKey(ev));
+        assertTrue(Y1KeyMap.noteHardwareKeyInput(InputDevice.SOURCE_KEYBOARD,
+                Y1KeyMap.SCAN_WHEEL_CCW, KeyEvent.KEYCODE_DPAD_LEFT));
         assertEquals(Y1KeyMap.LAYOUT_STOCK, Y1KeyMap.getRuntimeLayoutHintForTest());
     }
 
     @Test
     public void noteHardwareKeyIgnoresBtMediaSource() {
         Y1KeyMap.setRuntimeLayoutHintForTest(-1);
-        KeyEvent ev = new KeyEvent(0, 0, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MEDIA_NEXT,
-                0, 0, 0, 0, 0, InputDevice.SOURCE_MEDIA);
-        assertFalse(Y1KeyMap.noteHardwareKey(ev));
+        final int sourceMedia = 0x00000400;
+        assertFalse(Y1KeyMap.noteHardwareKeyInput(sourceMedia,
+                Y1KeyMap.SCAN_NEXT, KeyEvent.KEYCODE_MEDIA_NEXT));
         assertEquals(-1, Y1KeyMap.getRuntimeLayoutHintForTest());
     }
 }

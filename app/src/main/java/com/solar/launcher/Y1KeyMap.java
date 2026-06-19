@@ -142,32 +142,34 @@ public final class Y1KeyMap {
      */
     public static boolean noteHardwareKey(KeyEvent event) {
         if (event == null) return false;
-        int src = event.getSource();
-        if ((src & InputDevice.SOURCE_KEYBOARD) == 0
-                && (src & InputDevice.SOURCE_DPAD) == 0) {
+        return noteHardwareKeyInput(event.getSource(), event.getScanCode(), event.getKeyCode());
+    }
+
+    /** Package-visible for unit tests (JVM KeyEvent.getSource is not mocked). */
+    static boolean noteHardwareKeyInput(int source, int scanCode, int keyCode) {
+        if ((source & InputDevice.SOURCE_KEYBOARD) == 0
+                && (source & InputDevice.SOURCE_DPAD) == 0) {
             return false;
         }
-        int sc = event.getScanCode();
-        int kc = event.getKeyCode();
         int prev = runtimeLayoutHint;
-        if (sc == SCAN_PREV) {
-            if (kc == KeyEvent.KEYCODE_MEDIA_PREVIOUS || kc == 88 || kc == 165) {
+        if (scanCode == SCAN_PREV) {
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88 || keyCode == 165) {
                 runtimeLayoutHint = LAYOUT_STOCK;
-            } else if (kc == KeyEvent.KEYCODE_DPAD_LEFT) {
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
             }
-        } else if (sc == SCAN_NEXT && kc == KeyEvent.KEYCODE_DPAD_RIGHT) {
+        } else if (scanCode == SCAN_NEXT && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
             runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (sc == SCAN_NEXT
-                && (kc == KeyEvent.KEYCODE_MEDIA_NEXT || kc == 87 || kc == 163)) {
+        } else if (scanCode == SCAN_NEXT
+                && (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87 || keyCode == 163)) {
             runtimeLayoutHint = LAYOUT_STOCK;
-        } else if (sc == SCAN_WHEEL_CCW && kc == KeyEvent.KEYCODE_DPAD_UP) {
+        } else if (scanCode == SCAN_WHEEL_CCW && keyCode == KeyEvent.KEYCODE_DPAD_UP) {
             runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (sc == SCAN_WHEEL_CCW && kc == KeyEvent.KEYCODE_DPAD_LEFT) {
+        } else if (scanCode == SCAN_WHEEL_CCW && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
             runtimeLayoutHint = LAYOUT_STOCK;
-        } else if (sc == SCAN_WHEEL_CW && kc == KeyEvent.KEYCODE_DPAD_DOWN) {
+        } else if (scanCode == SCAN_WHEEL_CW && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
             runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (sc == SCAN_WHEEL_CW && kc == KeyEvent.KEYCODE_DPAD_RIGHT) {
+        } else if (scanCode == SCAN_WHEEL_CW && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
             runtimeLayoutHint = LAYOUT_STOCK;
         }
         return runtimeLayoutHint != prev;
