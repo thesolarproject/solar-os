@@ -270,6 +270,7 @@ public class MainActivity extends Activity {
     private int musicQueueEditorFocus = 1;
     private int musicQueueMoveFrom = -1;
     private int musicQueueReturnScreen = STATE_PLAYER;
+    private boolean musicQueuePinNowPlayingScroll = false;
     private static final int PODCAST_UI_SEARCH = 0;
     private static final int PODCAST_UI_SHOWS = 1;
     private static final int PODCAST_UI_EPISODES = 2;
@@ -373,6 +374,9 @@ public class MainActivity extends Activity {
     private TextView otaDownloadPercentText = null;
     private TextView otaDownloadDetailText = null;
     private Button otaDownloadStatusRow = null;
+    private Button otaDownloadCancelButton = null;
+    private boolean otaInstallInProgress = false;
+    private String otaInstallStatus = null;
     private long otaDownloadStartMs = 0;
     private long otaDownloadLastDone = 0;
     private long otaDownloadLastSpeedMs = 0;
@@ -496,6 +500,27 @@ public class MainActivity extends Activity {
             performScreenSleep(false);
         }
     };
+    private final Runnable centerQueueMoveRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (centerLongPressHandled || centerKeyDownTime == 0) return;
+            if (!isMusicQueueEditorScreen()) return;
+            centerLongPressHandled = true;
+            int idx = musicQueueFocusedIndex();
+            if (idx >= 0 && musicQueueMoveFrom < 0 && canPickMusicQueueMoveFrom(idx)) {
+                musicQueueMoveFrom = idx;
+                musicQueueEditorFocus = idx + 1;
+                refreshMusicQueueList();
+                listMusicQueue.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        refreshMusicQueueMoveUi();
+                    }
+                });
+                clickFeedback();
+            }
+        }
+    };
     private final Runnable keyboardDelRepeatRunnable = new Runnable() {
         @Override
         public void run() {
@@ -506,6 +531,7 @@ public class MainActivity extends Activity {
     };
     private long backKeyDownTime = 0;
     private boolean backLongPressHandled = false;
+    private long backContextMenuOpenedAt = 0;
     private static final long BACK_LONG_PRESS_MS = 600;
     private static final long MEDIA_SKIP_LONG_PRESS_MS = 500;
     private static final int MEDIA_SCRUB_STEP_MS = 5000;
@@ -1853,6 +1879,7 @@ public class MainActivity extends Activity {
     private static final String TAG_REARRANGE_LABEL = "rearrange_label";
     private static final String TAG_REARRANGE_GRIP = "rearrange_grip";
     private static final String TAG_REARRANGE_ARROW = "rearrange_arrow";
+    private static final String TAG_QUEUE_MOVE_4WAY = "queue_move_4way";
 
     private int rearrangeRightSlotWidthPx() {
         int[] arrowLayout = y1ArrowLayout(ThemeManager.getScaledItemRightArrow(y1RowHeightPx));
@@ -1954,6 +1981,67 @@ public class MainActivity extends Activity {
                 arrow.setVisibility(focused && arrow.getDrawable() != null
                         ? View.VISIBLE : View.INVISIBLE);
             }
+        }
+    }
+
+    /** Queue editor: 4-way glyph while moving, theme arrow when focused, play/pause on now playing. */
+    private void bindQueueRowAdornment(LinearLayout layout, boolean moving, boolean focused,
+            boolean nowPlaying) {
+        if (layout == null) return;
+        TextView grip = (TextView) layout.findViewWithTag(TAG_REARRANGE_GRIP);
+        ImageView arrow = (ImageView) layout.findViewWithTag(TAG_REARRANGE_ARROW);
+        ImageView pp = (ImageView) layout.findViewWithTag("queue_pp");
+        ImageView move4 = (ImageView) layout.findViewWithTag(TAG_QUEUE_MOVE_4WAY);
+        if (grip != null) grip.setVisibility(View.INVISIBLE);
+        if (moving) {
+            android.widget.FrameLayout rightSlot = arrow != null
+                    ? (android.widget.FrameLayout) arrow.getParent() : null;
+            if (rightSlot != null) {
+                if (move4 == null) {
+                    move4 = new ImageView(this);
+                    move4.setTag(TAG_QUEUE_MOVE_4WAY);
+                    move4.setFocusable(false);
+                    move4.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                    int sz = (int) (y1RowHeightPx * 0.45f);
+                    android.widget.FrameLayout.LayoutParams moveLp =
+                            new android.widget.FrameLayout.LayoutParams(sz, sz);
+                    moveLp.gravity = Gravity.CENTER;
+                    rightSlot.addView(move4, moveLp);
+                }
+                move4.setImageResource(R.drawable.ic_move_4way);
+                move4.setColorFilter(ThemeManager.getItemTextColorSelected());
+                move4.setVisibility(View.VISIBLE);
+            }
+            if (arrow != null) arrow.setVisibility(View.INVISIBLE);
+            if (pp != null) pp.setVisibility(View.GONE);
+        } else {
+            if (move4 != null) move4.setVisibility(View.GONE);
+            if (focused && !nowPlaying) {
+                if (arrow != null) {
+                    arrow.setVisibility(arrow.getDrawable() != null ? View.VISIBLE : View.INVISIBLE);
+                }
+                if (pp != null) pp.setVisibility(View.GONE);
+            } else if (nowPlaying && pp != null) {
+                if (arrow != null) arrow.setVisibility(View.INVISIBLE);
+                pp.setVisibility(View.VISIBLE);
+            } else {
+                if (arrow != null) arrow.setVisibility(View.INVISIBLE);
+                if (pp != null) pp.setVisibility(View.GONE);
+            }
+        }
+    }
+
+    private void refreshMusicQueueMoveUi() {
+        if (listMusicQueue == null) return;
+        for (int i = 0; i < listMusicQueue.getChildCount(); i++) {
+            View child = listMusicQueue.getChildAt(i);
+            if (!(child instanceof LinearLayout)) continue;
+            int listPos = listMusicQueue.getPositionForView(child);
+            if (listPos <= 0) continue;
+            int queueIdx = listPos - 1;
+            boolean moving = musicQueueMoveFrom == queueIdx;
+            boolean np = isMusicQueueNowPlayingSlot(queueIdx);
+            bindQueueRowAdornment((LinearLayout) child, moving, child.hasFocus() && !np, np);
         }
     }
 
@@ -3556,6 +3644,23 @@ public class MainActivity extends Activity {
     private void onWifiConnectivityChanged() {
         refreshConnectivityGatedMenus();
         updateSoulseekSharePolicy();
+        refreshSoulseekUiAfterConnectivityChange();
+    }
+
+    /** Reach search/results must stay navigable after Wi‑Fi drops (e.g. context-menu Wi‑Fi off). */
+    private void refreshSoulseekUiAfterConnectivityChange() {
+        if (currentScreenState != STATE_SOULSEEK) return;
+        if (ConnectivityHelper.isOnline(this)) {
+            if (soulseekUiMode == SOULSEEK_UI_SEARCH) buildSoulseekSearchUI();
+            return;
+        }
+        if (soulseekClient != null) soulseekClient.cancelSearch();
+        soulseekSearchInProgress = false;
+        soulseekUiHandler.removeCallbacks(soulseekUiFlushRunnable);
+        soulseekUiFlushScheduled = false;
+        if (soulseekUiMode == SOULSEEK_UI_DOWNLOAD || soulseekUiMode == SOULSEEK_UI_ACTION) return;
+        if (soulseekUiMode == SOULSEEK_UI_RESULTS) buildSoulseekResultsUI();
+        else buildSoulseekSearchUI();
     }
 
     private void triggerAutoReconnect() {
@@ -4647,33 +4752,7 @@ public class MainActivity extends Activity {
             }
             if (currentScreenState == STATE_SETTINGS && isMusicQueueEditorScreen()) {
                 clickFeedback();
-                int listPos = musicQueueListPosition();
-                if (listPos <= 0) {
-                    if (musicQueueMoveFrom >= 0) {
-                        musicQueueMoveFrom = -1;
-                        refreshMusicQueueList();
-                    } else {
-                        setMusicQueueListVisible(false);
-                        changeScreen(musicQueueReturnScreen);
-                    }
-                    return;
-                }
-                musicQueueEditorFocus = listPos;
-                int idx = listPos - 1;
-                if (musicQueueMoveFrom < 0) {
-                    if (canPickMusicQueueMoveFrom(idx)) {
-                        musicQueueMoveFrom = idx;
-                        refreshMusicQueueList();
-                    }
-                } else {
-                    if (idx == musicQueueMoveFrom) {
-                        musicQueueMoveFrom = -1;
-                        refreshMusicQueueList();
-                    } else if (canDropMusicQueueMoveAt(idx)) {
-                        applyMusicQueueMove(musicQueueMoveFrom, idx);
-                        musicQueueMoveFrom = -1;
-                    }
-                }
+                handleMusicQueueEditorCenterClick();
                 return;
             }
             View c = getCurrentFocus();
@@ -6610,9 +6689,12 @@ public class MainActivity extends Activity {
             centerLongPressHandled = false;
             centerKeyDownTime = System.currentTimeMillis();
             clockHandler.removeCallbacks(centerSleepRunnable);
+            clockHandler.removeCallbacks(centerQueueMoveRunnable);
             clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
             if (isKeyboardDelSelected()) {
                 clockHandler.postDelayed(keyboardDelRepeatRunnable, 80);
+            } else if (currentScreenState == STATE_SETTINGS && isMusicQueueEditorScreen()) {
+                clockHandler.postDelayed(centerQueueMoveRunnable, CENTER_SLEEP_HOLD_MS);
             } else {
                 clockHandler.postDelayed(centerSleepRunnable, CENTER_SLEEP_HOLD_MS);
             }
@@ -6629,6 +6711,7 @@ public class MainActivity extends Activity {
     private boolean handleCenterKeyUp(KeyEvent event, boolean fromContextMenu) {
         long heldMs = centerKeyDownTime > 0 ? System.currentTimeMillis() - centerKeyDownTime : 0;
         clockHandler.removeCallbacks(centerSleepRunnable);
+        clockHandler.removeCallbacks(centerQueueMoveRunnable);
         clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
         centerKeyDownTime = 0;
         if (centerLongPressHandled) {
@@ -6654,19 +6737,42 @@ public class MainActivity extends Activity {
     private void dismissThemedContextMenu() {
         contextMenuTierStack.clear();
         contextMenuInVolumeSlider = false;
+        suppressListClickUntil = 0;
         if (themedContextMenu != null) themedContextMenu.dismiss();
+    }
+
+    private static final int CONTEXT_QUICK_VOLUME_INDEX = 3;
+
+    private int contextQuickVolumeIconResId() {
+        if (audioManager == null) return R.drawable.ic_volume_medium;
+        int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (max <= 0) return R.drawable.ic_volume_medium;
+        int cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+        if (cur <= 0) return R.drawable.ic_volume_mute;
+        int third = Math.max(1, max / 3);
+        if (cur <= third) return R.drawable.ic_volume_low;
+        if (cur <= third * 2) return R.drawable.ic_volume_medium;
+        return R.drawable.ic_volume_high;
+    }
+
+    private void refreshContextQuickVolumeIcon() {
+        if (themedContextMenu == null || !themedContextMenu.isShowing()) return;
+        themedContextMenu.updateQuickChipIcon(CONTEXT_QUICK_VOLUME_INDEX, contextQuickVolumeIconResId());
     }
 
     private ThemedContextMenu.QuickItem[] buildContextQuickBar() {
         boolean hasQueue = playback.hasAnyQueue();
         return new ThemedContextMenu.QuickItem[] {
-            new ThemedContextMenu.QuickItem("keyLockOn", 0, getString(R.string.context_action_lock_screen), true),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock,
+                    getString(R.string.context_action_lock_screen), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_wifi, getString(R.string.wifi_power), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_bluetooth, getString(R.string.home_menu_bluetooth), true),
-            new ThemedContextMenu.QuickItem(null, R.drawable.ic_headphone, getString(R.string.context_quick_volume), true),
-            new ThemedContextMenu.QuickItem("shutdown", 0, getString(R.string.context_quick_power), true),
-            new ThemedContextMenu.QuickItem("nowPlaying", 0, getString(R.string.context_quick_queue),
-                    hasQueue)
+            new ThemedContextMenu.QuickItem(null, contextQuickVolumeIconResId(),
+                    getString(R.string.context_quick_volume), true),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_power,
+                    getString(R.string.context_quick_power), true),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_queue_play,
+                    getString(R.string.context_quick_queue), hasQueue)
         };
     }
 
@@ -6694,8 +6800,7 @@ public class MainActivity extends Activity {
             case 5:
                 dismissThemedContextMenu();
                 if (playback.hasAnyQueue()) {
-                    if (hasActiveMediaPlayback()) changeScreen(STATE_PLAYER);
-                    else openMusicQueueEditor();
+                    openMusicQueueEditor();
                 }
                 break;
             default:
@@ -6730,6 +6835,10 @@ public class MainActivity extends Activity {
         contextMenuTierStack.push("wifi");
         java.util.ArrayList<String> labels = new java.util.ArrayList<String>();
         java.util.ArrayList<Runnable> actions = new java.util.ArrayList<Runnable>();
+        labels.add(getString(R.string.wifi_off_confirm));
+        actions.add(new Runnable() {
+            @Override public void run() { toggleWifiFromContextMenu(); }
+        });
         labels.add(getString(R.string.context_action_refresh_scan));
         actions.add(new Runnable() {
             @Override public void run() {
@@ -6747,10 +6856,6 @@ public class MainActivity extends Activity {
                 }
             });
         }
-        labels.add(getString(R.string.wifi_off_confirm));
-        actions.add(new Runnable() {
-            @Override public void run() { toggleWifiFromContextMenu(); }
-        });
         showContextMenuTier(getString(R.string.wifi_power), labels, actions);
     }
 
@@ -6758,6 +6863,12 @@ public class MainActivity extends Activity {
         contextMenuTierStack.push("bt");
         java.util.ArrayList<String> labels = new java.util.ArrayList<String>();
         java.util.ArrayList<Runnable> actions = new java.util.ArrayList<Runnable>();
+        final BluetoothAdapter ba = BluetoothAdapter.getDefaultAdapter();
+        final boolean btOn = ba != null && ba.isEnabled();
+        labels.add(btOn ? getString(R.string.wifi_off_confirm) : getString(R.string.context_turn_on));
+        actions.add(new Runnable() {
+            @Override public void run() { toggleBluetoothFromContextMenu(); }
+        });
         labels.add(getString(R.string.context_action_refresh_scan));
         actions.add(new Runnable() {
             @Override public void run() {
@@ -6776,6 +6887,20 @@ public class MainActivity extends Activity {
             });
         }
         showContextMenuTier(getString(R.string.home_menu_bluetooth), labels, actions);
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private void toggleBluetoothFromContextMenu() {
+        BluetoothAdapter ba = BluetoothAdapter.getDefaultAdapter();
+        if (ba == null) return;
+        dismissThemedContextMenu();
+        if (ba.isEnabled()) {
+            Toast.makeText(this, getString(R.string.toast_bt_turning_off), Toast.LENGTH_SHORT).show();
+            ba.disable();
+        } else {
+            Toast.makeText(this, getString(R.string.toast_bt_turning_on), Toast.LENGTH_SHORT).show();
+            ba.enable();
+        }
     }
 
     private void showContextMenuTier(String title, java.util.List<String> labels,
@@ -6799,7 +6924,10 @@ public class MainActivity extends Activity {
     private boolean popContextMenuTier() {
         if (contextMenuInVolumeSlider) {
             contextMenuInVolumeSlider = false;
-            if (themedContextMenu != null) themedContextMenu.hideSlider();
+            if (themedContextMenu != null) {
+                themedContextMenu.hideSlider();
+                refreshContextQuickVolumeIcon();
+            }
             return true;
         }
         if (!contextMenuTierStack.isEmpty()) {
@@ -6830,12 +6958,22 @@ public class MainActivity extends Activity {
         if (themedContextMenu == null) return;
         if (layoutLoadingOverlay != null && layoutLoadingOverlay.getVisibility() == View.VISIBLE) return;
         populateContextMenu();
-        if (contextMenuActions.isEmpty()) return;
-        String[] labels = contextMenuLabels.toArray(new String[contextMenuLabels.size()]);
-        String[] iconKeys = contextMenuIconKeys.toArray(new String[contextMenuIconKeys.size()]);
-        String[] stateTexts = contextMenuStateTexts.toArray(new String[contextMenuStateTexts.size()]);
-        boolean[] headers = new boolean[contextMenuHeaders.size()];
-        for (int i = 0; i < headers.length; i++) headers[i] = contextMenuHeaders.get(i);
+        String[] labels;
+        String[] iconKeys;
+        String[] stateTexts;
+        boolean[] headers;
+        if (contextMenuActions.isEmpty()) {
+            labels = new String[0];
+            iconKeys = new String[0];
+            stateTexts = new String[0];
+            headers = new boolean[0];
+        } else {
+            labels = contextMenuLabels.toArray(new String[contextMenuLabels.size()]);
+            iconKeys = contextMenuIconKeys.toArray(new String[contextMenuIconKeys.size()]);
+            stateTexts = contextMenuStateTexts.toArray(new String[contextMenuStateTexts.size()]);
+            headers = new boolean[contextMenuHeaders.size()];
+            for (int i = 0; i < headers.length; i++) headers[i] = contextMenuHeaders.get(i);
+        }
         ViewGroup root = (ViewGroup) findViewById(android.R.id.content);
         boolean menuRows = currentScreenState == STATE_MENU || currentScreenState == STATE_SETTINGS;
         int margin = (int) (10 * getResources().getDisplayMetrics().density);
@@ -6864,6 +7002,7 @@ public class MainActivity extends Activity {
                         handleContextQuickBar(index);
                     }
                 });
+        backContextMenuOpenedAt = System.currentTimeMillis();
         clickFeedback();
     }
 
@@ -7022,12 +7161,6 @@ public class MainActivity extends Activity {
             });
         }
         if (currentScreenState == STATE_PLAYER && playback.isMusicActive() && !playback.musicPlaylist().isEmpty()) {
-            addContextAction(getString(R.string.library_edit_queue), new Runnable() {
-                @Override
-                public void run() {
-                    openMusicQueueEditor();
-                }
-            });
             addContextAction(getString(R.string.library_save_queue_m3u), new Runnable() {
                 @Override
                 public void run() {
@@ -7356,16 +7489,39 @@ public class MainActivity extends Activity {
     /** Screen off — su power key first (Y1), then goToSleep; shared by hold-center and context menu. */
     private void performScreenSleep(boolean feedback) {
         if (feedback) clickFeedback();
-        if (trySuScreenOff()) return;
-        try {
-            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            java.lang.reflect.Method goToSleep = PowerManager.class.getMethod(
-                    "goToSleep", long.class);
-            goToSleep.invoke(pm, android.os.SystemClock.uptimeMillis());
-            if (!isScreenInteractive()) return;
-        } catch (Exception ignored) {}
-        if (trySuScreenOff()) return;
-        Toast.makeText(this, getString(R.string.context_action_lock_failed), Toast.LENGTH_SHORT).show();
+        if (layoutLoadingOverlay != null) layoutLoadingOverlay.setVisibility(View.GONE);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (trySuScreenOff()) return;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        try {
+                            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                            java.lang.reflect.Method goToSleep = PowerManager.class.getMethod(
+                                    "goToSleep", long.class);
+                            goToSleep.invoke(pm, android.os.SystemClock.uptimeMillis());
+                            if (!isScreenInteractive()) return;
+                        } catch (Exception ignored) {}
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (trySuScreenOff()) return;
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        Toast.makeText(MainActivity.this,
+                                                getString(R.string.context_action_lock_failed),
+                                                Toast.LENGTH_SHORT).show();
+                                    }
+                                });
+                            }
+                        }, "SolarSleepSu").start();
+                    }
+                });
+            }
+        }, "SolarSleep").start();
     }
 
     private boolean isScreenInteractive() {
@@ -7519,12 +7675,14 @@ public class MainActivity extends Activity {
     private void applyWifiPowerState(boolean enable) {
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wm == null) return;
+        dismissThemedContextMenu();
         if (enable) {
             Toast.makeText(this, getString(R.string.toast_wifi_turning_on), Toast.LENGTH_SHORT).show();
             wm.setWifiEnabled(true);
         } else {
             Toast.makeText(this, getString(R.string.toast_wifi_turning_off), Toast.LENGTH_SHORT).show();
             wm.setWifiEnabled(false);
+            refreshSoulseekUiAfterConnectivityChange();
         }
     }
 
@@ -7637,6 +7795,10 @@ public class MainActivity extends Activity {
     }
 
     private void handleBackShortPress() {
+        if (themedContextMenu != null && themedContextMenu.isShowing()) {
+            dismissThemedContextMenu();
+            return;
+        }
         if (currentScreenState == STATE_WIFI_KEYBOARD) {
             if (keyboardReturnState == STATE_SETTINGS && keyboardReturnSettingsSubKey != null) {
                 restoreSettingsAfterSoulseekAccount();
@@ -7817,6 +7979,13 @@ public class MainActivity extends Activity {
     }
 
     private boolean handleBackKeyDown(KeyEvent event) {
+        if (themedContextMenu != null && themedContextMenu.isShowing()) {
+            if (event.getRepeatCount() == 0) {
+                if (popContextMenuTier()) return true;
+                dismissThemedContextMenu();
+            }
+            return true;
+        }
         if (event.getRepeatCount() == 0) {
             backKeyDownTime = System.currentTimeMillis();
             backLongPressHandled = false;
@@ -8803,7 +8972,8 @@ public class MainActivity extends Activity {
     }
 
     private void beginOtaDownloadUi(SolarUpdateClient.ReleaseInfo release, int localCode, String localName) {
-        // ponytail: ota-chain-test wave 2 — symbolic release for OTA verification
+        otaInstallInProgress = false;
+        otaInstallStatus = null;
         otaActiveDownload = release;
         otaDownloadLocalCode = localCode;
         otaDownloadLocalName = localName != null ? localName : "";
@@ -8881,16 +9051,71 @@ public class MainActivity extends Activity {
         otaDownloadStatusRow.setEnabled(false);
         containerSettingsItems.addView(otaDownloadStatusRow);
 
-        Button cancel = createListButton(getString(R.string.soulseek_cancel_download));
-        cancel.setOnClickListener(new View.OnClickListener() {
+        otaDownloadCancelButton = createListButton(getString(R.string.soulseek_cancel_download));
+        otaDownloadCancelButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 clickFeedback();
                 cancelOtaDownload();
             }
         });
-        containerSettingsItems.addView(cancel);
-        cancel.requestFocus();
+        containerSettingsItems.addView(otaDownloadCancelButton);
+        otaDownloadCancelButton.requestFocus();
+    }
+
+    private void showOtaInstallPhase(int statusResId) {
+        showOtaInstallPhase(getString(statusResId), null);
+    }
+
+    private void showOtaInstallPhase(String status, String detail) {
+        otaInstallInProgress = true;
+        otaInstallStatus = status;
+        if (otaDownloadProgressBar != null) otaDownloadProgressBar.setProgress(100);
+        if (otaDownloadPercentText != null) otaDownloadPercentText.setText(status);
+        if (otaDownloadDetailText != null) {
+            otaDownloadDetailText.setText(detail != null && detail.length() > 0
+                    ? detail : getString(R.string.soulseek_download_eta_done));
+        }
+        if (otaDownloadStatusRow != null) otaDownloadStatusRow.setText(status);
+        if (tvSettingsPreviewState != null) tvSettingsPreviewState.setText(status);
+        if (tvSettingsPreviewTitle != null && otaActiveDownload != null) {
+            tvSettingsPreviewTitle.setText(otaActiveDownload.listLabel());
+        }
+        if (otaDownloadCancelButton != null) {
+            otaDownloadCancelButton.setVisibility(View.GONE);
+        }
+        forceOtaUiRefresh();
+        android.util.Log.i("SolarOTA", status + (detail != null ? " | " + detail : ""));
+    }
+
+    private void forceOtaUiRefresh() {
+        if (containerSettingsItems != null) containerSettingsItems.invalidate();
+        View decor = getWindow() != null ? getWindow().getDecorView() : null;
+        if (decor != null) decor.postInvalidate();
+    }
+
+    private void runAfterOtaUiPhase(final Runnable next, long delayMs) {
+        otaDownloadUiHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!SettingsScreens.SYSTEM_UPDATE_DOWNLOAD.equals(settingsSubScreenKey)
+                        && !otaInstallInProgress) {
+                    return;
+                }
+                forceOtaUiRefresh();
+                if (next != null) next.run();
+            }
+        }, delayMs);
+    }
+
+    private void finishOtaDownloadSession() {
+        otaDownloadUiHandler.removeCallbacks(otaDownloadTickRunnable);
+        otaActiveDownload = null;
+        otaInstallInProgress = false;
+        otaInstallStatus = null;
+        otaDownloadCancel = null;
+        otaDownloadThread = null;
+        clearOtaDownloadUiRefs();
     }
 
     private String formatOtaDownloadRelation(SolarUpdateClient.ReleaseInfo release,
@@ -8907,8 +9132,13 @@ public class MainActivity extends Activity {
     }
 
     private void updateOtaDownloadStatusUi() {
-        if (!SettingsScreens.SYSTEM_UPDATE_DOWNLOAD.equals(settingsSubScreenKey)
-                || otaActiveDownload == null) return;
+        if (!SettingsScreens.SYSTEM_UPDATE_DOWNLOAD.equals(settingsSubScreenKey)) return;
+        if (otaInstallInProgress && otaInstallStatus != null) {
+            if (otaDownloadStatusRow != null) otaDownloadStatusRow.setText(otaInstallStatus);
+            if (tvSettingsPreviewState != null) tvSettingsPreviewState.setText(otaInstallStatus);
+            return;
+        }
+        if (otaActiveDownload == null) return;
         if (tvSettingsPreviewState != null) {
             int pct = otaDownloadProgressBar != null ? otaDownloadProgressBar.getProgress() : 0;
             if (pct > 0) {
@@ -8971,17 +9201,193 @@ public class MainActivity extends Activity {
         otaDownloadPercentText = null;
         otaDownloadDetailText = null;
         otaDownloadStatusRow = null;
+        otaDownloadCancelButton = null;
     }
 
     private void cancelOtaDownload() {
+        if (otaInstallInProgress) return;
         if (otaDownloadCancel != null) otaDownloadCancel.set(true);
         if (otaDownloadThread != null) otaDownloadThread.interrupt();
         otaDownloadUiHandler.removeCallbacks(otaDownloadTickRunnable);
-        otaActiveDownload = null;
-        otaDownloadCancel = null;
-        otaDownloadThread = null;
-        clearOtaDownloadUiRefs();
+        finishOtaDownloadSession();
         buildUpdateSettingsUI();
+    }
+
+    private void startOtaInstall(final File apkFile, final SolarUpdateClient.ReleaseInfo release) {
+        otaDownloadUiHandler.removeCallbacks(otaDownloadTickRunnable);
+        final long fileSize = apkFile.length();
+        showOtaInstallPhase(R.string.update_download_status_complete);
+        updateOtaDownloadProgress(100, fileSize > 0 ? fileSize : 1, fileSize > 0 ? fileSize : 1);
+
+        runAfterOtaUiPhase(new Runnable() {
+            @Override
+            public void run() {
+                showOtaInstallPhase(R.string.update_download_status_preparing);
+                runAfterOtaUiPhase(new Runnable() {
+                    @Override
+                    public void run() {
+                        queueOtaInstallExecution(apkFile, release);
+                    }
+                }, isInstalledAsSystemApp() ? 900L : 450L);
+            }
+        }, 400L);
+    }
+
+    private void queueOtaInstallExecution(final File apkFile, final SolarUpdateClient.ReleaseInfo release) {
+        if (isInstalledAsSystemApp()) {
+            showOtaInstallPhase(getString(R.string.update_download_status_freeze_warning),
+                    getString(R.string.update_download_status_freeze_detail));
+            runAfterOtaUiPhase(new Runnable() {
+                @Override
+                public void run() {
+                    showOtaInstallPhase(R.string.update_download_status_launching_root);
+                    runAfterOtaUiPhase(new Runnable() {
+                        @Override
+                        public void run() {
+                            showOtaInstallPhase(R.string.update_download_status_system_install);
+                            runAfterOtaUiPhase(new Runnable() {
+                                @Override
+                                public void run() {
+                                    launchOtaInstallWorker(apkFile, release);
+                                }
+                            }, 500L);
+                        }
+                    }, 700L);
+                }
+            }, 1400L);
+            return;
+        }
+        showOtaInstallPhase(R.string.update_download_status_installing);
+        runAfterOtaUiPhase(new Runnable() {
+            @Override
+            public void run() {
+                launchOtaInstallWorker(apkFile, release);
+            }
+        }, 450L);
+    }
+
+    private void launchOtaInstallWorker(final File apkFile, final SolarUpdateClient.ReleaseInfo release) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                executeOtaInstallWork(apkFile, release);
+            }
+        }, "SolarOtaInstall").start();
+    }
+
+    private void executeOtaInstallWork(final File apkFile, final SolarUpdateClient.ReleaseInfo release) {
+        try {
+            if (!apkFile.isFile() || apkFile.length() <= 0) {
+                throw new IllegalStateException("missing apk");
+            }
+            int localCode = BuildConfig.VERSION_CODE;
+            String localName = BuildConfig.VERSION_NAME;
+            try {
+                android.content.pm.PackageInfo pInfo =
+                        getPackageManager().getPackageInfo(getPackageName(), 0);
+                localCode = pInfo.versionCode;
+                localName = pInfo.versionName;
+            } catch (Exception ignored) {}
+            final SolarUpdateClient.InstallRelation relation = release != null
+                    ? release.compareToInstalled(localCode, localName)
+                    : SolarUpdateClient.InstallRelation.UPGRADE;
+            if (release != null && relation == SolarUpdateClient.InstallRelation.SAME) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        finishOtaDownloadSession();
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.update_already_installed), Toast.LENGTH_SHORT).show();
+                        buildUpdateSettingsUI();
+                    }
+                });
+                return;
+            }
+
+            final boolean systemApp = isInstalledAsSystemApp();
+            final boolean allowDowngrade = relation == SolarUpdateClient.InstallRelation.DOWNGRADE
+                    || relation == SolarUpdateClient.InstallRelation.SIDEGRADE;
+            final long expectedSize = apkFile.length();
+            boolean installed = false;
+
+            if (!systemApp) {
+                installed = installViaPackageManager(apkFile, allowDowngrade);
+            }
+            if (!installed && systemApp) {
+                installed = installSystemApk(apkFile);
+                if (installed) {
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            showOtaInstallPhase(R.string.update_download_status_verifying_install);
+                        }
+                    });
+                    installed = verifySystemApkSize(expectedSize);
+                }
+            }
+            if (!installed && !systemApp) {
+                installed = installViaPackageManager(apkFile, true);
+            }
+
+            final boolean ok = installed;
+            final boolean needsReboot = ok && systemApp;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (ok && needsReboot) {
+                        showOtaInstallPhase(R.string.update_download_status_reboot_pending);
+                        showOtaRebootModal();
+                        return;
+                    }
+                    finishOtaDownloadSession();
+                    if (ok) {
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.toast_install_ok), Toast.LENGTH_SHORT).show();
+                        buildUpdateSettingsUI();
+                        return;
+                    }
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.update_install_failed), Toast.LENGTH_LONG).show();
+                    buildUpdateSettingsUI();
+                }
+            });
+        } catch (Exception e) {
+            android.util.Log.w("SolarOTA", "install failed", e);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    finishOtaDownloadSession();
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.update_install_failed), Toast.LENGTH_LONG).show();
+                    buildUpdateSettingsUI();
+                }
+            });
+        }
+    }
+
+    private boolean verifySystemApkSize(long expectedSize) {
+        if (expectedSize <= 0) return false;
+        java.io.BufferedReader reader = null;
+        Process process = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[] {
+                    "su", "-c", "stat -c %s " + SYSTEM_APK_PATH
+            });
+            reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()));
+            String line = reader.readLine();
+            int exit = process.waitFor();
+            if (exit != 0 || line == null) return false;
+            long onDisk = Long.parseLong(line.trim());
+            android.util.Log.i("SolarOTA", "system apk bytes on disk=" + onDisk + " expected=" + expectedSize);
+            return onDisk == expectedSize;
+        } catch (Exception e) {
+            android.util.Log.w("SolarOTA", "verifySystemApkSize failed", e);
+            return false;
+        } finally {
+            if (reader != null) try { reader.close(); } catch (Exception ignored) {}
+            if (process != null) process.destroy();
+        }
     }
 
     private void startOtaDownload(final SolarUpdateClient.ReleaseInfo release) {
@@ -8993,6 +9399,7 @@ public class MainActivity extends Activity {
             public void run() {
                 File updateFile = null;
                 try {
+                    android.util.Log.i("SolarOTA", "download " + release.listLabel() + " from " + apkUrl);
                     File dir = getDir("update", Context.MODE_PRIVATE);
                     updateFile = new File(dir, "Solar_Update.apk");
                     if (updateFile.exists()) updateFile.delete();
@@ -9001,38 +9408,40 @@ public class MainActivity extends Activity {
                                 @Override
                                 public void onProgress(final long bytesRead, final long totalBytes) {
                                     long now = android.os.SystemClock.uptimeMillis();
-                                    if (now - otaDownloadLastProgressUiMs < 200 && totalBytes > 0) {
-                                        int pct = (int) (bytesRead * 100 / totalBytes);
-                                        if (pct < 100) return;
+                                    int rawPct = totalBytes > 0
+                                            ? (int) Math.min(100, bytesRead * 100 / totalBytes) : 0;
+                                    if (now - otaDownloadLastProgressUiMs < 200 && totalBytes > 0
+                                            && rawPct < 97) {
+                                        return;
                                     }
                                     otaDownloadLastProgressUiMs = now;
-                                    final int pct = totalBytes > 0
-                                            ? (int) Math.min(100, bytesRead * 100 / totalBytes) : 0;
+                                    final int pct = rawPct;
                                     final long done = bytesRead;
                                     final long total = totalBytes;
+                                    final boolean finishing = totalBytes > 0 && bytesRead < totalBytes
+                                            && pct >= 97;
                                     runOnUiThread(new Runnable() {
                                         @Override
                                         public void run() {
                                             if (!SettingsScreens.SYSTEM_UPDATE_DOWNLOAD
                                                     .equals(settingsSubScreenKey)) return;
                                             updateOtaDownloadProgress(pct, done, total);
+                                            if (finishing && otaDownloadStatusRow != null) {
+                                                otaDownloadStatusRow.setText(getString(
+                                                        R.string.update_download_status_finishing_download));
+                                            }
                                         }
                                     });
                                 }
                             }, 0L, null, otaDownloadCancel);
+                    android.util.Log.i("SolarOTA", "download complete bytes=" + updateFile.length());
                     final File ready = updateFile;
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
-                            otaDownloadUiHandler.removeCallbacks(otaDownloadTickRunnable);
-                            otaActiveDownload = null;
-                            otaDownloadCancel = null;
                             otaDownloadThread = null;
-                            clearOtaDownloadUiRefs();
-                            installApk(ready, release);
-                            if (!isInstalledAsSystemApp()) {
-                                buildUpdateSettingsUI();
-                            }
+                            otaDownloadCancel = null;
+                            startOtaInstall(ready, release);
                         }
                     });
                 } catch (Exception e) {
@@ -9041,11 +9450,7 @@ public class MainActivity extends Activity {
                         @Override
                         public void run() {
                             boolean cancelled = otaDownloadCancel != null && otaDownloadCancel.get();
-                            otaDownloadUiHandler.removeCallbacks(otaDownloadTickRunnable);
-                            otaActiveDownload = null;
-                            otaDownloadCancel = null;
-                            otaDownloadThread = null;
-                            clearOtaDownloadUiRefs();
+                            finishOtaDownloadSession();
                             if (cancelled) {
                                 buildUpdateSettingsUI();
                                 return;
@@ -10327,7 +10732,8 @@ public class MainActivity extends Activity {
         }
         playback.clampMusicIndex();
         musicQueueMoveFrom = -1;
-        musicQueueEditorFocus = Math.min(playback.musicIndex() + 1, playback.musicPlaylist().size());
+        musicQueueEditorFocus = playback.musicIndex() + 1;
+        musicQueuePinNowPlayingScroll = true;
         musicQueueReturnScreen = currentScreenState == STATE_PLAYER ? STATE_PLAYER : STATE_MENU;
         setSettingsSubScreen(SettingsScreens.MUSIC_QUEUE);
         changeScreen(STATE_SETTINGS);
@@ -10342,6 +10748,7 @@ public class MainActivity extends Activity {
         }
         if (listMusicQueue != null) {
             listMusicQueue.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (visible) listMusicQueue.bringToFront();
         }
         if (!visible) {
             musicQueueMoveFrom = -1;
@@ -10379,6 +10786,14 @@ public class MainActivity extends Activity {
         musicQueueEditorFocus = to + 1;
         updateMusicTrackCountUi();
         refreshMusicQueueList();
+        if (listMusicQueue != null) {
+            listMusicQueue.post(new Runnable() {
+                @Override
+                public void run() {
+                    refreshMusicQueueMoveUi();
+                }
+            });
+        }
     }
 
     private int musicQueueListPosition() {
@@ -10403,28 +10818,94 @@ public class MainActivity extends Activity {
 
     private void refreshMusicQueueListSoft() {
         if (listMusicQueue == null || musicQueueListAdapter == null) return;
-        final int firstVisible = listMusicQueue.getFirstVisiblePosition();
+        final boolean pinNowPlaying = musicQueuePinNowPlayingScroll;
+        musicQueuePinNowPlayingScroll = false;
         musicQueueListAdapter.notifyDataSetChanged();
         listMusicQueue.post(new Runnable() {
             @Override
             public void run() {
                 if (listMusicQueue == null) return;
-                int target = Math.max(1, musicQueueEditorFocus);
                 int size = playback.musicPlaylist().size();
+                int target = musicQueueEditorFocus;
+                if (target < 0) target = 0;
                 if (target > size) target = size;
-                int first = listMusicQueue.getFirstVisiblePosition();
-                int last = listMusicQueue.getLastVisiblePosition();
-                if (target < first || target > last) {
-                    int offset = target - firstVisible;
-                    listMusicQueue.setSelectionFromTop(Math.max(1, offset + 1), 0);
-                }
+                musicQueueEditorFocus = target;
+                applyMusicQueueListScrollAndFocus(pinNowPlaying);
+            }
+        });
+    }
+
+    private boolean moveMusicQueueFocus(int delta) {
+        if (!isMusicQueueEditorScreen() || listMusicQueue == null || musicQueueMoveFrom >= 0) {
+            return false;
+        }
+        int maxPos = playback.musicPlaylist().size();
+        int next = musicQueueEditorFocus + delta;
+        if (next < 0 || next > maxPos) return false;
+        musicQueueEditorFocus = next;
+        applyMusicQueueListScrollAndFocus(false);
+        return true;
+    }
+
+    private void applyMusicQueueListScrollAndFocus(boolean pinNowPlaying) {
+        if (listMusicQueue == null) return;
+        final int target = musicQueueEditorFocus;
+        final int topInset = target == 0 ? 0 : y1RowHeightPx;
+        if (pinNowPlaying && target > 0 && isMusicQueueNowPlayingSlot(target - 1)) {
+            listMusicQueue.setSelectionFromTop(target, topInset);
+        } else {
+            int first = listMusicQueue.getFirstVisiblePosition();
+            int last = listMusicQueue.getLastVisiblePosition();
+            if (target < first || target > last) {
+                listMusicQueue.setSelectionFromTop(target, topInset);
+            }
+        }
+        focusMusicQueueTarget(target);
+    }
+
+    private void focusMusicQueueTarget(final int target) {
+        listMusicQueue.post(new Runnable() {
+            @Override
+            public void run() {
+                if (listMusicQueue == null) return;
                 int childIdx = target - listMusicQueue.getFirstVisiblePosition();
                 if (childIdx >= 0 && childIdx < listMusicQueue.getChildCount()) {
                     View v = listMusicQueue.getChildAt(childIdx);
                     if (v != null && v.isFocusable()) v.requestFocus();
                 }
+                refreshMusicQueueFocusStyles();
+                refreshMusicQueueMoveUi();
             }
         });
+    }
+
+    private void refreshMusicQueueFocusStyles() {
+        if (listMusicQueue == null) return;
+        int rowW = musicQueueRowWidthPx();
+        for (int i = 0; i < listMusicQueue.getChildCount(); i++) {
+            View child = listMusicQueue.getChildAt(i);
+            int listPos = listMusicQueue.getPositionForView(child);
+            if (listPos < 0) continue;
+            boolean focused = listPos == musicQueueEditorFocus;
+            if (listPos == 0 && child instanceof Button) {
+                if (focused) child.requestFocus();
+                continue;
+            }
+            if (!(child instanceof LinearLayout) || !"queue_row".equals(child.getTag())) continue;
+            LinearLayout row = (LinearLayout) child;
+            int queueIdx = listPos - 1;
+            boolean moving = musicQueueMoveFrom == queueIdx;
+            boolean np = isMusicQueueNowPlayingSlot(queueIdx);
+            bindQueueRowAdornment(row, moving, focused && !np, np);
+            row.setBackground(getY1RowBackground(focused, rowW, Y1_ROW_MENU));
+            TextView tv = (TextView) row.findViewWithTag(TAG_REARRANGE_LABEL);
+            if (tv != null && !np) {
+                ThemeManager.applyThemedTextStyle(tv, focused
+                        ? y1RowTextColorSelected(Y1_ROW_MENU) : y1RowTextColorNormal(Y1_ROW_MENU));
+                tv.setSelected(focused);
+                if (focused) enableMarquee(tv);
+            }
+        }
     }
 
     private void scrollMusicQueueToListPos(final int listPos) {
@@ -10445,15 +10926,21 @@ public class MainActivity extends Activity {
         updateStatusBarTitle();
         setThemesListVisible(false);
         setMusicQueueListVisible(true);
+        applySettingsListLayout();
         containerSettingsItems.removeAllViews();
         if (listMusicQueue == null) return;
         if (musicQueueListAdapter == null) {
             musicQueueListAdapter = new MusicQueueListAdapter();
         }
         listMusicQueue.setAdapter(musicQueueListAdapter);
-        int focusListPos = musicQueueEditorFocus > 0 ? musicQueueEditorFocus
-                : playback.musicIndex() + 1;
-        focusListPos = Math.min(focusListPos, playback.musicPlaylist().size());
+        int nowPlayingListPos = playback.musicIndex() + 1;
+        if (musicQueueEditorFocus <= 0) {
+            musicQueueEditorFocus = nowPlayingListPos;
+            musicQueuePinNowPlayingScroll = true;
+        } else if (musicQueueEditorFocus == nowPlayingListPos) {
+            musicQueuePinNowPlayingScroll = true;
+        }
+        int focusListPos = Math.min(musicQueueEditorFocus, playback.musicPlaylist().size());
         scrollMusicQueueToListPos(focusListPos);
     }
 
@@ -10525,13 +11012,62 @@ public class MainActivity extends Activity {
     private boolean handleMusicQueueEditorBack() {
         if (!isMusicQueueEditorScreen()) return false;
         if (musicQueueMoveFrom >= 0) {
-            musicQueueMoveFrom = -1;
-            refreshMusicQueueList();
+            lockMusicQueueMove();
             return true;
         }
         setMusicQueueListVisible(false);
         changeScreen(musicQueueReturnScreen);
         return true;
+    }
+
+    private int musicQueueRowWidthPx() {
+        if (listMusicQueue != null && listMusicQueue.getWidth() > 0) return listMusicQueue.getWidth();
+        return y1ActiveRowWidthPx();
+    }
+
+    private void lockMusicQueueMove() {
+        if (musicQueueMoveFrom < 0) return;
+        musicQueueMoveFrom = -1;
+        refreshMusicQueueList();
+        if (listMusicQueue != null) {
+            listMusicQueue.post(new Runnable() {
+                @Override
+                public void run() {
+                    refreshMusicQueueMoveUi();
+                }
+            });
+        }
+    }
+
+    private void playMusicQueueTrackAt(int idx) {
+        if (idx < 0 || idx >= playback.musicPlaylist().size()) return;
+        if (isMusicQueueNowPlayingSlot(idx)) return;
+        isPausedByHand = false;
+        prepareMusicTrack(idx);
+        persistPlaybackQueue();
+        musicQueueEditorFocus = idx + 1;
+        musicQueuePinNowPlayingScroll = true;
+        refreshMusicQueueList();
+    }
+
+    private void handleMusicQueueEditorCenterClick() {
+        int listPos = musicQueueListPosition();
+        if (listPos <= 0) {
+            if (musicQueueMoveFrom >= 0) {
+                lockMusicQueueMove();
+            } else {
+                setMusicQueueListVisible(false);
+                changeScreen(musicQueueReturnScreen);
+            }
+            return;
+        }
+        musicQueueEditorFocus = listPos;
+        int idx = listPos - 1;
+        if (musicQueueMoveFrom >= 0) {
+            lockMusicQueueMove();
+            return;
+        }
+        playMusicQueueTrackAt(idx);
     }
 
     private String musicTrackLabel(File f) {
@@ -12040,7 +12576,10 @@ public class MainActivity extends Activity {
         containerBrowserItems.addView(back);
 
         if (!ConnectivityHelper.isOnline(this)) {
-            if (containerBrowserItems.getChildCount() > 0) containerBrowserItems.getChildAt(0).requestFocus();
+            Button offline = createListButton(getString(R.string.soulseek_wifi_required));
+            offline.setEnabled(false);
+            containerBrowserItems.addView(offline);
+            back.requestFocus();
             return;
         }
 
@@ -14242,7 +14781,8 @@ public class MainActivity extends Activity {
         }
         String[] labels = new String[] { getString(R.string.common_ok) };
         themedContextMenu.show(root, getString(R.string.update_installing_title),
-                getString(R.string.update_install_reboot), labels, null, null,
+                getString(R.string.update_install_reboot) + "\n\n"
+                        + getString(R.string.update_download_status_freeze_detail), labels, null, null,
                 new boolean[] { false },
                 new ThemedContextMenu.Listener() {
                     @Override
@@ -15159,6 +15699,7 @@ public class MainActivity extends Activity {
             currentVol--;
         audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, currentVol, 0);
         showDynamicVolumeOverlay();
+        refreshContextQuickVolumeIcon();
     }
 
     private void showDynamicVolumeOverlay() {
@@ -15232,6 +15773,7 @@ public class MainActivity extends Activity {
                     int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
                     int cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
                     themedContextMenu.showSlider(getString(R.string.context_quick_volume), max, cur);
+                    refreshContextQuickVolumeIcon();
                     clickFeedback();
                     return true;
                 }
@@ -15251,8 +15793,10 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (keyCode == KeyEvent.KEYCODE_BACK) {
-                if (popContextMenuTier()) return true;
-                dismissThemedContextMenu();
+                if (event.getRepeatCount() == 0) {
+                    if (popContextMenuTier()) return true;
+                    dismissThemedContextMenu();
+                }
                 return true;
             }
             return true;
@@ -15484,14 +16028,7 @@ public class MainActivity extends Activity {
                     && musicQueueMoveFrom < 0 && listMusicQueue != null
                     && listMusicQueue.getVisibility() == View.VISIBLE
                     && (keyCode == 21 || keyCode == 22)) {
-                if (keyCode == 21) {
-                    listMusicQueue.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP));
-                    listMusicQueue.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP));
-                } else {
-                    listMusicQueue.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
-                    listMusicQueue.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN));
-                }
-                clickFeedback();
+                if (moveMusicQueueFocus(keyCode == 21 ? -1 : 1)) clickFeedback();
                 return true;
             }
             if (currentScreenState == STATE_SETTINGS && isThemeListActive()
@@ -15582,7 +16119,8 @@ public class MainActivity extends Activity {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             long held = System.currentTimeMillis() - backKeyDownTime;
             if (themedContextMenu != null && themedContextMenu.isShowing()) {
-                if (held < BACK_LONG_PRESS_MS) {
+                if (held < BACK_LONG_PRESS_MS
+                        && System.currentTimeMillis() - backContextMenuOpenedAt > 150) {
                     dismissThemedContextMenu();
                 }
                 return true;
@@ -16904,8 +17442,7 @@ public class MainActivity extends Activity {
                     public void onClick(View v) {
                         clickFeedback();
                         if (musicQueueMoveFrom >= 0) {
-                            musicQueueMoveFrom = -1;
-                            refreshMusicQueueList();
+                            lockMusicQueueMove();
                         } else {
                             setMusicQueueListVisible(false);
                             changeScreen(musicQueueReturnScreen);
@@ -16928,106 +17465,87 @@ public class MainActivity extends Activity {
             } else {
                 layout = createRearrangeListRow(null, "", null);
                 layout.setTag("queue_row");
+                applyMusicQueueListRowParams(layout);
             }
-            applyMusicQueueListRowParams(layout);
+            final File track = playlist.get(queueIdx);
+            final boolean nowPlaying = isMusicQueueNowPlayingSlot(queueIdx);
+            final TextView tvLeft = (TextView) layout.findViewWithTag(TAG_REARRANGE_LABEL);
+            if (tvLeft != null) {
+                String num = String.format(Locale.US, "%02d · ", queueIdx + 1);
+                tvLeft.setText(num + musicTrackLabel(track));
+                tvLeft.setMaxLines(1);
+                tvLeft.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+                if (nowPlaying) {
+                    tvLeft.setTypeface(null, android.graphics.Typeface.BOLD);
+                    tvLeft.setTextColor(0xFF00FF00);
+                } else {
+                    ThemeManager.applyThemedTextStyle(tvLeft, layout.hasFocus()
+                            ? y1RowTextColorSelected(Y1_ROW_MENU) : y1RowTextColorNormal(Y1_ROW_MENU));
+                }
+            }
+            ImageView arrow = (ImageView) layout.findViewWithTag(TAG_REARRANGE_ARROW);
+            android.widget.FrameLayout rightSlot = arrow != null
+                    ? (android.widget.FrameLayout) arrow.getParent() : null;
+            ImageView pp = (ImageView) layout.findViewWithTag("queue_pp");
+            if (nowPlaying && rightSlot != null) {
+                if (pp == null) {
+                    pp = new ImageView(MainActivity.this);
+                    pp.setTag("queue_pp");
+                    int sz = (int) (y1RowHeightPx * 0.45f);
+                    android.widget.FrameLayout.LayoutParams ppLp =
+                            new android.widget.FrameLayout.LayoutParams(sz, sz);
+                    ppLp.gravity = Gravity.CENTER;
+                    rightSlot.addView(pp, ppLp);
+                }
+                boolean playing = false;
+                try { playing = mediaPlayer != null && mediaPlayer.isPlaying(); } catch (Exception ignored) {}
+                pp.setImageResource(playing ? android.R.drawable.ic_media_pause
+                        : android.R.drawable.ic_media_play);
+                pp.setColorFilter(ThemeManager.getItemTextColorSelected());
+            } else if (pp != null) {
+                pp.setVisibility(View.GONE);
+            }
             layout.setOnFocusChangeListener(new View.OnFocusChangeListener() {
                 @Override
                 public void onFocusChange(View v, boolean hasFocus) {
                     if (!(v instanceof LinearLayout)) return;
                     LinearLayout row = (LinearLayout) v;
                     boolean moving = musicQueueMoveFrom == queueIdx;
-                    boolean nowPlaying = isMusicQueueNowPlayingSlot(queueIdx);
-                    bindRearrangeRowAdornment(row, moving, hasFocus && !nowPlaying);
-                    int rowW = y1ActiveRowWidthPx();
+                    boolean np = isMusicQueueNowPlayingSlot(queueIdx);
+                    bindQueueRowAdornment(row, moving, hasFocus && !np, np);
+                    int rowW = musicQueueRowWidthPx();
                     row.setBackground(getY1RowBackground(hasFocus, rowW, Y1_ROW_MENU));
-                    TextView tvLeft = (TextView) row.findViewWithTag(TAG_REARRANGE_LABEL);
-                    if (tvLeft != null) {
-                        ThemeManager.applyThemedTextStyle(tvLeft, hasFocus
+                    TextView tv = (TextView) row.findViewWithTag(TAG_REARRANGE_LABEL);
+                    if (tv != null && !np) {
+                        ThemeManager.applyThemedTextStyle(tv, hasFocus
                                 ? y1RowTextColorSelected(Y1_ROW_MENU) : y1RowTextColorNormal(Y1_ROW_MENU));
-                        tvLeft.setSelected(hasFocus);
-                        if (hasFocus) enableMarquee(tvLeft);
+                        tv.setSelected(hasFocus);
+                        if (hasFocus) enableMarquee(tv);
                     }
-                    if (hasFocus) musicQueueEditorFocus = position;
+                    if (hasFocus) {
+                        musicQueueEditorFocus = position;
+                        refreshMusicQueueFocusStyles();
+                    }
+                    if (musicQueueMoveFrom >= 0) refreshMusicQueueMoveUi();
                 }
             });
             layout.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     clickFeedback();
-                    if (isMusicQueueNowPlayingSlot(queueIdx)) return;
-                    if (musicQueueMoveFrom < 0) {
-                        if (canPickMusicQueueMoveFrom(queueIdx)) {
-                            musicQueueMoveFrom = queueIdx;
-                            refreshMusicQueueList();
-                        }
-                    } else if (musicQueueMoveFrom == queueIdx) {
-                        musicQueueMoveFrom = -1;
-                        refreshMusicQueueList();
-                    } else if (canDropMusicQueueMoveAt(queueIdx)) {
-                        applyMusicQueueMove(musicQueueMoveFrom, queueIdx);
+                    if (musicQueueMoveFrom >= 0) {
+                        lockMusicQueueMove();
+                    } else if (!isMusicQueueNowPlayingSlot(queueIdx)) {
+                        playMusicQueueTrackAt(queueIdx);
                     }
                 }
             });
 
-            final TextView tvLeft = (TextView) layout.findViewWithTag(TAG_REARRANGE_LABEL);
-            final File track = playlist.get(queueIdx);
-            if (tvLeft == null) return layout;
-            final boolean nowPlaying = isMusicQueueNowPlayingSlot(queueIdx);
             final boolean moving = musicQueueMoveFrom == queueIdx;
-            String num = String.format(Locale.US, "%02d · ", queueIdx + 1);
-            tvLeft.setText(num + musicTrackLabel(track));
-            tvLeft.setMaxLines(1);
-            TextView tvSub = (TextView) layout.findViewWithTag("queue_sub");
-            if (tvSub == null) {
-                tvSub = new TextView(MainActivity.this);
-                tvSub.setTag("queue_sub");
-                tvSub.setTypeface(ThemeManager.getCustomFont());
-                tvSub.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                        getResources().getDimension(R.dimen.y1_menu_text_size) * 0.78f);
-                tvSub.setSingleLine(true);
-                tvSub.setEllipsize(TextUtils.TruncateAt.END);
-                LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
-                subLp.leftMargin = (int) getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-                layout.addView(tvSub, 1, subLp);
-                layout.setOrientation(LinearLayout.VERTICAL);
-                applyMusicQueueListRowParams(layout);
-                android.widget.AbsListView.LayoutParams lp = (android.widget.AbsListView.LayoutParams) layout.getLayoutParams();
-                if (lp != null) lp.height = y1RowHeightPx * 2;
-            }
-            SongItem meta = resolveSongMetadata(track);
-            String sub = meta != null ? (meta.artist + " · " + meta.album) : "";
-            tvSub.setText(sub);
-            ThemeManager.applyThemedTextStyle(tvSub, ThemeManager.getHintTextColor());
-            ImageView pp = (ImageView) layout.findViewWithTag("queue_pp");
-            if (nowPlaying) {
-                if (pp == null) {
-                    pp = new ImageView(MainActivity.this);
-                    pp.setTag("queue_pp");
-                    int sz = (int) (y1RowHeightPx * 0.45f);
-                    LinearLayout.LayoutParams ppLp = new LinearLayout.LayoutParams(sz, sz);
-                    ppLp.gravity = Gravity.CENTER_VERTICAL;
-                    layout.addView(pp, ppLp);
-                }
-                boolean playing = false;
-                try { playing = mediaPlayer != null && mediaPlayer.isPlaying(); } catch (Exception ignored) {}
-                pp.setImageResource(playing ? android.R.drawable.ic_media_pause : android.R.drawable.ic_media_play);
-                pp.setColorFilter(ThemeManager.getItemTextColorSelected());
-                pp.setVisibility(View.VISIBLE);
-            } else if (pp != null) {
-                pp.setVisibility(View.GONE);
-            }
-            tvLeft.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
-            if (nowPlaying) {
-                tvLeft.setTypeface(null, android.graphics.Typeface.BOLD);
-                tvLeft.setTextColor(0xFF00FF00);
-            } else {
-                ThemeManager.applyThemedTextStyle(tvLeft, layout.hasFocus()
-                        ? y1RowTextColorSelected(Y1_ROW_MENU) : y1RowTextColorNormal(Y1_ROW_MENU));
-            }
-            bindRearrangeRowAdornment(layout, moving, layout.hasFocus() && !nowPlaying);
-            int rowW = y1ActiveRowWidthPx();
-            layout.setBackground(getY1RowBackground(layout.hasFocus(), rowW, Y1_ROW_MENU));
+            final boolean rowFocused = musicQueueEditorFocus == position;
+            bindQueueRowAdornment(layout, moving, rowFocused && !nowPlaying, nowPlaying);
+            layout.setBackground(getY1RowBackground(rowFocused,
+                    musicQueueRowWidthPx(), Y1_ROW_MENU));
             return layout;
         }
     }
