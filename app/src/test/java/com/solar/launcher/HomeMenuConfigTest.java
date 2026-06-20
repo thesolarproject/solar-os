@@ -145,17 +145,11 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void offlineFiltersInternetAndLocalItems() {
+    public void offlineFiltersLocalNetworkItemsOnly() {
         List<HomeMenuConfig.Entry> offline = HomeMenuConfig.loadVisibleForDisplay(prefs, false, false);
         for (HomeMenuConfig.Entry e : offline) {
-            if (ConnectivityHelper.itemNeedsInternetForDiscovery(e.id)) {
-                throw new AssertionError("internet item shown offline: " + e.id);
-            }
             if (ConnectivityHelper.itemNeedsLocalNetwork(e.id)) {
                 throw new AssertionError("local-network item shown offline: " + e.id);
-            }
-            if (HomeMenuConfig.ID_PODCASTS.equals(e.id)) {
-                throw new AssertionError("podcasts without saved offline");
             }
         }
     }
@@ -172,40 +166,40 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void loadMoreVisible_excludesReachWhenOffline() {
+    public void loadMoreVisible_includesReachWhenOffline() {
         HomeMenuConfig.saveMoreOrder(prefs, Arrays.asList(
                 HomeMenuConfig.ID_SOULSEEK, HomeMenuConfig.ID_MUSIC));
         List<HomeMenuConfig.Entry> more = HomeMenuConfig.loadMoreVisible(prefs, false, true);
+        boolean reach = false;
+        boolean music = false;
         for (HomeMenuConfig.Entry e : more) {
-            if (HomeMenuConfig.ID_SOULSEEK.equals(e.id)) {
-                throw new AssertionError("reach in more offline");
-            }
+            if (HomeMenuConfig.ID_SOULSEEK.equals(e.id)) reach = true;
+            if (HomeMenuConfig.ID_MUSIC.equals(e.id)) music = true;
         }
-        if (more.size() != 1 || !HomeMenuConfig.ID_MUSIC.equals(more.get(0).id)) {
-            throw new AssertionError("expected music only, got " + more.size());
-        }
+        if (!reach) throw new AssertionError("expected reach to show offline");
+        if (!music) throw new AssertionError("expected music to show");
     }
 
     @Test
     public void moreTileHiddenWhenAllMoreItemsFiltered() {
         HomeMenuConfig.setMoreEnabled(prefs, true);
-        HomeMenuConfig.saveMoreOrder(prefs, Arrays.asList(HomeMenuConfig.ID_SOULSEEK));
-        if (HomeMenuConfig.shouldShowMoreTile(prefs, false, true)) {
+        HomeMenuConfig.saveMoreOrder(prefs, Arrays.asList(HomeMenuConfig.ID_PC_UPLOAD));
+        if (HomeMenuConfig.shouldShowMoreTile(prefs, false, false)) {
             throw new AssertionError("more tile should hide when filtered list empty");
         }
     }
 
     @Test
-    public void lanWithoutInternetShowsPcUploadOnly() {
+    public void lanWithoutInternetShowsPcUploadAndInternetItems() {
         List<HomeMenuConfig.Entry> onLan = HomeMenuConfig.loadVisibleForDisplay(prefs, false, true);
         boolean pc = false;
+        boolean reach = false;
         for (HomeMenuConfig.Entry e : onLan) {
             if (HomeMenuConfig.ID_PC_UPLOAD.equals(e.id)) pc = true;
-            if (ConnectivityHelper.itemNeedsInternetForDiscovery(e.id)) {
-                throw new AssertionError("internet item on lan-only: " + e.id);
-            }
+            if (HomeMenuConfig.ID_SOULSEEK.equals(e.id)) reach = true;
         }
         if (!pc) throw new AssertionError("pc upload missing on lan");
+        if (!reach) throw new AssertionError("reach missing on lan");
     }
 
     @Test

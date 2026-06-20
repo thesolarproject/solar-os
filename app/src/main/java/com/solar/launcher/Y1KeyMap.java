@@ -105,6 +105,9 @@ public final class Y1KeyMap {
         if (mtk.l103 != null && mtk.l103.contains("MEDIA_PLAY")) {
             return LAYOUT_ROCKBOX_ROM;
         }
+        if (gen.l105 != null && gen.l105.contains("MEDIA_PREVIOUS")) {
+            return LAYOUT_STOCK;
+        }
         if (mtk.l103 != null && mtk.l103.contains("DPAD_UP")) {
             return LAYOUT_ROCKBOX_CLASSIC;
         }
@@ -264,8 +267,11 @@ public final class Y1KeyMap {
         if (layout == LAYOUT_ROCKBOX_SIDELoad) {
             return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88;
         }
+        if (layout == LAYOUT_STOCK) {
+            return keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == 21;
+        }
         return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126
-                || keyCode == KeyEvent.KEYCODE_DPAD_UP;
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == 19;
     }
 
     private static boolean isWheelDownByKeycode(int keyCode, boolean rockboxKeymap) {
@@ -273,8 +279,11 @@ public final class Y1KeyMap {
         if (layout == LAYOUT_ROCKBOX_SIDELoad) {
             return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87;
         }
+        if (layout == LAYOUT_STOCK) {
+            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == 22;
+        }
         return keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127
-                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN || keyCode == 20;
     }
 
     private static boolean scancodeIsWheelUp(int scanCode) {
@@ -337,11 +346,19 @@ public final class Y1KeyMap {
     }
 
     private static boolean isMediaPreviousByKeycode(int keyCode, boolean rockboxKeymap) {
+        int layout = layoutFor(rockboxKeymap);
+        if (layout == LAYOUT_STOCK) {
+            return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88 || keyCode == 165;
+        }
         return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88 || keyCode == 165
                 || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == 21;
     }
 
     private static boolean isMediaNextByKeycode(int keyCode, boolean rockboxKeymap) {
+        int layout = layoutFor(rockboxKeymap);
+        if (layout == LAYOUT_STOCK) {
+            return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87 || keyCode == 163;
+        }
         return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87 || keyCode == 163
                 || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == 22;
     }
@@ -351,7 +368,6 @@ public final class Y1KeyMap {
         if (scancodeIsWheelUp(scanCode) || scancodeIsWheelDown(scanCode) || scanCode == SCAN_NEXT) {
             return false;
         }
-        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW) return false;
         return isMediaPreviousByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -364,7 +380,6 @@ public final class Y1KeyMap {
         if (scancodeIsWheelUp(scanCode) || scancodeIsWheelDown(scanCode) || scanCode == SCAN_PREV) {
             return false;
         }
-        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW) return false;
         return isMediaNextByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -381,11 +396,20 @@ public final class Y1KeyMap {
         return isMediaSkip(keyCode, 0, rockboxKeymap);
     }
 
-    public static boolean isPlayPauseKey(int keyCode) {
+    public static boolean isPlayPauseKey(int keyCode, boolean rockboxKeymap) {
+        int layout = layoutFor(rockboxKeymap);
+        if (layout == LAYOUT_ROCKBOX_ROM) {
+            return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == 85
+                    || keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86;
+        }
         return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126
                 || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127
                 || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == 85
                 || keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86;
+    }
+
+    public static boolean isPlayPauseKey(int keyCode) {
+        return isPlayPauseKey(keyCode, false);
     }
 
     public static boolean isBackKey(int keyCode) {

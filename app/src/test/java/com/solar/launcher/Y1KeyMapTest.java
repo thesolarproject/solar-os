@@ -20,11 +20,11 @@ public class Y1KeyMapTest {
     @Test
     public void stockWheelAndMediaKeys() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
-        // Without scancode, DPAD_LEFT/RIGHT map to media previous/next:
-        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, false));
-        assertFalse(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, false));
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
-        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, false));
+        // Without scancode, DPAD_LEFT/RIGHT map to wheel up/down on Stock layout:
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, false));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertFalse(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, false));
 
         // With scancode, scroll wheel works on Stock:
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, false));

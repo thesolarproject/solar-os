@@ -16872,7 +16872,7 @@ toastError(R.string.toast_audio_permission);
         if (isMediaSkipKey(keyCode)) {
             return false;
         }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126) {
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || (keyCode == 126 && !rockboxKeymap)) {
             try {
                 if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
                     mediaPlayer.start();
@@ -16883,7 +16883,7 @@ toastError(R.string.toast_audio_permission);
             clickFeedback();
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127) {
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || (keyCode == 127 && !rockboxKeymap)) {
             try {
                 if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                     mediaPlayer.pause();
@@ -16982,7 +16982,7 @@ toastError(R.string.toast_audio_permission);
     }
 
     private boolean isMediaPlayPauseKey(int keyCode) {
-        return Y1KeyMap.isPlayPauseKey(keyCode);
+        return Y1KeyMap.isPlayPauseKey(keyCode, rockboxKeymap);
     }
 
     private boolean hasActiveMediaPlayback() {
@@ -17360,7 +17360,7 @@ toastError(R.string.toast_audio_permission);
                 if (isMediaSkipKey(keyCode, event)) {
                     return handleMediaSkipKeyDown(keyCode, event);
                 }
-                if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126) {
+                if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || (keyCode == 126 && !rockboxKeymap)) {
                     try {
                         if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
                             mediaPlayer.start();
@@ -17371,7 +17371,7 @@ toastError(R.string.toast_audio_permission);
                     clickFeedback();
                     return true;
                 }
-                if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127) {
+                if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || (keyCode == 127 && !rockboxKeymap)) {
                     try {
                         if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                             mediaPlayer.pause();

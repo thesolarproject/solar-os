@@ -47,8 +47,8 @@ public class ConnectivityHelperTest {
         if (!ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_PODCASTS, false, false, true)) {
             throw new AssertionError("podcasts with saved offline");
         }
-        if (ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_PODCASTS, false, false, false)) {
-            throw new AssertionError("podcasts without saved offline");
+        if (!ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_PODCASTS, false, false, false)) {
+            throw new AssertionError("podcasts without saved offline should still show (graceful toast handling)");
         }
         if (!ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_PODCASTS, true, true, false)) {
             throw new AssertionError("podcasts online");
@@ -64,8 +64,8 @@ public class ConnectivityHelperTest {
 
     @Test
     public void shouldShowHomeShortcut_reachAndPcUpload() {
-        if (ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_SOULSEEK, false, true, false)) {
-            throw new AssertionError("reach offline");
+        if (!ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_SOULSEEK, false, true, false)) {
+            throw new AssertionError("reach offline should still show (graceful toast handling)");
         }
         if (!ConnectivityHelper.shouldShowHomeShortcut(HomeMenuConfig.ID_SOULSEEK, true, false, false)) {
             throw new AssertionError("reach online");

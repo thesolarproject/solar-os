@@ -120,10 +120,10 @@ public final class ConnectivityHelper {
         if (id == null) return false;
         id = HomeMenuConfig.migrateIdStatic(id);
         if (HomeMenuConfig.ID_MORE.equals(id)) return true;
-        if (HomeMenuConfig.ID_SOULSEEK.equals(id)) return internetAvailable && reachLoginOk;
+        if (HomeMenuConfig.ID_SOULSEEK.equals(id)) return true;
+        if (HomeMenuConfig.ID_PODCASTS.equals(id)) return true;
         if (itemNeedsInternetForDiscovery(id)) return internetAvailable;
         if (itemNeedsLocalNetwork(id)) return localNetworkAvailable;
-        if (HomeMenuConfig.ID_PODCASTS.equals(id)) return internetAvailable || podcastsSaved;
         return true;
     }
 
