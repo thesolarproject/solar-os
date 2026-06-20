@@ -4,8 +4,12 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 
 /**
- * Y1 input: maps physical controls to UI roles. Prefers kernel scancodes (103/108 wheel,
- * 105/106 skip) so menus work even when Generic.kl and mtk-kpd.kl disagree.
+ * Y1 input per {@code .cursor/rules/input-rules.mdc}:
+ * <ul>
+ *   <li><b>Stock</b> wheel 21/22 (DPAD_LEFT/RIGHT), skip 88/87</li>
+ *   <li><b>Rockbox ROM</b> wheel 126/127 (MEDIA_PLAY/PAUSE), skip 88/87 and 21/22</li>
+ * </ul>
+ * Scancodes 103/108 (wheel) and 105/106 (skip) disambiguate when keylayout files disagree.
  */
 public final class Y1KeyMap {
     public static final String PREF_ROCKBOX_KEYMAP = "debug_rockbox_keymap";
@@ -13,6 +17,8 @@ public final class Y1KeyMap {
 
     public static final int SCAN_WHEEL_CCW = 103;
     public static final int SCAN_WHEEL_CW = 108;
+    public static final int SCAN_WHEEL_UP = 114;
+    public static final int SCAN_WHEEL_DOWN = 115;
     public static final int SCAN_PREV = 105;
     public static final int SCAN_NEXT = 106;
 
@@ -61,6 +67,7 @@ public final class Y1KeyMap {
     static final class KlLines {
         String l103;
         String l105;
+        String l114;
     }
 
     private static KlLines readKlLines(String path) {
@@ -71,6 +78,7 @@ public final class Y1KeyMap {
             while ((line = r.readLine()) != null) {
                 if (line.startsWith("key 103")) out.l103 = line;
                 else if (line.startsWith("key 105")) out.l105 = line;
+                else if (line.startsWith("key 114")) out.l114 = line;
             }
             r.close();
         } catch (Exception ignored) {}
@@ -81,19 +89,33 @@ public final class Y1KeyMap {
         return line != null && line.contains("MEDIA_PREVIOUS");
     }
 
+    /** rockbox-y1 {@code Rockbox.kl} on Generic.kl (Y1 loads Generic for mtk-kpd). */
+    private static boolean lineHasRockboxKlGeneric(KlLines gen) {
+        return gen.l103 != null && gen.l103.contains("MEDIA_PLAY");
+    }
+
     private static int readLayoutFromDevice() {
         return classifyLayoutFromKlFiles(readKlLines(MTK_KL), readKlLines(GENERIC_KL));
     }
 
-    /** Package-visible for unit tests (both keylayout files). */
     static int classifyLayoutFromKlFiles(KlLines mtk, KlLines gen) {
-        if (lineHasMediaPrevious(mtk.l105) || lineHasMediaPrevious(gen.l105)) {
-            return LAYOUT_STOCK;
+        if (gen.l103 != null && gen.l103.contains("MEDIA_PLAY")) {
+            return LAYOUT_ROCKBOX_ROM;
         }
-        if (lineHasMediaPrevious(mtk.l103) || lineHasMediaPrevious(gen.l103)) {
+        if (mtk.l103 != null && mtk.l103.contains("MEDIA_PLAY")) {
+            return LAYOUT_ROCKBOX_ROM;
+        }
+        if (mtk.l103 != null && mtk.l103.contains("DPAD_UP")) {
+            return LAYOUT_ROCKBOX_CLASSIC;
+        }
+        if (gen.l103 != null && gen.l103.contains("DPAD_UP")) {
+            return LAYOUT_ROCKBOX_CLASSIC;
+        }
+        if ((mtk.l103 != null && mtk.l103.contains("MEDIA_PREVIOUS"))
+                || (gen.l103 != null && gen.l103.contains("MEDIA_PREVIOUS"))) {
             return LAYOUT_ROCKBOX_SIDELoad;
         }
-        return classifyMtkLines(mtk.l103, mtk.l105);
+        return LAYOUT_STOCK;
     }
 
     public static int classifyMtkLines(String line103, String line105) {
@@ -108,14 +130,11 @@ public final class Y1KeyMap {
         return LAYOUT_STOCK;
     }
 
-    /** True when mtk-kpd is Rockbox but Generic.kl still maps wheel to LEFT/RIGHT. */
     public static boolean isGenericMtkWheelMismatch() {
         KlLines mtk = readKlLines(MTK_KL);
         KlLines gen = readKlLines(GENERIC_KL);
         if (mtk.l103 == null || gen.l103 == null) return false;
-        boolean mtkRockboxWheel = mtk.l103.contains("DPAD_UP");
-        boolean genStockWheel = gen.l103.contains("DPAD_LEFT");
-        return mtkRockboxWheel && genStockWheel;
+        return mtk.l103.contains("DPAD_UP") && gen.l103.contains("DPAD_LEFT");
     }
 
     public static String layoutLabel(int layout) {
@@ -136,43 +155,54 @@ public final class Y1KeyMap {
         return detectMtkLayout() != LAYOUT_STOCK;
     }
 
-    /**
-     * Updates runtime layout hint from hardware keys (keyboard/dpad source only).
-     * @return true if hint changed (caller should reconcile prefs)
-     */
     public static boolean noteHardwareKey(KeyEvent event) {
         if (event == null) return false;
         return noteHardwareKeyInput(event.getSource(), event.getScanCode(), event.getKeyCode());
     }
 
-    /** Package-visible for unit tests (JVM KeyEvent.getSource is not mocked). */
     static boolean noteHardwareKeyInput(int source, int scanCode, int keyCode) {
         if ((source & InputDevice.SOURCE_KEYBOARD) == 0
                 && (source & InputDevice.SOURCE_DPAD) == 0) {
             return false;
         }
         int prev = runtimeLayoutHint;
-        if (scanCode == SCAN_PREV) {
-            if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88 || keyCode == 165) {
+        if (scanCode == SCAN_WHEEL_CCW) {
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126) {
+                runtimeLayoutHint = LAYOUT_ROCKBOX_ROM;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 runtimeLayoutHint = LAYOUT_STOCK;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
+            }
+        } else if (scanCode == SCAN_WHEEL_CW) {
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127) {
+                runtimeLayoutHint = LAYOUT_ROCKBOX_ROM;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                runtimeLayoutHint = LAYOUT_STOCK;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
+            }
+        } else if (scanCode == SCAN_PREV) {
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88) {
+                runtimeLayoutHint = isRockboxLayout(runtimeLayoutHint) ? runtimeLayoutHint : LAYOUT_STOCK;
             } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
             }
-        } else if (scanCode == SCAN_NEXT && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (scanCode == SCAN_NEXT
-                && (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87 || keyCode == 163)) {
-            runtimeLayoutHint = LAYOUT_STOCK;
-        } else if (scanCode == SCAN_WHEEL_CCW && keyCode == KeyEvent.KEYCODE_DPAD_UP) {
-            runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (scanCode == SCAN_WHEEL_CCW && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-            runtimeLayoutHint = LAYOUT_STOCK;
-        } else if (scanCode == SCAN_WHEEL_CW && keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-            runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
-        } else if (scanCode == SCAN_WHEEL_CW && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            runtimeLayoutHint = LAYOUT_STOCK;
+        } else if (scanCode == SCAN_NEXT) {
+            if (keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87) {
+                runtimeLayoutHint = isRockboxLayout(runtimeLayoutHint) ? runtimeLayoutHint : LAYOUT_STOCK;
+            } else if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                runtimeLayoutHint = LAYOUT_ROCKBOX_CLASSIC;
+            }
+        } else if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126) {
+            runtimeLayoutHint = LAYOUT_ROCKBOX_ROM;
         }
         return runtimeLayoutHint != prev;
+    }
+
+    private static boolean isRockboxLayout(int layout) {
+        return layout == LAYOUT_ROCKBOX_ROM || layout == LAYOUT_ROCKBOX_CLASSIC
+                || layout == LAYOUT_ROCKBOX_SIDELoad;
     }
 
     public static boolean reconcileRockboxKeymapPref(android.content.Context ctx,
@@ -224,35 +254,42 @@ public final class Y1KeyMap {
         return LAYOUT_STOCK;
     }
 
+    private static boolean isRockboxWheelLayout(int layout) {
+        return layout == LAYOUT_ROCKBOX_ROM || layout == LAYOUT_ROCKBOX_SIDELoad
+                || layout == LAYOUT_ROCKBOX_CLASSIC;
+    }
+
     private static boolean isWheelUpByKeycode(int keyCode, boolean rockboxKeymap) {
-        switch (layoutFor(rockboxKeymap)) {
-            case LAYOUT_ROCKBOX_SIDELoad:
-                return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88;
-            case LAYOUT_ROCKBOX_CLASSIC:
-            case LAYOUT_ROCKBOX_ROM:
-                return keyCode == KeyEvent.KEYCODE_DPAD_UP;
-            case LAYOUT_STOCK:
-            default:
-                return keyCode == KeyEvent.KEYCODE_DPAD_LEFT;
+        int layout = layoutFor(rockboxKeymap);
+        if (layout == LAYOUT_ROCKBOX_SIDELoad) {
+            return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88;
         }
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || keyCode == 126
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP;
     }
 
     private static boolean isWheelDownByKeycode(int keyCode, boolean rockboxKeymap) {
-        switch (layoutFor(rockboxKeymap)) {
-            case LAYOUT_ROCKBOX_SIDELoad:
-                return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87;
-            case LAYOUT_ROCKBOX_CLASSIC:
-            case LAYOUT_ROCKBOX_ROM:
-                return keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
-            case LAYOUT_STOCK:
-            default:
-                return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
+        int layout = layoutFor(rockboxKeymap);
+        if (layout == LAYOUT_ROCKBOX_SIDELoad) {
+            return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87;
         }
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
+    }
+
+    private static boolean scancodeIsWheelUp(int scanCode) {
+        return scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_UP;
+    }
+
+    private static boolean scancodeIsWheelDown(int scanCode) {
+        return scanCode == SCAN_WHEEL_CW || scanCode == SCAN_WHEEL_DOWN;
     }
 
     public static boolean isWheelUp(int keyCode, int scanCode, boolean rockboxKeymap) {
-        if (scanCode == SCAN_WHEEL_CCW) return true;
-        if (scanCode == SCAN_WHEEL_CW || scanCode == SCAN_PREV || scanCode == SCAN_NEXT) return false;
+        if (scancodeIsWheelUp(scanCode)) return true;
+        if (scancodeIsWheelDown(scanCode) || scanCode == SCAN_PREV || scanCode == SCAN_NEXT) {
+            return false;
+        }
         return isWheelUpByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -261,8 +298,10 @@ public final class Y1KeyMap {
     }
 
     public static boolean isWheelDown(int keyCode, int scanCode, boolean rockboxKeymap) {
-        if (scanCode == SCAN_WHEEL_CW) return true;
-        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_PREV || scanCode == SCAN_NEXT) return false;
+        if (scancodeIsWheelDown(scanCode)) return true;
+        if (scancodeIsWheelUp(scanCode) || scanCode == SCAN_PREV || scanCode == SCAN_NEXT) {
+            return false;
+        }
         return isWheelDownByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -298,36 +337,21 @@ public final class Y1KeyMap {
     }
 
     private static boolean isMediaPreviousByKeycode(int keyCode, boolean rockboxKeymap) {
-        switch (layoutFor(rockboxKeymap)) {
-            case LAYOUT_ROCKBOX_ROM:
-            case LAYOUT_ROCKBOX_CLASSIC:
-            case LAYOUT_ROCKBOX_SIDELoad:
-                return keyCode == KeyEvent.KEYCODE_DPAD_LEFT;
-            case LAYOUT_STOCK:
-            default:
-                return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88
-                        || keyCode == 165;
-        }
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS || keyCode == 88 || keyCode == 165
+                || keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == 21;
     }
 
     private static boolean isMediaNextByKeycode(int keyCode, boolean rockboxKeymap) {
-        switch (layoutFor(rockboxKeymap)) {
-            case LAYOUT_ROCKBOX_ROM:
-            case LAYOUT_ROCKBOX_CLASSIC:
-            case LAYOUT_ROCKBOX_SIDELoad:
-                return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
-            case LAYOUT_STOCK:
-            default:
-                return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87
-                        || keyCode == 163;
-        }
+        return keyCode == KeyEvent.KEYCODE_MEDIA_NEXT || keyCode == 87 || keyCode == 163
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == 22;
     }
 
     public static boolean isMediaPrevious(int keyCode, int scanCode, boolean rockboxKeymap) {
         if (scanCode == SCAN_PREV) return true;
-        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW || scanCode == SCAN_NEXT) {
+        if (scancodeIsWheelUp(scanCode) || scancodeIsWheelDown(scanCode) || scanCode == SCAN_NEXT) {
             return false;
         }
+        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW) return false;
         return isMediaPreviousByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -337,9 +361,10 @@ public final class Y1KeyMap {
 
     public static boolean isMediaNext(int keyCode, int scanCode, boolean rockboxKeymap) {
         if (scanCode == SCAN_NEXT) return true;
-        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW || scanCode == SCAN_PREV) {
+        if (scancodeIsWheelUp(scanCode) || scancodeIsWheelDown(scanCode) || scanCode == SCAN_PREV) {
             return false;
         }
+        if (scanCode == SCAN_WHEEL_CCW || scanCode == SCAN_WHEEL_CW) return false;
         return isMediaNextByKeycode(keyCode, rockboxKeymap);
     }
 
@@ -361,5 +386,14 @@ public final class Y1KeyMap {
                 || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || keyCode == 127
                 || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == 85
                 || keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86;
+    }
+
+    public static boolean isBackKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BACK || keyCode == 4;
+    }
+
+    public static boolean isCenterKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == 66;
     }
 }

@@ -304,30 +304,44 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
+    if [ ! -f "$sys_mount/usr/keylayout/mtk_kpd.kl" ]; then
+        echo "audit fail: mtk_kpd.kl missing (Android 4.2 name for mtk-kpd device)" >&2
+        errors=$((errors + 1))
+    elif ! cmp -s "$sys_mount/usr/keylayout/mtk_kpd.kl" "$SCRIPT_DIR/mtk_kpd.kl"; then
+        echo "audit fail: mtk_kpd.kl does not match solar-rom/scripts/mtk_kpd.kl" >&2
+        errors=$((errors + 1))
+    elif ! grep -q '^key 105   MEDIA_PREVIOUS' "$sys_mount/usr/keylayout/mtk_kpd.kl" \
+            || ! grep -q '^key 103   MEDIA_PLAY' "$sys_mount/usr/keylayout/mtk_kpd.kl"; then
+        echo "audit fail: mtk_kpd.kl is not Rockbox wheel layout (103 MEDIA_PLAY, 105 MEDIA_PREVIOUS)" >&2
+        errors=$((errors + 1))
+    fi
+
     if [ ! -f "$sys_mount/usr/keylayout/mtk-kpd.kl" ]; then
         echo "audit fail: mtk-kpd.kl missing (Y1 wheel / prev-next)" >&2
         errors=$((errors + 1))
     elif ! cmp -s "$sys_mount/usr/keylayout/mtk-kpd.kl" "$SCRIPT_DIR/mtk-kpd-rockbox.kl"; then
         echo "audit fail: mtk-kpd.kl does not match solar-rom/scripts/mtk-kpd-rockbox.kl" >&2
         errors=$((errors + 1))
-    elif ! grep -q '^key 105   DPAD_LEFT' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
-            || ! grep -q '^key 106   DPAD_RIGHT' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
-            || ! grep -q '^key 103   DPAD_UP' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
-            || ! grep -q '^key 108   DPAD_DOWN' "$sys_mount/usr/keylayout/mtk-kpd.kl"; then
-        echo "audit fail: mtk-kpd.kl is not Rockbox layout (103/108 UP/DOWN, 105/106 LEFT/RIGHT)" >&2
+    elif ! grep -q '^key 105   MEDIA_PREVIOUS' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 106   MEDIA_NEXT' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 103   MEDIA_PLAY' "$sys_mount/usr/keylayout/mtk-kpd.kl" \
+            || ! grep -q '^key 108   MEDIA_PAUSE' "$sys_mount/usr/keylayout/mtk-kpd.kl"; then
+        echo "audit fail: mtk-kpd.kl is not Rockbox layout (103/108 MEDIA_PLAY/PAUSE, 105/106 MEDIA_PREVIOUS/NEXT)" >&2
         errors=$((errors + 1))
     fi
 
-    if ! grep -q '^key 103   DPAD_UP' "$sys_mount/usr/keylayout/Generic.kl" \
-            || ! grep -q '^key 108   DPAD_DOWN' "$sys_mount/usr/keylayout/Generic.kl" \
-            || ! grep -q '^key 105   DPAD_LEFT' "$sys_mount/usr/keylayout/Generic.kl" \
-            || ! grep -q '^key 106   DPAD_RIGHT' "$sys_mount/usr/keylayout/Generic.kl"; then
-        echo "audit fail: Generic.kl wheel/prev-next not Rockbox (must match mtk-kpd)" >&2
+    if ! grep -q '^key 114   DPAD_UP' "$sys_mount/usr/keylayout/Generic.kl" \
+            || ! grep -q '^key 103   MEDIA_PLAY' "$sys_mount/usr/keylayout/Generic.kl" \
+            || ! grep -q '^key 105   MEDIA_PREVIOUS' "$sys_mount/usr/keylayout/Generic.kl"; then
+        echo "audit fail: Generic.kl is not rockbox-y1 Rockbox.kl (114 UP, 103 PLAY, 105 MEDIA_PREVIOUS)" >&2
         errors=$((errors + 1))
     fi
 
-    if [ -f "$sys_mount/usr/keylayout/Rockbox.kl" ]; then
-        echo "audit fail: Rockbox.kl still present" >&2
+    if [ ! -f "$sys_mount/usr/keylayout/Rockbox.kl" ]; then
+        echo "audit fail: Rockbox.kl missing (rockbox-y1 ROM layout)" >&2
+        errors=$((errors + 1))
+    elif ! cmp -s "$sys_mount/usr/keylayout/Rockbox.kl" "$sys_mount/usr/keylayout/Generic.kl"; then
+        echo "audit fail: Rockbox.kl does not match Generic.kl" >&2
         errors=$((errors + 1))
     fi
 
@@ -460,7 +474,7 @@ else
     echo "==> Skipping Koensayr AVRCP (clone koensayr into solar-rom/koensayr or set KOENSAYR_DIR)"
 fi
 
-echo "==> Rockbox-Y1 keylayout (wheel 19/20, prev/next 21/22)"
+echo "==> Rockbox-Y1 keylayout (Rockbox.kl + mtk-kpd-rockbox.kl)"
 chmod +x "$SCRIPT_DIR/apply-rockbox-keylayout.sh"
 "$SCRIPT_DIR/apply-rockbox-keylayout.sh" "$MOUNT_SYS"
 

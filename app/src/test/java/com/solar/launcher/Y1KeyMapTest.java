@@ -20,22 +20,34 @@ public class Y1KeyMapTest {
     @Test
     public void stockWheelAndMediaKeys() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
-        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, false));
-        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, false));
+        // Without scancode, DPAD_LEFT/RIGHT map to media previous/next:
+        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertFalse(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, false));
+        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, false));
+
+        // With scancode, scroll wheel works on Stock:
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, false));
+        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, Y1KeyMap.SCAN_WHEEL_CW, false));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, false));
+
+        // Trackpad buttons work:
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, false));
         assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_MEDIA_NEXT, false));
-        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
-        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, false));
+        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
     }
 
     @Test
     public void rockboxRomWheelAndSkip() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
-        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, true));
-        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_DOWN, true));
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, true));
+        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_MEDIA_PAUSE, true));
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, Y1KeyMap.SCAN_WHEEL_CCW, true));
+        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, true));
+        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_MEDIA_NEXT, true));
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
-        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
         assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, true));
+        assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS, Y1KeyMap.SCAN_PREV, true));
     }
 
     @Test
@@ -58,9 +70,9 @@ public class Y1KeyMapTest {
 
     @Test
     public void rockboxHardwareWorksWhenPrefOff() {
-        Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC);
-        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, false));
-        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_DOWN, false));
+        Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
+        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_MEDIA_PAUSE, false));
         assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, false));
     }
 
@@ -70,31 +82,30 @@ public class Y1KeyMapTest {
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, true));
         assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, Y1KeyMap.SCAN_WHEEL_CW, true));
         assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, true));
-        assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_PREV, true));
     }
 
     @Test
     public void scancodeSkipStockAndRockbox() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, Y1KeyMap.SCAN_PREV, false));
-        Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC);
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_PREV, true));
-        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, Y1KeyMap.SCAN_NEXT, true));
+        Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
+        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, Y1KeyMap.SCAN_PREV, true));
+        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_MEDIA_NEXT, Y1KeyMap.SCAN_NEXT, true));
     }
 
     @Test
     public void runtimeHintOverridesStockFileDetect() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
-        Y1KeyMap.setRuntimeLayoutHintForTest(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC);
-        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, false));
+        Y1KeyMap.setRuntimeLayoutHintForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
     }
 
     @Test
-    public void noteHardwareKeyWheelUpSetsRockboxHint() {
+    public void noteHardwareKeyWheel126SetsRockboxHint() {
         assertTrue(Y1KeyMap.noteHardwareKeyInput(InputDevice.SOURCE_KEYBOARD,
-                Y1KeyMap.SCAN_WHEEL_CCW, KeyEvent.KEYCODE_DPAD_UP));
-        assertEquals(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC, Y1KeyMap.getRuntimeLayoutHintForTest());
+                Y1KeyMap.SCAN_WHEEL_CCW, KeyEvent.KEYCODE_MEDIA_PLAY));
+        assertEquals(Y1KeyMap.LAYOUT_ROCKBOX_ROM, Y1KeyMap.getRuntimeLayoutHintForTest());
     }
 
     @Test
