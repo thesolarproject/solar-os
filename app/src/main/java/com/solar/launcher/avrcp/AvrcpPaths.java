@@ -3,7 +3,7 @@ package com.solar.launcher.avrcp;
 import java.io.File;
 import java.io.RandomAccessFile;
 
-/** Koensayr legacy paths — native trampolines mmap these; do not retarget without re-patching JNI. */
+/** AVRCP legacy paths — native trampolines mmap these; do not retarget without re-patching JNI. */
 final class AvrcpPaths {
     static final String FILES_DIR = "/data/data/com.innioasis.y1/files";
     static final String TRACK_INFO = FILES_DIR + "/y1-track-info";

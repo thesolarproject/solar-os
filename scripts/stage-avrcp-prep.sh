@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# Stage Koensayr-patched system files for adb push or APK assets.
-# Usage: stage-koensayr-prep.sh [OUTPUT_DIR]
+# Stage AVRCP-patched system files for adb push or APK assets.
+# Usage: stage-avrcp-prep.sh [OUTPUT_DIR]
 #   KOENSAYR_SOURCE_SYS=/path/to/stock/system  — skip adb pull
 #   KOENSAYR_FROM_DEVICE=1                    — adb pull live /system files (default when no SOURCE)
-set -euo pipefail
+# set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/env.sh"
 
-STAGING="${1:-$ROOT/build/koensayr-staging/system}"
+STAGING="${1:-$ROOT/build/avrcp-staging/system}"
 KOENSAYR_SOURCE_SYS="${KOENSAYR_SOURCE_SYS:-}"
 FROM_DEVICE="${KOENSAYR_FROM_DEVICE:-}"
 
 SCRIPT_DIR="$ROOT/solar-rom/scripts"
-APPLY="$SCRIPT_DIR/koensayr-apply-to-tree.sh"
+APPLY="$SCRIPT_DIR/avrcp-apply-to-tree.sh"
 
 die() { echo "error: $*" >&2; exit 1; }
 
 command -v adb >/dev/null 2>&1 || die "adb required"
 [[ -x "$APPLY" ]] || die "missing $APPLY"
 
-KOENSAYR_PATHS=(
+AVRCP_PATHS=(
     app/MtkBt.odex
     bin/mtkbt
     lib/libextavrcp_jni.so
@@ -39,7 +39,7 @@ pull_stock_tree() {
     echo "==> Pulling stock /system files from device"
     adb get-state >/dev/null 2>&1 || die "no adb device"
     mkdir -p "$dest"
-    for rel in "${KOENSAYR_PATHS[@]}"; do
+    for rel in "${AVRCP_PATHS[@]}"; do
         local dir
         dir="$(dirname "$rel")"
         mkdir -p "$dest/$dir"
@@ -58,7 +58,7 @@ copy_source_tree() {
     echo "==> Copying stock system tree from $src"
     [[ -d "$src" ]] || die "KOENSAYR_SOURCE_SYS not a directory: $src"
     mkdir -p "$dest"
-    for rel in "${KOENSAYR_PATHS[@]}"; do
+    for rel in "${AVRCP_PATHS[@]}"; do
         if [[ -f "$src/$rel" ]]; then
             local dir
             dir="$(dirname "$rel")"
@@ -79,8 +79,8 @@ else
     die "connect a Y1 via adb or set KOENSAYR_SOURCE_SYS"
 fi
 
-echo "==> Applying Koensayr patches to staging tree"
+echo "==> Applying AVRCP patches to staging tree"
 "$APPLY" "$STAGING"
 
-echo "==> Staged Koensayr system tree: $STAGING"
+echo "==> Staged AVRCP system tree: $STAGING"
 echo "$STAGING"

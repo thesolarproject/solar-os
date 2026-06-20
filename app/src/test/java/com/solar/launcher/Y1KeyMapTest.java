@@ -20,13 +20,13 @@ public class Y1KeyMapTest {
     @Test
     public void stockWheelAndMediaKeys() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
-        // Without scancode, DPAD_LEFT/RIGHT map to wheel up/down on Stock layout:
+        // Under layout-agnostic, DPAD_LEFT/RIGHT and MEDIA_PLAY/PAUSE are wheel keys:
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, false));
         assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, false));
         assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
         assertFalse(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, false));
 
-        // With scancode, scroll wheel works on Stock:
+        // With scancode, scroll wheel works:
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, false));
         assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_RIGHT, Y1KeyMap.SCAN_WHEEL_CW, false));
         assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, Y1KeyMap.SCAN_WHEEL_CCW, false));
@@ -34,7 +34,7 @@ public class Y1KeyMapTest {
         // Trackpad buttons work:
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, false));
         assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_MEDIA_NEXT, false));
-        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
     }
 
     @Test
@@ -45,18 +45,20 @@ public class Y1KeyMapTest {
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, Y1KeyMap.SCAN_WHEEL_CCW, true));
         assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, true));
         assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_MEDIA_NEXT, true));
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
-        assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, true));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
+        assertTrue(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, true));
         assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS, Y1KeyMap.SCAN_PREV, true));
     }
 
     @Test
     public void rockboxSideloadSwappedKeys() {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_SIDELoad);
-        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PREVIOUS, true));
-        assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_MEDIA_NEXT, true));
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
-        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
+        assertFalse(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PREVIOUS, true));
+        assertFalse(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_MEDIA_NEXT, true));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
+        assertFalse(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
+        assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, true));
+        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_MEDIA_PREVIOUS, true));
     }
 
     @Test
@@ -64,8 +66,9 @@ public class Y1KeyMapTest {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_CLASSIC);
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_DPAD_UP, true));
         assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_DPAD_DOWN, true));
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
-        assertTrue(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, true));
+        assertFalse(Y1KeyMap.isMediaNext(KeyEvent.KEYCODE_DPAD_RIGHT, true));
+        assertTrue(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, true));
     }
 
     @Test
@@ -73,7 +76,7 @@ public class Y1KeyMapTest {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
         assertTrue(Y1KeyMap.isWheelDown(KeyEvent.KEYCODE_MEDIA_PAUSE, false));
-        assertFalse(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertTrue(Y1KeyMap.isWheelKey(KeyEvent.KEYCODE_DPAD_LEFT, false));
     }
 
     @Test
@@ -98,7 +101,7 @@ public class Y1KeyMapTest {
         Y1KeyMap.setLayoutForTest(Y1KeyMap.LAYOUT_STOCK);
         Y1KeyMap.setRuntimeLayoutHintForTest(Y1KeyMap.LAYOUT_ROCKBOX_ROM);
         assertTrue(Y1KeyMap.isWheelUp(KeyEvent.KEYCODE_MEDIA_PLAY, false));
-        assertTrue(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
+        assertFalse(Y1KeyMap.isMediaPrevious(KeyEvent.KEYCODE_DPAD_LEFT, false));
     }
 
     @Test

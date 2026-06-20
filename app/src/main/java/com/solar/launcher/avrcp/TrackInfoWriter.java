@@ -9,7 +9,7 @@ import java.io.File;
 import java.io.RandomAccessFile;
 import java.nio.charset.Charset;
 
-/** Double-buffer writer for Koensayr y1-track-info (2213 B). */
+/** Double-buffer writer for AVRCP y1-track-info (2213 B). */
 public final class TrackInfoWriter {
     public static final TrackInfoWriter INSTANCE = new TrackInfoWriter();
 

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # Remove third-party launchers from Y1 (root) and install Solar as /system/app.
-# Optional: --with-koensayr (auto when solar-rom/koensayr is cloned)
+# Optional: --with-avrcp (auto when solar-rom/koensayr is cloned)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/env.sh"
 APK="$ROOT/app/build/outputs/apk/release/app-release.apk"
 
-WITH_KOENSAYR=0
+WITH_AVRCP=0
 for arg in "$@"; do
-  [[ "$arg" == "--with-koensayr" ]] && WITH_KOENSAYR=1
+  [[ "$arg" == "--with-avrcp" ]] && WITH_AVRCP=1
 done
 if [[ -d "$ROOT/solar-rom/koensayr/src/patches" ]]; then
-  WITH_KOENSAYR=1
+  WITH_AVRCP=1
 fi
 
 [[ -f "$APK" ]] || {
@@ -111,11 +111,11 @@ echo "== After =="
 adb shell "ls -la /system/app/com.solar.launcher.apk /system/lib/libconscrypt_jni.so"
 adb shell pm list packages 2>/dev/null | grep -iE 'solar|launcher' || true
 
-if [[ "$WITH_KOENSAYR" -eq 1 ]]; then
-  echo "== Koensayr AVRCP stack =="
-  chmod +x "$ROOT/scripts/push-koensayr-adb.sh"
-  "$ROOT/scripts/push-koensayr-adb.sh"
-  echo "DONE: Solar + TLS + stock keylayout + Koensayr — device rebooting"
+if [[ "$WITH_AVRCP" -eq 1 ]]; then
+  echo "== AVRCP stack =="
+  chmod +x "$ROOT/scripts/push-avrcp-adb.sh"
+  "$ROOT/scripts/push-avrcp-adb.sh"
+  echo "DONE: Solar + TLS + stock keylayout + AVRCP — device rebooting"
 else
   echo "== Rebooting =="
   adb reboot

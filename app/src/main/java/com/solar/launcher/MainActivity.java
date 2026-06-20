@@ -16872,7 +16872,7 @@ toastError(R.string.toast_audio_permission);
         if (isMediaSkipKey(keyCode)) {
             return false;
         }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || (keyCode == 126 && !rockboxKeymap)) {
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY && !Y1KeyMap.isWheelKey(keyCode, rockboxKeymap)) {
             try {
                 if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
                     mediaPlayer.start();
@@ -16883,7 +16883,7 @@ toastError(R.string.toast_audio_permission);
             clickFeedback();
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || (keyCode == 127 && !rockboxKeymap)) {
+        if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE && !Y1KeyMap.isWheelKey(keyCode, rockboxKeymap)) {
             try {
                 if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                     mediaPlayer.pause();
@@ -17360,7 +17360,7 @@ toastError(R.string.toast_audio_permission);
                 if (isMediaSkipKey(keyCode, event)) {
                     return handleMediaSkipKeyDown(keyCode, event);
                 }
-                if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY || (keyCode == 126 && !rockboxKeymap)) {
+                if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY && !Y1KeyMap.isWheelKey(keyCode, rockboxKeymap)) {
                     try {
                         if (mediaPlayer != null && !mediaPlayer.isPlaying()) {
                             mediaPlayer.start();
@@ -17371,7 +17371,7 @@ toastError(R.string.toast_audio_permission);
                     clickFeedback();
                     return true;
                 }
-                if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE || (keyCode == 127 && !rockboxKeymap)) {
+                if (keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE && !Y1KeyMap.isWheelKey(keyCode, rockboxKeymap)) {
                     try {
                         if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                             mediaPlayer.pause();

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Push Koensayr-patched system files to a rooted Y1 via adb + su (no adb root required).
-# Usage: push-koensayr-adb.sh [--no-reboot]
+# Push AVRCP-patched system files to a rooted Y1 via adb + su (no adb root required).
+# Usage: push-avrcp-adb.sh [--no-reboot]
 set -euo pipefail
 
 NO_REBOOT=0
@@ -10,9 +10,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 source "$ROOT/scripts/env.sh"
 
-STAGE_SCRIPT="$ROOT/scripts/stage-koensayr-prep.sh"
+STAGE_SCRIPT="$ROOT/scripts/stage-avrcp-prep.sh"
 INIT_SRC="$ROOT/solar-rom/system/99SolarInit.sh"
-BACKUP_ROOT="$ROOT/backups/koensayr-$(date +%Y%m%d-%H%M%S)"
+BACKUP_ROOT="$ROOT/backups/avrcp-$(date +%Y%m%d-%H%M%S)"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -20,7 +20,7 @@ run_su() {
   adb shell "su -c '$*'" 2>/dev/null || adb shell "$*"
 }
 
-KOENSAYR_PUSH_PATHS=(
+AVRCP_PUSH_PATHS=(
     app/Y1Bridge.apk
     app/MtkBt.odex
     bin/mtkbt
@@ -38,15 +38,15 @@ echo "== Waiting for device (120s) =="
 timeout 120 adb wait-for-device || die "no adb device"
 sleep 2
 
-echo "==> Staging Koensayr patches"
-chmod +x "$STAGE_SCRIPT" "$ROOT/solar-rom/scripts/koensayr-apply-to-tree.sh"
-STAGING="$ROOT/build/koensayr-adb-staging/system"
+echo "==> Staging AVRCP patches"
+chmod +x "$STAGE_SCRIPT" "$ROOT/solar-rom/scripts/avrcp-apply-to-tree.sh"
+STAGING="$ROOT/build/avrcp-adb-staging/system"
 "$STAGE_SCRIPT" "$STAGING"
 [[ -f "$STAGING/app/Y1Bridge.apk" ]] || die "staging failed"
 
 echo "==> Backing up live /system files to $BACKUP_ROOT"
 mkdir -p "$BACKUP_ROOT"
-for rel in "${KOENSAYR_PUSH_PATHS[@]}"; do
+for rel in "${AVRCP_PUSH_PATHS[@]}"; do
     if adb shell "test -f /system/$rel" 2>/dev/null; then
         mkdir -p "$BACKUP_ROOT/$(dirname "$rel")"
         echo "  backup /system/$rel"
@@ -64,13 +64,13 @@ push_file() {
     local mode="$2"
     local src="$STAGING/$rel"
     [[ -f "$src" ]] || { echo "  skip (not staged): $rel"; return 0; }
-    local tmp="/data/local/tmp/solar-koensayr-$(basename "$rel")"
+    local tmp="/data/local/tmp/solar-avrcp-$(basename "$rel")"
     echo "  push /system/$rel"
     adb push "$src" "$tmp"
     run_su "cp $tmp /system/$rel && chmod $mode /system/$rel && chown root:root /system/$rel && rm -f $tmp"
 }
 
-echo "==> Push Koensayr files"
+echo "==> Push AVRCP files"
 push_file app/Y1Bridge.apk 644
 push_file app/MtkBt.odex 644
 push_file bin/mtkbt 755
@@ -83,8 +83,8 @@ push_file etc/bluetooth/auto_pairing.conf 644
 push_file etc/bluetooth/blacklist.conf 644
 
 if ! adb shell "grep -q avrcp.target.enabled /system/build.prop" 2>/dev/null; then
-    echo "  append Koensayr build.prop lines"
-    run_su "printf '%s\n' '' '# Solar / Koensayr AVRCP target profile' 'ro.bluetooth.class=10486812' 'ro.bluetooth.profiles.a2dp.source.enabled=true' 'ro.bluetooth.profiles.avrcp.target.enabled=true' >> /system/build.prop" || true
+    echo "  append AVRCP build.prop lines"
+    run_su "printf '%s\n' '' '# Solar / AVRCP target profile' 'ro.bluetooth.class=10486812' 'ro.bluetooth.profiles.a2dp.source.enabled=true' 'ro.bluetooth.profiles.avrcp.target.enabled=true' >> /system/build.prop" || true
 fi
 
 if [[ -f "$INIT_SRC" ]] && ! adb shell "test -f /system/etc/init.d/99SolarInit.sh" 2>/dev/null; then
@@ -102,7 +102,7 @@ adb shell pm list packages 2>/dev/null | grep -i bridge || true
 if [[ "$NO_REBOOT" -eq 0 ]]; then
     echo "==> Rebooting (BT stack loads patched libs at boot)"
     adb reboot
-    echo "DONE: Koensayr pushed — device rebooting"
+    echo "DONE: AVRCP pushed — device rebooting"
 else
-    echo "DONE: Koensayr pushed (no reboot — run adb reboot when ready)"
+    echo "DONE: AVRCP pushed (no reboot — run adb reboot when ready)"
 fi

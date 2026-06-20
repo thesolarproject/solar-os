@@ -20,7 +20,7 @@ Solar listens to **Android keycodes** (`KeyEvent`), with **kernel scancodes** (1
 |------|----------------|------------------|
 | Wheel up / down | 21 / 22 | 19 / 20 |
 | Media prev / next | 88 / 87 (+ 165/163) | 21 / 22 |
-| BT remotes | MEDIA_* via Koensayr | same |
+| BT remotes | MEDIA_* via AVRCP patching | same |
 
 ## Why three keylayout files matter
 
@@ -33,7 +33,7 @@ Y1 InputReader loads **both** `mtk-kpd.kl` and `Generic.kl` (identical to `Stock
 | [`Generic-rockbox.kl`](Generic-rockbox.kl) | `/system/usr/keylayout/Generic.kl` and `Stock.kl` |
 | [`mtk-kpd-rockbox.kl`](mtk-kpd-rockbox.kl) | `/system/usr/keylayout/mtk-kpd.kl` |
 
-All patching happens at **ROM build time** in [`build-rom.sh`](build-rom.sh) — no boot-time or app-side `.kl` writes. Koensayr (`AVRCP.kl`, BT stack) is separate and also ROM-build-only.
+All patching happens at **ROM build time** in [`build-rom.sh`](build-rom.sh) — no boot-time or app-side `.kl` writes. AVRCP (`AVRCP.kl`, BT stack) is separate and also ROM-build-only.
 
 ## Auto-detect (`Y1KeyMap`)
 

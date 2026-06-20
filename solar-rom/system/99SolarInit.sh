@@ -17,7 +17,7 @@ if [ -d "$SD" ]; then
     chmod 755 "$SD/Music" "$SD/Podcasts" "$SD/Themes" 2>/dev/null
 fi
 
-# AVRCP shared state (Koensayr legacy path; BT stack mmaps as different uid)
+# AVRCP shared state (AVRCP legacy path; BT stack mmaps as different uid)
 mkdir -p /data/data/com.innioasis.y1/files 2>/dev/null
 chmod 771 /data/data/com.innioasis.y1 /data/data/com.innioasis.y1/files 2>/dev/null
 

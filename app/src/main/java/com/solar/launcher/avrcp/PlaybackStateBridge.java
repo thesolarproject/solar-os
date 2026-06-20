@@ -3,7 +3,7 @@ package com.solar.launcher.avrcp;
 import android.content.Context;
 import android.media.MediaPlayer;
 
-/** Hooks Solar playback into Koensayr y1-track-info + wake broadcasts. */
+/** Hooks Solar playback into AVRCP y1-track-info + wake broadcasts. */
 public final class PlaybackStateBridge {
     private static PlaybackStateBridge instance;
     private final PositionTicker positionTicker = new PositionTicker();

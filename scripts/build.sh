@@ -6,7 +6,7 @@ source "$ROOT/scripts/env.sh"
 cd "$ROOT"
 chmod +x gradlew
 
-stage_koensayr_assets() {
+stage_avrcp_assets() {
   local k="$ROOT/solar-rom/koensayr"
   [[ -d "$k/src/patches" ]] || return 0
   local assets="$ROOT/app/src/main/assets/koensayr"
@@ -14,23 +14,23 @@ stage_koensayr_assets() {
   if [[ -z "$source_sys" ]]; then
     source_sys="$ROOT/build/koensayr-stock-system"
     if [[ ! -f "$source_sys/build.prop" ]]; then
-      chmod +x "$ROOT/scripts/extract-koensayr-stock-sys.sh"
-      if ! "$ROOT/scripts/extract-koensayr-stock-sys.sh" "$source_sys"; then
-        echo "WARN: Koensayr asset staging skipped (set KOENSAYR_SOURCE_SYS or connect device)" >&2
+      chmod +x "$ROOT/scripts/extract-avrcp-stock-sys.sh"
+      if ! "$ROOT/scripts/extract-avrcp-stock-sys.sh" "$source_sys"; then
+        echo "WARN: AVRCP asset staging skipped (set KOENSAYR_SOURCE_SYS or connect device)" >&2
         return 0
       fi
     fi
   fi
-  chmod +x "$ROOT/scripts/stage-koensayr-prep.sh" "$ROOT/solar-rom/scripts/koensayr-apply-to-tree.sh"
+  chmod +x "$ROOT/scripts/stage-avrcp-prep.sh" "$ROOT/solar-rom/scripts/avrcp-apply-to-tree.sh"
   local staging="$ROOT/build/koensayr-apk-assets/system"
-  KOENSAYR_SOURCE_SYS="$source_sys" "$ROOT/scripts/stage-koensayr-prep.sh" "$staging"
+  KOENSAYR_SOURCE_SYS="$source_sys" "$ROOT/scripts/stage-avrcp-prep.sh" "$staging"
   rm -rf "$assets"
   mkdir -p "$assets"
   cp -a "$staging"/* "$assets/"
-  echo "==> Koensayr APK assets staged ($assets)"
+  echo "==> AVRCP APK assets staged ($assets)"
 }
 
-stage_koensayr_assets
+stage_avrcp_assets
 ./gradlew assembleRelease "$@"
 
 UNSIGNED="$ROOT/app/build/outputs/apk/release/app-release-unsigned.apk"

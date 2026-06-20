@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Extract stock /system files from Rockbox-Y1 type-A base for Koensayr asset staging.
-# Usage: extract-koensayr-stock-sys.sh OUTPUT_DIR
+# Extract stock /system files from Rockbox-Y1 type-A base for AVRCP asset staging.
+# Usage: extract-avrcp-stock-sys.sh OUTPUT_DIR
 set -euo pipefail
 
 OUT="${1:-}"

@@ -226,14 +226,14 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
-    local koensayr_expected="${KOENSAYR_APPLIED:-0}"
+    local avrcp_expected="${KOENSAYR_APPLIED:-0}"
 
     if [ ! -f "$sys_mount/usr/keylayout/AVRCP.kl" ]; then
-        if [ "$koensayr_expected" = "1" ]; then
-            echo "audit fail: AVRCP.kl missing (Koensayr apply failed)" >&2
+        if [ "$avrcp_expected" = "1" ]; then
+            echo "audit fail: AVRCP.kl missing (AVRCP apply failed)" >&2
             errors=$((errors + 1))
         else
-            echo "audit warn: AVRCP.kl missing (Koensayr patches not applied?)" >&2
+            echo "audit warn: AVRCP.kl missing (AVRCP patches not applied?)" >&2
         fi
     fi
 
@@ -466,12 +466,12 @@ fi
 
 KOENSAYR_APPLIED=0
 if [ -d "$REPO_ROOT/solar-rom/koensayr/src/patches" ] || [ -n "${KOENSAYR_DIR:-}" ]; then
-    echo "==> Koensayr AVRCP + Bluetooth patches"
+    echo "==> AVRCP + Bluetooth patches"
     KOENSAYR_APPLIED=1
-    chmod +x "$SCRIPT_DIR/apply-koensayr-avrcp.sh"
-    "$SCRIPT_DIR/apply-koensayr-avrcp.sh" "$MOUNT_SYS"
+    chmod +x "$SCRIPT_DIR/apply-avrcp-patch.sh"
+    "$SCRIPT_DIR/apply-avrcp-patch.sh" "$MOUNT_SYS"
 else
-    echo "==> Skipping Koensayr AVRCP (clone koensayr into solar-rom/koensayr or set KOENSAYR_DIR)"
+    echo "==> Skipping AVRCP patching (clone repository into solar-rom/koensayr or set KOENSAYR_DIR)"
 fi
 
 echo "==> Rockbox-Y1 keylayout (Rockbox.kl + mtk-kpd-rockbox.kl)"

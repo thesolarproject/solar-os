@@ -2,7 +2,7 @@
 
 Builds flashable **type A** and **type B** firmware images from the [Rockbox-Y1](https://github.com/rockbox-y1/rockbox) stock bases, with **Solar** (`com.solar.launcher`) as the system launcher.
 
-Release source: [github.com/thatwitchgirl/solar](https://github.com/thatwitchgirl/solar)
+Release source: [github.com/thesolarproject/solar](https://github.com/thesolarproject/solar)
 
 ## Branches
 
@@ -36,16 +36,16 @@ Each ROM includes, on the **system** partition:
 | `/system/lib/libconscrypt_jni.so` | Conscrypt JNI for TLS 1.2+ (Reach, podcasts, themes via OkHttp) |
 | `/system/etc/security/cacerts/*.0` | Modern CA roots (Let's Encrypt, etc.) for **MediaPlayer** HTTPS and all apps |
 | `/system/etc/init.d/99SolarInit.sh` | Boot: create `Music` / `Podcasts` / `Themes` on SD; AVRCP track-info dir; log if TLS prep missing |
-| `/system/app/Y1Bridge.apk` | AVRCP Binder host (when Koensayr patches applied) |
-| Patched `mtkbt`, `libextavrcp*.so`, `AVRCP.kl` | Full AVRCP 1.3 metadata + car-stereo transport (Koensayr) |
+| `/system/app/Y1Bridge.apk` | AVRCP Binder host (when AVRCP patches applied) |
+| Patched `mtkbt`, `libextavrcp*.so`, `AVRCP.kl` | Full AVRCP 1.3 metadata + car-stereo transport (AVRCP patching) |
 | `logo.bin`, `boot.img` (rom.zip root) | LOGO + BOOTIMG partitions — early splash + kernel ([details](assets/innioasis-boot/README.md)) |
 | `/system/media/bootanimation.zip`, `/system/bin/bootanimation` | Android boot animation inside `system.img` only |
 
 These match what `./scripts/clean_install_system.sh` applies on a rooted device. Shared staging: `scripts/stage-y1-system-prep.sh` → `apply-y1-system-prep.sh` (ROM) or `push-y1-system-prep.sh` (adb). `SolarApplication` loads Conscrypt at boot; system cacerts are still required for stock HTTPS stacks (podcast streaming via MediaPlayer).
 
-### AVRCP (Koensayr)
+### AVRCP
 
-Full Bluetooth receiver metadata and transport controls require **native system patches** from [Koensayr](https://github.com/SeanathanVT/koensayr). OTA APK updates alone cannot install these — flash a Solar ROM built with Koensayr present.
+Full Bluetooth receiver metadata and transport controls require **native system patches** from [AVRCP patches](https://github.com/SeanathanVT/koensayr). OTA APK updates alone cannot install these — flash a Solar ROM built with AVRCP patches present.
 
 ```bash
 git clone https://github.com/SeanathanVT/koensayr.git solar-rom/koensayr
@@ -53,7 +53,7 @@ git clone https://github.com/SeanathanVT/koensayr.git solar-rom/koensayr
 ./solar-rom/scripts/build-rom.sh a --apk app/build/outputs/apk/release/app-release.apk rom.zip
 ```
 
-`build-rom.sh` runs `apply-koensayr-avrcp.sh` when `solar-rom/koensayr` exists. Solar writes track state to the legacy `y1-track-info` path expected by the patched BT stack.
+`build-rom.sh` runs `apply-avrcp-patch.sh` when `solar-rom/koensayr` exists. Solar writes track state to the legacy `y1-track-info` path expected by the patched BT stack.
 
 ### Boot splash (Innioasis stock)
 
@@ -78,7 +78,7 @@ Future custom Solar boot media: [`solar-rom/assets/solar-boot/`](solar-rom/asset
 
 Solar ROMs ship **Rockbox keymap** + `org.rockbox.apk`. Stock Innioasis wheel/media layout is applied only via `clean_install_system.sh` (adb sideload). See [`solar-rom/scripts/KEYMAP.md`](solar-rom/scripts/KEYMAP.md).
 
-Override release repo for ROM downloads: `SOLAR_GITHUB_REPO=thatwitchgirl/solar` (default).
+Override release repo for ROM downloads: `SOLAR_GITHUB_REPO=thesolarproject/solar` (default).
 
 ## CI
 

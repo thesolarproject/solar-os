@@ -1,6 +1,5 @@
-#!/usr/bin/env bash
-# Apply Koensayr AVRCP patches + Y1Bridge.apk to a system tree (ROM mount or staging dir).
-# Usage: koensayr-apply-to-tree.sh /path/to/system [--sudo]
+# Apply AVRCP patches + Y1Bridge.apk to a system tree (ROM mount or staging dir).
+# Usage: avrcp-apply-to-tree.sh /path/to/system [--sudo]
 set -euo pipefail
 
 TARGET_SYS="${1:-}"
@@ -21,7 +20,7 @@ cleanup() {
 trap cleanup EXIT
 
 [ -n "$TARGET_SYS" ] && [ -d "$TARGET_SYS" ] || die "usage: $0 /path/to/system [--sudo]"
-[ -d "$KOENSAYR_DIR/src/patches" ] || die "Koensayr not found at $KOENSAYR_DIR"
+[ -d "$KOENSAYR_DIR/src/patches" ] || die "AVRCP patches not found at $KOENSAYR_DIR"
 command -v python3 >/dev/null 2>&1 || die "python3 required"
 
 WORK_DIR="$(mktemp -d)"
@@ -149,7 +148,7 @@ apply_bt_config() {
         if ! grep -q 'ro.bluetooth.profiles.avrcp.target.enabled=true' "$TARGET_SYS/build.prop" 2>/dev/null; then
             do_tee_append "$TARGET_SYS/build.prop" <<'EOF'
 
-# Solar / Koensayr AVRCP target profile
+# Solar / AVRCP target profile
 ro.bluetooth.class=10486812
 ro.bluetooth.profiles.a2dp.source.enabled=true
 ro.bluetooth.profiles.avrcp.target.enabled=true
@@ -158,7 +157,7 @@ EOF
     fi
 }
 
-echo "==> Koensayr AVRCP (from $KOENSAYR_DIR) -> $TARGET_SYS"
+echo "==> AVRCP patching (from $KOENSAYR_DIR) -> $TARGET_SYS"
 
 BRIDGE_OUT="$WORK_DIR/Y1Bridge.apk"
 build_y1_bridge "$BRIDGE_OUT"
@@ -173,4 +172,4 @@ patch_into_tree "lib/libaudio.a2dp.default.so" "patch_libaudio_a2dp.py" 644
 patch_into_tree "usr/keylayout/AVRCP.kl" "patch_avrcp_kl.py" 644
 
 apply_bt_config
-echo "==> Koensayr applied to $TARGET_SYS"
+echo "==> AVRCP applied to $TARGET_SYS"
