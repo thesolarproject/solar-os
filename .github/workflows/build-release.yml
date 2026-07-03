@@ -71,7 +71,9 @@ jobs:
         run: |
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-a-base/rom.zip"
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-b-base/rom.zip"
-          echo "ROM base sources OK (Y1 type A/B)"
+          curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom.zip"
+          test -f solar-rom/vendor/y1-su/su
+          echo "ROM base sources OK (Y1 type A/B + Y2 ATA + vendored y1-su; rockbox-y1 APK fetched at build)"
 
       - name: Decode platform signing keys
         env:
@@ -109,16 +111,34 @@ jobs:
           APK="$GITHUB_WORKSPACE/app/build/outputs/apk/release/app-release.apk"
           test -f "$APK"
           mkdir -p dist
-          chmod +x solar-rom/scripts/build-rom.sh
+          chmod +x solar-rom/scripts/build-rom.sh \
+            solar-rom/scripts/install-y1-su-system.sh \
+            solar-rom/scripts/fetch-rockbox-y1-y2-assets.sh \
+            solar-rom/scripts/verify-y2-rom-flash.sh
           ./solar-rom/scripts/build-rom.sh a --apk "$APK" "$GITHUB_WORKSPACE/dist/rom.zip"
           ./solar-rom/scripts/build-rom.sh b --apk "$APK" "$GITHUB_WORKSPACE/dist/rom_type_b.zip"
-          ls -la dist/
-          for z in dist/rom.zip dist/rom_type_b.zip; do
+          ./solar-rom/scripts/build-rom.sh y2 --apk "$APK" "$GITHUB_WORKSPACE/dist/rom_y2.zip"
+          for z in dist/rom.zip dist/rom_type_b.zip dist/rom_y2.zip; do
             test -s "$z" || { echo "::error::Missing or empty $z"; exit 1; }
           done
           unzip -l dist/rom.zip | grep -q MT6572_Android_scatter.txt
           unzip -l dist/rom_type_b.zip | grep -q MT6572_Android_scatter.txt
-          echo "Y1 type A/B ROM zips built and verified"
+          unzip -l dist/rom_y2.zip | grep -q MT6582_Android_scatter.txt
+          ./solar-rom/scripts/verify-y2-rom-flash.sh dist/rom_y2.zip
+          echo "Y1 type A/B and Y2 ATA ROM zips built and verified"
+          ls -la dist/
+
+      - name: Prepare release artifact list
+        id: release_artifacts
+        run: |
+          {
+            echo "files<<EOF"
+            echo "app/build/outputs/apk/release/app-release.apk"
+            echo "dist/rom.zip"
+            echo "dist/rom_type_b.zip"
+            echo "dist/rom_y2.zip"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Prepare release notes
         run: ./solar-rom/scripts/format-release-notes.sh release.json > RELEASE_NOTES.md
@@ -132,10 +152,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: ${{ steps.meta.outputs.version_name }}
           body_path: RELEASE_NOTES.md
-          files: |
-            app/build/outputs/apk/release/app-release.apk
-            dist/rom.zip
-            dist/rom_type_b.zip
+          files: ${{ steps.release_artifacts.outputs.files }}
           fail_on_unmatched_files: true
           make_latest: ${{ github.ref == 'refs/heads/main' }}
           prerelease: ${{ github.ref == 'refs/heads/nightly' }}

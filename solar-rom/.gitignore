@@ -7,3 +7,8 @@ rom_y2.zip
 mount_sys/
 mount_user/
 dist/
+.rom_y2_extracted/
+# Downloaded at build time for Y2 — see fetch-rockbox-y1-y2-assets.sh
+vendor/rockbox-y1/
+# Legacy SuperSU tree — Y2 builds use vendor/y1-su instead; not required by CI
+vendor/supersu/

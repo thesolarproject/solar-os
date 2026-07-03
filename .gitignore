@@ -40,6 +40,7 @@ local.properties
 *.logcat
 Screenshot_*.png
 /ci-keys/
+__pycache__/
 
 # ROM build outputs (local)
 /rom.zip
@@ -47,5 +48,9 @@ Screenshot_*.png
 /rom_y2.zip
 /dist/
 /release.json
+/.rom_y2_extracted/
 /reference
 TestSort*
+rom.zip
+rom_type_b.zip
+rom_y2.zip

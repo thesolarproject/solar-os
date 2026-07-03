@@ -36,6 +36,8 @@ Each ROM includes, on the **system** partition:
 | `/system/etc/solar/disable-rockbox-for-solar.sh` | One-shot `pm disable org.rockbox` on first boot (marker wiped on flash) |
 | `/system/etc/init.d/99SolarInit.sh` | Boot: SD library folders; runs disable script + switch scripts + keymap/codec sync |
 
+**Y2 only** — Y1 permissive `su` is baked into `/system` during `build-rom.sh y2` (see `solar-rom/vendor/y1-su/` and `install-y1-su-system.sh`). Same setuid binary as the Y1 rockbox base — no Superuser.apk grant dialog. Y1 rockbox bases already ship this root; Y2 ATA stock base does not. **`org.rockbox.apk` + `librockbox.so`** are not vendored in git — `fetch-rockbox-y1-y2-assets.sh` downloads them from the rockbox-y1 type-A base at build time (cached under `~/.cache/solar-rom-build/rockbox-y1-y2/`). **AVRCP Bluetooth metadata patches** (`apply-avrcp-patches.sh`) run on **Y1 type A/B only** — the Y2 MT6582 base ships a different `MtkBt.odex` / `mtkbt` layout without `libextavrcp_jni.so`.
+
 The ROM zip root also ships **`boot.img`** and **`logo.bin`** from `solar-rom/system/`.
 
 These match what `./scripts/clean_install_system.sh` applies on a rooted device. Shared staging: `scripts/stage-y1-system-prep.sh` → `apply-y1-system-prep.sh` (ROM) or `push-y1-system-prep.sh` (adb). `SolarApplication` loads Conscrypt at boot; system cacerts are still required for stock HTTPS stacks (podcast streaming via MediaPlayer).
@@ -54,8 +56,26 @@ Override release repo for ROM downloads: `SOLAR_GITHUB_REPO=thatwitchgirl/solar`
 
 ## CI
 
-`.github/workflows/build-release.yml` runs on pushes to **`main`** and **`nightly`**: signs the release APK, builds Y1 ROM zips (`rom.zip`, `rom_type_b.zip`), and publishes a GitHub release.
-
-**Y2 ATA** (`build-rom.sh y2` → `rom_y2.zip`) is intentionally **not** built in CI until the Innioasis Y2 device ships. The script and firmware URL remain in the repo for future support.
+`.github/workflows/build-release.yml` runs on pushes to **`main`** and **`nightly`**: signs the release APK, builds Y1 ROM zips (`rom.zip`, `rom_type_b.zip`) and **Y2 ATA** (`rom_y2.zip`, desparsed ext4 + Y1 permissive root), then publishes a GitHub release on both branches.
 
 Required secrets: `SOLAR_PLATFORM_KEY_PK8_B64`, `SOLAR_PLATFORM_KEY_PEM_B64` (base64-encoded AOSP test platform key material).
+
+**Y2 root:** vendored Y1 permissive `su` under `solar-rom/vendor/y1-su/` (~74 KiB). Commit for CI reproducibility. Regenerate:
+
+```bash
+./solar-rom/scripts/extract-y1-su-vendor.sh
+```
+
+After flashing `rom_y2.zip`, verify root: `adb shell su -c id` (expect `uid=0`, no permission dialog).
+
+## Y2 roadmap
+
+| Phase | Status | Work |
+|-------|--------|------|
+| **1 — Y1 permissive system root** | Done | Y1 rockbox `su` baked into loop-mounted `system.img` via `install-y1-su-system.sh` (no Superuser.apk) |
+| **2 — APK input parity** | Done | Y2 Java keeps DPAD compensation as safety net; external-app input handoff enabled on both devices |
+| **3 — Y2 keylayout unification** | Done | `Y2-Rockbox.kl` (wheel/side match Y1; volume on scancodes 114/115) installed in `build-rom.sh y2`; `mtk-kpd.kl` patched for wheel + side keys |
+
+**Intentional Y1/Y2 app divergence:** Y2 quick menu hides Volume and Lock/sleep chips (hardware volume + sleep/lock buttons). Everything else (Rockbox switch, power/reboot/shutdown, dual storage) is shared.
+
+**Non-goals for Y2:** AVRCP native patches (different MT6582 `MtkBt.odex`).

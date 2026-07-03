@@ -68,14 +68,16 @@ public final class RowKeys {
     public static final String LIB_ALBUM_SUB = "library.album_sub";
     public static final String LIB_GUEST_SUB = "library.guest_sub";
     public static final String ABOUT = "settings.about";
+    public static final String DIAG_AUTO_REPORT = "settings.diag_auto_report";
+    /** Debug experiment — Solar Developer support thread + Report a Problem. */
+    public static final String DEBUG_DEV_SUPPORT_EXPERIMENT = "settings.debug.dev_support_experiment";
     public static final String REPORT_PROBLEM = "settings.report_problem";
     public static final String CONTACT_DEVELOPER = "settings.contact_developer";
-    public static final String DIAG_AUTO_REPORT = "settings.diag_auto_report";
-    public static final String REPORT_FROM_DEVICE = "settings.report_from_device";
     public static final String DEBUG = "settings.debug";
     public static final String DEBUG_JJ_THEMES = "settings.debug.jj_themes";
+    public static final String DEBUG_WIRELESS_ADB = "settings.debug.wireless_adb";
     public static final String DEBUG_SHOW_ERROR_TOASTS = "settings.debug.show_error_toasts";
-    public static final String DEBUG_DEV_SUPPORT_EXPERIMENT = "settings.debug.dev_support_experiment";
+    public static final String DEBUG_BLUETOOTH_EXPERIMENT = "settings.debug.bluetooth_experiment";
     public static final String DEBUG_RADIO_EXPERIMENT = "settings.debug.radio_experiment";
     public static final String DEBUG_FLOW_ENABLED = "settings.debug.flow_enabled";
     public static final String DEBUG_FLOW_OK_LIBRARY = "settings.debug.flow_ok_library";
@@ -88,8 +90,17 @@ public final class RowKeys {
     public static final String ARTWORK_PERSPECTIVE = "settings.artwork_perspective";
     public static final String SYSTEM_UPDATE = "settings.system_update";
     public static final String BLUETOOTH_SETUP = "settings.bluetooth_setup";
+    public static final String BLUETOOTH_PAIRING_PIN = "settings.bluetooth_pairing_pin";
     public static final String BRIGHTNESS = "settings.brightness";
     public static final String STORAGE = "settings.storage";
+    /** Y2 — save new media on internal storage (sdcard0) when on; scans always include both volumes. */
+    public static final String Y2_INTERNAL_MEDIA = "settings.y2_internal_media";
+    /** Y2 — submenu to pick MicroSD vs internal as primary save target. */
+    public static final String Y2_PRIMARY_STORAGE = "settings.y2_primary_storage";
+    public static final String Y2_PRIMARY_MICROSD = "settings.y2_primary.microsd";
+    public static final String Y2_PRIMARY_INTERNAL = "settings.y2_primary.internal";
+    /** Debug experiment — format/repair MicroSD (root on Y1, system UI elsewhere). */
+    public static final String DEBUG_MICROSD_FORMAT = "settings.debug.microsd_format";
     public static final String BACKGROUND = "settings.background";
     public static final String NOW_PLAYING = "settings.now_playing";
     public static final String NOW_PLAYING_ALBUM_BLUR = "settings.now_playing.album_blur";
@@ -218,14 +229,17 @@ public final class RowKeys {
         if (LIB_ALBUM_SUB.equals(rowKey)) return R.string.lib_album_owner_sub;
         if (LIB_GUEST_SUB.equals(rowKey)) return R.string.lib_guest_song_sub;
         if (ABOUT.equals(rowKey)) return R.string.settings_about;
+        if (DIAG_AUTO_REPORT.equals(rowKey)) return R.string.settings_diag_auto_report;
+        if (DEBUG_DEV_SUPPORT_EXPERIMENT.equals(rowKey)) {
+            return R.string.settings_debug_dev_support_experiment;
+        }
         if (REPORT_PROBLEM.equals(rowKey)) return R.string.settings_report_problem;
         if (CONTACT_DEVELOPER.equals(rowKey)) return R.string.settings_contact_developer;
-        if (DIAG_AUTO_REPORT.equals(rowKey)) return R.string.settings_diag_auto_report;
-        if (REPORT_FROM_DEVICE.equals(rowKey)) return R.string.settings_report_from_device;
         if (DEBUG.equals(rowKey)) return R.string.settings_sub_debug;
         if (DEBUG_JJ_THEMES.equals(rowKey)) return R.string.settings_debug_jj_themes;
+        if (DEBUG_WIRELESS_ADB.equals(rowKey)) return R.string.settings_debug_wireless_adb;
         if (DEBUG_SHOW_ERROR_TOASTS.equals(rowKey)) return R.string.settings_debug_show_error_toasts;
-        if (DEBUG_DEV_SUPPORT_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_dev_support_experiment;
+        if (DEBUG_BLUETOOTH_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_bluetooth_experiment;
         if (DEBUG_RADIO_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_radio_experiment;
         if (DEBUG_FLOW_ENABLED.equals(rowKey)) return R.string.settings_debug_flow_enabled;
         if (DEBUG_FLOW_OK_LIBRARY.equals(rowKey)) return R.string.settings_debug_flow_ok_library;
@@ -236,8 +250,14 @@ public final class RowKeys {
         if (FLOW_MULTI_TRACK_ALBUMS.equals(rowKey)) return R.string.settings_flow_multi_track_albums;
         if (SYSTEM_UPDATE.equals(rowKey)) return R.string.settings_app_version;
         if (BLUETOOTH_SETUP.equals(rowKey)) return R.string.settings_bluetooth_setup;
+        if (BLUETOOTH_PAIRING_PIN.equals(rowKey)) return R.string.settings_bluetooth_pairing_pin;
         if (BRIGHTNESS.equals(rowKey)) return R.string.settings_display_brightness;
         if (STORAGE.equals(rowKey)) return R.string.settings_storage_info;
+        if (Y2_INTERNAL_MEDIA.equals(rowKey)) return R.string.settings_y2_internal_media;
+        if (Y2_PRIMARY_STORAGE.equals(rowKey)) return R.string.settings_y2_primary_storage;
+        if (Y2_PRIMARY_MICROSD.equals(rowKey)) return R.string.settings_y2_primary_microsd;
+        if (Y2_PRIMARY_INTERNAL.equals(rowKey)) return R.string.settings_y2_primary_internal;
+        if (DEBUG_MICROSD_FORMAT.equals(rowKey)) return R.string.settings_debug_microsd_format;
         if (BACKGROUND.equals(rowKey)) return R.string.settings_background;
         if (NOW_PLAYING.equals(rowKey)) return R.string.settings_now_playing;
         if (NOW_PLAYING_ALBUM_BLUR.equals(rowKey)) return R.string.settings_player_album_blur;

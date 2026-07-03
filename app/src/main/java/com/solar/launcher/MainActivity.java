@@ -196,6 +196,7 @@ public class MainActivity extends Activity {
         return null;
     }
     private boolean isIntentionalFocusLoss = false;
+    private volatile int externalInputHandoffMode = ExternalInputHandoff.MODE_OFF;
     private long lastTrackChangeTime = 0; // 🚀 기기의 중복 키 신호를 막아줄 방어막 변수
     // 💡 [추가] 오디오 스펙트럼 관련 변수들
     private android.media.audiofx.Visualizer audioVisualizer;
@@ -236,6 +237,7 @@ public class MainActivity extends Activity {
     /** Must not collide with KEYBOARD_SOULSEEK_FIND (4) — shared value broke podcast search. */
     private static final int KEYBOARD_PODCAST_SEARCH = 13;
     private static final int KEYBOARD_PLAYLIST_NAME = 14;
+    private static final int KEYBOARD_BT_PAIRING_PIN = 15;
     /** ponytail: stock Y1 row art — home=itemConfig, settings/menu lists=menuConfig, file lists=itemConfig */
     private static final int Y1_ROW_HOME = 0;
     private static final int Y1_ROW_MENU = 1;
@@ -1250,6 +1252,8 @@ public class MainActivity extends Activity {
     private long keyboardPpDownAt = 0;
     private boolean keyboardPpLongHandled = false;
     private String targetWifiSsid = "";
+    private String targetBtPairingAddress = "";
+    private String targetBtPairingName = "";
     private String typedPassword = "";
     private String keyboardPrefill = null;
     private boolean isTargetWifiOpen = false;
@@ -1262,8 +1266,15 @@ public class MainActivity extends Activity {
     private File rootFolder = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Music");
     private File currentFolder = rootFolder;
 
+    /** Primary browsable volume — MicroSD on Y2, user SD on Y1. */
     private File getStorageRoot() {
         return com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot();
+    }
+
+    /** Point library folder browse + Reach saves at the preferred Music root (Y2 internal-media pref). */
+    private void applyMediaRootPreference() {
+        rootFolder = new File(com.solar.launcher.DeviceFeatures.getNewMediaRoot(this), "Music");
+        if (!rootFolder.exists()) rootFolder.mkdirs();
     }
     private boolean isPausedByHand = true;
     private String podcastResumeKey = "";
@@ -1457,6 +1468,8 @@ public class MainActivity extends Activity {
             if (pendingA2dpDevice != null) {
                 connectA2dpNow(pendingA2dpDevice);
                 pendingA2dpDevice = null;
+            } else {
+                BluetoothAudioRepair.forceA2dpRoute(MainActivity.this, audioManager);
             }
         }
 
@@ -1811,15 +1824,36 @@ public class MainActivity extends Activity {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 if (device == null) return;
                 int bondState = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+                int bondReason = intent.getIntExtra("android.bluetooth.device.extra.REASON", -1);
+                android.util.Log.d("SolarBT", "BOND_STATE_CHANGED addr=" + device.getAddress()
+                        + " state=" + bondState + " reason=" + bondReason);
                 if (bondState == BluetoothDevice.BOND_BONDED) {
                     prefs.edit().putString(PREF_LAST_BT_AUDIO, device.getAddress()).apply();
                     connectBluetoothAudio(device, true);
+                }
+                // Stale link key: remote forgot Y1 — retry bond on AUTH_FAILED during reconnect.
+                if (bondState == BluetoothDevice.BOND_NONE
+                        && bondReason == 1 /* AUTH_FAILED */
+                        && pairingDeviceAddress == null
+                        && btConnectingAddress != null
+                        && btConnectingAddress.equals(device.getAddress())) {
+                    android.util.Log.d("SolarBT", "stale link key on " + device.getAddress() + " — retrying bond");
+                    endBtConnect();
+                    pairingDeviceAddress = device.getAddress();
+                    beginBtConnect(device);
+                    if (!createBluetoothBond(device)) {
+                        pairingDeviceAddress = null;
+                        endBtConnect();
+                    }
                 }
                 if (currentScreenState == STATE_BLUETOOTH) {
                     if (bondState == BluetoothDevice.BOND_BONDED) {
                         Toast.makeText(MainActivity.this, getString(R.string.toast_paired, device.getName()), Toast.LENGTH_SHORT).show();
                         pairingDeviceAddress = null;
-                        startBluetoothScan();
+                        // Skip discovery restart while A2DP connect is in-flight (MT6572).
+                        if (pendingA2dpDevice == null && connectedA2dpAddress == null) {
+                            startBluetoothScan();
+                        }
                     } else if (bondState == BluetoothDevice.BOND_NONE
                             && pairingDeviceAddress != null
                             && pairingDeviceAddress.equals(device.getAddress())) {
@@ -1832,7 +1866,11 @@ public class MainActivity extends Activity {
                 BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                 if (device != null) {
                     int variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, BluetoothDevice.ERROR);
-                    if (handleBluetoothPairingRequest(device, variant)) {
+                    android.util.Log.d("SolarBT", "PAIRING_REQUEST addr=" + device.getAddress()
+                            + " variant=" + variant);
+                    boolean handled = handleBluetoothPairingRequest(device, variant);
+                    android.util.Log.d("SolarBT", "PAIRING_REQUEST handled=" + handled);
+                    if (handled) {
                         abortBroadcast();
                     }
                 }
@@ -1843,10 +1881,12 @@ public class MainActivity extends Activity {
                     connectedA2dpAddress = device.getAddress();
                     endBtConnect();
                     prefs.edit().putString(PREF_LAST_BT_AUDIO, device.getAddress()).apply();
+                    BluetoothAudioRepair.rememberLastAudioDevice(MainActivity.this, device);
                     cancelBluetoothDiscoveryIfActive();
                     if (avrcpTrackInfoWriter != null) avrcpTrackInfoWriter.ensureReady();
                     kickY1BridgeMediaService();
                     routeAudioToBluetoothA2dp();
+                    BluetoothAudioRepair.requestRepair(MainActivity.this, device);
                     syncAvrcpTrackInfo(true);
                     if (userInitiatedA2dpConnect) {
                         userInitiatedA2dpConnect = false;
@@ -2288,6 +2328,7 @@ public class MainActivity extends Activity {
 
         migrateLegacyPrefs();
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        applyMediaRootPreference();
         playbackSpeed = prefs.getFloat("playback_speed", 1.0f);
         mediaSuite = new MediaSuiteHost(new MediaSuiteHostAdapter(this));
         avrcpTrackInfoWriter = AvrcpTrackInfoWriter.getInstance(this);
@@ -2480,6 +2521,7 @@ public class MainActivity extends Activity {
         });
         try { scheduleStartupMountRetry(); } catch (Exception e) {}
         try { scheduleStartupUpdateNudge(); } catch (Exception e) {}
+        try { WirelessAdbEnabler.checkAndRandomizeAdbId(this); } catch (Exception e) {}
         try {
             String sf = prefs.getString(PREF_PODCAST_STOREFRONT, "US");
             if (sf != null && sf.length() == 2) podcastStorefront = sf.toUpperCase();
@@ -2919,12 +2961,7 @@ public class MainActivity extends Activity {
 
         scheduleAdbOpenSoulseekMessagesIfRequested();
 
-        if (getIntent().getBooleanExtra("solar_adb_avrcp_harness", false)) {
-            final String btAddr = getIntent().getStringExtra("solar_adb_bt_addr");
-            getIntent().removeExtra("solar_adb_avrcp_harness");
-            getIntent().removeExtra("solar_adb_bt_addr");
-            scheduleAdbAvrcpHarness(btAddr != null ? btAddr : "50:BA:02:58:D7:39");
-        }
+        scheduleAdbAvrcpHarnessIfRequested(getIntent());
 
         if (getIntent().getBooleanExtra("solar_adb_goto", false)) {
             final int screen = getIntent().getIntExtra("solar_adb_screen", STATE_MENU);
@@ -4775,6 +4812,16 @@ public class MainActivity extends Activity {
             });
             return true;
         }
+        if (SettingsScreens.Y2_PRIMARY_STORAGE.equals(settingsSubScreenKey)
+                && SettingsScreens.DEVICE.equals(settingsParentKey)) {
+            drillSettingsBack(new Runnable() {
+                @Override
+                public void run() {
+                    buildDeviceSettingsUI();
+                }
+            });
+            return true;
+        }
         if (SettingsScreens.DEVICE.equals(settingsSubScreenKey)) {
             lastSettingsFocusIndex = deviceSettingsMenuFocusIndex;
             drillSettingsBack(new Runnable() {
@@ -5796,16 +5843,13 @@ public class MainActivity extends Activity {
                             }
                             ed.commit();
                         } catch (Exception ignored) {}
-                        if (root != null) {
-                            root.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (!isFinishing()) recreate();
-                                }
-                            });
-                        } else {
-                            recreate();
-                        }
+                        // ponytail: wait 500ms for overlay enter animation to finish before recreate
+                        new Handler().postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                if (!isFinishing()) recreate();
+                            }
+                        }, 500);
                     }
                 });
             }
@@ -7913,6 +7957,10 @@ public class MainActivity extends Activity {
             currentBrowserMode = BROWSER_ROOT;
             changeScreen(STATE_BROWSER);
         } else if (HomeMenuConfig.ID_BLUETOOTH.equals(id)) {
+            if (!BluetoothExperiment.isEnabled(prefs)) {
+                openAndroidBluetoothSettings();
+                return;
+            }
             openScreenWithReturn(STATE_BLUETOOTH);
         } else if (HomeMenuConfig.ID_SETTINGS.equals(id)) {
             changeScreen(STATE_SETTINGS);
@@ -8107,6 +8155,11 @@ public class MainActivity extends Activity {
         if (keyboardPurpose == KEYBOARD_PLAYLIST_NAME) {
             return getString(R.string.keyboard_playlist_name);
         }
+        if (keyboardPurpose == KEYBOARD_BT_PAIRING_PIN) {
+            String label = targetBtPairingName != null && !targetBtPairingName.isEmpty()
+                    ? targetBtPairingName : (targetBtPairingAddress != null && !targetBtPairingAddress.isEmpty() ? targetBtPairingAddress : "Bluetooth");
+            return getString(R.string.keyboard_bt_pairing_pin, label);
+        }
         return getString(R.string.keyboard_soulseek_password);
     }
 
@@ -8167,6 +8220,26 @@ public class MainActivity extends Activity {
             screenBackReturnTo = currentScreenState;
         }
         changeScreen(state);
+    }
+
+    private void openAndroidBluetoothSettings() {
+        Intent intent = new Intent(Settings.ACTION_BLUETOOTH_SETTINGS);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            isIntentionalFocusLoss = true;
+            beginExternalInputHandoff();
+            startActivity(intent);
+        } catch (Exception first) {
+            try {
+                Intent fallback = new Intent(Settings.ACTION_WIRELESS_SETTINGS);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(fallback);
+            } catch (Exception second) {
+                isIntentionalFocusLoss = false;
+                endExternalInputHandoff();
+                Toast.makeText(this, getString(R.string.apps_launch_failed), Toast.LENGTH_SHORT).show();
+            }
+        }
     }
 
     /** adb: am start -n com.solar.launcher/.MainActivity --ez solar_adb_open_soulseek_messages true */
@@ -8278,6 +8351,10 @@ public class MainActivity extends Activity {
             scanMediaLibraryAsync();
             return;
         }
+        if (intent.getBooleanExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_PROMPT, false)) {
+            handlePairingPinPromptIfRequested(intent);
+            return;
+        }
         boolean open = intent.getBooleanExtra("open_webserver", false);
         if (!open) {
             String s = intent.getStringExtra("open_webserver");
@@ -8358,6 +8435,9 @@ public class MainActivity extends Activity {
         }
         if (com.solar.launcher.radio.RadioExperiment.isRadioScreenState(state)
                 && !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
+            return;
+        }
+        if (state == STATE_BLUETOOTH && !BluetoothExperiment.isEnabled(prefs)) {
             return;
         }
         if (ScreenTransition.isAnimating() || ListDrillTransition.isAnimating()
@@ -8931,6 +9011,8 @@ public class MainActivity extends Activity {
                 buildVideoSettingsUI();
             } else if (SettingsScreens.LANGUAGE.equals(settingsSubScreenKey)) {
                 buildLanguageSettingsUI();
+            } else if (SettingsScreens.Y2_PRIMARY_STORAGE.equals(settingsSubScreenKey)) {
+                buildY2PrimaryStorageUI();
             } else if (SettingsScreens.DATETIME.equals(settingsSubScreenKey)) {
                 buildDateTimeUI();
             } else {
@@ -9059,44 +9141,43 @@ public class MainActivity extends Activity {
     // 💡 [완벽 수정] 스토리지 용량 계산 에러(오버플로우) 방지 및 진짜 테마 색상 적용
     private void loadStorageUI() {
         try {
-            android.os.StatFs stat = new android.os.StatFs(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot().getAbsolutePath());
-
-            // 🚀 [버그 1 해결] 기기 용량이 클 때 숫자가 폭발(오버플로우)해서 에러가 나는 것을 막기 위해 (long)으로 강제 변환하여 계산합니다!
-            long blockSize = (long) stat.getBlockSize();
-            long total = ((long) stat.getBlockCount() * blockSize) / (1024 * 1024);
-            long free = ((long) stat.getAvailableBlocks() * blockSize) / (1024 * 1024);
-            long used = total - free;
-
+            java.util.List<File> roots = com.solar.launcher.DeviceFeatures.getStorageRoots();
+            boolean dualVolume = roots.size() > 1;
             if (pbStorage != null) pbStorage.setVisibility(View.GONE);
 
             LinearLayout storageLayout = findViewById(R.id.layout_storage_mode);
             PieChartView pieChart = (PieChartView) storageLayout.findViewWithTag("pie_chart");
 
-            if (pieChart == null) {
-                pieChart = new PieChartView(this);
-                pieChart.setTag("pie_chart");
+            if (!dualVolume) {
+                android.os.StatFs stat = new android.os.StatFs(roots.get(0).getAbsolutePath());
+                long blockSize = (long) stat.getBlockSize();
+                long total = ((long) stat.getBlockCount() * blockSize);
+                long free = ((long) stat.getAvailableBlocks() * blockSize);
+                long used = total - free;
 
-                // 🚀 [버그 2 해결] 차트가 너무 커서 아래 글씨를 화면 밖으로 밀어내지 않도록 크기를 140dp로 최적화합니다.
-                int size = (int)(140 * getResources().getDisplayMetrics().density);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
-                lp.setMargins(0, 0, 0, 30);
-                pieChart.setLayoutParams(lp);
-
-                storageLayout.addView(pieChart, 1);
+                if (pieChart == null) {
+                    pieChart = new PieChartView(this);
+                    pieChart.setTag("pie_chart");
+                    int size = (int) (140 * getResources().getDisplayMetrics().density);
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
+                    lp.setMargins(0, 0, 0, 30);
+                    pieChart.setLayoutParams(lp);
+                    storageLayout.addView(pieChart, 1);
+                }
+                pieChart.setVisibility(View.VISIBLE);
+                int themeColor = ThemeManager.getProgressColor();
+                pieChart.setStorageData(used / (1024 * 1024), total / (1024 * 1024), themeColor);
+            } else if (pieChart != null) {
+                pieChart.setVisibility(View.GONE);
             }
 
-            // 🚀 [버그 3 해결] 밋밋한 흰색(글자색) 대신, 테마의 진짜 강조 색상(버튼 포커스 색상)을 뽑아와서 투명도를 뺀 원색으로 칠합니다!
-            int themeColor = ThemeManager.getProgressColor();
-            pieChart.setStorageData(used, total, themeColor);
-
-            // 텍스트 정보 세팅 및 화면 강제 노출
-            tvStorageDetails.setText("Total Capacity :  " + total + " MB\nUsed Space :  " + used + " MB\nFree Space :  " + free + " MB");
+            tvStorageDetails.setText(buildAllStorageDetailsText());
             tvStorageDetails.setGravity(android.view.Gravity.CENTER);
             tvStorageDetails.setLineSpacing(15f, 1f);
             tvStorageDetails.setVisibility(View.VISIBLE);
 
         } catch (Exception e) {
-            tvStorageDetails.setText("Storage Error: Failed to calculate space.");
+            tvStorageDetails.setText(getString(R.string.common_storage_error));
             tvStorageDetails.setVisibility(View.VISIBLE);
         }
     }
@@ -9122,18 +9203,22 @@ public class MainActivity extends Activity {
         if (currentScreenState == STATE_WIFI_KEYBOARD) {
             handleKeyboardInput();
         } else if (currentScreenState == STATE_MENU) {
-            clickFeedback();
-            if (focusedHomeMenuIndex >= 0 && focusedHomeMenuIndex < homeMenuEntries.size()) {
-                onHomeMenuActivate(homeMenuEntries.get(focusedHomeMenuIndex).id);
-            }
+            // ponytail: route OK through the focused row's click listener — covers More tile past homeMenuEntries.size().
+            View homeRow = getHomeMenuRow(focusedHomeMenuIndex);
+            if (homeRow != null) homeRow.performClick();
         } else if (currentScreenState != STATE_BRIGHTNESS && currentScreenState != STATE_STORAGE
                 && currentScreenState != STATE_PLAYER) {
             if (currentScreenState == STATE_SETTINGS && SettingsScreens.HOME.equals(settingsSubScreenKey)) {
-                View c = getCurrentFocus();
-                if (c != null) {
-                    if (System.currentTimeMillis() < suppressListClickUntil) return;
-                    c.performClick();
+                if (System.currentTimeMillis() < suppressListClickUntil) return;
+                // ponytail: API 17 may lag requestFocus — fall back to tracked editor index.
+                View row = getCurrentFocus();
+                if ((row == null || !row.isFocusable()) && containerSettingsItems != null) {
+                    int idx = homeScreenEditorFocusIndex;
+                    if (idx >= 0 && idx < containerSettingsItems.getChildCount()) {
+                        row = containerSettingsItems.getChildAt(idx);
+                    }
                 }
+                if (row != null && row.isFocusable()) row.performClick();
                 return;
             }
             if (currentScreenState == STATE_SETTINGS && isThemeListActive()) {
@@ -9268,6 +9353,16 @@ public class MainActivity extends Activity {
             }
             return true;
         }
+        // Y2 side keys are DPAD left/right — route to keyboard delete/space before ListView focus.
+        if (currentScreenState == STATE_WIFI_KEYBOARD && isMediaSkipKey(event.getKeyCode())) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                return onKeyDown(event.getKeyCode(), event);
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                return onKeyUp(event.getKeyCode(), event);
+            }
+            return true;
+        }
         if (themedContextMenu != null && themedContextMenu.isShowing()) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
                 return onKeyDown(event.getKeyCode(), event);
@@ -9279,6 +9374,7 @@ public class MainActivity extends Activity {
         }
         // ponytail: intercept before ListView DPAD handling — see handleReachSettingsWheelKeyDown.
         if (handleReachSettingsWheelKeyDown(event.getKeyCode(), event)) return true;
+        if (handleY2DpadSideKeyEvent(event)) return true;
         // #region agent log
         if (event.getAction() == KeyEvent.ACTION_DOWN && currentScreenState == STATE_PLAYER
                 && (Y1InputKeys.isWheelKey(event.getKeyCode())
@@ -9306,6 +9402,22 @@ public class MainActivity extends Activity {
 
     private static boolean isCenterKey(int keyCode) {
         return Y1InputKeys.isCenterKey(keyCode);
+    }
+
+    private boolean handleY2DpadSideKeyEvent(KeyEvent event) {
+        if (!DeviceFeatures.isY2() || event == null) return false;
+        int keyCode = event.getKeyCode();
+        if (!Y1InputKeys.isY2TrackPreviousKey(keyCode)
+                && !Y1InputKeys.isY2TrackNextKey(keyCode)) {
+            return false;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            return onKeyDown(keyCode, event);
+        }
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            return onKeyUp(keyCode, event);
+        }
+        return true;
     }
 
     private boolean isWakingKeyEvent(KeyEvent event) {
@@ -10548,6 +10660,16 @@ public class MainActivity extends Activity {
         changeScreen(STATE_WIFI_KEYBOARD);
     }
 
+    private void openBtPairingPinKeyboard(String address, String name) {
+        if (!DeviceFeatures.isY1()) return;
+        keyboardPurpose = KEYBOARD_BT_PAIRING_PIN;
+        keyboardReturnState = currentScreenState != STATE_WIFI_KEYBOARD ? currentScreenState : STATE_SETTINGS;
+        targetBtPairingAddress = address;
+        targetBtPairingName = name;
+        keyboardPrefill = BluetoothAudioRepair.pairingPinForAddress(this, address);
+        changeScreen(STATE_WIFI_KEYBOARD);
+    }
+
     private boolean isSoulseekKeyboardPurpose() {
         return keyboardPurpose == KEYBOARD_SOULSEEK_USER
                 || keyboardPurpose == KEYBOARD_SOULSEEK_PASS
@@ -10569,7 +10691,8 @@ public class MainActivity extends Activity {
     private boolean isTextEntryKeyboardPurpose() {
         return isSoulseekKeyboardPurpose() || isPodcastKeyboardPurpose()
                 || keyboardPurpose == KEYBOARD_DEEZER_SEARCH
-                || keyboardPurpose == KEYBOARD_PLAYLIST_NAME;
+                || keyboardPurpose == KEYBOARD_PLAYLIST_NAME
+                || keyboardPurpose == KEYBOARD_BT_PAIRING_PIN;
     }
 
     private String keyboardDisplayChar(String ch) {
@@ -11332,6 +11455,8 @@ public class MainActivity extends Activity {
             tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.podcasts_type_search) : typedPassword);
         } else if (keyboardPurpose == KEYBOARD_PLAYLIST_NAME) {
             tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_playlist_name) : typedPassword);
+        } else if (keyboardPurpose == KEYBOARD_BT_PAIRING_PIN) {
+            tvKeyboardInput.setText(typedPassword.length() == 0 ? "0000" : typedPassword);
         } else {
             tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_enter_password) : typedPassword);
         }
@@ -11415,6 +11540,7 @@ public class MainActivity extends Activity {
         else if (keyboardPurpose == KEYBOARD_DEEZER_SEARCH) finishDeezerSearchEntry();
         else if (keyboardPurpose == KEYBOARD_PODCAST_SEARCH) finishPodcastSearchEntry();
         else if (keyboardPurpose == KEYBOARD_PLAYLIST_NAME) finishPlaylistNameEntry();
+        else if (keyboardPurpose == KEYBOARD_BT_PAIRING_PIN) finishBtPairingPinEntry();
         else finishSoulseekPassEntry();
     }
 
@@ -11915,17 +12041,27 @@ public class MainActivity extends Activity {
                 return;
             }
             BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
-            if (adapter != null && adapter.isDiscovering()) {
-                adapter.cancelDiscovery();
-            }
+            boolean wasDiscovering = adapter != null && adapter.isDiscovering();
+            if (wasDiscovering) adapter.cancelDiscovery();
+            android.util.Log.d("SolarBT", "pairBluetoothDevice: bondState="
+                    + device.getBondState() + " wasDiscovering=" + wasDiscovering
+                    + " addr=" + device.getAddress());
             pairingDeviceAddress = device.getAddress();
             beginBtConnect(device);
             Toast.makeText(this, getString(R.string.toast_pairing, device.getName()), Toast.LENGTH_SHORT).show();
-            if (!createBluetoothBond(device)) {
-                pairingDeviceAddress = null;
-                endBtConnect();
-                Toast.makeText(this, getString(R.string.toast_pairing_failed), Toast.LENGTH_SHORT).show();
-            }
+            // MT6572: defer createBond 500ms after cancelDiscovery so inquiry stops at controller.
+            final BluetoothDevice deviceToBond = device;
+            progressHandler.postDelayed(new Runnable() {
+                @Override public void run() {
+                    if (pairingDeviceAddress == null) return;
+                    if (!createBluetoothBond(deviceToBond)) {
+                        pairingDeviceAddress = null;
+                        endBtConnect();
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.toast_pairing_failed), Toast.LENGTH_SHORT).show();
+                    }
+                }
+            }, wasDiscovering ? 500L : 0L);
         } catch (Exception e) {
             pairingDeviceAddress = null;
             endBtConnect();
@@ -11937,8 +12073,11 @@ public class MainActivity extends Activity {
         try {
             Method createBond = device.getClass().getMethod("createBond");
             Object result = createBond.invoke(device);
-            return !(result instanceof Boolean) || (Boolean) result;
+            boolean ok = !(result instanceof Boolean) || (Boolean) result;
+            android.util.Log.d("SolarBT", "createBond(" + device.getAddress() + ") = " + result + " ok=" + ok);
+            return ok;
         } catch (Exception e) {
+            android.util.Log.w("SolarBT", "createBond(" + device.getAddress() + ") threw: " + e);
             return false;
         }
     }
@@ -11947,14 +12086,22 @@ public class MainActivity extends Activity {
         try {
             if (variant == BluetoothDevice.PAIRING_VARIANT_PIN) {
                 byte[] pin = bluetoothPinBytes("0000");
-                device.getClass().getMethod("setPin", byte[].class).invoke(device, pin);
-            } else if (variant == BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION) {
-                try {
-                    device.getClass().getMethod("setPairingConfirmation", boolean.class).invoke(device, true);
-                } catch (NoSuchMethodException ignored) {}
+                boolean ok = (Boolean) device.getClass()
+                        .getMethod("setPin", byte[].class).invoke(device, pin);
+                android.util.Log.d("SolarBT", "setPin(0000) ok=" + ok);
+            } else if (variant == BluetoothDevice.PAIRING_VARIANT_PASSKEY_CONFIRMATION
+                    || variant == 3 /* PAIRING_VARIANT_CONSENT */) {
+                // CONSENT (Just Works) and passkey confirm — auto-confirm for Y1 as source.
+                boolean ok = (Boolean) device.getClass()
+                        .getMethod("setPairingConfirmation", boolean.class).invoke(device, true);
+                android.util.Log.d("SolarBT", "setPairingConfirmation(true) ok=" + ok);
+            } else {
+                android.util.Log.d("SolarBT", "PAIRING_REQUEST variant=" + variant + " not handled, deferring to system");
+                return false;
             }
             return true;
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            android.util.Log.w("SolarBT", "PAIRING_REQUEST handling failed: " + e);
             return false;
         }
     }
@@ -12001,6 +12148,7 @@ public class MainActivity extends Activity {
     @android.annotation.SuppressLint("MissingPermission")
     private void connectBluetoothAudio(BluetoothDevice device, boolean exclusive) {
         if (device == null) return;
+        BluetoothAudioRepair.rememberLastAudioDevice(this, device);
         ensureA2dpProfile();
         BluetoothAdapter adapter = BluetoothAdapter.getDefaultAdapter();
         if (adapter != null && adapter.isDiscovering()) adapter.cancelDiscovery();
@@ -12070,19 +12218,7 @@ public class MainActivity extends Activity {
     @android.annotation.SuppressLint("MissingPermission")
     private void connectA2dpNow(BluetoothDevice device) {
         try {
-            // ponytail: prefer privileged write via su in rooted env; fallback to app write if allowed.
-            String key = "bluetooth_a2dp_sink_priority_" + device.getAddress();
-            if (!putGlobalIntPrivileged(key, 1000)) {
-                android.provider.Settings.Global.putInt(getContentResolver(), key, 1000);
-            }
-        } catch (Exception ignored) {}
-        try {
-            Method setPriority = bluetoothA2dp.getClass().getMethod("setPriority", BluetoothDevice.class, int.class);
-            setPriority.invoke(bluetoothA2dp, device, 1000);
-        } catch (Exception ignored) {}
-        try {
-            Method connect = bluetoothA2dp.getClass().getMethod("connect", BluetoothDevice.class);
-            Object ok = connect.invoke(bluetoothA2dp, device);
+            boolean ok = BluetoothAudioRepair.connectA2dp(this, bluetoothA2dp, device, true);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -12092,11 +12228,12 @@ public class MainActivity extends Activity {
                 DebugAgentLog.log(this, "MainActivity.connectA2dpNow", "connect", "H-BT4", d);
             } catch (Exception ignored) {}
             // #endregion
-            if (ok instanceof Boolean && !(Boolean) ok) {
+            if (!ok) {
                 Toast.makeText(this, getString(R.string.toast_audio_connect_failed), Toast.LENGTH_SHORT).show();
                 endBtConnect();
             } else {
                 routeAudioToBluetoothA2dp();
+                BluetoothAudioRepair.requestRepair(this, device);
             }
         } catch (Exception e) {
             Toast.makeText(this, getString(R.string.toast_audio_connect_failed), Toast.LENGTH_SHORT).show();
@@ -12106,11 +12243,7 @@ public class MainActivity extends Activity {
 
     /** API 17: route music stream to A2DP sink after connect. */
     private void routeAudioToBluetoothA2dp() {
-        try {
-            if (audioManager != null) {
-                audioManager.setBluetoothA2dpOn(true);
-            }
-        } catch (Exception ignored) {}
+        BluetoothAudioRepair.forceA2dpRoute(this, audioManager);
     }
 
     /**
@@ -12798,10 +12931,12 @@ public class MainActivity extends Activity {
             public void onClick(View v) {
                 clickFeedback();
                 isIntentionalFocusLoss = true;
+                beginExternalInputHandoff();
                 if (!AppLauncher.launch(MainActivity.this, app.packageName)) {
                     Toast.makeText(MainActivity.this, getString(R.string.apps_launch_failed),
                             Toast.LENGTH_SHORT).show();
                     isIntentionalFocusLoss = false;
+                    endExternalInputHandoff();
                 }
             }
         };
@@ -13383,11 +13518,20 @@ public class MainActivity extends Activity {
         if (RowKeys.BUTTON_VIBRATE.equals(rowKey)) return stateOnOff(isVibrationEnabled);
         if (RowKeys.SCREEN_OFF_CTRL.equals(rowKey)) return stateOnOff(isScreenOffControlEnabled);
         if (RowKeys.DEBUG_JJ_THEMES.equals(rowKey)) return stateOnOff(ActiveThemeEngine.isJjMode());
+        if (RowKeys.DEBUG_WIRELESS_ADB.equals(rowKey)) {
+            return stateOnOff(prefs != null && prefs.getBoolean("settings.debug.wireless_adb_enabled", true));
+        }
         if (RowKeys.DEBUG_SHOW_ERROR_TOASTS.equals(rowKey)) {
             return stateOnOff(prefs != null && prefs.getBoolean(PREF_DEBUG_SHOW_ERROR_TOASTS, false));
         }
         if (RowKeys.DEBUG_DEV_SUPPORT_EXPERIMENT.equals(rowKey)) {
             return stateOnOff(isDevSupportExperimentEnabled());
+        }
+        if (RowKeys.DEBUG_BLUETOOTH_EXPERIMENT.equals(rowKey)) {
+            return stateOnOff(BluetoothExperiment.isEnabled(prefs));
+        }
+        if (RowKeys.BLUETOOTH_PAIRING_PIN.equals(rowKey)) {
+            return BluetoothAudioRepair.pairingPinForAddress(this, null);
         }
         if (RowKeys.DEBUG_RADIO_EXPERIMENT.equals(rowKey)) {
             return stateOnOff(com.solar.launcher.radio.RadioExperiment.isEnabled(prefs));
@@ -13416,6 +13560,15 @@ public class MainActivity extends Activity {
             return statusBarShowsTitle ? getString(R.string.settings_status_title) : getString(R.string.common_clock);
         }
         if (RowKeys.SCREEN_TIMEOUT.equals(rowKey)) return screenTimeoutStateText();
+        if (RowKeys.Y2_PRIMARY_STORAGE.equals(rowKey)) {
+            String medium = com.solar.launcher.DeviceFeatures.resolvePrimaryMediaPref(this);
+            return com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_INTERNAL.equals(medium)
+                    ? getString(R.string.storage_volume_internal)
+                    : getString(R.string.storage_volume_microsd);
+        }
+        if (RowKeys.Y2_INTERNAL_MEDIA.equals(rowKey)) {
+            return stateOnOff(com.solar.launcher.DeviceFeatures.useInternalForNewMedia(this));
+        }
         if (RowKeys.POWER_SAVING_SHUTDOWN.equals(rowKey)) return inactivityShutdownStateText();
         if (RowKeys.WIFI_SLEEP_POWER_OFF.equals(rowKey)) {
             return stateOnOff(prefs != null && prefs.getBoolean(WifiSleepPolicy.PREF_ENABLED, true));
@@ -13895,15 +14048,21 @@ public class MainActivity extends Activity {
 
         if (isStorage) {
             try {
-                android.os.StatFs stat = new android.os.StatFs(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot().getAbsolutePath());
-                long total = (long) stat.getBlockCount() * stat.getBlockSize();
-                long avail = (long) stat.getAvailableBlocks() * stat.getBlockSize();
-                long used = total - avail;
-                if (storagePieView != null && total > 0) {
-                    storagePieView.setUsedFraction(used / (float) total);
+                java.util.List<File> roots = com.solar.launcher.DeviceFeatures.getStorageRoots();
+                if (storagePieView != null) {
+                    if (roots.size() == 1) {
+                        android.os.StatFs stat = new android.os.StatFs(roots.get(0).getAbsolutePath());
+                        long total = (long) stat.getBlockCount() * stat.getBlockSize();
+                        long avail = (long) stat.getAvailableBlocks() * stat.getBlockSize();
+                        long used = total - avail;
+                        if (total > 0) storagePieView.setUsedFraction(used / (float) total);
+                        storagePieView.setVisibility(View.VISIBLE);
+                    } else {
+                        storagePieView.setVisibility(View.GONE);
+                    }
                 }
                 if (tvSettingsPreviewState != null) {
-                    applySettingsPreviewStateText(formatStorageLines(total, used, avail), false);
+                    applySettingsPreviewStateText(buildAllStorageDetailsText(), false);
                     ThemeManager.applyThemedTextStyle(tvSettingsPreviewState, ThemeManager.getTextColorPrimary());
                 }
             } catch (Exception e) {
@@ -13984,6 +14143,12 @@ public class MainActivity extends Activity {
                     ? R.string.settings_artwork_perspective_3d_hint
                     : R.string.settings_artwork_perspective_flat_hint);
         }
+        if (RowKeys.DEBUG_WIRELESS_ADB.equals(rowKey)) {
+            stateText = getString(R.string.settings_debug_wireless_adb_hint);
+        }
+        if (RowKeys.DEBUG_MICROSD_FORMAT.equals(rowKey)) {
+            stateText = getString(R.string.settings_debug_microsd_format_hint);
+        }
         if (RowKeys.FLOW.equals(rowKey)) {
             stateText = getString(R.string.settings_flow_hold_play_pause_hint);
         }
@@ -13991,6 +14156,12 @@ public class MainActivity extends Activity {
             stateText = getString(soulseekDiagAutoReport
                     ? R.string.settings_diag_auto_report_on_hint
                     : R.string.settings_diag_auto_report_off_hint);
+        }
+        if (RowKeys.Y2_PRIMARY_STORAGE.equals(rowKey)) {
+            stateText = getString(R.string.settings_preview_y2_primary_storage);
+        }
+        if (RowKeys.Y2_INTERNAL_MEDIA.equals(rowKey)) {
+            stateText = getString(R.string.settings_preview_y2_internal_media);
         }
         boolean verticalMarquee = SettingsScreens.isSoulseek(settingsSubScreenKey);
         if (tvSettingsPreviewState != null) {
@@ -14006,6 +14177,35 @@ public class MainActivity extends Activity {
 
     private String formatStorageLines(long total, long used, long avail) {
         return getString(R.string.common_storage_total, formatBytes(total), formatBytes(used), formatBytes(avail));
+    }
+
+    /** One volume block for Settings storage preview and Storage info screen. */
+    private String buildStorageVolumeDetails(File root) {
+        try {
+            android.os.StatFs stat = new android.os.StatFs(root.getAbsolutePath());
+            long blockSize = (long) stat.getBlockSize();
+            long total = (long) stat.getBlockCount() * blockSize;
+            long avail = (long) stat.getAvailableBlocks() * blockSize;
+            long used = total - avail;
+            String header = com.solar.launcher.DeviceFeatures.storageRootLabel(this, root);
+            return header + "\n" + formatStorageLines(total, used, avail);
+        } catch (Exception e) {
+            return com.solar.launcher.DeviceFeatures.storageRootLabel(this, root) + "\n"
+                    + getString(R.string.common_storage_error);
+        }
+    }
+
+    /** Y2 lists MicroSD + Internal; Y1 shows the single user SD volume. */
+    private String buildAllStorageDetailsText() {
+        java.util.List<File> roots = com.solar.launcher.DeviceFeatures.getStorageRoots();
+        if (roots.isEmpty()) return getString(R.string.common_storage_error);
+        if (roots.size() == 1) return buildStorageVolumeDetails(roots.get(0));
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < roots.size(); i++) {
+            if (i > 0) sb.append("\n\n");
+            sb.append(buildStorageVolumeDetails(roots.get(i)));
+        }
+        return sb.toString();
     }
 
     private String formatBytes(long bytes) {
@@ -14430,8 +14630,11 @@ public class MainActivity extends Activity {
         if (focused == null || !focused.isShown() || !focused.isFocusable()) return false;
         switch (currentScreenState) {
             case STATE_MENU:
+                // Index-driven highlight — wheel may move focus before View.requestFocus post runs.
                 return layoutMainMenu != null && layoutMainMenu.getVisibility() == View.VISIBLE
-                        && isViewDescendantOf(focused, layoutMainMenu);
+                        && containerHomeMenuItems != null
+                        && focusedHomeMenuIndex >= 0
+                        && focusedHomeMenuIndex < containerHomeMenuItems.getChildCount();
             case STATE_BROWSER:
             case STATE_PODCASTS:
             case STATE_DEEZER:
@@ -14673,10 +14876,11 @@ public class MainActivity extends Activity {
         int volIcon = ThemedContextMenu.volumeIconResForLevel(volCur, volMax);
         int brightIcon = ThemedContextMenu.brightnessIconResForLevel(currentSystemBrightness, 255);
         boolean rooted = DeviceFeatures.hasRootAccess();
+        // Y2 has hardware volume + sleep/lock buttons — hide those quick-menu chips on Y2 only.
         boolean y1 = DeviceFeatures.isY1();
         return new ThemedContextMenu.QuickItem[] {
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_home, getString(R.string.context_go_to_home), true),
-            new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock, getString(R.string.context_action_lock_screen), true),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock, getString(R.string.context_action_lock_screen), y1),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_wifi, getString(R.string.context_tier_wifi), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_bluetooth, getString(R.string.home_menu_bluetooth), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_power, getString(R.string.context_quick_power), rooted),
@@ -17566,6 +17770,9 @@ public class MainActivity extends Activity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            endExternalInputHandoff();
+        }
         // #region agent log
         if (!hasFocus && usbFocusHelper != null && usbFocusHelper.isHostConnected()) {
             try {
@@ -17595,6 +17802,60 @@ public class MainActivity extends Activity {
             // #endregion
             routeUsbHostInterceptUi(false);
         }
+    }
+
+    void beginExternalInputHandoff() {
+        // Y1 and Y2 share unified keymaps; re-emit MEDIA keys as DPAD for stock Android apps.
+        externalInputHandoffMode = ExternalInputHandoff.MODE_ANDROID;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("mode", externalInputHandoffMode);
+            d.put("screen", currentScreenState);
+            DebugSessionLog.log("MainActivity.beginExternalInputHandoff",
+                    "external input handoff enabled", "H-DPAD", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    private void endExternalInputHandoff() {
+        if (externalInputHandoffMode == ExternalInputHandoff.MODE_OFF) return;
+        externalInputHandoffMode = ExternalInputHandoff.MODE_OFF;
+        // #region agent log
+        try {
+            DebugSessionLog.log("MainActivity.endExternalInputHandoff",
+                    "external input handoff disabled", "H-DPAD", null);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    private boolean shouldRouteExternalInputHandoff() {
+        return externalInputHandoffMode != ExternalInputHandoff.MODE_OFF
+                && !hasWindowFocus()
+                && isScreenInteractive();
+    }
+
+    boolean handleExternalInputHandoffMediaButton(Context context, KeyEvent event) {
+        if (event == null || !shouldRouteExternalInputHandoff()) return false;
+        int keyCode = event.getKeyCode();
+        if (!ExternalInputHandoff.isMediaNavigationKey(keyCode)) return false;
+        int dpadCode = ExternalInputHandoff.mediaToDpad(
+                keyCode, event.getRepeatCount(), externalInputHandoffMode);
+        if (dpadCode <= 0) return false;
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            ExternalInputHandoff.injectClick(context != null ? context : this, dpadCode);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("mediaCode", keyCode);
+                d.put("dpadCode", dpadCode);
+                d.put("repeat", event.getRepeatCount());
+                DebugSessionLog.log("MainActivity.handleExternalInputHandoffMediaButton",
+                        "injected dpad", "H-DPAD", d);
+            } catch (Exception ignored) {}
+            // #endregion
+        }
+        return true;
     }
 
     /** User declined USB storage — stop in-app intercept; recovery agent re-homes if SystemUI sticks. */
@@ -20549,6 +20810,10 @@ public class MainActivity extends Activity {
         contextMenuOpenedAtMs = System.currentTimeMillis();
     }
 
+    void showAdbRebootOverlay(String message) {
+        showPleaseWaitOverlay(message);
+    }
+
     private void dismissPleaseWaitOverlay() {
         contextMenuBlockingHint = false;
         if (themedContextMenu != null && themedContextMenu.isHintOnlyMode()) {
@@ -22051,6 +22316,25 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnStorageMenu);
 
+        if (com.solar.launcher.DeviceFeatures.isY2()) {
+            LinearLayout btnPrimaryStorage = createSettingsRow(
+                    RowKeys.Y2_PRIMARY_STORAGE, R.string.settings_y2_primary_storage, true);
+            btnPrimaryStorage.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    settingsParentKey = SettingsScreens.DEVICE;
+                    drillSettingsForward(new Runnable() {
+                        @Override
+                        public void run() {
+                            buildY2PrimaryStorageUI();
+                        }
+                    });
+                }
+            });
+            containerSettingsItems.addView(btnPrimaryStorage);
+        }
+
         LinearLayout btnTime = createSettingsRow(RowKeys.DATETIME, R.string.settings_datetime, true);
         btnTime.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -22992,6 +23276,125 @@ public class MainActivity extends Activity {
         containerSettingsItems.addView(row);
     }
 
+    /** Y2 — pick MicroSD vs internal as the default save target for new media. */
+    private void buildY2PrimaryStorageUI() {
+        setSettingsSubScreen(SettingsScreens.Y2_PRIMARY_STORAGE);
+        updateStatusBarTitle();
+        applyReachBrowseLayoutMode();
+        containerSettingsItems.removeAllViews();
+
+        Button btnBack = createListButton(getString(R.string.common_cancel_back));
+        styleSecondaryLabel(btnBack);
+        btnBack.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                drillSettingsBack(new Runnable() {
+                    @Override
+                    public void run() {
+                        buildDeviceSettingsUI();
+                    }
+                });
+            }
+        });
+        containerSettingsItems.addView(btnBack);
+
+        final String current = com.solar.launcher.DeviceFeatures.resolvePrimaryMediaPref(this);
+        final boolean sdPresent = com.solar.launcher.DeviceFeatures.isMicroSdPresent();
+        addY2PrimaryMediaOption(RowKeys.Y2_PRIMARY_MICROSD,
+                com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_MICROSD, current, sdPresent);
+        addY2PrimaryMediaOption(RowKeys.Y2_PRIMARY_INTERNAL,
+                com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_INTERNAL, current, true);
+
+        if (containerSettingsItems.getChildCount() > 1) {
+            containerSettingsItems.getChildAt(1).requestFocus();
+        }
+    }
+
+    private void addY2PrimaryMediaOption(final String rowKey, final String medium,
+            String current, boolean selectable) {
+        final LinearLayout row = createSettingsRow(rowKey, RowKeys.labelResId(rowKey), false);
+        TextView stateView = row.findViewWithTag("inline_state") instanceof TextView
+                ? (TextView) row.findViewWithTag("inline_state") : null;
+        if (stateView != null) {
+            if (!selectable) {
+                stateView.setText(getString(R.string.settings_y2_primary_microsd_absent));
+            } else {
+                stateView.setText(medium.equals(current) ? getString(R.string.common_check) : "");
+            }
+        }
+        if (!selectable) {
+            row.setAlpha(0.55f);
+            return;
+        }
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                com.solar.launcher.DeviceFeatures.setPrimaryMediaPref(MainActivity.this, medium);
+                applyMediaRootPreference();
+                ThemeManager.ensureThemesRootReady(MainActivity.this);
+                buildY2PrimaryStorageUI();
+                refreshSettingsPreview(RowKeys.Y2_PRIMARY_STORAGE);
+            }
+        });
+        containerSettingsItems.addView(row);
+    }
+
+    /** Debug experiment — confirm then format MicroSD (root shell on Y1, system UI elsewhere). */
+    private void promptMicroSdFormat() {
+        if (usbMassStorageLocked) {
+            Toast.makeText(this, getString(R.string.toast_reset_usb_blocked), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!MicroSdFormatTool.shouldUseRootFormat(this)) {
+            Toast.makeText(this, getString(R.string.microsd_format_opening_system), Toast.LENGTH_SHORT).show();
+            if (!MicroSdFormatTool.launchSystemFormatUi(this)) {
+                Toast.makeText(this, getString(R.string.microsd_format_failed), Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+        if (!MicroSdFormatTool.isMicroSdDetectable()) {
+            Toast.makeText(this, getString(R.string.microsd_format_no_card), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        long bytes = MicroSdFormatTool.readCapacityBytes(MicroSdFormatTool.defaultBlockDeviceName());
+        String sizeLabel = MicroSdFormatTool.formatCapacityLabel(bytes);
+        String body = getString(R.string.microsd_format_confirm_body, sizeLabel);
+        showThemedConfirm(
+                getString(R.string.microsd_format_confirm_title),
+                body,
+                getString(R.string.microsd_format_confirm_action),
+                getString(R.string.common_cancel),
+                new Runnable() {
+                    @Override public void run() {
+                        runMicroSdFormatConfirmed();
+                    }
+                });
+    }
+
+    private void runMicroSdFormatConfirmed() {
+        Toast.makeText(this, getString(R.string.microsd_format_progress), Toast.LENGTH_SHORT).show();
+        MicroSdFormatTool.runRootFormat(this, MicroSdFormatTool.defaultBlockDeviceName(),
+                new MicroSdFormatTool.FormatCallback() {
+                    @Override public void onSuccess(boolean fat32Fallback) {
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.microsd_format_success), Toast.LENGTH_LONG).show();
+                        if (fat32Fallback) {
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.microsd_format_fat32_fallback),
+                                    Toast.LENGTH_LONG).show();
+                        }
+                        sendBroadcast(new Intent(Intent.ACTION_MEDIA_MOUNTED,
+                                android.net.Uri.parse("file://" + MicroSdFormatTool.microSdMountPath())));
+                    }
+                    @Override public void onFailed() {
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.microsd_format_failed), Toast.LENGTH_LONG).show();
+                    }
+                });
+    }
+
     private boolean handleLanguageSettingsBack() {
         if (SettingsScreens.LANGUAGE.equals(settingsSubScreenKey)) {
             if (SettingsScreens.DEVICE.equals(settingsParentKey)) {
@@ -23442,11 +23845,27 @@ public class MainActivity extends Activity {
         btnBtMenu.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                openScreenWithReturn(STATE_BLUETOOTH);
+                if (BluetoothExperiment.isEnabled(prefs)) {
+                    openScreenWithReturn(STATE_BLUETOOTH);
+                } else {
+                    openAndroidBluetoothSettings();
+                }
                 clickFeedback();
             }
         });
         containerSettingsItems.addView(btnBtMenu);
+
+        if (DeviceFeatures.isY1()) {
+            LinearLayout btnBtPin = createSettingsRow(RowKeys.BLUETOOTH_PAIRING_PIN, R.string.settings_bluetooth_pairing_pin, false);
+            btnBtPin.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    openBtPairingPinKeyboard(null, null);
+                }
+            });
+            containerSettingsItems.addView(btnBtPin);
+        }
 
         LinearLayout btnUsbMenu = createSettingsRow(RowKeys.USB, R.string.settings_usb, true);
         usbSettingsMenuFocusIndex = containerSettingsItems.getChildCount();
@@ -27301,6 +27720,35 @@ public class MainActivity extends Activity {
         containerSettingsItems.addView(btnJjThemes);
         refreshSettingsPreview(RowKeys.DEBUG_JJ_THEMES);
 
+        final LinearLayout btnWirelessAdb = createSettingsRow(RowKeys.DEBUG_WIRELESS_ADB,
+                R.string.settings_debug_wireless_adb, false);
+        btnWirelessAdb.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean enable = !prefs.getBoolean("settings.debug.wireless_adb_enabled", true);
+                prefs.edit().putBoolean("settings.debug.wireless_adb_enabled", enable).apply();
+                refreshSettingsPreview(RowKeys.DEBUG_WIRELESS_ADB);
+                if (enable) {
+                    WirelessAdbEnabler.ensureWirelessAdb(MainActivity.this);
+                }
+            }
+        });
+        containerSettingsItems.addView(btnWirelessAdb);
+        refreshSettingsPreview(RowKeys.DEBUG_WIRELESS_ADB);
+
+        final LinearLayout btnMicroSdFormat = createSettingsRow(RowKeys.DEBUG_MICROSD_FORMAT,
+                R.string.settings_debug_microsd_format, true);
+        btnMicroSdFormat.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                promptMicroSdFormat();
+            }
+        });
+        containerSettingsItems.addView(btnMicroSdFormat);
+        refreshSettingsPreview(RowKeys.DEBUG_MICROSD_FORMAT);
+
         final LinearLayout btnDevSupport = createSettingsRow(RowKeys.DEBUG_DEV_SUPPORT_EXPERIMENT,
                 R.string.settings_debug_dev_support_experiment, false);
         btnDevSupport.setOnClickListener(new View.OnClickListener() {
@@ -27315,6 +27763,22 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnDevSupport);
         refreshSettingsPreview(RowKeys.DEBUG_DEV_SUPPORT_EXPERIMENT);
+
+        final LinearLayout btnBluetoothExperiment = createSettingsRow(RowKeys.DEBUG_BLUETOOTH_EXPERIMENT,
+                R.string.settings_debug_bluetooth_experiment, false);
+        btnBluetoothExperiment.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean enable = !BluetoothExperiment.isEnabled(prefs);
+                prefs.edit().putBoolean(BluetoothExperiment.PREF_BLUETOOTH_EXPERIMENT, enable)
+                        .apply();
+                refreshSettingsPreview(RowKeys.DEBUG_BLUETOOTH_EXPERIMENT);
+                scheduleRebuildHomeMenuIfVisible();
+            }
+        });
+        containerSettingsItems.addView(btnBluetoothExperiment);
+        refreshSettingsPreview(RowKeys.DEBUG_BLUETOOTH_EXPERIMENT);
 
         final LinearLayout btnRadioExperiment = createSettingsRow(RowKeys.DEBUG_RADIO_EXPERIMENT,
                 R.string.settings_debug_radio_experiment, false);
@@ -27778,6 +28242,10 @@ public class MainActivity extends Activity {
                         onHomeShortcutEditorClick(entry);
                     }
                 });
+            } else {
+                // Required shortcuts (Settings) cannot toggle off — keep them out of wheel order.
+                row.setFocusable(false);
+                row.setClickable(false);
             }
             containerSettingsItems.addView(row);
         }
@@ -28701,6 +29169,10 @@ public class MainActivity extends Activity {
             String rootPath = root.getAbsolutePath();
             if (path.startsWith(rootPath)) {
                 path = path.substring(rootPath.length());
+                if (com.solar.launcher.DeviceFeatures.isY2()) {
+                    String suffix = path.isEmpty() ? "/" : path;
+                    return com.solar.launcher.DeviceFeatures.storageRootLabel(this, root) + ":" + suffix;
+                }
                 break;
             }
         }
@@ -30168,6 +30640,20 @@ public class MainActivity extends Activity {
         changeScreen(STATE_BROWSER);
     }
 
+    private void finishBtPairingPinEntry() {
+        clickFeedback();
+        String pin = typedPassword != null ? typedPassword.trim() : "0000";
+        BluetoothAudioRepair.savePairingPin(this, targetBtPairingAddress, pin);
+        changeScreen(keyboardReturnState != STATE_WIFI_KEYBOARD ? keyboardReturnState : STATE_SETTINGS);
+        refreshSettingsPreview(RowKeys.BLUETOOTH_PAIRING_PIN);
+        if (targetBtPairingAddress != null && !targetBtPairingAddress.isEmpty()) {
+            BluetoothDevice dev = BluetoothAudioRepair.deviceForAddress(targetBtPairingAddress);
+            if (dev != null) {
+                BluetoothAudioRepair.requestRepair(this, dev);
+            }
+        }
+    }
+
     private PlaylistManager.Entry focusedLocalPlaylistEntry() {
         View c = getCurrentFocus();
         while (c != null) {
@@ -30767,6 +31253,7 @@ public class MainActivity extends Activity {
             folderBrowserEntries.add(FolderBrowserEntry.up(getString(R.string.browser_up)));
             currentScrollIndexList.add(getString(R.string.browser_up));
         }
+        appendOtherStorageVolumeEntries();
         for (File folder : folders) {
             folderBrowserEntries.add(FolderBrowserEntry.folder(folder));
             currentScrollIndexList.add(folder.getName());
@@ -30798,6 +31285,20 @@ public class MainActivity extends Activity {
                 }
             }
         });
+    }
+
+    /** Y2: at a volume root, list the other storage (MicroSD ↔ Internal) as a jump row. */
+    private void appendOtherStorageVolumeEntries() {
+        if (!com.solar.launcher.DeviceFeatures.isY2()
+                || !com.solar.launcher.DeviceFeatures.isStorageVolumeRoot(currentFolder)) {
+            return;
+        }
+        for (File root : com.solar.launcher.DeviceFeatures.getBrowsableStorageRoots()) {
+            if (root.equals(currentFolder)) continue;
+            String label = com.solar.launcher.DeviceFeatures.storageRootLabel(this, root);
+            folderBrowserEntries.add(FolderBrowserEntry.storageVolume(root, label));
+            currentScrollIndexList.add(label);
+        }
     }
 
     private void preparePodcastBrowserChrome() {
@@ -37421,7 +37922,7 @@ public class MainActivity extends Activity {
     private void savePodcastEpisodeToLibrary(final OpenRssClient.Episode ep) {
         if (podcastSelected == null || ep == null) return;
         if (!requireInternet(R.string.podcasts_wifi_required_stream)) return;
-        final File dest = PodcastLibrary.destFile(podcastSelected.title, ep.title, ep.audioUrl);
+        final File dest = PodcastLibrary.destFile(this, podcastSelected.title, ep.title, ep.audioUrl);
         if (dest.isFile() && dest.length() > 0) {
             Toast.makeText(this, getString(R.string.podcasts_already_saved), Toast.LENGTH_SHORT).show();
             return;
@@ -37687,9 +38188,11 @@ public class MainActivity extends Activity {
             intent.setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive");
             intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             isIntentionalFocusLoss = true;
+            beginExternalInputHandoff();
             startActivity(intent);
         } catch (Exception e) {
             isIntentionalFocusLoss = false;
+            endExternalInputHandoff();
             Toast.makeText(this, getString(R.string.toast_install_failed), Toast.LENGTH_SHORT).show();
         }
     }
@@ -38413,6 +38916,24 @@ public class MainActivity extends Activity {
     }
 
     /** adb: am start -n com.solar.launcher/.MainActivity --ez solar_adb_avrcp_harness true */
+    private void scheduleAdbAvrcpHarnessIfRequested(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("solar_adb_avrcp_harness", false)) return;
+        final String btAddr = intent.getStringExtra("solar_adb_bt_addr");
+        intent.removeExtra("solar_adb_avrcp_harness");
+        intent.removeExtra("solar_adb_bt_addr");
+        scheduleAdbAvrcpHarness(btAddr != null ? btAddr : "50:BA:02:58:D7:39");
+    }
+
+    private void handlePairingPinPromptIfRequested(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_PROMPT, false)) return;
+        String address = intent.getStringExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_ADDRESS);
+        String name = intent.getStringExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_NAME);
+        intent.removeExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_PROMPT);
+        intent.removeExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_ADDRESS);
+        intent.removeExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_NAME);
+        openBtPairingPinKeyboard(address, name);
+    }
+
     private void finishAvrcpHarnessPlayback(String btAddr) {
         BluetoothAdapter ba = BluetoothAdapter.getDefaultAdapter();
         BluetoothDevice dev = ba != null ? ba.getRemoteDevice(btAddr) : null;
@@ -38672,23 +39193,13 @@ public class MainActivity extends Activity {
     }
 
     private boolean isMediaNextKey(int keyCode) {
-        if (com.solar.launcher.DeviceFeatures.isY2()
-                && (currentScreenState == STATE_PLAYER || currentScreenState == STATE_WIFI_KEYBOARD || isScreenOff())) {
-            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT || keyCode == 22) {
-                return true;
-            }
-        }
-        return Y1InputKeys.isTrackNextKey(keyCode);
+        return Y1InputKeys.isTrackNextKey(keyCode)
+                || (DeviceFeatures.isY2() && Y1InputKeys.isY2TrackNextKey(keyCode));
     }
 
     private boolean isMediaPrevKey(int keyCode) {
-        if (com.solar.launcher.DeviceFeatures.isY2()
-                && (currentScreenState == STATE_PLAYER || currentScreenState == STATE_WIFI_KEYBOARD || isScreenOff())) {
-            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == 21) {
-                return true;
-            }
-        }
-        return Y1InputKeys.isTrackPreviousKey(keyCode);
+        return Y1InputKeys.isTrackPreviousKey(keyCode)
+                || (DeviceFeatures.isY2() && Y1InputKeys.isY2TrackPreviousKey(keyCode));
     }
 
     private boolean isMediaSkipKey(int keyCode) {
@@ -38702,6 +39213,52 @@ public class MainActivity extends Activity {
     private boolean hasActiveMediaPlayback() {
         if (!playback.hasAnyQueue()) return false;
         return mediaPlayer != null || podcastIjkPlayer != null;
+    }
+
+    /** Y2 side keys = track prev/next; route whenever a queue exists, not only on Now Playing. */
+    private boolean shouldRouteMediaSkipKeys() {
+        return shouldRouteMediaSkipKeysForTest(
+                playback.hasAnyQueue(),
+                currentScreenState,
+                STATE_FLOW,
+                STATE_WIFI_KEYBOARD,
+                STATE_PLAYER,
+                MediaSuiteHost.STATE_VIDEO_PLAYER,
+                hasActiveMediaPlayback(),
+                playback.isMusicActive(),
+                playback.isRadioActive(),
+                playback.isPodcastActive());
+    }
+
+    static boolean shouldRouteMediaSkipKeysForTest(
+            boolean hasQueue, int screenState, int stateFlow, int stateWifiKeyboard,
+            int statePlayer, int stateVideoPlayer,
+            boolean hasActivePlayback, boolean musicActive, boolean radioActive,
+            boolean podcastActive) {
+        if (!hasQueue) return false;
+        if (screenState == stateFlow) return false;
+        if (screenState == stateWifiKeyboard) return true;
+        return screenState == statePlayer
+                || screenState == stateVideoPlayer
+                || hasActivePlayback
+                || musicActive
+                || radioActive
+                || podcastActive;
+    }
+
+    /** Mirrors buildContextQuickBar() — Volume chip only on Y1 (Y2 has hardware volume buttons). */
+    static boolean isContextQuickVolumeChipVisibleForTest() {
+        return DeviceFeatures.isY1();
+    }
+
+    /** Mirrors buildContextQuickBar() — Lock chip only on Y1 (Y2 has hardware sleep/lock button). */
+    static boolean isContextQuickLockChipVisibleForTest() {
+        return DeviceFeatures.isY1();
+    }
+
+    /** Power chip follows root availability on both Y1 and Y2 Solar ROMs. */
+    static boolean isContextQuickPowerChipVisibleForTest() {
+        return DeviceFeatures.hasRootAccess();
     }
 
     private int playbackDurationForScrub() {
@@ -39420,11 +39977,10 @@ public class MainActivity extends Activity {
         }
 
         if (isMediaPrevKey(keyCode) || isMediaNextKey(keyCode)) {
-            if (currentScreenState == STATE_PLAYER || hasActiveMediaPlayback()
-                    || currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER) {
+            if (shouldRouteMediaSkipKeys()) {
                 return handleMediaSkipKeyDown(keyCode, event);
             }
-            return true; // ponytail: consume side buttons on menus — not wheel (21/22)
+            return true; // consume side buttons on menus when no queue
         }
 
         if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER && mediaSuite != null) {
@@ -39570,6 +40126,7 @@ public class MainActivity extends Activity {
                 || currentScreenState == STATE_SETTINGS || currentScreenState == STATE_BLUETOOTH
                 || currentScreenState == STATE_WIFI || currentScreenState == STATE_PODCASTS
                 || currentScreenState == STATE_SOULSEEK || currentScreenState == STATE_DEEZER
+                || currentScreenState == STATE_APPS || currentScreenState == STATE_MORE
                 || MediaSuiteHost.isMediaListBrowseState(currentScreenState)) {
             // Playlist move strip replaces the ListView — handle wheel while list is hidden.
             if (currentScreenState == STATE_BROWSER && isPlaylistMoveActive()) {
@@ -39877,6 +40434,8 @@ public class MainActivity extends Activity {
         scheduleAdbOpenSoulseekMessagesIfRequested();
         scheduleThemeAutoVariantIfRequested();
         scheduleAdbFlowCarouselIfRequested();
+        scheduleAdbAvrcpHarnessIfRequested(intent);
+        handlePairingPinPromptIfRequested(intent);
         if (intent != null && intent.getBooleanExtra("solar_adb_goto", false)) {
             final int screen = intent.getIntExtra("solar_adb_screen", STATE_MENU);
             intent.removeExtra("solar_adb_goto");
@@ -39893,6 +40452,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        endExternalInputHandoff();
         LauncherSwitch.assertRockboxDisabledWhileSolarHome(this);
         if (isScreenInteractive()) {
             maybeRestoreWifiAfterSleepPolicy();
@@ -40160,7 +40720,7 @@ public class MainActivity extends Activity {
     }
 
     private File getCoversFolder() {
-        File covers = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Solar_Covers");
+        File covers = new File(com.solar.launcher.DeviceFeatures.getNewMediaRoot(this), "Solar_Covers");
         if (!covers.exists()) covers.mkdirs();
         return covers;
     }
@@ -40416,6 +40976,12 @@ public class MainActivity extends Activity {
             final MainActivity activity = MainActivity.instance;
             final KeyEvent event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
             if (event == null) return;
+            if (activity.handleExternalInputHandoffMediaButton(context, event)) {
+                try {
+                    abortBroadcast();
+                } catch (Exception ignored) {}
+                return;
+            }
             final BroadcastReceiver.PendingResult pending = goAsync();
             activity.runOnUiThreadSafe(new Runnable() {
                 @Override
@@ -41106,6 +41672,8 @@ public class MainActivity extends Activity {
         static final int KIND_AUDIO = 2;
         static final int KIND_APK = 3;
         static final int KIND_IMAGE = 4;
+        /** Y2 cross-link to the other storage volume from a mount root. */
+        static final int KIND_STORAGE = 5;
 
         final int kind;
         final File file;
@@ -41136,6 +41704,10 @@ public class MainActivity extends Activity {
         static FolderBrowserEntry image(File f) {
             return new FolderBrowserEntry(KIND_IMAGE, f, f.getName());
         }
+
+        static FolderBrowserEntry storageVolume(File f, String label) {
+            return new FolderBrowserEntry(KIND_STORAGE, f, label);
+        }
     }
 
     private class FolderBrowserAdapter extends android.widget.BaseAdapter {
@@ -41160,6 +41732,7 @@ public class MainActivity extends Activity {
             else if (entry.kind == FolderBrowserEntry.KIND_APK) prefix = "";
             else if (entry.kind == FolderBrowserEntry.KIND_IMAGE) prefix = "🖼 ";
             else if (entry.kind == FolderBrowserEntry.KIND_UP) prefix = "";
+            else if (entry.kind == FolderBrowserEntry.KIND_STORAGE) prefix = "💾 ";
             if (entry.kind == FolderBrowserEntry.KIND_APK) {
                 btn.setText(getString(R.string.browser_install_apk, entry.label));
                 btn.setTextColor(0xFF00FFFF);
@@ -41196,7 +41769,8 @@ public class MainActivity extends Activity {
                                 buildFileBrowserUI();
                             }
                         });
-                    } else if (entry.kind == FolderBrowserEntry.KIND_FOLDER && entry.file != null) {
+                    } else if ((entry.kind == FolderBrowserEntry.KIND_FOLDER
+                            || entry.kind == FolderBrowserEntry.KIND_STORAGE) && entry.file != null) {
                         final File next = entry.file;
                         drillBrowserForward(new Runnable() {
                             @Override

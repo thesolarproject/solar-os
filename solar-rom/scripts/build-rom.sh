@@ -124,19 +124,89 @@ prepare_image_for_mount() {
     fi
 }
 
+# MTK SP Flash Tool rejects corrupt ext4 sparse images — fsck raw before img2simg repack.
+verify_sparse_roundtrip() {
+    local sparse="$1"
+    is_sparse_android_image "$sparse" || return 0
+    require_cmd simg2img
+    local verify="${sparse}.verify.raw"
+    simg2img "$sparse" "$verify"
+    tune2fs -l "$verify" >/dev/null 2>&1 \
+        || die "sparse round-trip failed for $(basename "$sparse")"
+    rm -f "$verify"
+}
+
+finalize_image_raw() {
+    local shipped_path="$1"
+    local mount_src="$2"
+    if [ "$mount_src" = "$shipped_path" ]; then
+        return 0
+    fi
+    require_cmd e2fsck
+    sync
+    set +e
+    e2fsck -f -y "$mount_src" >/dev/null 2>&1
+    set -e
+    echo "==> Ship desparsed ext4 $(basename "$shipped_path") ($(du -h "$mount_src" | awk '{print $1}'))"
+    rm -f "$shipped_path"
+    mv -f "$mount_src" "$shipped_path"
+    if is_sparse_android_image "$shipped_path"; then
+        die "$(basename "$shipped_path") is still sparse after desparse"
+    fi
+}
+
 finalize_image_after_mount() {
     local shipped_path="$1"
     local mount_src="$2"
     if [ "$mount_src" != "$shipped_path" ]; then
         require_cmd img2simg
+        require_cmd e2fsck
+        sync
+        echo "==> Fsck $(basename "$shipped_path") before sparse repack"
+        set +e
+        e2fsck -f -y "$mount_src" >/dev/null 2>&1
+        local fsck_rc=$?
+        set -e
+        # e2fsck returns 1 when it auto-fixed bitmap padding — that is OK for MTK sparse repack.
+        if [ "$fsck_rc" -gt 1 ]; then
+            die "e2fsck failed on $(basename "$mount_src") (exit $fsck_rc)"
+        fi
         echo "==> Repacking $(basename "$shipped_path") to Android sparse"
-        img2simg "$mount_src" "$shipped_path"
+        local tmp="${shipped_path}.repack.$$"
+        # Y2 MTK DA is picky about sparse layout — -s matches vendor chunk style more closely.
+        if [ "$TYPE" = "y2" ] && [ "$(basename "$shipped_path")" = "system.img" ]; then
+            require_cmd resize2fs
+            resize2fs -M "$mount_src" >/dev/null 2>&1 || true
+            img2simg -s "$mount_src" "$tmp" 4096
+        else
+            img2simg "$mount_src" "$tmp" 4096
+        fi
+        mv -f "$tmp" "$shipped_path"
         rm -f "$mount_src"
+        verify_sparse_roundtrip "$shipped_path"
     fi
 }
 
 require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+# Y2 ATA stock base has no Rockbox; fetch org.rockbox.apk + librockbox.so from rockbox-y1 type-A base.
+install_rockbox_from_y1_base() {
+    local mount_sys="$1"
+    if [ -f "$mount_sys/app/org.rockbox.apk" ] && [ -f "$mount_sys/lib/librockbox.so" ]; then
+        return 0
+    fi
+    chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh"
+    local cache
+    cache="$("$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh")"
+    [ -f "$cache/org.rockbox.apk" ] && [ -f "$cache/librockbox.so" ] \
+        || die "fetch-rockbox-y1-y2-assets.sh did not populate org.rockbox.apk + librockbox.so"
+    echo "==> Y2 base lacks Rockbox — installing org.rockbox.apk + librockbox.so from rockbox-y1 type-A base"
+    sudo cp "$cache/org.rockbox.apk" "$mount_sys/app/org.rockbox.apk"
+    sudo cp "$cache/librockbox.so" "$mount_sys/lib/librockbox.so"
+    sudo chmod 644 "$mount_sys/app/org.rockbox.apk" "$mount_sys/lib/librockbox.so"
+    sudo chown root:root "$mount_sys/app/org.rockbox.apk" "$mount_sys/lib/librockbox.so"
 }
 
 case "$TYPE" in
@@ -151,15 +221,21 @@ case "$TYPE" in
         SCATTER_FILE="MT6572_Android_scatter.txt"
         ;;
     y2)
-        # Y2 ATA support is maintained for future Innioasis Y2 release; not built in CI yet.
+        # Y2 ATA (MT6582); Y1 permissive su baked below. CI publishes rom_y2.zip on main and nightly.
         BASE_URL="https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom.zip"
         OUTPUT="${OUTPUT:-$REPO_ROOT/rom_y2.zip}"
         SCATTER_FILE="MT6582_Android_scatter.txt"
+        # Fail fast before downloading Y2 base if vendored Y1 su is missing.
+        [ -f "$REPO_ROOT/solar-rom/vendor/y1-su/su" ] \
+            || die "missing solar-rom/vendor/y1-su/su — run solar-rom/scripts/extract-y1-su-vendor.sh"
         ;;
     *)
         die "unknown type: $TYPE"
         ;;
 esac
+
+# Resolve OUTPUT to absolute path before cd into WORK_DIR (relative paths would land in tmpdir).
+OUTPUT="$(realpath -m "$OUTPUT" 2>/dev/null || echo "$(pwd)/$(basename "$OUTPUT")")"
 
 require_cmd curl
 require_cmd unzip
@@ -239,8 +315,13 @@ install_solar_boot_assets() {
     fi
 
     if [ -f "$SOLAR_SYS/boot.img" ]; then
-        echo "==> Replace boot.img in ROM archive"
-        cp "$SOLAR_SYS/boot.img" "$base_dir/boot.img"
+        # Y2 ATA ships MT6582 boot.img; solar-rom/system/boot.img is Y1/MT6572 — keep stock kernel.
+        if [ "$TYPE" = "y2" ]; then
+            echo "==> Keeping Y2 stock boot.img (MT6582 kernel; Solar boot animation is on /system)"
+        else
+            echo "==> Replace boot.img in ROM archive"
+            cp "$SOLAR_SYS/boot.img" "$base_dir/boot.img"
+        fi
     else
         die "missing $SOLAR_SYS/boot.img"
     fi
@@ -276,6 +357,40 @@ audit_rom_contents() {
     if [ "$TYPE" = "y2" ] && find "$sys_mount/priv-app" -iname '*factorylauncher*' 2>/dev/null | grep -q .; then
         echo "audit fail: stock Y2 factory launcher still present in /system/priv-app" >&2
         errors=$((errors + 1))
+    fi
+
+    if [ "$TYPE" = "y2" ]; then
+        boot_bytes=$(stat -c%s "$base_dir/boot.img" 2>/dev/null || echo 0)
+        # ponytail: Y1 boot.img is ~4.7 MiB; Y2 MT6582 stock is ~5.5 MiB — wrong kernel bricks SP Flash writes.
+        if [ "$boot_bytes" -lt 5700000 ] || [ "$boot_bytes" -gt 5900000 ]; then
+            echo "audit fail: Y2 boot.img is ${boot_bytes} bytes (expected MT6582 stock ~5773312)" >&2
+            errors=$((errors + 1))
+        fi
+    fi
+
+    # Y2 gets Y1 permissive su baked in build-rom.sh; Y1 rockbox base already ships /system/xbin/su.
+    if [ "$TYPE" = "y2" ]; then
+        if [ ! -x "$sys_mount/xbin/su" ]; then
+            echo "audit fail: /system/xbin/su missing (Y2 permissive root)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -x "$sys_mount/xbin/daemonsu" ]; then
+            echo "audit fail: /system/xbin/daemonsu missing (Y2 permissive root)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -x "$sys_mount/bin/.ext/.su" ]; then
+            echo "audit fail: /system/bin/.ext/.su missing (Y2 permissive root)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -u "$sys_mount/xbin/su" ]; then
+            echo "audit fail: /system/xbin/su not setuid (Y2 permissive root)" >&2
+            errors=$((errors + 1))
+        fi
+        # Superuser.apk would re-enable grant prompts — Y1-style root omits it on purpose.
+        if [ -f "$sys_mount/app/Superuser.apk" ]; then
+            echo "audit fail: /system/app/Superuser.apk present (Y2 should use permissive su only)" >&2
+            errors=$((errors + 1))
+        fi
     fi
 
     if [ ! -f "$sys_mount/app/$SYSTEM_APK_NAME" ]; then
@@ -363,31 +478,46 @@ audit_rom_contents() {
     if [ ! -f "$sys_mount/etc/solar/sync-y1-keymap.sh" ]; then
         echo "audit fail: /system/etc/solar/sync-y1-keymap.sh missing (unified keymap sync)" >&2
         errors=$((errors + 1))
-    elif [ ! -f "$sys_mount/etc/solar/Y1-Rockbox.kl" ]; then
-        echo "audit fail: /system/etc/solar/Y1-Rockbox.kl missing" >&2
+    elif [ ! -f "$sys_mount/etc/solar/Y1-Rockbox.kl" ] \
+            && [ ! -f "$sys_mount/etc/solar/Y2-Rockbox.kl" ]; then
+        echo "audit fail: /system/etc/solar/Y1-Rockbox.kl or Y2-Rockbox.kl missing" >&2
         errors=$((errors + 1))
     fi
 
-    if [ ! -f "$sys_mount/etc/init.d/99Y1ButtonScript" ]; then
-        echo "audit fail: 99Y1ButtonScript missing (Back+Play Rockbox gesture)" >&2
-        errors=$((errors + 1))
+    if [ -f "$sys_mount/etc/solar/Y2-Rockbox.kl" ]; then
+        canon_kl="$sys_mount/etc/solar/Y2-Rockbox.kl"
+        canon_name="Y2-Rockbox.kl"
+    else
+        canon_kl="$sys_mount/etc/solar/Y1-Rockbox.kl"
+        canon_name="Y1-Rockbox.kl"
     fi
 
     if [ ! -f "$sys_mount/usr/keylayout/Generic.kl" ] || [ ! -f "$sys_mount/usr/keylayout/Rockbox.kl" ]; then
         echo "audit fail: keylayout files missing" >&2
         errors=$((errors + 1))
-    elif ! cmp -s "$sys_mount/usr/keylayout/Generic.kl" "$sys_mount/usr/keylayout/Y1-Rockbox.kl"; then
-        echo "audit fail: Generic.kl is not identical to Y1-Rockbox.kl (Y1 wheel 126/127)" >&2
+    elif ! cmp -s "$sys_mount/usr/keylayout/Generic.kl" "$canon_kl"; then
+        echo "audit fail: Generic.kl is not identical to $canon_name (wheel 126/127)" >&2
         errors=$((errors + 1))
-    elif ! cmp -s "$sys_mount/usr/keylayout/Stock.kl" "$sys_mount/usr/keylayout/Y1-Rockbox.kl"; then
-        echo "audit fail: Stock.kl must match Y1-Rockbox.kl (unified keymap)" >&2
+    elif ! cmp -s "$sys_mount/usr/keylayout/Stock.kl" "$canon_kl"; then
+        echo "audit fail: Stock.kl must match $canon_name (unified keymap)" >&2
         errors=$((errors + 1))
-    elif ! cmp -s "$sys_mount/usr/keylayout/Rockbox.kl" "$sys_mount/usr/keylayout/Y1-Rockbox.kl"; then
-        echo "audit fail: Rockbox.kl must match Y1-Rockbox.kl (unified keymap)" >&2
+    elif ! cmp -s "$sys_mount/usr/keylayout/Rockbox.kl" "$canon_kl"; then
+        echo "audit fail: Rockbox.kl must match $canon_name (unified keymap)" >&2
+        errors=$((errors + 1))
+    elif [ ! -f "$sys_mount/usr/keylayout/$canon_name" ]; then
+        echo "audit fail: /system/usr/keylayout/$canon_name missing" >&2
+        errors=$((errors + 1))
+    elif ! cmp -s "$sys_mount/usr/keylayout/$canon_name" "$canon_kl"; then
+        echo "audit fail: usr/keylayout/$canon_name must match etc/solar copy" >&2
         errors=$((errors + 1))
     elif [ -f "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" ] && [ -f "$sys_mount/usr/keylayout/mtk-kpd.kl" ] \
             && ! cmp -s "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" "$sys_mount/usr/keylayout/mtk-kpd.kl"; then
         echo "audit fail: mtk-tpd-kpd.kl must match mtk-kpd.kl (side keys 88/87, wheel 126/127)" >&2
+        errors=$((errors + 1))
+    fi
+
+    if [ ! -f "$sys_mount/etc/init.d/99Y1ButtonScript" ]; then
+        echo "audit fail: 99Y1ButtonScript missing (Back+Play Rockbox gesture)" >&2
         errors=$((errors + 1))
     fi
 
@@ -440,7 +570,9 @@ audit_rom_contents() {
     echo "==> ROM audit passed"
 }
 
-WORK_DIR="$(mktemp -d)"
+SOLAR_ROM_BUILD_DIR="${SOLAR_ROM_BUILD_DIR:-$HOME/.cache/solar-rom-build}"
+mkdir -p "$SOLAR_ROM_BUILD_DIR"
+WORK_DIR="$(mktemp -d "$SOLAR_ROM_BUILD_DIR/work-XXXXXX")"
 BASE_DIR="$WORK_DIR/base"
 MOUNT_SYS="$BASE_DIR/mount_sys"
 MOUNT_USER="$BASE_DIR/mount_user"
@@ -470,6 +602,16 @@ normalize_firmware_layout
 
 [ -f "$BASE_DIR/system.img" ] || die "system.img not found under $BASE_DIR after unzip"
 [ -f "$BASE_DIR/userdata.img" ] || die "userdata.img not found under $BASE_DIR after unzip"
+
+# Y2: keep pristine sparse copies of partitions MTK DA is sensitive about (userdata repack, boot mix-ups).
+PRISTINE_DIR="$WORK_DIR/pristine"
+if [ "$TYPE" = "y2" ]; then
+    mkdir -p "$PRISTINE_DIR"
+    for _pristine in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 \
+            preloader_eastaeon82_wet_kk.bin userdata.img system.img; do
+        [ -f "$BASE_DIR/$_pristine" ] && cp -a "$BASE_DIR/$_pristine" "$PRISTINE_DIR/$_pristine"
+    done
+fi
 
 SYSTEM_MOUNT_SRC="$(prepare_image_for_mount "$BASE_DIR/system.img")"
 USERDATA_MOUNT_SRC="$(prepare_image_for_mount "$BASE_DIR/userdata.img")"
@@ -502,6 +644,10 @@ else
     done
 fi
 
+if [ "$TYPE" = "y2" ]; then
+    install_rockbox_from_y1_base "$MOUNT_SYS"
+fi
+
 # Keep org.rockbox.apk + librockbox.so from base firmware for launcher switching.
 sudo rm -f "$MOUNT_SYS/etc/init.d/99Y1LauncherInit.sh"
 
@@ -532,45 +678,71 @@ sudo cp "$SCRIPT_DIR/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-li
 sudo cp "$SCRIPT_DIR/sync-y1-keymap.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh"
 sudo cp "$SCRIPT_DIR/disable-rockbox-for-solar.sh" "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh"
 sudo cp "$SCRIPT_DIR/solar-usb-recovery-agent.sh" "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
-sudo cp "$SCRIPT_DIR/Y1-Rockbox.kl" "$MOUNT_SYS/etc/solar/Y1-Rockbox.kl"
 sudo chmod 755 "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
     "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
     "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
-sudo chmod 644 "$MOUNT_SYS/etc/solar/Y1-Rockbox.kl"
 sudo chown root:root "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
     "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
-    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh" "$MOUNT_SYS/etc/solar/Y1-Rockbox.kl"
+    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
 
 sudo cp "$REPO_ROOT/solar-rom/system/99Y1ButtonScript" "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
 sudo chmod 755 "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
 sudo chown root:root "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
 
 [ -f "$SCRIPT_DIR/Y1-Rockbox.kl" ] || die "missing $SCRIPT_DIR/Y1-Rockbox.kl"
-# ponytail: Generic/Stock/Rockbox = Y1-Rockbox.kl (wheel 126/127); mtk-tpd-kpd mirrors patched mtk-kpd (side 88/87).
-for _kl in Stock.kl Rockbox.kl Y1-Rockbox.kl Generic.kl; do
-    sudo cp "$SCRIPT_DIR/Y1-Rockbox.kl" "$MOUNT_SYS/usr/keylayout/$_kl"
+# ponytail: Y1 uses Y1-Rockbox.kl; Y2 uses Y2-Rockbox.kl (same wheel/side map, Y2 volume on 114/115).
+if [ "$TYPE" = "y2" ]; then
+    CANONICAL_KL="$SCRIPT_DIR/Y2-Rockbox.kl"
+    CANONICAL_KL_NAME="Y2-Rockbox.kl"
+    [ -f "$CANONICAL_KL" ] || die "missing $CANONICAL_KL"
+else
+    CANONICAL_KL="$SCRIPT_DIR/Y1-Rockbox.kl"
+    CANONICAL_KL_NAME="Y1-Rockbox.kl"
+fi
+sudo cp "$CANONICAL_KL" "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
+sudo chmod 644 "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
+sudo chown root:root "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
+for _kl in Stock.kl Rockbox.kl Generic.kl "$CANONICAL_KL_NAME"; do
+    sudo cp "$CANONICAL_KL" "$MOUNT_SYS/usr/keylayout/$_kl"
 done
 sudo chmod 644 "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Rockbox.kl" \
-    "$MOUNT_SYS/usr/keylayout/Y1-Rockbox.kl" "$MOUNT_SYS/usr/keylayout/Generic.kl"
+    "$MOUNT_SYS/usr/keylayout/Generic.kl" "$MOUNT_SYS/usr/keylayout/$CANONICAL_KL_NAME"
 sudo chown root:root "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Rockbox.kl" \
-    "$MOUNT_SYS/usr/keylayout/Y1-Rockbox.kl" "$MOUNT_SYS/usr/keylayout/Generic.kl"
+    "$MOUNT_SYS/usr/keylayout/Generic.kl" "$MOUNT_SYS/usr/keylayout/$CANONICAL_KL_NAME"
 # Patch wheel scancodes in mtk-kpd.kl without replacing GPIO key map; mtk-tpd-kpd uses the same file.
 # ponytail: sed -i writes a temp file beside the target — needs sudo on mounted system.img (root-owned dir).
 if [ -f "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" ]; then
     sudo sed -i 's/^key 105[[:space:]].*/key 105   MEDIA_PLAY/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
     sudo sed -i 's/^key 106[[:space:]].*/key 106   MEDIA_PAUSE/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
+    if [ "$TYPE" = "y2" ]; then
+        # Y2 stock mtk-kpd maps side keys to DPAD — unify to MEDIA_NEXT/PREVIOUS like Y1.
+        sudo sed -i 's/^key 163[[:space:]].*/key 163   MEDIA_NEXT/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
+        sudo sed -i 's/^key 165[[:space:]].*/key 165   MEDIA_PREVIOUS/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
+    fi
     sudo cp "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
     sudo chmod 644 "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
     sudo chown root:root "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
 fi
 
-echo "==> AVRCP Bluetooth stack (Y1Bridge + mtkbt patches; hardware keylayout unchanged)"
-chmod +x "$SCRIPT_DIR/apply-avrcp-patches.sh"
-sudo "$SCRIPT_DIR/apply-avrcp-patches.sh" "$MOUNT_SYS"
+# Koensayr AVRCP patches target Y1 MT6572 MtkBt.odex/mtkbt layout. Y2 ATA (MT6582)
+# ships a different BT stack (517 KiB odex, no libextavrcp_jni.so) — patch sites do not match.
+if [ "$TYPE" = "y2" ]; then
+    echo "==> Skipping AVRCP stack patches (Y2 base — Y1-only mtkbt/MtkBt.odex layout)"
+else
+    echo "==> AVRCP Bluetooth stack (Y1Bridge + mtkbt patches; hardware keylayout unchanged)"
+    chmod +x "$SCRIPT_DIR/apply-avrcp-patches.sh"
+    sudo "$SCRIPT_DIR/apply-avrcp-patches.sh" "$MOUNT_SYS"
+fi
 
 install_solar_boot_assets "$BASE_DIR" "$MOUNT_SYS"
+
+if [ "$TYPE" = "y2" ]; then
+    echo "==> Install Y1 permissive su (Y2 stock base is unrooted; no Superuser.apk prompt)"
+    chmod +x "$SCRIPT_DIR/install-y1-su-system.sh"
+    sudo "$SCRIPT_DIR/install-y1-su-system.sh" "$MOUNT_SYS"
+fi
 
 echo "==> Patching userdata partition"
 while IFS= read -r apk; do
@@ -595,13 +767,24 @@ sudo chown root:root "$MOUNT_USER/data/switch-to-stock.sh" "$MOUNT_USER/data/swi
 audit_rom_contents "$BASE_DIR" "$MOUNT_SYS" "$MOUNT_USER"
 
 echo "==> Unmounting images"
+sync
 sudo umount "$MOUNT_SYS"
 sudo umount "$MOUNT_USER"
 MOUNT_SYS=""
 MOUNT_USER=""
 
-finalize_image_after_mount "$BASE_DIR/system.img" "$SYSTEM_MOUNT_SRC"
-finalize_image_after_mount "$BASE_DIR/userdata.img" "$USERDATA_MOUNT_SRC"
+if [ "$TYPE" = "y2" ]; then
+    # MTK SP Flash on MT6582: desparsed ext4 images flash slower but avoid sparse chunk DA failures.
+    finalize_image_raw "$BASE_DIR/system.img" "$SYSTEM_MOUNT_SRC"
+    finalize_image_raw "$BASE_DIR/userdata.img" "$USERDATA_MOUNT_SRC"
+    for _restore in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 \
+            preloader_eastaeon82_wet_kk.bin; do
+        [ -f "$PRISTINE_DIR/$_restore" ] && cp -a "$PRISTINE_DIR/$_restore" "$BASE_DIR/$_restore"
+    done
+else
+    finalize_image_after_mount "$BASE_DIR/system.img" "$SYSTEM_MOUNT_SRC"
+    finalize_image_after_mount "$BASE_DIR/userdata.img" "$USERDATA_MOUNT_SRC"
+fi
 
 rm -f "$BASE_DIR/rom.zip"
 rm -rf "$MOUNT_SYS" "$MOUNT_USER"
@@ -613,5 +796,9 @@ rm -f "$OUTPUT"
     cd "$BASE_DIR"
     zip -j -q "$OUTPUT" ./*
 )
+
+if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
+    chown "$SUDO_UID:$SUDO_GID" "$OUTPUT"
+fi
 
 echo "==> Built $OUTPUT ($(du -h "$OUTPUT" | awk '{print $1}'))"
