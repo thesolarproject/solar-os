@@ -73,7 +73,13 @@ jobs:
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-b-base/rom.zip"
           curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom.zip"
           test -f solar-rom/vendor/y1-su/su
-          echo "ROM base sources OK (Y1 type A/B + Y2 ATA + vendored y1-su; rockbox-y1 APK fetched at build)"
+          test -d solar-rom/vendor/xposed/api17-arm
+          test -d solar-rom/vendor/xposed/api19-arm
+          test -f solar-rom/vendor/xposed/XposedInstaller.apk || ./solar-rom/scripts/build-xposed-installer-apk.sh
+          test -f solar-rom/vendor/xposed/solar-context-bridge/SolarContextBridgeY1.apk || ./solar-rom/scripts/build-context-bridge-apk.sh
+          test -f solar-rom/vendor/xposed/solar-context-bridge/SolarContextBridgeY2.apk || ./solar-rom/scripts/build-context-bridge-apk.sh
+          test -f solar-rom/vendor/xposed/solar-theme-font/SolarThemeFont.apk || ./solar-rom/scripts/build-theme-font-apk.sh
+          echo "ROM base sources OK (Y1 type A/B + Y2 ATA + vendored y1-su + xposed; rockbox-y1 APK fetched at build)"
 
       - name: Decode platform signing keys
         env:
@@ -107,25 +113,14 @@ jobs:
       - name: Build ROM images
         env:
           SOLAR_GITHUB_REPO: thesolarproject/solar
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          SKIP_APK: "1"
         run: |
-          APK="$GITHUB_WORKSPACE/app/build/outputs/apk/release/app-release.apk"
-          test -f "$APK"
-          mkdir -p dist
-          chmod +x solar-rom/scripts/build-rom.sh \
-            solar-rom/scripts/install-y1-su-system.sh \
-            solar-rom/scripts/fetch-rockbox-y1-y2-assets.sh \
-            solar-rom/scripts/verify-y2-rom-flash.sh
-          ./solar-rom/scripts/build-rom.sh a --apk "$APK" "$GITHUB_WORKSPACE/dist/rom.zip"
-          ./solar-rom/scripts/build-rom.sh b --apk "$APK" "$GITHUB_WORKSPACE/dist/rom_type_b.zip"
-          ./solar-rom/scripts/build-rom.sh y2 --apk "$APK" "$GITHUB_WORKSPACE/dist/rom_y2.zip"
-          for z in dist/rom.zip dist/rom_type_b.zip dist/rom_y2.zip; do
-            test -s "$z" || { echo "::error::Missing or empty $z"; exit 1; }
-          done
-          unzip -l dist/rom.zip | grep -q MT6572_Android_scatter.txt
-          unzip -l dist/rom_type_b.zip | grep -q MT6572_Android_scatter.txt
-          unzip -l dist/rom_y2.zip | grep -q MT6582_Android_scatter.txt
-          ./solar-rom/scripts/verify-y2-rom-flash.sh dist/rom_y2.zip
-          echo "Y1 type A/B and Y2 ATA ROM zips built and verified"
+          chmod +x scripts/build-all-roms.sh scripts/ensure-platform-keystore.sh \
+            solar-rom/scripts/*.sh
+          ./scripts/build-all-roms.sh
+          echo "Y1 type A/B and Y2 ATA ROM zips built and verified (rooted, Rockbox-y1 + minimal Y2 patch)"
           ls -la dist/
 
       - name: Prepare release artifact list

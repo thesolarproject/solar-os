@@ -17,6 +17,11 @@ SYSTEM_APK_NAME="com.solar.launcher.apk"
 
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/solar-repo.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-root.sh"
+ensure_sudo_shim_when_root
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/lib-debug-log.sh"
 
 usage() {
     cat >&2 <<EOF
@@ -194,19 +199,33 @@ require_cmd() {
 # Y2 ATA stock base has no Rockbox; fetch org.rockbox.apk + librockbox.so from rockbox-y1 type-A base.
 install_rockbox_from_y1_base() {
     local mount_sys="$1"
-    if [ -f "$mount_sys/app/org.rockbox.apk" ] && [ -f "$mount_sys/lib/librockbox.so" ]; then
-        return 0
-    fi
-    chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh"
-    local cache
+    local cache patched staged_libs staged_rb
+    chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh" \
+        "$SCRIPT_DIR/patch-rockbox-y2.sh" \
+        "$SCRIPT_DIR/extract-rockbox-staged-assets.sh"
     cache="$("$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh")"
     [ -f "$cache/org.rockbox.apk" ] && [ -f "$cache/librockbox.so" ] \
         || die "fetch-rockbox-y1-y2-assets.sh did not populate org.rockbox.apk + librockbox.so"
-    echo "==> Y2 base lacks Rockbox — installing org.rockbox.apk + librockbox.so from rockbox-y1 type-A base"
-    sudo cp "$cache/org.rockbox.apk" "$mount_sys/app/org.rockbox.apk"
+    patched="$WORK_DIR/org.rockbox-y2.apk"
+    staged_libs="$WORK_DIR/rockbox-staged-libs"
+    staged_rb="$WORK_DIR/rockbox-staged-dot-rockbox"
+    echo "==> Y2 Rockbox — patch rockbox-y1 APK for Y2 platform cert + su -c"
+    "$SCRIPT_DIR/patch-rockbox-y2.sh" "$cache/org.rockbox.apk" "$patched"
+    "$SCRIPT_DIR/extract-rockbox-staged-assets.sh" "$patched" "$staged_libs" "$staged_rb"
+    echo "==> Installing patched org.rockbox.apk + staged libs/.rockbox"
+    sudo cp "$patched" "$mount_sys/app/org.rockbox.apk"
     sudo cp "$cache/librockbox.so" "$mount_sys/lib/librockbox.so"
+    sudo mkdir -p "$mount_sys/etc/solar/rockbox-libs" "$mount_sys/etc/solar/rockbox-dot-rockbox"
+    sudo cp -a "$staged_libs/." "$mount_sys/etc/solar/rockbox-libs/"
+    sudo cp -a "$staged_rb/." "$mount_sys/etc/solar/rockbox-dot-rockbox/"
     sudo chmod 644 "$mount_sys/app/org.rockbox.apk" "$mount_sys/lib/librockbox.so"
-    sudo chown root:root "$mount_sys/app/org.rockbox.apk" "$mount_sys/lib/librockbox.so"
+    sudo chmod -R 755 "$mount_sys/etc/solar/rockbox-libs" "$mount_sys/etc/solar/rockbox-dot-rockbox"
+    sudo chown -R root:root "$mount_sys/app/org.rockbox.apk" "$mount_sys/lib/librockbox.so" \
+        "$mount_sys/etc/solar/rockbox-libs" "$mount_sys/etc/solar/rockbox-dot-rockbox"
+    # #region agent log
+    debug_rom_log "A" "build-rom.sh:install_rockbox" "Y2 Rockbox installed" \
+        "patched_apk=$patched" "has_libmisc=$(unzip -l "$patched" 2>/dev/null | grep -c libmisc.so || echo 0)"
+    # #endregion
 }
 
 case "$TYPE" in
@@ -334,6 +353,29 @@ install_solar_boot_assets() {
     fi
 }
 
+# ponytail: stock Y2 ships zh-CN — force English default for Solar UI and stock apps.
+apply_english_build_prop() {
+    local sys_mount="$1"
+    local prop="$sys_mount/build.prop"
+    [ -f "$prop" ] || { echo "warn: missing $prop (locale not patched)" >&2; return 0; }
+    echo "==> Set default locale to English (build.prop)"
+    sudo sed -i 's/^ro\.product\.locale\.language=.*/ro.product.locale.language=en/' "$prop"
+    sudo sed -i 's/^ro\.product\.locale\.region=.*/ro.product.locale.region=US/' "$prop"
+    sudo sed -i 's/^ro\.product\.locale=.*/ro.product.locale=en-US/' "$prop"
+    sudo sed -i 's/^persist\.sys\.language=.*/persist.sys.language=en/' "$prop"
+    sudo sed -i 's/^persist\.sys\.country=.*/persist.sys.country=US/' "$prop"
+    sudo grep -q '^ro\.product\.locale\.language=' "$prop" \
+        || echo 'ro.product.locale.language=en' | sudo tee -a "$prop" >/dev/null
+    sudo grep -q '^ro\.product\.locale\.region=' "$prop" \
+        || echo 'ro.product.locale.region=US' | sudo tee -a "$prop" >/dev/null
+    sudo grep -q '^ro\.product\.locale=' "$prop" \
+        || echo 'ro.product.locale=en-US' | sudo tee -a "$prop" >/dev/null
+    sudo grep -q '^persist\.sys\.language=' "$prop" \
+        || echo 'persist.sys.language=en' | sudo tee -a "$prop" >/dev/null
+    sudo grep -q '^persist\.sys\.country=' "$prop" \
+        || echo 'persist.sys.country=US' | sudo tee -a "$prop" >/dev/null
+}
+
 audit_rom_contents() {
     local base_dir="$1"
     local sys_mount="$2"
@@ -386,6 +428,14 @@ audit_rom_contents() {
             echo "audit fail: /system/xbin/su not setuid (Y2 permissive root)" >&2
             errors=$((errors + 1))
         fi
+        if [ ! -x "$sys_mount/etc/init.d/99SuperSUDaemon" ]; then
+            echo "audit fail: /system/etc/init.d/99SuperSUDaemon missing (SuperSU daemon boot)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -x "$sys_mount/xbin/solar-rb-launch" ]; then
+            echo "audit fail: /system/xbin/solar-rb-launch missing (Rockbox Settings/FM/BT launch)" >&2
+            errors=$((errors + 1))
+        fi
         # Superuser.apk would re-enable grant prompts — Y1-style root omits it on purpose.
         if [ -f "$sys_mount/app/Superuser.apk" ]; then
             echo "audit fail: /system/app/Superuser.apk present (Y2 should use permissive su only)" >&2
@@ -411,8 +461,25 @@ audit_rom_contents() {
     if [ ! -f "$sys_mount/etc/init.d/99SolarInit.sh" ]; then
         echo "audit fail: 99SolarInit.sh missing (SD Music/Podcasts/Themes + TLS sanity)" >&2
         errors=$((errors + 1))
-    elif ! grep -q 'disable-rockbox-for-solar.sh' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
-        echo "audit fail: 99SolarInit must run disable-rockbox-for-solar.sh on first boot" >&2
+    elif ! grep -q 'apply-preferred-home-boot.sh' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
+        echo "audit fail: 99SolarInit must run apply-preferred-home-boot.sh on boot" >&2
+        errors=$((errors + 1))
+    fi
+
+    # Solar install-recovery runs init.d + early Xposed app_process apply on all ROM variants.
+    if [ ! -x "$sys_mount/etc/install-recovery.sh" ]; then
+        echo "audit fail: /system/etc/install-recovery.sh missing (init.rc flash_recovery boot chain)" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'app_process.xposed.staged' "$sys_mount/etc/install-recovery.sh" 2>/dev/null; then
+        echo "audit fail: install-recovery.sh missing early Xposed app_process apply" >&2
+        errors=$((errors + 1))
+    fi
+    if [ ! -x "$sys_mount/etc/install-recovery-2.sh" ]; then
+        echo "audit fail: /system/etc/install-recovery-2.sh missing (Solar init.d boot hooks)" >&2
+        errors=$((errors + 1))
+    fi
+    if [ ! -x "$sys_mount/etc/init.d/99SuperSUDaemon" ]; then
+        echo "audit fail: /system/etc/init.d/99SuperSUDaemon missing (daemonsu boot)" >&2
         errors=$((errors + 1))
     fi
 
@@ -445,16 +512,63 @@ audit_rom_contents() {
             echo "audit fail: org.rockbox.apk has ${rb_so_count:-0} native libs (expected >=35 from rockbox-y1 base)" >&2
             errors=$((errors + 1))
         fi
+        # grep -q closes the pipe early; with pipefail unzip gets SIGPIPE and falsely fails — use -c.
+        rb_misc_count=$(unzip -l "$sys_mount/app/org.rockbox.apk" 2>/dev/null \
+            | grep -c 'lib/armeabi/libmisc.so' || true)
+        if [ "${rb_misc_count:-0}" -lt 1 ]; then
+            echo "audit fail: org.rockbox.apk missing lib/armeabi/libmisc.so (asset bootstrap)" >&2
+            errors=$((errors + 1))
+        fi
+        # Y2: unpatched rockbox-y1 sharedUserId blocks PM install on MT6582 — mandatory in CI.
+        if [ "$TYPE" = "y2" ]; then
+            # shellcheck source=lib-android-tools.sh
+            source "$SCRIPT_DIR/lib-android-tools.sh"
+            AAPT="$(find_android_build_tool aapt)" || {
+                echo "audit fail: aapt required for Y2 org.rockbox.apk sharedUserId audit (set ANDROID_HOME)" >&2
+                errors=$((errors + 1))
+                AAPT=""
+            }
+            if [ -n "$AAPT" ] && "$AAPT" dump xmltree "$sys_mount/app/org.rockbox.apk" AndroidManifest.xml 2>/dev/null \
+                    | grep -q 'sharedUserId'; then
+                echo "audit fail: org.rockbox.apk still has sharedUserId (run patch-rockbox-y2.sh)" >&2
+                errors=$((errors + 1))
+            fi
+        fi
+    fi
+
+    if [ ! -f "$sys_mount/etc/solar/sync-rockbox-assets.sh" ]; then
+        echo "audit fail: /system/etc/solar/sync-rockbox-assets.sh missing (Rockbox plugin sync)" >&2
+        errors=$((errors + 1))
+    fi
+
+    if [ "$TYPE" = "y2" ]; then
+        if [ ! -f "$sys_mount/etc/solar/rockbox-y2-config.cfg" ]; then
+            echo "audit fail: /system/etc/solar/rockbox-y2-config.cfg missing (Y2 dual-storage)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -f "$sys_mount/etc/solar/rockbox-dot-rockbox/rocks/viewers/db_folder_select.rock" ]; then
+            echo "audit fail: staged rockbox-dot-rockbox missing db_folder_select.rock" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -f "$sys_mount/etc/solar/rockbox-libs/librockbox.so" ]; then
+            echo "audit fail: staged rockbox-libs missing librockbox.so" >&2
+            errors=$((errors + 1))
+        fi
+    fi
+
+    if [ ! -f "$sys_mount/etc/solar/apply-preferred-home-boot.sh" ]; then
+        echo "audit fail: /system/etc/solar/apply-preferred-home-boot.sh missing" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'persist.solar.home.target' "$sys_mount/etc/solar/apply-preferred-home-boot.sh" 2>/dev/null; then
+        echo "audit fail: apply-preferred-home-boot.sh must read persist.solar.home.target" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'SET_PREFERRED_HOME' "$sys_mount/etc/solar/apply-preferred-home-boot.sh" 2>/dev/null; then
+        echo "audit fail: apply-preferred-home-boot.sh must broadcast preferred HOME" >&2
+        errors=$((errors + 1))
     fi
 
     if [ ! -f "$sys_mount/etc/solar/disable-rockbox-for-solar.sh" ]; then
-        echo "audit fail: /system/etc/solar/disable-rockbox-for-solar.sh missing" >&2
-        errors=$((errors + 1))
-    elif ! grep -q 'pm disable' "$sys_mount/etc/solar/disable-rockbox-for-solar.sh" 2>/dev/null; then
-        echo "audit fail: disable-rockbox-for-solar.sh must pm disable org.rockbox" >&2
-        errors=$((errors + 1))
-    elif ! grep -q 'packages -d' "$sys_mount/etc/solar/disable-rockbox-for-solar.sh" 2>/dev/null; then
-        echo "audit fail: disable-rockbox-for-solar.sh must gate marker on Rockbox disabled state" >&2
+        echo "audit fail: /system/etc/solar/disable-rockbox-for-solar.sh missing (legacy forwarder)" >&2
         errors=$((errors + 1))
     fi
 
@@ -465,8 +579,8 @@ audit_rom_contents() {
             "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
         echo "audit fail: switch-to-stock.sh must not reboot (unified keymap)" >&2
         errors=$((errors + 1))
-    elif ! grep -q 'verify_rockbox_disabled' "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
-        echo "audit fail: switch-to-stock.sh must verify Rockbox disabled before enabling Solar" >&2
+    elif ! grep -q 'set_preferred_home' "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
+        echo "audit fail: switch-to-stock.sh must set preferred HOME for launcher switch" >&2
         errors=$((errors + 1))
     fi
 
@@ -512,8 +626,28 @@ audit_rom_contents() {
         errors=$((errors + 1))
     elif [ -f "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" ] && [ -f "$sys_mount/usr/keylayout/mtk-kpd.kl" ] \
             && ! cmp -s "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" "$sys_mount/usr/keylayout/mtk-kpd.kl"; then
-        echo "audit fail: mtk-tpd-kpd.kl must match mtk-kpd.kl (side keys 88/87, wheel 126/127)" >&2
+        echo "audit fail: mtk-tpd-kpd.kl must match mtk-kpd.kl" >&2
         errors=$((errors + 1))
+    elif [ "$TYPE" = "y2" ] && [ -f "$sys_mount/usr/keylayout/mtk-kpd.kl" ] \
+            && ! cmp -s "$sys_mount/usr/keylayout/mtk-kpd.kl" "$canon_kl"; then
+        echo "audit fail: Y2 mtk-kpd.kl must match $canon_name (same playbook as Generic/Stock/Rockbox)" >&2
+        errors=$((errors + 1))
+    elif [ "$TYPE" = "y2" ] && [ -f "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" ] \
+            && ! cmp -s "$sys_mount/usr/keylayout/mtk-tpd-kpd.kl" "$canon_kl"; then
+        echo "audit fail: Y2 mtk-tpd-kpd.kl must match $canon_name (wheel device on Y2)" >&2
+        errors=$((errors + 1))
+    fi
+
+    # Y2 GPIO map: 103/108 wheel, 105/106 side — reject accidental Y1 wheel lines on 105/106.
+    if [ "$TYPE" = "y2" ] && [ -f "$canon_kl" ]; then
+        if grep -qE '^key[[:space:]]+105[[:space:]]+MEDIA_PLAY' "$canon_kl" 2>/dev/null; then
+            echo "audit fail: Y2 $canon_name has Y1 wheel map on scancode 105 (expected MEDIA_PREVIOUS)" >&2
+            errors=$((errors + 1))
+        fi
+        if ! grep -qE '^key[[:space:]]+105[[:space:]]+MEDIA_PREVIOUS' "$canon_kl" 2>/dev/null; then
+            echo "audit fail: Y2 $canon_name missing MEDIA_PREVIOUS on scancode 105" >&2
+            errors=$((errors + 1))
+        fi
     fi
 
     if [ ! -f "$sys_mount/etc/init.d/99Y1ButtonScript" ]; then
@@ -540,6 +674,35 @@ audit_rom_contents() {
         echo "audit fail: logo.bin missing from ROM archive" >&2
         errors=$((errors + 1))
     fi
+
+    # Xposed Dalvik framework (all Solar ROM variants).
+    for xp in \
+        /bin/app_process.orig \
+        /framework/XposedBridge.jar \
+        /etc/solar/XposedBridge.jar \
+        /xposed.prop \
+        /app/XposedInstaller.apk \
+        /etc/init.d/99XposedInit.sh; do
+        if [ ! -f "$sys_mount$xp" ]; then
+            echo "audit fail: Xposed path missing: $xp" >&2
+            errors=$((errors + 1))
+        fi
+    done
+    if [ -f "$sys_mount/bin/app_process" ] && [ -f "$sys_mount/bin/app_process.orig" ] \
+            && cmp -s "$sys_mount/bin/app_process" "$sys_mount/bin/app_process.orig"; then
+        echo "audit fail: app_process identical to app_process.orig (Xposed not installed)" >&2
+        errors=$((errors + 1))
+    fi
+    if [ -f "$sys_mount/bin/app_process" ] && ! strings "$sys_mount/bin/app_process" 2>/dev/null | grep -q 'with Xposed support'; then
+        echo "audit fail: app_process missing Xposed support string" >&2
+        errors=$((errors + 1))
+    fi
+    if [ "$TYPE" = "y2" ]; then
+        [ -f "$sys_mount/app/SolarContextBridgeY2.apk" ] || { echo "audit fail: SolarContextBridgeY2.apk missing" >&2; errors=$((errors + 1)); }
+    else
+        [ -f "$sys_mount/app/SolarContextBridgeY1.apk" ] || { echo "audit fail: SolarContextBridgeY1.apk missing" >&2; errors=$((errors + 1)); }
+    fi
+    [ -f "$sys_mount/app/SolarThemeFont.apk" ] || { echo "audit fail: SolarThemeFont.apk missing" >&2; errors=$((errors + 1)); }
 
     if [ -n "$(find "$user_mount" -maxdepth 1 -name '*_launcher.apk' ! -name 'com.solar.launcher.apk' -print -quit 2>/dev/null)" ]; then
         echo "audit fail: legacy launcher APK in userdata" >&2
@@ -675,16 +838,25 @@ sudo mkdir -p "$MOUNT_SYS/etc/solar"
 sudo cp "$SCRIPT_DIR/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-stock.sh"
 sudo cp "$SCRIPT_DIR/switch-to-rockbox.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh"
 sudo cp "$SCRIPT_DIR/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh"
+sudo cp "$SCRIPT_DIR/sync-rockbox-assets.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-assets.sh"
+sudo cp "$REPO_ROOT/solar-rom/system/rockbox-y2-config.cfg" "$MOUNT_SYS/etc/solar/rockbox-y2-config.cfg"
 sudo cp "$SCRIPT_DIR/sync-y1-keymap.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh"
 sudo cp "$SCRIPT_DIR/disable-rockbox-for-solar.sh" "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh"
+sudo cp "$SCRIPT_DIR/apply-preferred-home-boot.sh" "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh"
 sudo cp "$SCRIPT_DIR/solar-usb-recovery-agent.sh" "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
 sudo chmod 755 "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
-    "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
+    "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-assets.sh" \
+    "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
+    "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh" \
     "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
+sudo chmod 644 "$MOUNT_SYS/etc/solar/rockbox-y2-config.cfg"
 sudo chown root:root "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
-    "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
+    "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-assets.sh" \
+    "$MOUNT_SYS/etc/solar/rockbox-y2-config.cfg" \
+    "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
+    "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh" \
     "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
 
 sudo cp "$REPO_ROOT/solar-rom/system/99Y1ButtonScript" "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
@@ -711,20 +883,29 @@ sudo chmod 644 "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Roc
     "$MOUNT_SYS/usr/keylayout/Generic.kl" "$MOUNT_SYS/usr/keylayout/$CANONICAL_KL_NAME"
 sudo chown root:root "$MOUNT_SYS/usr/keylayout/Stock.kl" "$MOUNT_SYS/usr/keylayout/Rockbox.kl" \
     "$MOUNT_SYS/usr/keylayout/Generic.kl" "$MOUNT_SYS/usr/keylayout/$CANONICAL_KL_NAME"
-# Patch wheel scancodes in mtk-kpd.kl without replacing GPIO key map; mtk-tpd-kpd uses the same file.
-# ponytail: sed -i writes a temp file beside the target — needs sudo on mounted system.img (root-owned dir).
-if [ -f "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" ]; then
+# Y1: patch wheel lines in stock mtk-kpd; Y2: always install canonical on GPIO + tpd (parity with Generic trio).
+if [ "$TYPE" = "y2" ]; then
+    sudo cp "$CANONICAL_KL" "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
+    sudo cp "$CANONICAL_KL" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
+    sudo chmod 644 "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
+    sudo chown root:root "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
+elif [ -f "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" ]; then
     sudo sed -i 's/^key 105[[:space:]].*/key 105   MEDIA_PLAY/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
     sudo sed -i 's/^key 106[[:space:]].*/key 106   MEDIA_PAUSE/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
-    if [ "$TYPE" = "y2" ]; then
-        # Y2 stock mtk-kpd maps side keys to DPAD — unify to MEDIA_NEXT/PREVIOUS like Y1.
-        sudo sed -i 's/^key 163[[:space:]].*/key 163   MEDIA_NEXT/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
-        sudo sed -i 's/^key 165[[:space:]].*/key 165   MEDIA_PREVIOUS/' "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl"
-    fi
     sudo cp "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
     sudo chmod 644 "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
     sudo chown root:root "$MOUNT_SYS/usr/keylayout/mtk-kpd.kl" "$MOUNT_SYS/usr/keylayout/mtk-tpd-kpd.kl"
 fi
+# #region agent log
+debug_rom_log "C" "build-rom.sh:keylayout" "canonical keylayout installed" \
+    "type=$TYPE" "canon=$CANONICAL_KL_NAME" "generic=$(cmp -s "$CANONICAL_KL" "$MOUNT_SYS/usr/keylayout/Generic.kl" && echo match || echo differ)"
+# #endregion
+
+apply_english_build_prop "$MOUNT_SYS"
+# #region agent log
+debug_rom_log "E" "build-rom.sh:apply_english" "build.prop locale patched" \
+    "type=$TYPE" "locale=$(grep -m1 '^ro.product.locale=' "$MOUNT_SYS/build.prop" 2>/dev/null || echo missing)"
+# #endregion
 
 # Koensayr AVRCP patches target Y1 MT6572 MtkBt.odex/mtkbt layout. Y2 ATA (MT6582)
 # ships a different BT stack (517 KiB odex, no libextavrcp_jni.so) — patch sites do not match.
@@ -738,11 +919,34 @@ fi
 
 install_solar_boot_assets "$BASE_DIR" "$MOUNT_SYS"
 
+# Solar install-recovery + daemonsu boot chain — Y1 rockbox base has su but stock install-recovery
+# skips Solar init.d and early Xposed staged app_process apply; Y2 ATA base is unrooted.
+echo "==> Install Solar boot recovery chain (install-recovery + init.d hooks)"
+chmod +x "$SCRIPT_DIR/install-y1-su-system.sh"
+sudo "$SCRIPT_DIR/install-y1-su-system.sh" "$MOUNT_SYS"
 if [ "$TYPE" = "y2" ]; then
-    echo "==> Install Y1 permissive su (Y2 stock base is unrooted; no Superuser.apk prompt)"
-    chmod +x "$SCRIPT_DIR/install-y1-su-system.sh"
-    sudo "$SCRIPT_DIR/install-y1-su-system.sh" "$MOUNT_SYS"
+    echo "==> Install Rockbox system() launcher shim"
+    sudo install -m 755 -o root -g root \
+        "$REPO_ROOT/solar-rom/system/solar-rb-launch" "$MOUNT_SYS/xbin/solar-rb-launch"
+    # #region agent log
+    debug_rom_log "D" "build-rom.sh:install_su" "Y1 permissive su baked" \
+        "su_mode=$(stat -c%a "$MOUNT_SYS/xbin/su" 2>/dev/null || echo missing)"
+    # #endregion
 fi
+
+# Xposed Dalvik — API 17 for Y1 type A/B, API 19 for Y2 (same arm app_process binary).
+case "$TYPE" in
+    a|b) XPOSED_API=17 ;;
+    y2)  XPOSED_API=19 ;;
+esac
+if [ ! -f "$SCRIPT_DIR/../vendor/xposed/XposedInstaller.apk" ]; then
+    echo "==> Build XposedInstaller.apk (first run)"
+    chmod +x "$SCRIPT_DIR/build-xposed-installer-apk.sh"
+    "$SCRIPT_DIR/build-xposed-installer-apk.sh"
+fi
+echo "==> Install Xposed framework (API $XPOSED_API)"
+chmod +x "$SCRIPT_DIR/install-xposed-system.sh"
+sudo "$SCRIPT_DIR/install-xposed-system.sh" "$MOUNT_SYS" "$XPOSED_API"
 
 echo "==> Patching userdata partition"
 while IFS= read -r apk; do
