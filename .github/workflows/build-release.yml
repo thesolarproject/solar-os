@@ -1,4 +1,5 @@
 name: Build Solar APK and ROMs
+# 2026-07-05 — CI records SOURCE_DATE_EPOCH at checkout (build start UTC), before prepare-release.sh.
 
 on:
   push:
@@ -73,6 +74,8 @@ jobs:
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-b-base/rom.zip"
           curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom.zip"
           test -f solar-rom/vendor/y1-su/su
+          test -f solar-rom/vendor/y2-flash/EBR2
+          test -f solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt
           test -d solar-rom/vendor/xposed/api17-arm
           test -d solar-rom/vendor/xposed/api19-arm
           test -f solar-rom/vendor/xposed/XposedInstaller.apk || ./solar-rom/scripts/build-xposed-installer-apk.sh
@@ -98,8 +101,15 @@ jobs:
 
       - name: Sync and verify Y1 scripts (ROM sources → APK assets)
         run: |
-          chmod +x solar-rom/scripts/sync-y1-assets.sh solar-rom/scripts/verify-y1-assets.sh
+          chmod +x solar-rom/scripts/sync-y1-assets.sh solar-rom/scripts/verify-y1-assets.sh \
+            solar-rom/scripts/sync-platform-assets.sh solar-rom/scripts/verify-platform-assets.sh
           ./solar-rom/scripts/sync-y1-assets.sh
+          ./solar-rom/scripts/sync-platform-assets.sh
+
+      - name: Xposed ROM parity unit tests
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest --tests "com.solar.launcher.XposedParityVerifyScriptsTest" --tests "com.solar.launcher.Y2MtkFlashManifestTest" -q
 
       - name: Build signed release APK
         env:
@@ -120,7 +130,8 @@ jobs:
           chmod +x scripts/build-all-roms.sh scripts/ensure-platform-keystore.sh \
             solar-rom/scripts/*.sh
           ./scripts/build-all-roms.sh
-          echo "Y1 type A/B and Y2 ATA ROM zips built and verified (rooted, Rockbox-y1 + minimal Y2 patch)"
+          echo "Y1 type A/B and Y2 ATA ROM zips built — verify-y1/y2 + verify-xposed (API 17+19) on all three zips"
+          echo "Y2 rom_y2.zip: desparsed ext4 system/userdata, EBR2 bundled, MTK scatter offsets verified"
           ls -la dist/
 
       - name: Prepare release artifact list

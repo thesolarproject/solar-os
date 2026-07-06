@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Pre-flash sanity check for rom_y2.zip (MT6582 / MT6582_Android_scatter.txt).
+# 2026-07-06 — Pre-flash sanity check for rom_y2.zip (MT6582 / MT6582_Android_scatter.txt).
+# Ensures images work with MTKclient scatter wo + SP Flash Tool (flashing tools).
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST="${SCRIPT_DIR}/../config/y2-mtk-flash-manifest.txt"
 ZIP="${1:-rom_y2.zip}"
 die() { echo "error: $*" >&2; exit 1; }
 
 [ -f "$ZIP" ] || die "usage: $0 [rom_y2.zip]"
+[ -f "$MANIFEST" ] || die "missing $MANIFEST"
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing $1"; }
 require_cmd unzip
@@ -16,13 +20,35 @@ is_sparse() {
     [ "$magic" = "3aff26ed" ]
 }
 
+scatter_linear_addr() {
+    local scatter="$1"
+    local part_name="$2"
+    awk -v name="$part_name" '
+        $0 ~ "partition_name: " name "$" { found=1; next }
+        found && $0 ~ /linear_start_addr:/ {
+            sub(/.*linear_start_addr:[[:space:]]*/, "")
+            print
+            exit
+        }
+    ' "$scatter"
+}
+
 echo "==> Verify $ZIP ($(du -h "$ZIP" | awk '{print $1}'))"
 
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
-unzip -q "$ZIP" MT6582_Android_scatter.txt boot.img system.img userdata.img -d "$tmpdir"
 
-[ -f "$tmpdir/MT6582_Android_scatter.txt" ] || die "missing MT6582_Android_scatter.txt"
+required=(
+    MT6582_Android_scatter.txt
+    preloader_eastaeon82_wet_kk.bin
+    MBR EBR1 EBR2
+    logo.bin lk.bin boot.img recovery.img system.img userdata.img
+)
+unzip -q "$ZIP" "${required[@]}" -d "$tmpdir"
+
+for f in "${required[@]}"; do
+    [ -f "$tmpdir/$f" ] || die "missing $f in zip (required for MTKclient + SP Flash Y2 install)"
+done
 
 boot_sz=$(stat -c%s "$tmpdir/boot.img")
 if [ "$boot_sz" -lt 5700000 ] || [ "$boot_sz" -gt 5900000 ]; then
@@ -32,45 +58,63 @@ fi
 sys_path="$tmpdir/system.img"
 user_path="$tmpdir/userdata.img"
 
+require_cmd tune2fs
+
 if is_sparse "$sys_path"; then
-    require_cmd simg2img
-    require_cmd tune2fs
-    sys_raw="$tmpdir/system.raw"
-    simg2img "$sys_path" "$sys_raw"
-    tune2fs -l "$sys_raw" >/dev/null || die "system.img sparse round-trip failed"
-    sys_kind="sparse"
-    sys_detail="$(du -h "$sys_raw" | awk '{print $1}') ext4 expanded"
-else
-    require_cmd tune2fs
-    tune2fs -l "$sys_path" >/dev/null || die "system.img is not valid ext4"
-    sys_kind="desparsed ext4"
-    sys_detail="$(du -h "$sys_path" | awk '{print $1}')"
+    die "system.img is Android sparse — rebuild rom_y2.zip (Y2 ships desparsed ext4 for MTKclient wo)"
+fi
+if is_sparse "$user_path"; then
+    die "userdata.img is Android sparse — rebuild rom_y2.zip (MTKclient wo needs raw ext4, not sparse container)"
 fi
 
-if is_sparse "$user_path"; then
-    require_cmd simg2img
-    require_cmd tune2fs
-    user_raw="$tmpdir/user.raw"
-    simg2img "$user_path" "$user_raw"
-    tune2fs -l "$user_raw" >/dev/null || die "userdata.img sparse round-trip failed"
-    user_kind="sparse"
-    user_detail="$(du -h "$user_raw" | awk '{print $1}') ext4 expanded"
-    if [ "$(stat -c%s "$user_path")" -lt 5000000 ]; then
-        die "userdata.img sparse is only $(stat -c%s "$user_path") bytes — re-extract from a fresh rom_y2.zip build"
-    fi
-else
-    require_cmd tune2fs
-    tune2fs -l "$user_path" >/dev/null || die "userdata.img is not valid ext4"
-    user_kind="desparsed ext4"
-    user_detail="$(du -h "$user_path" | awk '{print $1}')"
+tune2fs -l "$sys_path" >/dev/null || die "system.img is not valid ext4"
+tune2fs -l "$user_path" >/dev/null || die "userdata.img is not valid ext4"
+
+sys_uuid=$(tune2fs -l "$sys_path" 2>/dev/null | awk '/Filesystem UUID/ {print $3}')
+user_uuid=$(tune2fs -l "$user_path" 2>/dev/null | awk '/Filesystem UUID/ {print $3}')
+if [ -n "$sys_uuid" ] && [ "$sys_uuid" = "$user_uuid" ]; then
+    die "system.img and userdata.img share UUID $sys_uuid — run tune2fs -U random on one image before flash"
 fi
+
+sys_bytes=$(stat -c%s "$sys_path")
+user_bytes=$(stat -c%s "$user_path")
+if [ "$sys_bytes" -lt 400000000 ]; then
+    die "system.img is only ${sys_bytes} bytes — expected desparsed ext4 ~800MB+ after Solar bake"
+fi
+if [ "$user_bytes" -lt 500000000 ]; then
+    die "userdata.img is only ${user_bytes} bytes — expected desparsed ext4 ~800MB (sparse zip is ~15MB)"
+fi
+# 2026-07-06 — USRDATA partition_size in MT6582 scatter is 0x32000000; raw image must not exceed EMMC slot.
+USRDATA_PARTITION_MAX=$((0x32000000))
+if [ "$user_bytes" -gt "$USRDATA_PARTITION_MAX" ]; then
+    die "userdata.img is ${user_bytes} bytes — exceeds USRDATA partition ceiling 0x32000000 (${USRDATA_PARTITION_MAX})"
+fi
+
+scatter="$tmpdir/MT6582_Android_scatter.txt"
+while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    [ -n "$line" ] || continue
+    fname="${line%%:*}"
+    expected="${line#*:}"
+    case "$fname" in
+        logo.bin) scatter_part=LOGO ;;
+        lk.bin) scatter_part=UBOOT ;;
+        boot.img) scatter_part=BOOTIMG ;;
+        recovery.img) scatter_part=RECOVERY ;;
+        system.img) scatter_part=ANDROID ;;
+        userdata.img) scatter_part=USRDATA ;;
+        *) continue ;;
+    esac
+    actual=$(scatter_linear_addr "$scatter" "$scatter_part")
+    [ -n "$actual" ] || die "scatter missing linear_start_addr for $scatter_part ($fname)"
+    if [ "$(printf '%s' "$actual" | tr 'A-F' 'a-f')" != "$(printf '%s' "$expected" | tr 'A-F' 'a-f')" ]; then
+        die "scatter $scatter_part linear_start_addr is $actual (expected $expected for MTKclient wo)"
+    fi
+done < "$MANIFEST"
 
 echo "  boot.img        ${boot_sz} bytes (MT6582 stock)"
-echo "  system.img      $(stat -c%s "$sys_path") bytes ($sys_kind, $sys_detail)"
-echo "  userdata.img    $(stat -c%s "$user_path") bytes ($user_kind, $user_detail)"
-
-if [ "$sys_kind" = "sparse" ]; then
-    echo "warn: system.img is still sparse — rebuild rom_y2.zip (Y2 now ships desparsed ext4 by default)"
-fi
-
-echo "==> OK for SP Flash Tool (scatter: MT6582_Android_scatter.txt from zip or extract dir)"
+echo "  system.img      ${sys_bytes} bytes (desparsed ext4, $(du -h "$sys_path" | awk '{print $1}'))"
+echo "  userdata.img    ${user_bytes} bytes (desparsed ext4, $(du -h "$user_path" | awk '{print $1}'))"
+echo "  flash bundle    MBR EBR1 EBR2 preloader + MT6582 scatter offsets OK"
+echo "==> OK for MTKclient scatter wo + SP Flash Tool (MT6582_Android_scatter.txt)"

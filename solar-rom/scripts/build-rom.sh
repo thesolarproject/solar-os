@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Build a Solar launcher ROM from Y1 type-A/B or Y2 ATA base firmware.
+# 2026-07-05 — Assembles Solar ROM zips (a/b/y2) from base firmware + Solar APK + platform bake.
+# 2026-07-06 — Y2 ships desparsed ext4 system/userdata (MTKclient wo), bundles EBR2, scatter offsets in
+#   solar-rom/config/y2-mtk-flash-manifest.txt (verify-y2-rom-flash.sh in CI).
+# APK/ROM parity: must call install-xposed-system.sh for all three types; audit_rom_contents gates Xposed.
+# When changing: verify-y1/y2-rom-contents.sh + verify-xposed-rom-contents.sh; lib-xposed-install.sh paths.
+# Reversal: skip Xposed install block; ROM ships without framework (APK prep cannot fully self-heal).
 # Usage: build-rom.sh <a|b|y2> --apk PATH [output.zip]
 set -euo pipefail
 
@@ -160,6 +165,14 @@ finalize_image_raw() {
     fi
 }
 
+# 2026-07-06 — Y2 system+userdata must not share one ext4 UUID (init/vold confusion on MT6582).
+assign_ext4_unique_uuid() {
+    local img="$1"
+    require_cmd tune2fs
+    tune2fs -U random "$img" >/dev/null
+    echo "==> Assigned unique ext4 UUID to $(basename "$img")" >&2
+}
+
 finalize_image_after_mount() {
     local shipped_path="$1"
     local mount_src="$2"
@@ -196,11 +209,44 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+# 2026-07-05 — Y2 ATA base omits MediaTek FM; bake FMRadio.apk + libfm* from Y1 type-A (Settings FM entry).
+install_fm_from_y1_base() {
+    local mount_sys="$1"
+    local cache so base
+    chmod +x "$SCRIPT_DIR/fetch-fm-mtk-from-y1-base.sh"
+    cache="$("$SCRIPT_DIR/fetch-fm-mtk-from-y1-base.sh")"
+    [ -f "$cache/FMRadio.apk" ] && [ -f "$cache/libfmjni.so" ] \
+        || die "fetch-fm-mtk-from-y1-base.sh did not populate FMRadio.apk + libfmjni.so"
+    if [ -f "$mount_sys/app/FMRadio.apk" ] || [ -f "$mount_sys/priv-app/FMRadio.apk" ]; then
+        echo "==> MediaTek FMRadio.apk already on /system — refreshing libfm* only"
+    else
+        echo "==> Installing FMRadio.apk from Y1 base (Settings → FM Radio + Solar FmEngine bind)"
+        sudo cp "$cache/FMRadio.apk" "$mount_sys/app/FMRadio.apk"
+        sudo chmod 644 "$mount_sys/app/FMRadio.apk"
+        sudo chown root:root "$mount_sys/app/FMRadio.apk"
+        if [ -f "$cache/FMRadio.odex" ]; then
+            sudo cp "$cache/FMRadio.odex" "$mount_sys/app/FMRadio.odex"
+            sudo chmod 644 "$mount_sys/app/FMRadio.odex"
+            sudo chown root:root "$mount_sys/app/FMRadio.odex"
+        fi
+    fi
+    for so in "$cache"/libfm*.so; do
+        [ -f "$so" ] || continue
+        base="$(basename "$so")"
+        echo "  installing /system/lib/$base"
+        sudo cp "$so" "$mount_sys/lib/$base"
+        sudo chmod 644 "$mount_sys/lib/$base"
+        sudo chown root:root "$mount_sys/lib/$base"
+    done
+}
+
 # Y2 ATA stock base has no Rockbox; fetch org.rockbox.apk + librockbox.so from rockbox-y1 type-A base.
 install_rockbox_from_y1_base() {
     local mount_sys="$1"
     local cache patched staged_libs staged_rb
     chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh" \
+        "$SCRIPT_DIR/build-rockbox-solar.sh" \
+        "$SCRIPT_DIR/fetch-rockbox-y1-source.sh" \
         "$SCRIPT_DIR/patch-rockbox-y2.sh" \
         "$SCRIPT_DIR/extract-rockbox-staged-assets.sh"
     cache="$("$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh")"
@@ -209,8 +255,8 @@ install_rockbox_from_y1_base() {
     patched="$WORK_DIR/org.rockbox-y2.apk"
     staged_libs="$WORK_DIR/rockbox-staged-libs"
     staged_rb="$WORK_DIR/rockbox-staged-dot-rockbox"
-    echo "==> Y2 Rockbox — patch rockbox-y1 APK for Y2 platform cert + su -c"
-    "$SCRIPT_DIR/patch-rockbox-y2.sh" "$cache/org.rockbox.apk" "$patched"
+    echo "==> Y2 Rockbox — manifest-only resign + Xposed RockboxCompatHooks + staged lib patch"
+    "$SCRIPT_DIR/build-rockbox-solar.sh" "$patched" y2
     "$SCRIPT_DIR/extract-rockbox-staged-assets.sh" "$patched" "$staged_libs" "$staged_rb"
     echo "==> Installing patched org.rockbox.apk + staged libs/.rockbox"
     sudo cp "$patched" "$mount_sys/app/org.rockbox.apk"
@@ -247,6 +293,8 @@ case "$TYPE" in
         # Fail fast before downloading Y2 base if vendored Y1 su is missing.
         [ -f "$REPO_ROOT/solar-rom/vendor/y1-su/su" ] \
             || die "missing solar-rom/vendor/y1-su/su — run solar-rom/scripts/extract-y1-su-vendor.sh"
+        [ -f "$REPO_ROOT/solar-rom/vendor/y2-flash/EBR2" ] \
+            || die "missing solar-rom/vendor/y2-flash/EBR2 (SP Flash index 14 / MTK Y2 flash bundle)"
         ;;
     *)
         die "unknown type: $TYPE"
@@ -391,6 +439,15 @@ audit_rom_contents() {
         fi
     done
 
+    if [ "$TYPE" = "y2" ]; then
+        for required in MBR EBR1 EBR2 preloader_eastaeon82_wet_kk.bin; do
+            if [ ! -f "$base_dir/$required" ]; then
+                echo "audit fail: missing $required in ROM archive (MTK/SP Flash Y2 bundle)" >&2
+                errors=$((errors + 1))
+            fi
+        done
+    fi
+
     if find "$sys_mount/app" "$sys_mount/priv-app" -iname '*innioasis*' 2>/dev/null | grep -q .; then
         echo "audit fail: stock launcher APK still present under /system/app" >&2
         errors=$((errors + 1))
@@ -464,6 +521,15 @@ audit_rom_contents() {
     elif ! grep -q 'apply-preferred-home-boot.sh' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
         echo "audit fail: 99SolarInit must run apply-preferred-home-boot.sh on boot" >&2
         errors=$((errors + 1))
+    elif ! grep -q 'disable-large-font-accessibility.sh' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
+        echo "audit fail: 99SolarInit must reset large-font accessibility on boot" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'enable-gpu-performance.sh' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
+        echo "audit fail: 99SolarInit must enable GPU rendering + disable HW overlays on boot" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'SolarInputMethodService' "$sys_mount/etc/init.d/99SolarInit.sh" 2>/dev/null; then
+        echo "audit fail: 99SolarInit must set default SolarInputMethodService" >&2
+        errors=$((errors + 1))
     fi
 
     # Solar install-recovery runs init.d + early Xposed app_process apply on all ROM variants.
@@ -502,6 +568,44 @@ audit_rom_contents() {
     if ! find "$sys_mount/lib" -maxdepth 1 -name 'libfm*.so' 2>/dev/null | grep -q . \
             && ! find "$sys_mount" \( -iname '*mediatek*fm*' -o -iname '*FMRadio*' \) 2>/dev/null | grep -q .; then
         echo "audit warn: no libfm* or MediaTek FM package found on /system (hardware FM may be unavailable)" >&2
+    fi
+    if [ ! -f "$sys_mount/lib/libfmjni.so" ]; then
+        echo "audit fail: /system/lib/libfmjni.so missing (MediaTek FM JNI for FMRadio.apk)" >&2
+        errors=$((errors + 1))
+    fi
+    if [ ! -f "$sys_mount/app/FMRadio.apk" ] && [ ! -f "$sys_mount/priv-app/FMRadio.apk" ]; then
+        echo "audit fail: FMRadio.apk stripped (Solar FM binds com.mediatek.FMRadio service)" >&2
+        errors=$((errors + 1))
+    fi
+
+    # 2026-07-05 — Every surviving APK basename must be on curated allowlist (debloat regression guard).
+    allowlist="$REPO_ROOT/solar-rom/config/system-app-allowlist.txt"
+    if [ ! -f "$allowlist" ]; then
+        echo "audit fail: missing $allowlist" >&2
+        errors=$((errors + 1))
+    else
+        declare -A _audit_keep=()
+        while IFS= read -r _line || [ -n "$_line" ]; do
+            _line="${_line%%#*}"
+            _line="$(echo "$_line" | tr -d '[:space:]')"
+            [ -n "$_line" ] || continue
+            _audit_keep["$_line"]=1
+        done < "$allowlist"
+        for _apkdir in app priv-app; do
+            [ -d "$sys_mount/$_apkdir" ] || continue
+            for _apk in "$sys_mount/$_apkdir"/*.apk; do
+                [ -e "$_apk" ] || continue
+                _base="$(basename "$_apk")"
+                if [ -z "${_audit_keep[$_base]+x}" ]; then
+                    echo "audit fail: non-allowlisted APK /system/$_apkdir/$_base" >&2
+                    errors=$((errors + 1))
+                fi
+            done
+        done
+        if [ ! -f "$sys_mount/app/LatinIME.apk" ]; then
+            echo "audit fail: LatinIME.apk missing (future Solar IME fallback)" >&2
+            errors=$((errors + 1))
+        fi
     fi
 
     # ponytail: codec plugins ship inside org.rockbox.apk (lib/armeabi/*.so) — must survive ROM build.
@@ -564,6 +668,23 @@ audit_rom_contents() {
         errors=$((errors + 1))
     elif ! grep -q 'SET_PREFERRED_HOME' "$sys_mount/etc/solar/apply-preferred-home-boot.sh" 2>/dev/null; then
         echo "audit fail: apply-preferred-home-boot.sh must broadcast preferred HOME" >&2
+        errors=$((errors + 1))
+    fi
+    if [ ! -f "$sys_mount/etc/solar/disable-large-font-accessibility.sh" ]; then
+        echo "audit fail: /system/etc/solar/disable-large-font-accessibility.sh missing" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'font_scale' "$sys_mount/etc/solar/disable-large-font-accessibility.sh" 2>/dev/null; then
+        echo "audit fail: disable-large-font-accessibility.sh must reset font_scale" >&2
+        errors=$((errors + 1))
+    fi
+    if [ ! -f "$sys_mount/etc/solar/enable-gpu-performance.sh" ]; then
+        echo "audit fail: /system/etc/solar/enable-gpu-performance.sh missing" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'force_gpu_rendering' "$sys_mount/etc/solar/enable-gpu-performance.sh" 2>/dev/null; then
+        echo "audit fail: enable-gpu-performance.sh must set force_gpu_rendering" >&2
+        errors=$((errors + 1))
+    elif ! grep -q 'SurfaceFlinger' "$sys_mount/etc/solar/enable-gpu-performance.sh" 2>/dev/null; then
+        echo "audit fail: enable-gpu-performance.sh must disable HW overlays via SurfaceFlinger" >&2
         errors=$((errors + 1))
     fi
 
@@ -703,6 +824,47 @@ audit_rom_contents() {
         [ -f "$sys_mount/app/SolarContextBridgeY1.apk" ] || { echo "audit fail: SolarContextBridgeY1.apk missing" >&2; errors=$((errors + 1)); }
     fi
     [ -f "$sys_mount/app/SolarThemeFont.apk" ] || { echo "audit fail: SolarThemeFont.apk missing" >&2; errors=$((errors + 1)); }
+    [ -f "$sys_mount/app/SolarRockboxIme.apk" ] || { echo "audit fail: SolarRockboxIme.apk missing" >&2; errors=$((errors + 1)); }
+    if [ "$TYPE" = "y2" ]; then
+        [ -f "$sys_mount/app/SolarRockboxCompat.apk" ] || { echo "audit fail: SolarRockboxCompat.apk missing" >&2; errors=$((errors + 1)); }
+    fi
+    if [ -f "$sys_mount/etc/init.d/99XposedInit.sh" ]; then
+        if ! grep -q 'com.solar.launcher.xposed.themefont' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.themefont" >&2
+            errors=$((errors + 1))
+        fi
+        if ! grep -q 'com.solar.launcher.xposed.rockbox.ime' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.ime" >&2
+            errors=$((errors + 1))
+        fi
+        if [ "$TYPE" = "y2" ]; then
+            if ! grep -q 'com.solar.launcher.xposed.bridge.y2' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+                echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.bridge.y2" >&2
+                errors=$((errors + 1))
+            fi
+            if ! grep -q 'com.solar.launcher.xposed.rockbox.compat' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+                echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.compat" >&2
+                errors=$((errors + 1))
+            fi
+        else
+            if ! grep -q 'com.solar.launcher.xposed.bridge.y1' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+                echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.bridge.y1" >&2
+                errors=$((errors + 1))
+            fi
+        fi
+        if ! grep -q '_xposed_set_module_enabled_in_prefs' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh missing safe enabled_modules merge helper" >&2
+            errors=$((errors + 1))
+        fi
+        if ! grep -q '_xposed_repair_enabled_modules_xml' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh must repair enabled_modules.xml" >&2
+            errors=$((errors + 1))
+        fi
+        if grep -Fq "grep -v '</map>' \"\$PREFS\"" "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh uses unsafe enabled_modules merge" >&2
+            errors=$((errors + 1))
+        fi
+    fi
 
     if [ -n "$(find "$user_mount" -maxdepth 1 -name '*_launcher.apk' ! -name 'com.solar.launcher.apk' -print -quit 2>/dev/null)" ]; then
         echo "audit fail: legacy launcher APK in userdata" >&2
@@ -763,6 +925,11 @@ curl -fsSL -o "$BASE_DIR/rom.zip" "$BASE_URL"
 unzip -q "$BASE_DIR/rom.zip" -d "$BASE_DIR"
 normalize_firmware_layout
 
+if [ "$TYPE" = "y2" ] && [ ! -f "$BASE_DIR/EBR2" ]; then
+    echo "==> Bundling EBR2 (missing from Y2 ATA base — required for SP Flash index 14)"
+    cp "$REPO_ROOT/solar-rom/vendor/y2-flash/EBR2" "$BASE_DIR/EBR2"
+fi
+
 [ -f "$BASE_DIR/system.img" ] || die "system.img not found under $BASE_DIR after unzip"
 [ -f "$BASE_DIR/userdata.img" ] || die "userdata.img not found under $BASE_DIR after unzip"
 
@@ -770,7 +937,7 @@ normalize_firmware_layout
 PRISTINE_DIR="$WORK_DIR/pristine"
 if [ "$TYPE" = "y2" ]; then
     mkdir -p "$PRISTINE_DIR"
-    for _pristine in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 \
+    for _pristine in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 EBR2 \
             preloader_eastaeon82_wet_kk.bin userdata.img system.img; do
         [ -f "$BASE_DIR/$_pristine" ] && cp -a "$BASE_DIR/$_pristine" "$PRISTINE_DIR/$_pristine"
     done
@@ -807,6 +974,19 @@ else
     done
 fi
 
+# 2026-07-05 — Aggressive debloat before Solar/Xposed APKs land; allowlist keeps FM, Settings, BT, Rockbox path.
+ALLOWLIST="$REPO_ROOT/solar-rom/config/system-app-allowlist.txt"
+[ -f "$ALLOWLIST" ] || die "missing $ALLOWLIST (system APK allowlist)"
+echo "==> Strip non-essential system APKs (allowlist)"
+chmod +x "$SCRIPT_DIR/strip-nonessential-system-apps.sh"
+sudo "$SCRIPT_DIR/strip-nonessential-system-apps.sh" "$MOUNT_SYS" "$TYPE" "$ALLOWLIST"
+
+# 2026-07-05 — Y2 ATA has no MTK FM; Y1 keeps base FMRadio via allowlist — repair if strip ever drops it.
+if [ "$TYPE" = "y2" ] \
+        || { [ ! -f "$MOUNT_SYS/app/FMRadio.apk" ] && [ ! -f "$MOUNT_SYS/priv-app/FMRadio.apk" ]; }; then
+    install_fm_from_y1_base "$MOUNT_SYS"
+fi
+
 if [ "$TYPE" = "y2" ]; then
     install_rockbox_from_y1_base "$MOUNT_SYS"
 fi
@@ -818,6 +998,16 @@ sudo mkdir -p "$MOUNT_SYS/app" "$MOUNT_SYS/usr/keylayout"
 sudo cp "$STAGING_APK" "$MOUNT_SYS/app/$SYSTEM_APK_NAME"
 sudo chmod 644 "$MOUNT_SYS/app/$SYSTEM_APK_NAME"
 sudo chown root:root "$MOUNT_SYS/app/$SYSTEM_APK_NAME"
+
+UPDATER_APK="${SOLAR_UPDATER_APK:-$REPO_ROOT/solar-updater/build/outputs/apk/release/solar-updater-release.apk}"
+if [ -f "$UPDATER_APK" ]; then
+    echo "==> Install Solar Versions updater ($UPDATER_APK)"
+    sudo cp "$UPDATER_APK" "$MOUNT_SYS/app/com.solar.updater.apk"
+    sudo chmod 644 "$MOUNT_SYS/app/com.solar.updater.apk"
+    sudo chown root:root "$MOUNT_SYS/app/com.solar.updater.apk"
+else
+    echo "==> Skip com.solar.updater.apk (not built — run ./gradlew :solar-updater:assembleRelease)" >&2
+fi
 
 echo "==> Install TLS prep (Conscrypt JNI + modern CA roots)"
 TLS_STAGE="$WORK_DIR/system-tls"
@@ -835,6 +1025,13 @@ sudo chown root:root "$MOUNT_SYS/etc/init.d/99SolarInit.sh"
 
 echo "==> Install launcher switch scripts + unified Rockbox keymap"
 sudo mkdir -p "$MOUNT_SYS/etc/solar"
+sudo cp "$SCRIPT_DIR/solar-rescue-hud-watch.sh" "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh"
+sudo cp "$SCRIPT_DIR/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh"
+sudo cp "$SCRIPT_DIR/solar-rescue-daemon.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
+sudo chmod 755 "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh" \
+    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
+sudo chown root:root "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh" \
+    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
 sudo cp "$SCRIPT_DIR/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-stock.sh"
 sudo cp "$SCRIPT_DIR/switch-to-rockbox.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh"
 sudo cp "$SCRIPT_DIR/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh"
@@ -843,13 +1040,23 @@ sudo cp "$REPO_ROOT/solar-rom/system/rockbox-y2-config.cfg" "$MOUNT_SYS/etc/sola
 sudo cp "$SCRIPT_DIR/sync-y1-keymap.sh" "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh"
 sudo cp "$SCRIPT_DIR/disable-rockbox-for-solar.sh" "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh"
 sudo cp "$SCRIPT_DIR/apply-preferred-home-boot.sh" "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh"
+sudo cp "$SCRIPT_DIR/disable-large-font-accessibility.sh" "$MOUNT_SYS/etc/solar/disable-large-font-accessibility.sh"
+sudo cp "$SCRIPT_DIR/enable-gpu-performance.sh" "$MOUNT_SYS/etc/solar/enable-gpu-performance.sh"
 sudo cp "$SCRIPT_DIR/solar-usb-recovery-agent.sh" "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
+sudo cp "$REPO_ROOT/app/src/main/assets/y1/solar-enable-ums.sh" "$MOUNT_SYS/etc/solar/solar-enable-ums.sh"
+sudo cp "$REPO_ROOT/app/src/main/assets/y1/solar-disable-ums.sh" "$MOUNT_SYS/etc/solar/solar-disable-ums.sh"
+sudo cp "$REPO_ROOT/app/src/main/assets/y1/y1-enable-ums.sh" "$MOUNT_SYS/etc/solar/y1-enable-ums.sh"
+sudo cp "$REPO_ROOT/app/src/main/assets/y1/y1-disable-ums.sh" "$MOUNT_SYS/etc/solar/y1-disable-ums.sh"
 sudo chmod 755 "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
     "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-assets.sh" \
     "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
     "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh" \
-    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
+    "$MOUNT_SYS/etc/solar/disable-large-font-accessibility.sh" \
+    "$MOUNT_SYS/etc/solar/enable-gpu-performance.sh" \
+    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh" \
+    "$MOUNT_SYS/etc/solar/solar-enable-ums.sh" "$MOUNT_SYS/etc/solar/solar-disable-ums.sh" \
+    "$MOUNT_SYS/etc/solar/y1-enable-ums.sh" "$MOUNT_SYS/etc/solar/y1-disable-ums.sh"
 sudo chmod 644 "$MOUNT_SYS/etc/solar/rockbox-y2-config.cfg"
 sudo chown root:root "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh" \
     "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-assets.sh" \
@@ -857,7 +1064,11 @@ sudo chown root:root "$MOUNT_SYS/etc/solar/switch-to-stock.sh" "$MOUNT_SYS/etc/s
     "$MOUNT_SYS/etc/solar/sync-y1-keymap.sh" \
     "$MOUNT_SYS/etc/solar/disable-rockbox-for-solar.sh" \
     "$MOUNT_SYS/etc/solar/apply-preferred-home-boot.sh" \
-    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh"
+    "$MOUNT_SYS/etc/solar/disable-large-font-accessibility.sh" \
+    "$MOUNT_SYS/etc/solar/enable-gpu-performance.sh" \
+    "$MOUNT_SYS/etc/solar/solar-usb-recovery-agent.sh" \
+    "$MOUNT_SYS/etc/solar/solar-enable-ums.sh" "$MOUNT_SYS/etc/solar/solar-disable-ums.sh" \
+    "$MOUNT_SYS/etc/solar/y1-enable-ums.sh" "$MOUNT_SYS/etc/solar/y1-disable-ums.sh"
 
 sudo cp "$REPO_ROOT/solar-rom/system/99Y1ButtonScript" "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
 sudo chmod 755 "$MOUNT_SYS/etc/init.d/99Y1ButtonScript"
@@ -944,7 +1155,7 @@ if [ ! -f "$SCRIPT_DIR/../vendor/xposed/XposedInstaller.apk" ]; then
     chmod +x "$SCRIPT_DIR/build-xposed-installer-apk.sh"
     "$SCRIPT_DIR/build-xposed-installer-apk.sh"
 fi
-echo "==> Install Xposed framework (API $XPOSED_API)"
+echo "==> Install Xposed framework (API $XPOSED_API) — required for a, b, and y2 ROM zips"
 chmod +x "$SCRIPT_DIR/install-xposed-system.sh"
 sudo "$SCRIPT_DIR/install-xposed-system.sh" "$MOUNT_SYS" "$XPOSED_API"
 
@@ -978,10 +1189,17 @@ MOUNT_SYS=""
 MOUNT_USER=""
 
 if [ "$TYPE" = "y2" ]; then
+    # 2026-07-06 — Duplicate UUID on system+userdata broke Y2 boot (/data mount + adb shell).
+    if [ -f "$SYSTEM_MOUNT_SRC" ] && [ "$SYSTEM_MOUNT_SRC" != "$BASE_DIR/system.img" ]; then
+        assign_ext4_unique_uuid "$SYSTEM_MOUNT_SRC"
+    fi
+    if [ -f "$USERDATA_MOUNT_SRC" ] && [ "$USERDATA_MOUNT_SRC" != "$BASE_DIR/userdata.img" ]; then
+        assign_ext4_unique_uuid "$USERDATA_MOUNT_SRC"
+    fi
     # MTK SP Flash on MT6582: desparsed ext4 images flash slower but avoid sparse chunk DA failures.
     finalize_image_raw "$BASE_DIR/system.img" "$SYSTEM_MOUNT_SRC"
     finalize_image_raw "$BASE_DIR/userdata.img" "$USERDATA_MOUNT_SRC"
-    for _restore in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 \
+    for _restore in boot.img recovery.img cache.img secro.img lk.bin MBR EBR1 EBR2 \
             preloader_eastaeon82_wet_kk.bin; do
         [ -f "$PRISTINE_DIR/$_restore" ] && cp -a "$PRISTINE_DIR/$_restore" "$BASE_DIR/$_restore"
     done
