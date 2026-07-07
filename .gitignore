@@ -7,7 +7,7 @@
 local.properties
 
 # Android / Native Build Outputs
-/build/
+build/
 /captures/
 .externalNativeBuild/
 .cxx/
@@ -49,8 +49,11 @@ __pycache__/
 TestSort*
 
 # Extracted ROMs and Staging Directories
-/rom_y2_extracted/
-/.rom_y2_extracted/
-/.rom_extracted/
-/build-ota-staging/
+rom_y2_extracted/
+.rom_y2_extracted/
+.rom_extracted/
+build-ota-staging/
 .y2_mtk_recovery/
+
+# If you have other specific large files, remove them individually:
+# git rm --cached path/to/your/large/file.img
