@@ -1,0 +1,177 @@
+package com.solar.launcher;
+
+import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.InputStreamReader;
+
+/**
+ * Run shell commands as root via Y1/Y2 ROM setuid su (see install-y1-su-system.sh).
+ * Tries explicit paths first — plain "su" alone can fail from app Runtime.exec on some builds.
+ */
+public final class RootShell {
+    /** Y1 rockbox base + Y2 ROM bake the same setuid binary in these locations. */
+    private static final String[] SU_PATHS = {"/system/xbin/su", "/system/bin/su", "su"};
+    /** One-shot: setuid daemonsu can be started from app context when daemon was not booted yet. */
+    private static volatile boolean daemonsuBootstrapped = false;
+
+    private RootShell() {}
+
+    /** Probe whether any su path grants root from this app process. */
+    public static boolean canRun() {
+        return run("id");
+    }
+
+    /** Run one root shell command; returns true when exit code is 0. */
+    public static boolean run(String command) {
+        if (command == null || command.isEmpty()) return false;
+        if (trySuPaths(command)) return true;
+        // Y2 ROMs before 99SuperSUDaemon may ship su without a running daemonsu — bootstrap once.
+        if (bootstrapDaemonsu() && trySuPaths(command)) return true;
+        return false;
+    }
+
+    private static android.os.Handler asyncHandler;
+    private static volatile String pendingAsyncCmd;
+
+    /** Coalesced background su — one thread, skip duplicate pending commands (2026-07-05). */
+    public static void runAsync(String command) {
+        if (command == null || command.isEmpty()) return;
+        pendingAsyncCmd = command;
+        ensureAsyncHandler();
+        asyncHandler.removeCallbacks(asyncFlushRunnable);
+        asyncHandler.post(asyncFlushRunnable);
+    }
+
+    private static final Runnable asyncFlushRunnable = new Runnable() {
+        @Override
+        public void run() {
+            String cmd = pendingAsyncCmd;
+            pendingAsyncCmd = null;
+            if (cmd != null) RootShell.run(cmd);
+        }
+    };
+
+    private static synchronized void ensureAsyncHandler() {
+        if (asyncHandler != null) return;
+        android.os.HandlerThread ht = new android.os.HandlerThread("RootShellAsync");
+        ht.start();
+        asyncHandler = new android.os.Handler(ht.getLooper());
+    }
+
+    private static boolean trySuPaths(String command) {
+        for (String su : SU_PATHS) {
+            Process proc = null;
+            try {
+                proc = Runtime.getRuntime().exec(new String[] {su, "-c", command});
+                String err = drainStream(proc.getErrorStream());
+                int code = proc.waitFor();
+                // #region agent log
+                debugLog("RootShell.run", "su attempt", "H-A-H-B",
+                        su, command, code, err.isEmpty() ? null : err);
+                // #endregion
+                if (code == 0) return true;
+            } catch (Exception e) {
+                // #region agent log
+                debugLog("RootShell.run", "su exception", "H-A",
+                        su, command, -1, e.getMessage());
+                // #endregion
+            } finally {
+                if (proc != null) proc.destroy();
+            }
+        }
+        return false;
+    }
+
+    private static String drainStream(java.io.InputStream in) {
+        if (in == null) return "";
+        try {
+            BufferedReader r = new BufferedReader(new InputStreamReader(in));
+            StringBuilder out = new StringBuilder();
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (out.length() > 0) out.append(' ');
+                out.append(line);
+            }
+            return out.toString();
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** Start SuperSU daemon (setuid binary — no prior root needed). */
+    private static boolean bootstrapDaemonsu() {
+        if (daemonsuBootstrapped) return false;
+        daemonsuBootstrapped = true;
+        File daemon = new File("/system/xbin/daemonsu");
+        if (!daemon.canExecute()) return false;
+        Process proc = null;
+        try {
+            proc = Runtime.getRuntime().exec(new String[] {daemon.getAbsolutePath(), "--auto-daemon"});
+            proc.waitFor();
+            Thread.sleep(1500L);
+            // #region agent log
+            debugLog("RootShell.bootstrapDaemonsu", "daemonsu started", "H-C",
+                    daemon.getAbsolutePath(), "--auto-daemon", 0, null);
+            // #endregion
+            return true;
+        } catch (Exception e) {
+            // #region agent log
+            debugLog("RootShell.bootstrapDaemonsu", "daemonsu failed", "H-C",
+                    daemon.getAbsolutePath(), "--auto-daemon", -1, e.getMessage());
+            // #endregion
+            return false;
+        } finally {
+            if (proc != null) proc.destroy();
+        }
+    }
+
+    /** Run root command and capture combined stdout/stderr (for diagnostics). */
+    public static String runCapture(String command) {
+        if (command == null || command.isEmpty()) return "";
+        for (String su : SU_PATHS) {
+            Process proc = null;
+            try {
+                proc = Runtime.getRuntime().exec(new String[] {su, "-c", command});
+                BufferedReader r = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream()));
+                StringBuilder out = new StringBuilder();
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (out.length() > 0) out.append('\n');
+                    out.append(line);
+                }
+                int code = proc.waitFor();
+                // #region agent log
+                debugLog("RootShell.runCapture", "su capture", "H-C",
+                        su, command, code, out.length() > 120 ? out.substring(0, 120) : out.toString());
+                // #endregion
+                if (code == 0) return out.toString();
+            } catch (Exception e) {
+                // #region agent log
+                debugLog("RootShell.runCapture", "su capture exception", "H-A",
+                        su, command, -1, e.getMessage());
+                // #endregion
+            } finally {
+                if (proc != null) proc.destroy();
+            }
+        }
+        return "";
+    }
+
+    // #region agent log
+    private static void debugLog(String location, String message, String hypothesisId,
+            String suPath, String command, int exitCode, String extra) {
+        if (!DebugSessionLog.ENABLED) return;
+        try {
+            JSONObject d = new JSONObject();
+            d.put("suPath", suPath);
+            d.put("cmd", command.length() > 200 ? command.substring(0, 200) + "…" : command);
+            d.put("exitCode", exitCode);
+            if (extra != null) d.put("extra", extra);
+            DebugSessionLog.logAlways(location, message, hypothesisId, d);
+        } catch (Exception ignored) {}
+    }
+    // #endregion
+}

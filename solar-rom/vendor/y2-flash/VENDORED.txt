@@ -1,0 +1,3 @@
+# 2026-07-06 — Y2 MTK / SP Flash reference artifacts (flashing tools).
+# EBR2 — partition table index 14; missing from Y2 ATA base zip, bundled in rom_y2.zip build.
+# MT6582_Android_scatter.txt — canonical linear_start_addr reference for y2-mtk-flash-manifest.txt CI test.

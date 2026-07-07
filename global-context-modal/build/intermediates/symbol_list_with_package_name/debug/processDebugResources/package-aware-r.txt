@@ -1,0 +1,12 @@
+com.solar.launcher.globalcontext
+string companion_app_name
+string emergency_recovery_body
+string emergency_recovery_clear
+string emergency_recovery_launcher
+string emergency_recovery_repair
+string emergency_recovery_retry
+string emergency_recovery_title
+string overlay_power_placeholder
+string overlay_power_title
+string rescue_hold_countdown
+string rescue_hold_restarting

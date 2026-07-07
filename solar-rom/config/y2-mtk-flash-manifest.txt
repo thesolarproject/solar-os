@@ -1,0 +1,9 @@
+# 2026-07-06 — MT6582 scatter linear_start_addr for MTKclient wo (flashing tools).
+# Must match MT6582_Android_scatter.txt bundled in rom_y2.zip (LOGO/UBOOT/BOOTIMG/…/USRDATA).
+# Format: filename:linear_start_addr_hex
+logo.bin:0x5800000
+lk.bin:0x3120000
+boot.img:0x3180000
+recovery.img:0x4180000
+system.img:0x6500000
+userdata.img:0x41700000

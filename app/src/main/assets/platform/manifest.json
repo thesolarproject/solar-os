@@ -1,0 +1,156 @@
+{
+  "prepVersion": 13,
+  "framework": {
+    "api17": {
+      "appProcess": "xposed/api17-arm/app_process",
+      "bridgeJar": "xposed/api17-arm/XposedBridge.jar",
+      "xposedProp": "xposed/api17-arm/xposed.prop"
+    },
+    "api19": {
+      "appProcess": "xposed/api19-arm/app_process",
+      "bridgeJar": "xposed/api19-arm/XposedBridge.jar",
+      "xposedProp": "xposed/api19-arm/xposed.prop"
+    },
+    "installerApk": "xposed/XposedInstaller.apk",
+    "initHook": "init/99XposedInit.sh",
+    "systemPaths": {
+      "appProcess": "/system/bin/app_process",
+      "appProcessOrig": "/system/bin/app_process.orig",
+      "bridgeJarFramework": "/system/framework/XposedBridge.jar",
+      "bridgeJarSolar": "/system/etc/solar/XposedBridge.jar",
+      "xposedProp": "/system/xposed.prop",
+      "installerApk": "/system/app/XposedInstaller.apk",
+      "initHook": "/system/etc/init.d/99XposedInit.sh"
+    }
+  },
+  "modules": [
+    {
+      "pkg": "com.solar.launcher.xposed.bridge.y1",
+      "asset": "xposed/SolarContextBridgeY1.apk",
+      "systemApk": "/system/app/SolarContextBridgeY1.apk",
+      "required": true,
+      "device": "y1",
+      "versionCode": 1,
+      "sha256": "1979d0536afac5f42d2e23c022c57a374eda7450b7de78fce63e4f37a533aec4"
+    },
+    {
+      "pkg": "com.solar.launcher.xposed.bridge.y2",
+      "asset": "xposed/SolarContextBridgeY2.apk",
+      "systemApk": "/system/app/SolarContextBridgeY2.apk",
+      "required": true,
+      "device": "y2",
+      "versionCode": 1,
+      "sha256": "f609d6f61343834c8aced2e66be07948e131f41185c6ba31e56f12d874f7437d"
+    },
+    {
+      "pkg": "com.solar.launcher.xposed.themefont",
+      "asset": "xposed/SolarThemeFont.apk",
+      "systemApk": "/system/app/SolarThemeFont.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 1,
+      "sha256": "3272b63acedc8869377de868e8916e2c5a268f11b7d0496856329539f25e16c8"
+    },
+    {
+      "pkg": "com.solar.launcher.xposed.rockbox.ime",
+      "asset": "xposed/SolarRockboxIme.apk",
+      "systemApk": "/system/app/SolarRockboxIme.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 1,
+      "sha256": "1c1d745881efa3964ca0117b407919aa2ac0613d66f2c0e70abc72f2f481ac68"
+    },
+    {
+      "pkg": "com.solar.launcher.xposed.rockbox.compat",
+      "asset": "xposed/SolarRockboxCompat.apk",
+      "systemApk": "/system/app/SolarRockboxCompat.apk",
+      "required": true,
+      "device": "y2",
+      "versionCode": 1,
+      "sha256": "f43d3022efdeb88e4429d9e483a8b10516c0795b901ec0bff6e251ae9c2b19a1"
+    },
+    {
+      "pkg": "com.solar.launcher.xposed.notpipe",
+      "asset": "xposed/SolarNotPipeBridge.apk",
+      "systemApk": "/system/app/SolarNotPipeBridge.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 1,
+      "sha256": "2c682e921821c5c052ade1a7850f6bc3696d4d5577b0f241c19ed22f53ea1581"
+    },
+    {
+      "pkg": "io.github.gohoski.notpipe",
+      "asset": "thirdparty/notPipe-0.3.0-release.apk",
+      "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 5,
+      "sha256": "fbe3bd9a4ee5e7aea21102d81b5a4e579252479db0e1834abfb2c21e5fed7243"
+    },
+    {
+      "pkg": "com.solar.launcher.globalcontext",
+      "asset": "companion/SolarGlobalContextModal.apk",
+      "systemApk": "/system/app/SolarGlobalContextModal.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 1,
+      "sha256": "ab7db9a018e70f57338a4df6f475a98e7fa8c577370065c417f361d48e27ab44"
+    },
+    {
+      "pkg": "com.solar.launcher.homehelper",
+      "asset": "companion/SolarHomeHelper.apk",
+      "systemApk": "/system/app/SolarHomeHelper.apk",
+      "required": true,
+      "device": "both",
+      "versionCode": 1,
+      "sha256": "ec12275d33e64b0ca4c853c9117eaa63bb7d2c52ed02c1fac288daa7f04aaa20"
+    }
+  ],
+  "files": [
+    {"asset": "init/99XposedInit.sh", "dest": "/system/etc/init.d/99XposedInit.sh", "mode": "755"}
+  ],
+  "rockbox": {
+    "pkg": "org.rockbox",
+    "stageIndex": "rockbox/stage-index.json",
+    "y1Apk": {
+      "asset": "rockbox/org.rockbox-y1.apk",
+      "systemApk": "/system/app/org.rockbox.apk",
+      "device": "y1",
+      "versionCode": 1,
+      "sha256": "080173ef13cbeeb028df41439a3768d89997441b6ca204bda76043324beb71d9"
+    },
+    "y2Apk": {
+      "asset": "rockbox/org.rockbox-y2.apk",
+      "systemApk": "/system/app/org.rockbox.apk",
+      "device": "y2",
+      "versionCode": 1,
+      "sha256": "554eb60ffa66a7b0bedeb56e48bf87141fd87bcca065ebc7aee411e9efbbdbba"
+    },
+    "systemLib": {
+      "asset": "rockbox/librockbox-system.so",
+      "dest": "/system/lib/librockbox.so",
+      "device": "y2",
+      "sha256": "e4c2df0b00e8b8936c07476242e36cfd440d4aab6b642bf92481f73a4a8c9462"
+    }
+  },
+  "deprecated": [
+    {
+      "systemApk": "/system/app/SolarContextBridge.apk",
+      "pkg": "com.solar.launcher.xposed.bridge",
+      "device": "both",
+      "reason": "legacy unified bridge before Y1/Y2 split"
+    },
+    {
+      "systemApk": "/system/app/SolarContextBridgeY1.apk",
+      "pkg": "com.solar.launcher.xposed.bridge.y1",
+      "device": "y2",
+      "reason": "wrong-family bridge on Y2"
+    },
+    {
+      "systemApk": "/system/app/SolarContextBridgeY2.apk",
+      "pkg": "com.solar.launcher.xposed.bridge.y2",
+      "device": "y1",
+      "reason": "wrong-family bridge on Y1"
+    }
+  ]
+}

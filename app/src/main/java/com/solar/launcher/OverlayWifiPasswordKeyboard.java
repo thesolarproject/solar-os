@@ -1,0 +1,135 @@
+package com.solar.launcher;
+
+import android.content.Context;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+
+import com.solar.launcher.theme.ThemeManager;
+
+/**
+ * 2026-07-06 — Wi-Fi password wheel keyboard inside global :overlay (mirrors BT PIN tier).
+ * Layman: type a network password over Rockbox/JJ without leaving that app.
+ * Technical: SolarWheelKeyboardController full alphabet; WifiConnector on enter.
+ * Reversal: remove; overlay dismisses to MainActivity for password (legacy path).
+ */
+final class OverlayWifiPasswordKeyboard {
+
+    private final Context context;
+    private final ViewGroup parent;
+    private final Runnable onDismissKeyboardOnly;
+
+    private View shellRoot;
+    private SolarKeyboardShellHost shellHost;
+    private SolarWheelKeyboardController controller;
+    private String targetSsid;
+
+    OverlayWifiPasswordKeyboard(Context context, ViewGroup parent,
+            Runnable onDismissKeyboardOnly) {
+        this.context = context.getApplicationContext();
+        this.parent = parent;
+        this.onDismissKeyboardOnly = onDismissKeyboardOnly;
+    }
+
+    boolean isShowing() {
+        return shellRoot != null;
+    }
+
+    /** Paint full keyboard for secured SSID — overlay quick bar stays underneath. */
+    void show(String ssid) {
+        dismiss();
+        targetSsid = ssid;
+        controller = new SolarWheelKeyboardController();
+        controller.setDigitOnlyMode(false);
+        controller.setListener(new SolarWheelKeyboardController.Listener() {
+            @Override
+            public void onStateChanged() {
+                refreshUi();
+            }
+
+            @Override
+            public void onEnterRequested() {
+                String password = controller.getBuffer();
+                if (password == null) password = "";
+                WifiConnector.connect(context, targetSsid, password, false,
+                        new WifiConnector.Callback() {
+                            @Override
+                            public void onComplete(boolean success) {
+                                dismissKeyboardOnly();
+                            }
+                        });
+            }
+        });
+
+        LayoutInflater inflater = LayoutInflater.from(context);
+        shellRoot = inflater.inflate(R.layout.layout_solar_keyboard_shell, parent, false);
+        shellHost = new SolarKeyboardShellHost(context, shellRoot,
+                context.getString(R.string.keyboard_enter_wifi_password));
+        parent.addView(shellRoot, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        refreshUi();
+        ThemeManager.ensureOverlayPaintableMinimum(context);
+        SolarImeRouteArbiter.setOverlayCredentialActive(true);
+    }
+
+    boolean handleKeyDown(int keyCode) {
+        if (controller == null || shellRoot == null) return false;
+        if (Y1InputKeys.isBackKey(keyCode)) {
+            dismissKeyboardOnly();
+            return true;
+        }
+        if (Y1InputKeys.isWheelUp(keyCode)) {
+            controller.wheelUp();
+            return true;
+        }
+        if (Y1InputKeys.isWheelDown(keyCode)) {
+            controller.wheelDown();
+            return true;
+        }
+        if (Y1InputKeys.isCenterKey(keyCode) || Y1InputKeys.isPlayPauseKey(keyCode)) {
+            controller.centerPress();
+            return true;
+        }
+        if (Y1InputKeys.isTrackPreviousKey(keyCode)) {
+            controller.mediaDelete();
+            return true;
+        }
+        return false;
+    }
+
+    boolean handleKeyUp(int keyCode) {
+        return isShowing() && (Y1InputKeys.isCenterKey(keyCode) || Y1InputKeys.isBackKey(keyCode)
+                || Y1InputKeys.isWheelKey(keyCode) || Y1InputKeys.isPlayPauseKey(keyCode));
+    }
+
+    void dismiss() {
+        SolarImeRouteArbiter.setOverlayCredentialActive(false);
+        if (shellRoot != null && parent != null) {
+            try {
+                parent.removeView(shellRoot);
+            } catch (Exception ignored) {}
+        }
+        shellRoot = null;
+        shellHost = null;
+        controller = null;
+        targetSsid = null;
+    }
+
+    private void dismissKeyboardOnly() {
+        dismiss();
+        if (onDismissKeyboardOnly != null) {
+            onDismissKeyboardOnly.run();
+        }
+    }
+
+    private void refreshUi() {
+        if (shellHost == null || controller == null) return;
+        String statusTitle = context.getString(R.string.keyboard_enter_wifi_password);
+        if (targetSsid != null && targetSsid.length() > 0) {
+            statusTitle = statusTitle + " — " + targetSsid;
+        }
+        shellHost.applyShellTheme(statusTitle, true);
+        String buffer = controller.getBuffer();
+        shellHost.getKeyboardUi().refresh(controller, statusTitle, buffer, buffer.length() == 0);
+    }
+}
