@@ -8,7 +8,7 @@ package com.solar.input.policy;
  */
 public final class GlobalInputPolicy {    public static final String POLICY_REV_PROPERTY = "sys.solar.input.policy_rev";
     /** Bump when hold tiers or fail-open paths change — adb: getprop sys.solar.input.policy_rev */
-    public static final int POLICY_REV = 17;
+    public static final int POLICY_REV = 18;
  
     /** Cross-process — infinite list wrap opt-in (overlay :overlay, companion, IME read-only). */
     public static final String PROP_INFINITE_SCROLL = "persist.solar.nav.infinite_scroll";
@@ -19,7 +19,7 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
      * Layman: same snappy feel as the USB/SystemUI overlay concierge across the whole OS.
      * Technical: matches warmOverlayProcess + postDelayed in SystemServerHooks BACK/POWER paths.
      */
-    public static final long GLOBAL_MODAL_HOLD_MS = 300L;
+    public static final long GLOBAL_MODAL_HOLD_MS = 130L;
     /** @deprecated use {@link #GLOBAL_MODAL_HOLD_MS}. */
     public static final long THIRD_PARTY_MODAL_HOLD_MS = GLOBAL_MODAL_HOLD_MS;
     /**
@@ -37,7 +37,7 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     /** OK/center long-press in stock apps — opens row context menu (~300ms). */
     public static final long CENTER_MENU_HOLD_MS = 300L;
     /** 2026-07-06 — Solar HOME BACK hold — in-app quick/options menu (~300ms). */
-    public static final long SOLAR_BACK_CONTEXT_HOLD_MS = 300L;
+    public static final long SOLAR_BACK_CONTEXT_HOLD_MS = 130L;
     /** 2026-07-06 — Overlay + HUD show 3..2..1 while finger still down (~7s total from hold start). */
     public static final long HUD_COUNTDOWN_START_MS = 4900L;
     /** Alias — rescue countdown HUD tier (~4.9s from hold DOWN). */
@@ -97,7 +97,7 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     public static long overlayDismissGraceMsForPackage(String pkg) {
         if (isNavOwnedHomeLauncher(pkg)) return THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS;
         if (isThirdPartyHomeLauncher(pkg)) return THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS;
-        return GLOBAL_MODAL_HOLD_MS;
+        return 150L;
     }
 
     /**

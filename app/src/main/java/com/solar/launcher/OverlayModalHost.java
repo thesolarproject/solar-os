@@ -42,8 +42,8 @@ public final class OverlayModalHost {
             com.solar.input.policy.GlobalInputPolicy.GLOBAL_MODAL_HOLD_MS;
     /** First BACK up after hold-open must not dismiss — finger lift is not "go back". */
     private boolean suppressBackDismissUntilLift;
-    /** Short BACK tap dismisses overlay; longer hold arms ~7s Solar rescue (2026-07-06, −30%). */
-    private static final long BACK_TAP_DISMISS_MS = 315L;
+    /** Fresh BACK hold after open release closes overlay; quick taps are ignored. */
+    private static final long BACK_HOLD_DISMISS_MS = 150L;
     /** Block center/OK activate briefly after long-press opened app-menu overlay (release key). */
     private static final long APP_MENU_CENTER_GRACE_MS = 595L;
 
@@ -1114,8 +1114,8 @@ public final class OverlayModalHost {
     }
 
     /**
-     * 2026-07-06 — Short BACK tap dismisses tier; ~10s hold runs {@link SolarRescue} (USB stall escape).
-     * Layman: quick Back closes the prompt; hold Back to force Solar home again.
+     * 2026-07-07 — First lift after open is ignored; a fresh 150ms BACK hold closes the overlay.
+     * Layman: release-to-open never dismisses, quick taps do nothing, deliberate hold closes.
      */
     private boolean finishOverlayBackHoldAndMaybeDismiss() {
         if (overlayBackDownAt == 0L) {
@@ -1146,7 +1146,7 @@ public final class OverlayModalHost {
             suppressBackDismissUntilLift = false;
             return true;
         }
-        if (held >= BACK_TAP_DISMISS_MS) {
+        if (held < BACK_HOLD_DISMISS_MS) {
             return true;
         }
         if (powerTierVisible) {

@@ -22,6 +22,9 @@ import java.util.Set;
  */
 public final class LauncherDiscovery {
 
+    /** Companion emergency HOME is infrastructure, never a user-selectable launcher target. */
+    private static final String GLOBAL_CONTEXT_COMPANION_PKG = "com.solar.launcher.globalcontext";
+
     private LauncherDiscovery() {}
 
     /** All resolveable HOME activities — excludes helper middle-man only. */
@@ -36,6 +39,7 @@ public final class LauncherDiscovery {
             if (info == null || info.activityInfo == null) continue;
             String pkg = info.activityInfo.packageName;
             if (HomeTargetPolicy.HELPER_PKG.equals(pkg)) continue;
+            if (GLOBAL_CONTEXT_COMPANION_PKG.equals(pkg)) continue;
             out.add(info);
         }
         return out;

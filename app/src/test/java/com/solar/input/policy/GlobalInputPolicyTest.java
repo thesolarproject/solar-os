@@ -54,22 +54,22 @@ public class GlobalInputPolicyTest {
         assertEquals(200L, GlobalInputPolicy.THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS);
         assertEquals(200L, GlobalInputPolicy.NAV_OWNED_LAUNCHER_MODAL_HOLD_MS);
         assertEquals(200L, GlobalInputPolicy.ROCKBOX_BACK_PASSTHROUGH_MS);
-        assertEquals(300L, GlobalInputPolicy.GLOBAL_MODAL_HOLD_MS);
-        assertEquals(300L, GlobalInputPolicy.THIRD_PARTY_MODAL_HOLD_MS);
-        assertEquals(300L, GlobalInputPolicy.MODAL_HOLD_MS);
+        assertEquals(130L, GlobalInputPolicy.GLOBAL_MODAL_HOLD_MS);
+        assertEquals(130L, GlobalInputPolicy.THIRD_PARTY_MODAL_HOLD_MS);
+        assertEquals(130L, GlobalInputPolicy.MODAL_HOLD_MS);
         assertEquals(300L, GlobalInputPolicy.CENTER_MENU_HOLD_MS);
-        assertEquals(300L, GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS);
+        assertEquals(130L, GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS);
         assertEquals(4900L, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
         assertEquals(7000L, GlobalInputPolicy.RESCUE_EXECUTE_MS);
-        assertEquals(17, GlobalInputPolicy.POLICY_REV);
+        assertEquals(18, GlobalInputPolicy.POLICY_REV);
     }
 
     @Test
-    public void thirdPartyBackModalAtThreeHundredMs() {
-        assertEquals(300L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.settings"));
-        assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage("com.mediatek.camera"));
-        assertEquals(300L, GlobalInputPolicy.overlayDismissGraceMsForPackage("com.android.settings"));
-        assertEquals(300L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.systemui"));
+    public void thirdPartyBackModalAtOneHundredThirtyMs() {
+        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.settings"));
+        assertEquals(130L, GlobalInputPolicy.powerModalHoldMsForPackage("com.mediatek.camera"));
+        assertEquals(150L, GlobalInputPolicy.overlayDismissGraceMsForPackage("com.android.settings"));
+        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.systemui"));
     }
 
     @Test
@@ -149,7 +149,7 @@ public class GlobalInputPolicyTest {
 
     @Test
     public void genericHomeLauncherUsesFastModalHold() {
-        assertEquals(300L, GlobalInputPolicy.backModalHoldMsForPackage("com.example.home"));
+        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.example.home"));
         assertFalse(GlobalInputPolicy.isThirdPartyHomeLauncher("com.example.home"));
         assertFalse(GlobalInputPolicy.isNavOwnedHomeLauncher("com.example.home"));
     }

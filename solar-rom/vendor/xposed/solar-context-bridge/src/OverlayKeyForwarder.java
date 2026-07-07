@@ -83,19 +83,12 @@ final class OverlayKeyForwarder {
         }
         if (event == null) return;
         Context ctx = SystemServerHooks.resolveContext(param.thisObject);
-        String fg = SystemServerHooks.foregroundPackage(ctx);
-        if (!shouldCaptureOverlayKeys(fg)) {
+        if (!shouldCaptureOverlayKeys(null)) {
             // #region agent log
-            SolarContextBridge.log("edc27b skip capture fg=" + fg + " key=" + event.getKeyCode());
+            SolarContextBridge.log("edc27b skip capture key=" + event.getKeyCode());
             // #endregion
             return;
         }
-        // #region agent log
-        if ("org.rockbox".equals(fg)) {
-            SolarContextBridge.log("edc27b RB-CAPTURE key=" + event.getKeyCode()
-                    + " action=" + event.getAction() + " queue=" + queueing);
-        }
-        // #endregion
         int action = event.getAction();
         if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) {
             return;
@@ -112,6 +105,7 @@ final class OverlayKeyForwarder {
                 return;
             }
             if (ctx != null) {
+                String fg = null;
                 SystemServerHooks.trackOverlayRescueHold(ctx, event, fg);
                 forwardKey(ctx, keyCode, action);
                 forwarded = true;

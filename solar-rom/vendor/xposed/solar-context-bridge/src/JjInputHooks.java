@@ -30,7 +30,9 @@ final class JjInputHooks {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (isOverlayActive()) {
-                        XposedHookKit.skipMethod(param);
+                        return;
+                    }
+                    if (!isJjHandoffActive()) {
                         return;
                     }
                     KeyEvent event = (KeyEvent) param.args[0];

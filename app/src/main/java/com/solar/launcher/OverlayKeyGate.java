@@ -29,8 +29,8 @@ public final class OverlayKeyGate {
     public static final String DISARM_PULSE_PROPERTY = "sys.solar.overlay.disarm_pulse";
     /** Legacy persist prop — stuck=1 breaks Rockbox/Solar back/OK; cleared on disarm/boot. */
     private static final String LEGACY_ACTIVE_PROPERTY = "persist.solar.overlay.active";
-    /** Block stock-app DPAD inject briefly after modal close — stops post-dismiss key storms. */
-    static final long POST_OVERLAY_COOLDOWN_MS = 450L;
+    /** Swallow only the dismiss release tail — repeated open/close cycles must stay snappy. */
+    static final long POST_OVERLAY_COOLDOWN_MS = 90L;
     /** Drop duplicate Xposed forwards (queue + dispatch hooks) within this window. */
     private static final long DELIVER_DEDUPE_MS = 45L;
 

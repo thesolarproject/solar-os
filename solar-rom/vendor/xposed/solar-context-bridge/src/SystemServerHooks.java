@@ -1,6 +1,8 @@
 package com.solar.launcher.xposed.bridge;
 
 import android.content.Context;
+import android.content.Intent;
+import android.content.ComponentName;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.SystemClock;
@@ -95,6 +97,11 @@ final class SystemServerHooks {
     private static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
     private static final String COMPANION_COORDINATOR =
             COMPANION_PKG + ".GlobalInputCoordinatorService";
+    private static final String COMPANION_OVERLAY =
+            COMPANION_PKG + ".GlobalContextOverlayService";
+    private static final String SOLAR_OVERLAY = "com.solar.launcher.SolarOverlayService";
+    private static final String ACTION_DISMISS_OVERLAY =
+            "com.solar.launcher.action.DISMISS_OVERLAY";
     private static final String ACTION_HOLD_DOWN =
             "com.solar.launcher.globalcontext.action.HOLD_DOWN";
     private static final String ACTION_HOLD_UP =
@@ -103,6 +110,10 @@ final class SystemServerHooks {
     private static final String EXTRA_FOREGROUND_PKG = "foreground_pkg";
     private static final String EXTRA_HOLD_MS = "hold_ms";
     private static final String EXTRA_Y2_DEVICE = "y2_device";
+    private static final long OVERLAY_DISMISS_HOLD_MS = 150L;
+    private static boolean overlayPowerDismissTracking;
+    private static boolean overlayPowerDismissFired;
+    private static Runnable overlayPowerDismissRunnable;
 
     /** 2026-07-06 — Companion owns hold FSM when installed; PWM stays thin forwarder. */
     private static boolean forwardHoldDownToCoordinator(Context ctx, int keyCode, String fg) {
@@ -284,6 +295,7 @@ final class SystemServerHooks {
     private static void hookY2PowerLongPress(Class<?> pwm) {
         ensureMainHandler();
         initPowerLongRunnable();
+        initOverlayPowerDismissRunnable();
         XposedHookKit.hookAll(pwm, "interceptKeyBeforeQueueing", new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
@@ -430,6 +442,51 @@ final class SystemServerHooks {
         }
     }
 
+    private static void initOverlayPowerDismissRunnable() {
+        if (overlayPowerDismissRunnable != null) return;
+        overlayPowerDismissRunnable = new Runnable() {
+            @Override
+            public void run() {
+                overlayPowerDismissFired = true;
+                Context ctx = resolveContext(phoneWindowManagerRef);
+                dismissAnyOverlay(ctx);
+            }
+        };
+    }
+
+    private static void armOverlayPowerDismiss() {
+        ensureMainHandler();
+        initOverlayPowerDismissRunnable();
+        overlayPowerDismissTracking = true;
+        overlayPowerDismissFired = false;
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(overlayPowerDismissRunnable);
+            mainHandler.postDelayed(overlayPowerDismissRunnable, OVERLAY_DISMISS_HOLD_MS);
+        }
+    }
+
+    private static void clearOverlayPowerDismissState() {
+        overlayPowerDismissTracking = false;
+        overlayPowerDismissFired = false;
+        if (mainHandler != null && overlayPowerDismissRunnable != null) {
+            mainHandler.removeCallbacks(overlayPowerDismissRunnable);
+        }
+    }
+
+    private static void dismissAnyOverlay(Context ctx) {
+        if (ctx == null) return;
+        try {
+            Intent solar = new Intent(ACTION_DISMISS_OVERLAY);
+            solar.setComponent(new ComponentName("com.solar.launcher", SOLAR_OVERLAY));
+            ctx.startService(solar);
+        } catch (Throwable ignored) {}
+        try {
+            Intent companion = new Intent(ACTION_DISMISS_OVERLAY);
+            companion.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
+            ctx.startService(companion);
+        } catch (Throwable ignored) {}
+    }
+
     /** Y2 hardware power — long-hold opens Solar modal; short tap passes through for sleep (RC-SLEEP). */
     private static boolean handlePowerLongPressEvent(Object pwmThis, Object[] args) {
         absorbOverlayDisarmPulse();
@@ -446,16 +503,23 @@ final class SystemServerHooks {
         if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
             // 2026-07-06 — Modal already up — skip second quick menu; still allow 10s power rescue.
             trackOverlayRescueHold(ctx, event, fg);
+            if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                armOverlayPowerDismiss();
+                return true;
+            }
             if (action == KeyEvent.ACTION_UP) {
                 forwardHoldUpToCoordinator(ctx);
+                boolean consume = overlayPowerDismissTracking || overlayPowerDismissFired;
+                clearOverlayPowerDismissState();
                 if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
                     powerTracking = false;
                     cachedPowerLongFg = null;
                     powerDownAt = 0L;
                     return true;
                 }
+                if (consume) return true;
             }
-            return false;
+            return overlayPowerDismissTracking || overlayPowerDismissFired;
         }
 
         if (action == KeyEvent.ACTION_DOWN) {
@@ -1041,6 +1105,10 @@ final class SystemServerHooks {
 
                 Context ctx = resolveContext(param.thisObject);
                 String fg = foregroundPackageFromArgs(param.args, ctx, param.thisObject);
+                if (shouldBypassCenterLongPressForPackage(fg)) {
+                    clearCenterLongPressState();
+                    return;
+                }
                 if (!shouldOfferOverlayForPackage(fg)) return;
 
                 int action = event.getAction();
@@ -1098,6 +1166,10 @@ final class SystemServerHooks {
                 if (event == null || !isCenterOrMenuKey(event.getKeyCode())) return;
                 Context ctx = resolveContext(param.thisObject);
                 String fg = foregroundPackageFromArgs(param.args, ctx, param.thisObject);
+                if (shouldBypassCenterLongPressForPackage(fg)) {
+                    clearCenterLongPressState();
+                    return;
+                }
                 if (!shouldOfferOverlayForPackage(fg)) {
                     clearCenterLongPressState();
                     return;
@@ -1593,6 +1665,11 @@ final class SystemServerHooks {
     static boolean shouldOfferPowerLongOverlayForPackage(String pkg) {
         return com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
                 pkg, allowRockboxPowerLongOverlay);
+    }
+
+    /** JJ owns short OK natively; overlay/system menu interception should not delay center presses there. */
+    static boolean shouldBypassCenterLongPressForPackage(String pkg) {
+        return com.solar.input.policy.GlobalInputPolicy.JJ_PKG.equals(pkg);
     }
 
     /** Ultra-long BACK restart — any fg except Solar (in-app handler); bare WM + shells OK. */

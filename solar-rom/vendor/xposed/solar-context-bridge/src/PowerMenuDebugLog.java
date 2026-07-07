@@ -13,8 +13,8 @@ import java.io.FileWriter;
 final class PowerMenuDebugLog {
 
     private static final String SESSION = "e93bdb";
-    /** 2026-07-06 — debug session JJ overlay + handoff; off after verification. */
-    private static final boolean ENABLED = true;
+    /** Off by default — system_server power/BACK tracing should not add file I/O on live input paths. */
+    private static final boolean ENABLED = false;
 
     private PowerMenuDebugLog() {}
 
