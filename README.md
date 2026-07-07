@@ -94,3 +94,4 @@ Extract [rom.zip](https://github.com/thesolarproject/solar/releases/latest/downl
 # How to leave feedback and report issues.
 
 Please leave your feedback and issue reports in the [Issues Tracker](https://github.com/thesolarproject/solar/issues)
+# solar-os
