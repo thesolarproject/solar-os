@@ -69,14 +69,11 @@ public final class HomeMenuConfig {
         return loadEditorCatalogEntries(null);
     }
 
-    /** Editor catalog; hides Radio until {@link com.solar.launcher.radio.RadioExperiment} is on. */
+    /** Editor catalog; hides Radio until its debug gate is on. */
     public static List<Entry> loadEditorCatalogEntries(SharedPreferences prefs) {
         List<Entry> out = new ArrayList<Entry>();
         for (String id : FIXED_HOME_ORDER) {
-            if ((ID_RADIO.equals(id) || ID_FM.equals(id))
-                    && !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
-                continue;
-            }
+            if (isHiddenByExperimentGate(id, prefs)) continue;
             Entry e = find(id);
             if (e != null) out.add(e);
         }
@@ -253,10 +250,7 @@ public final class HomeMenuConfig {
         List<Entry> out = new ArrayList<Entry>();
         for (String id : ids) {
             if (ID_MORE.equals(id)) continue;
-            if ((ID_RADIO.equals(id) || ID_FM.equals(id))
-                    && !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
-                continue;
-            }
+            if (isHiddenByExperimentGate(id, prefs)) continue;
             if (ID_SOULSEEK.equals(id)) {
                 if (!ConnectivityHelper.isGetMusicShortcutAvailable(prefs)) continue;
                 if (!internetAvailable) continue;
@@ -291,10 +285,7 @@ public final class HomeMenuConfig {
         List<String> ids = loadMoreOrderIds(prefs);
         List<Entry> out = new ArrayList<Entry>();
         for (String id : ids) {
-            if ((ID_RADIO.equals(id) || ID_FM.equals(id))
-                    && !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
-                continue;
-            }
+            if (isHiddenByExperimentGate(id, prefs)) continue;
             if (!ConnectivityHelper.shouldShowHomeShortcut(id, internetAvailable,
                     localNetworkAvailable, podcastsSaved)) continue;
             if (ID_SOULSEEK.equals(id)
@@ -362,6 +353,17 @@ public final class HomeMenuConfig {
         return shouldShowMoreTile(prefs,
                 ConnectivityHelper.isOnline(context),
                 ConnectivityHelper.hasLocalNetwork(context));
+    }
+
+    /** Home menu wheel rows = visible entries plus optional trailing More tile. */
+    public static int homeMenuRowCount(List<Entry> entries, boolean showMoreTile) {
+        if (entries == null) return showMoreTile ? 1 : 0;
+        return entries.size() + (showMoreTile ? 1 : 0);
+    }
+
+    /** More tile sits at index {@code entryCount}, outside {@code homeMenuEntries}. */
+    public static boolean isMoreTileFocusIndex(int focusIndex, int entryCount, boolean showMoreTile) {
+        return showMoreTile && focusIndex == entryCount;
     }
 
     public static boolean isVisible(SharedPreferences prefs, String id) {
@@ -502,6 +504,11 @@ public final class HomeMenuConfig {
         if (LEGACY_GET_THEMES.equals(id)) return ID_THEMES;
         if (ID_FM.equals(id)) return ID_RADIO;
         return id;
+    }
+
+  /** Radio is production on home; Internet radio remains experiment-gated in MediaSuiteHost. */
+    private static boolean isHiddenByExperimentGate(String id, SharedPreferences prefs) {
+        return false;
     }
 
     /** Public alias for {@link #migrateId}. */

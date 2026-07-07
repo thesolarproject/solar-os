@@ -12,10 +12,11 @@ public final class StreamCacheRoot {
     private StreamCacheRoot() {}
 
     public static File resolve(Context ctx) {
-        if (ctx == null) return new File("/storage/sdcard0");
+        if (ctx == null) return DeviceFeatures.getPrimaryStorageRoot();
         File internal = ctx.getCacheDir();
         if (hasSpace(internal, MIN_INTERNAL_FREE_BYTES)) return internal;
-        File sd = new File("/storage/sdcard0/Android/data/" + ctx.getPackageName() + "/cache");
+        File sd = new File(DeviceFeatures.getPrimaryStorageRoot(),
+                "Android/data/" + ctx.getPackageName() + "/cache");
         if (!sd.isDirectory()) sd.mkdirs();
         if (sd.isDirectory() && hasSpace(sd, MIN_INTERNAL_FREE_BYTES)) return sd;
         return internal != null ? internal : sd;

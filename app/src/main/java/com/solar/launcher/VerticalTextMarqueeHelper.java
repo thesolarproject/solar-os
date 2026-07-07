@@ -1,6 +1,6 @@
 package com.solar.launcher;
 
-import android.app.Activity;
+import android.content.Context;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -21,12 +21,12 @@ public final class VerticalTextMarqueeHelper {
 
     private VerticalTextMarqueeHelper() {}
 
-    public static int measureTextHeight(Activity activity, CharSequence text, float textPx, int widthPx) {
-        if (activity == null || widthPx <= 0) return 0;
-        TextView measure = new TextView(activity);
+    public static int measureTextHeight(Context context, CharSequence text, float textPx, int widthPx) {
+        if (context == null || widthPx <= 0) return 0;
+        TextView measure = new TextView(context);
         measure.setTypeface(ThemeManager.getCustomFont());
         measure.setTextSize(TypedValue.COMPLEX_UNIT_PX, textPx);
-        measure.setLineSpacing(messageLineSpacingPx(activity), 1f);
+        measure.setLineSpacing(messageLineSpacingPx(context), 1f);
         measure.setText(text != null ? text : "");
         int specW = View.MeasureSpec.makeMeasureSpec(widthPx, View.MeasureSpec.EXACTLY);
         int specH = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
@@ -35,27 +35,27 @@ public final class VerticalTextMarqueeHelper {
     }
 
     /** Max height ~3 menu lines (matches context-menu detail cap). */
-    public static int defaultMaxHeightPx(Activity activity) {
-        float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
+    public static int defaultMaxHeightPx(Context context) {
+        float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
         float linePx = menuTextPx * 0.85f;
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         return (int) (linePx * 1.18f * 3 + 14 * density);
     }
 
-    public static float defaultLineTextPx(Activity activity) {
-        return activity.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.85f;
+    public static float defaultLineTextPx(Context context) {
+        return context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.85f;
     }
 
-    public static int messagePadVerticalPx(Activity activity) {
-        return (int) activity.getResources().getDimension(R.dimen.y1_context_message_pad_v);
+    public static int messagePadVerticalPx(Context context) {
+        return (int) context.getResources().getDimension(R.dimen.y1_context_message_pad_v);
     }
 
-    public static int messagePadBottomExtraPx(Activity activity) {
-        return (int) activity.getResources().getDimension(R.dimen.y1_context_message_pad_bottom_extra);
+    public static int messagePadBottomExtraPx(Context context) {
+        return (int) context.getResources().getDimension(R.dimen.y1_context_message_pad_bottom_extra);
     }
 
-    public static float messageLineSpacingPx(Activity activity) {
-        return activity.getResources().getDimension(R.dimen.y1_context_message_line_spacing);
+    public static float messageLineSpacingPx(Context context) {
+        return context.getResources().getDimension(R.dimen.y1_context_message_line_spacing);
     }
 
     /** Shrink-to-fit capped row height (testable without Activity). */
@@ -63,28 +63,28 @@ public final class VerticalTextMarqueeHelper {
         return Math.min(maxHeightPx, Math.max(minH, contentH + pad));
     }
 
-    public static int computePanelHeight(Activity activity, CharSequence text, int maxHeightPx, int innerWidthPx) {
-        float linePx = defaultLineTextPx(activity);
-        int pad = messagePadVerticalPx(activity) + messagePadBottomExtraPx(activity);
+    public static int computePanelHeight(Context context, CharSequence text, int maxHeightPx, int innerWidthPx) {
+        float linePx = defaultLineTextPx(context);
+        int pad = messagePadVerticalPx(context) + messagePadBottomExtraPx(context);
         int minH = (int) (linePx * 1.18f + pad);
-        int contentH = measureTextHeight(activity, text, linePx, innerWidthPx);
+        int contentH = measureTextHeight(context, text, linePx, innerWidthPx);
         return computeCappedRowHeight(contentH, pad, maxHeightPx, minH);
     }
 
-    public static FrameLayout createCappedPanel(Activity activity, CharSequence text, int maxHeightPx) {
-        float density = activity.getResources().getDisplayMetrics().density;
-        int textPad = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        int screenW = activity.getResources().getDisplayMetrics().widthPixels;
+    public static FrameLayout createCappedPanel(Context context, CharSequence text, int maxHeightPx) {
+        float density = context.getResources().getDisplayMetrics().density;
+        int textPad = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        int screenW = context.getResources().getDisplayMetrics().widthPixels;
         int innerW = Math.max(1, screenW - textPad * 2 - (int) (8 * density));
-        int rowH = computePanelHeight(activity, text, maxHeightPx, innerW);
+        int rowH = computePanelHeight(context, text, maxHeightPx, innerW);
 
-        FrameLayout row = new FrameLayout(activity);
-        ScrollView scroll = new ScrollView(activity);
+        FrameLayout row = new FrameLayout(context);
+        ScrollView scroll = new ScrollView(context);
         scroll.setTag(TAG_SCROLL);
         scroll.setVerticalScrollBarEnabled(false);
         scroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
         scroll.setClipToPadding(false);
-        int padV = messagePadVerticalPx(activity);
+        int padV = messagePadVerticalPx(context);
         FrameLayout.LayoutParams scrollLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, rowH);
         scrollLp.leftMargin = textPad;
@@ -93,9 +93,9 @@ public final class VerticalTextMarqueeHelper {
         scrollLp.bottomMargin = padV / 2;
         row.addView(scroll, scrollLp);
 
-        TextView body = new TextView(activity);
+        TextView body = new TextView(context);
         body.setTag(TAG_BODY);
-        bindBodyText(activity, body, text, innerW);
+        bindBodyText(context, body, text, innerW);
         scroll.addView(body, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
 
@@ -104,22 +104,22 @@ public final class VerticalTextMarqueeHelper {
         return row;
     }
 
-    public static void updateCappedPanel(Activity activity, FrameLayout row, CharSequence text,
+    public static void updateCappedPanel(Context context, FrameLayout row, CharSequence text,
             int maxHeightPx, int panelWidthPx) {
-        if (activity == null || row == null) return;
+        if (context == null || row == null) return;
         ScrollView scroll = row.findViewWithTag(TAG_SCROLL);
         TextView body = row.findViewWithTag(TAG_BODY);
         if (scroll == null || body == null) return;
 
-        float density = activity.getResources().getDisplayMetrics().density;
-        int textPad = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        float density = context.getResources().getDisplayMetrics().density;
+        int textPad = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
         int innerW = panelWidthPx > 0
                 ? Math.max(1, panelWidthPx - textPad * 2 - (int) (8 * density))
-                : Math.max(1, activity.getResources().getDisplayMetrics().widthPixels
+                : Math.max(1, context.getResources().getDisplayMetrics().widthPixels
                         - textPad * 2 - (int) (8 * density));
-        int rowH = computePanelHeight(activity, text, maxHeightPx, innerW);
+        int rowH = computePanelHeight(context, text, maxHeightPx, innerW);
 
-        bindBodyText(activity, body, text, innerW);
+        bindBodyText(context, body, text, innerW);
         FrameLayout.LayoutParams scrollLp = (FrameLayout.LayoutParams) scroll.getLayoutParams();
         scrollLp.height = rowH;
         scroll.setLayoutParams(scrollLp);
@@ -130,15 +130,15 @@ public final class VerticalTextMarqueeHelper {
         }
     }
 
-    private static void bindBodyText(Activity activity, TextView body, CharSequence text, int innerW) {
-        float linePx = defaultLineTextPx(activity);
-        int hPad = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        int topPad = messagePadVerticalPx(activity) / 2;
-        int bottomPad = topPad + messagePadBottomExtraPx(activity);
+    private static void bindBodyText(Context context, TextView body, CharSequence text, int innerW) {
+        float linePx = defaultLineTextPx(context);
+        int hPad = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        int topPad = messagePadVerticalPx(context) / 2;
+        int bottomPad = topPad + messagePadBottomExtraPx(context);
         body.setTypeface(ThemeManager.getCustomFont());
         body.setTextSize(TypedValue.COMPLEX_UNIT_PX, linePx);
         body.setGravity(Gravity.START | Gravity.TOP);
-        body.setLineSpacing(messageLineSpacingPx(activity), 1f);
+        body.setLineSpacing(messageLineSpacingPx(context), 1f);
         body.setPadding(hPad, topPad, hPad, bottomPad);
         body.setText(text != null ? text : "");
         ThemeManager.applyThemedTextStyle(body, ThemeManager.getTextColorPrimary());
@@ -173,11 +173,11 @@ public final class VerticalTextMarqueeHelper {
         return scroll.getScrollY() >= max - 2;
     }
 
-    public static boolean scrollPanelByStep(Activity activity, FrameLayout panel, int direction) {
+    public static boolean scrollPanelByStep(Context context, FrameLayout panel, int direction) {
         if (panel == null || direction == 0) return false;
         ScrollView scroll = panel.findViewWithTag(TAG_SCROLL);
         if (scroll == null) return false;
-        int step = (int) (defaultLineTextPx(activity) * 0.9f);
+        int step = (int) (defaultLineTextPx(context) * 0.9f);
         if (step < 8) step = 8;
         int y = scroll.getScrollY() + (direction > 0 ? step : -step);
         View child = scroll.getChildCount() > 0 ? scroll.getChildAt(0) : null;

@@ -12,14 +12,10 @@ import android.os.Looper;
 import org.json.JSONObject;
 
 /**
- * Intercepts SystemUI {@code UsbStorageActivity} by keeping Solar in front while a USB
- * host (PC) is connected. Polling runs for the whole host session — cable disconnect or
- * {@link #onDestroy()} stops polling.
- *
- * ponytail: user dismissed the enable dialog → {@link #setInterceptPaused} stops in-app
- * HOME fights; {@link UsbRecoveryAgent} re-homes Solar if SystemUI stays on top.
- * While UMS is exported, {@link SystemUiUsbSuppressor} replaces SystemUI's lock screen
- * with Solar's — no 50ms HOME storm.
+ * 2026-07-06 — Event-driven USB host intercept: USB_STATE + Xposed concierge; no HOME poll storm.
+ * Layman: PC plug-in shows Solar's USB dialog once; after Dismiss we stay idle until unplug.
+ * Tech: tier-1 {@code UsbStorageHooks}, tier-2 sticky USB_STATE fallback; slow UMS watchdog only.
+ * Reversal: restore {@code pollRunnable} 1.5s loop + {@code bringToFrontFull} on every tick.
  */
 public final class Y1UsbFocusHelper {
 
@@ -27,15 +23,9 @@ public final class Y1UsbFocusHelper {
     private static final String EXTRA_USB_CONNECTED = "connected";
     private static final String EXTRA_HOST_CONNECTED = "host_connected";
 
-    /** How often to reclaim focus from SystemUI while USB host is connected (ms). */
-    private static final int POLL_INTERVAL_MS = 400;
-    /** Slower poll when Solar already has focus — saves CPU during Flow / playback. */
-    private static final int POLL_INTERVAL_STABLE_MS = 900;
-    /** Slow watchdog while UMS is exported — SystemUI lock screen replaced by Solar, not fought at 50ms. */
-    private static final int POLL_INTERVAL_MASS_STORAGE_MS = 2000;
-    /** Min gap between UI intercept callbacks — avoids su dumpsys storms on the main thread. */
-    private static final long INTERCEPT_NOTIFY_MIN_MS = 2000L;
-    /** Min gap between HOME intents when UMS is off — avoids freezing SystemUI's enable dialog. */
+    /** Slow watchdog while UMS exported — SystemUI lock screen replaced by Solar, not fought at 50ms. */
+    private static final int UMS_WATCHDOG_MS = 3000;
+    /** Min gap between one-shot HOME reclaim attempts on host connect (ms). */
     private static final long BRING_FULL_MIN_INTERVAL_MS = 500L;
     /**
      * Host must stay disconnected at least this long before a dismissed session may intercept again.
@@ -47,7 +37,7 @@ public final class Y1UsbFocusHelper {
         void onUsbStateChanged(boolean connected);
         /** Charger-only USB cable — no PC host; Solar still offers storage enable prompt. */
         void onChargerOnlyConnected();
-        /** Solar lost window focus to SystemUI — show/replace USB intercept UI. */
+        /** Solar lost window focus to SystemUI — show/replace USB intercept UI (UMS lock only). */
         void onUsbFocusIntercept();
     }
 
@@ -57,24 +47,18 @@ public final class Y1UsbFocusHelper {
     private boolean usbRegistered;
     private final UsbListener listener;
     private boolean usbConnected = false;
-    private boolean polling = false;
+    private boolean umsWatchdog = false;
     private boolean hostConnected = false;
-    /** Use HOME + moveTaskToFront every poll tick while UMS is exported. */
+    /** Use HOME + moveTaskToFront when SystemUI USB lock appears while UMS is exported. */
     private boolean massStorageIntercept = false;
-    /** User dismissed Solar's enable dialog — no in-app intercept; recovery agent handles stuck SystemUI. */
+    /** User dismissed Solar's enable dialog — no in-app intercept until cable unplug. */
     private boolean interceptPaused = false;
-    /** Dismissed this host plug — no poll/HOME/intercept until cable off longer than session reset. */
+    /** Dismissed this host plug — no reclaim until cable off longer than session reset. */
     private boolean userDeclinedHostSession = false;
-    /** USB lock screen: global context menu open — skip HOME/moveTaskToFront reclaim. */
+    /** USB lock screen: global context menu open — skip one-shot HOME reclaim. */
     private boolean reclaimSuspended = false;
     private long lastBringToFrontFullMs = 0L;
-    private long lastInterceptNotifyMs = 0L;
     private long lastHostDisconnectAtMs = 0L;
-    /** Consecutive polls where SystemUI UsbStorageActivity stayed on top after reclaim (H1/H5). */
-    private int reclaimFailureStreak = 0;
-    /** HOME/full reclaim calls in the current 5s window — detects intent storms (H1). */
-    private int homeCallsInWindow = 0;
-    private long homeRateWindowStartMs = 0L;
 
     public Y1UsbFocusHelper(Activity activity, UsbListener listener) {
         this.activity = activity;
@@ -86,15 +70,16 @@ public final class Y1UsbFocusHelper {
             @Override
             public void run() {
                 registerIfNeeded();
-                if (hostConnected && !interceptPaused && !userDeclinedHostSession) {
-                    startPolling();
+                // 2026-07-06 — UMS lock watchdog only; enable prompt is event-driven (no poll resume).
+                if (massStorageIntercept && hostConnected && !isSessionIdle()) {
+                    startUmsWatchdogIfNeeded();
                 }
             }
         });
     }
 
     public void onDestroy() {
-        stopPolling();
+        stopUmsWatchdog();
         if (usbRegistered && usbReceiver != null) {
             try { activity.unregisterReceiver(usbReceiver); } catch (Exception ignored) {}
             usbRegistered = false;
@@ -111,17 +96,37 @@ public final class Y1UsbFocusHelper {
         };
         activity.registerReceiver(usbReceiver, new IntentFilter(ACTION_USB_STATE));
         usbRegistered = true;
-        // ponytail: sticky USB_STATE may have fired before MainActivity registered.
+        // 2026-07-06 — Sticky USB_STATE may predate MainActivity; defer if boot-settle not ready.
         Intent sticky = activity.registerReceiver(null, new IntentFilter(ACTION_USB_STATE));
-        if (sticky != null) handleUsbStateIntent(sticky);
+        if (sticky != null) {
+            UsbHostSessionPolicy.runWhenPromptAllowed(activity.getApplicationContext(),
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            handleUsbStateIntent(sticky);
+                        }
+                    });
+        }
     }
 
     private void handleUsbStateIntent(Intent intent) {
         if (intent == null || !ACTION_USB_STATE.equals(intent.getAction())) return;
         final boolean connected = intent.getBooleanExtra(EXTRA_USB_CONNECTED, false);
-        final boolean host = intent.getBooleanExtra(EXTRA_HOST_CONNECTED, false)
-                || intent.getBooleanExtra("mass_storage", false)
-                || intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
+        final boolean extraHost = intent.getBooleanExtra(EXTRA_HOST_CONNECTED, false);
+        final boolean extraMassStorage = intent.getBooleanExtra("mass_storage", false);
+        final boolean extraPcKnow = intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
+        final boolean host = extraHost || extraMassStorage || extraPcKnow;
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("extraHost", extraHost);
+            d.put("extraMassStorage", extraMassStorage);
+            d.put("extraPcKnow", extraPcKnow);
+            d.put("hostDerived", host);
+            d.put("fg", ExternalInputHandoff.getForegroundPackageName(activity));
+            Debug266f21Log.log("Y1UsbFocusHelper.handleUsbStateIntent", "host derivation", "H2", d);
+        } catch (Exception ignored) {}
+        // #endregion
         android.util.Log.d("UsbFocus", "onReceive: connected=" + connected + ", host=" + host
                 + ", hostConnected=" + hostConnected + ", usbConnected=" + usbConnected);
         // #region agent log
@@ -132,10 +137,8 @@ public final class Y1UsbFocusHelper {
             d.put("hostConnected", hostConnected);
             d.put("usbConnected", usbConnected);
             d.put("interceptPaused", interceptPaused);
-            d.put("extra_host_connected", intent.getBooleanExtra(EXTRA_HOST_CONNECTED, false));
-            d.put("extra_mass_storage", intent.getBooleanExtra("mass_storage", false));
-            d.put("extra_USB_IS_PC_KNOW_ME", intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false));
-            d.put("polling", polling);
+            d.put("umsWatchdog", umsWatchdog);
+            d.put("sessionIdle", isSessionIdle());
             DebugSessionLog.log("Y1UsbFocusHelper.onReceive", "USB_STATE", "H1", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -149,7 +152,9 @@ public final class Y1UsbFocusHelper {
             massStorageIntercept = false;
             userDeclinedHostSession = false;
             interceptPaused = false;
-            stopPolling();
+            UsbStorageConcierge.clearOnUsbDisconnect();
+            UsbHostSessionPolicy.onUsbHostDisconnected(activity.getApplicationContext());
+            stopUmsWatchdog();
             if (listener != null) listener.onUsbStateChanged(false);
             return;
         }
@@ -168,13 +173,17 @@ public final class Y1UsbFocusHelper {
                     + " flapWhileDeclined=" + flapWhileDeclined);
             hostConnected = true;
             usbConnected = true;
-            if (flapWhileDeclined) {
+            UsbHostSessionPolicy.onUsbHostConnected(activity.getApplicationContext());
+            if (flapWhileDeclined || isSessionIdle()) {
                 interceptPaused = true;
-                stopPolling();
+                stopUmsWatchdog();
             } else if (!userDeclinedHostSession) {
                 interceptPaused = false;
-                bringToFrontFull();
-                startPolling();
+                if (massStorageIntercept && isSystemUiUsbOnTop()) {
+                    bringToFrontFullOnce();
+                } else {
+                    evaluateHostConnectOnce("Y1UsbFocusHelper.hostConnect");
+                }
             }
             // #region agent log
             try {
@@ -183,7 +192,6 @@ public final class Y1UsbFocusHelper {
                 d.put("flapWhileDeclined", flapWhileDeclined);
                 d.put("userDeclinedHostSession", userDeclinedHostSession);
                 d.put("interceptPaused", interceptPaused);
-                d.put("polling", polling);
                 DebugSessionLog.log("Y1UsbFocusHelper.handleUsbStateIntent",
                         "host connect", "H-USB-SESSION", d);
             } catch (Exception ignored) {}
@@ -199,7 +207,7 @@ public final class Y1UsbFocusHelper {
         } else if (connected && !host) {
             android.util.Log.d("UsbFocus", "Charger-only connection");
             usbConnected = true;
-            stopPolling();
+            stopUmsWatchdog();
             if (listener != null) {
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -208,90 +216,121 @@ public final class Y1UsbFocusHelper {
                     }
                 }, 200);
             }
-        } else if (connected && host && hostConnected
-                && !interceptPaused && !userDeclinedHostSession && !reclaimSuspended) {
-            startPolling();
-            bringToFrontFullIfDue();
-            notifyFocusIntercept();
         }
     }
 
-    private final Runnable pollRunnable = new Runnable() {
+    /**
+     * 2026-07-06 — One evaluation per host session: Xposed concierge, then USB_STATE overlay fallback.
+     * Reversal: restore immediate {@code routeEnablePromptOverlay} + 1.5s poll loop on every connect.
+     */
+    private void evaluateHostConnectOnce(final String caller) {
+        if (!hostConnected || isSessionIdle()) return;
+        if (massStorageIntercept) return;
+        UsbHostSessionPolicy.runWhenPromptAllowed(activity.getApplicationContext(),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        scheduleUsbConnectFallback(caller);
+                    }
+                });
+    }
+
+    /**
+     * 2026-07-06 — Fallback only when Xposed concierge did not intercept UsbStorageActivity.
+     * Reversal: restore immediate {@code routeEnablePromptOverlay} on host connect above.
+     */
+    private void scheduleUsbConnectFallback(final String caller) {
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!hostConnected || isSessionIdle()) return;
+                if (massStorageIntercept) return;
+                if (!UsbHostSessionPolicy.shouldEvaluatePromptThisSession(
+                        activity.getApplicationContext())) {
+                    return;
+                }
+                boolean concierge = UsbStorageConcierge.isXposedConciergeActive();
+                UsbStorageConcierge.logFallbackDecision(caller, concierge);
+                if (concierge) {
+                    UsbHostSessionPolicy.markPromptEvaluated(activity.getApplicationContext());
+                    return;
+                }
+                if (OverlayTierScheduler.shouldDeferUsbSpawn()) {
+                    OverlayTierScheduler.queuePendingUsbPrompt();
+                    return;
+                }
+                UsbHostSessionPolicy.markPromptEvaluated(activity.getApplicationContext());
+                UsbStorageOverlayReceiver.routeUsbStorageOverlay(
+                        activity.getApplicationContext(), false);
+            }
+        }, UsbStorageConcierge.fallbackDelayMs());
+    }
+
+    /** True when user dismissed this plug or Xposed owns USB — no poll/HOME/recovery (2026-07-06). */
+    private boolean isSessionIdle() {
+        return userDeclinedHostSession
+                || interceptPaused
+                || UsbHostSessionPolicy.isAggressiveUsbWorkSuppressed(
+                        activity.getApplicationContext());
+    }
+
+    /** Slow UMS lock watchdog — only while mass storage exported and session not idle. */
+    private final Runnable umsWatchdogRunnable = new Runnable() {
         @Override
         public void run() {
-            if (!polling) return;
-            if (interceptPaused || userDeclinedHostSession) {
-                stopPolling();
-                return;
-            }
-            if (reclaimSuspended) {
-                handler.postDelayed(this, POLL_INTERVAL_STABLE_MS);
-                return;
-            }
-            boolean hadFocus = activity.hasWindowFocus();
-            boolean systemUiUsbTop = isSystemUiUsbOnTop();
-            boolean needsReclaim = massStorageIntercept
-                    ? (systemUiUsbTop || !hadFocus)
-                    : !hadFocus;
-            if (needsReclaim) {
-                bringToFrontFullIfDue();
-                // ponytail: suppressor only while UMS exported — BACK during enable prompt kills our modal.
-                if (massStorageIntercept && systemUiUsbTop) {
-                    SystemUiUsbSuppressor.dismissIfNeeded(activity);
-                }
-                trackReclaimOutcome(hadFocus);
-                if (!massStorageIntercept && !interceptPaused) {
-                    notifyFocusIntercept();
-                }
-            } else if (reclaimFailureStreak > 0) {
-                reclaimFailureStreak = 0;
-            }
+            if (!umsWatchdog) return;
             // #region agent log
-            if (DebugSessionLog.ENABLED && (!hadFocus || massStorageIntercept)) {
-                try {
-                    JSONObject d = new JSONObject();
-                    d.put("polling", polling);
-                    d.put("hasWindowFocus", hadFocus);
-                    d.put("hasFocusAfter", activity.hasWindowFocus());
-                    d.put("hostConnected", hostConnected);
-                    d.put("massStorageIntercept", massStorageIntercept);
-                    d.put("interceptPaused", interceptPaused);
-                    DebugSessionLog.log("Y1UsbFocusHelper.pollRunnable", "poll tick", "H2-H3", d);
-                } catch (Exception ignored) {}
-            }
+            try {
+                JSONObject d = new JSONObject();
+                d.put("concierge", UsbStorageConcierge.isXposedConciergeActive());
+                d.put("reclaimSuspended", reclaimSuspended);
+                d.put("hasWindowFocus", activity.hasWindowFocus());
+                d.put("hostConnected", hostConnected);
+                d.put("massStorageIntercept", massStorageIntercept);
+                Debug86bbe0Log.log("Y1UsbFocusHelper.umsWatchdog", "tick", "H1", d);
+            } catch (Exception ignored) {}
             // #endregion
-            boolean stable = hadFocus
-                    && (!massStorageIntercept || !systemUiUsbTop);
-            int delay = stable ? POLL_INTERVAL_STABLE_MS
-                    : (massStorageIntercept ? POLL_INTERVAL_MASS_STORAGE_MS : POLL_INTERVAL_MS);
-            handler.postDelayed(this, delay);
+            if (OverlayKeyGate.isOverlayKeysActive() || isSessionIdle() || reclaimSuspended) {
+                stopUmsWatchdog();
+                return;
+            }
+            if (!massStorageIntercept || !hostConnected) {
+                stopUmsWatchdog();
+                return;
+            }
+            if (!activity.hasWindowFocus() && isSystemUiUsbOnTop()) {
+                bringToFrontFullOnce();
+                SystemUiUsbSuppressor.dismissIfNeeded(activity);
+                notifyFocusIntercept();
+            }
+            if (umsWatchdog) {
+                handler.postDelayed(this, UMS_WATCHDOG_MS);
+            }
         }
     };
 
     private void notifyFocusIntercept() {
-        if (listener == null || interceptPaused || userDeclinedHostSession) return;
-        long now = System.currentTimeMillis();
-        if (now - lastInterceptNotifyMs < INTERCEPT_NOTIFY_MIN_MS) return;
-        lastInterceptNotifyMs = now;
+        if (listener == null || isSessionIdle() || !massStorageIntercept) return;
         handler.post(new Runnable() {
             @Override
             public void run() {
-                if (!interceptPaused && !userDeclinedHostSession) {
+                if (!isSessionIdle() && massStorageIntercept) {
                     listener.onUsbFocusIntercept();
                 }
             }
         });
     }
 
-    private void startPolling() {
-        if (polling) return;
-        polling = true;
-        handler.post(pollRunnable);
+    private void startUmsWatchdogIfNeeded() {
+        if (isSessionIdle() || !massStorageIntercept) return;
+        if (umsWatchdog) return;
+        umsWatchdog = true;
+        handler.post(umsWatchdogRunnable);
     }
 
-    private void stopPolling() {
-        polling = false;
-        handler.removeCallbacks(pollRunnable);
+    private void stopUmsWatchdog() {
+        umsWatchdog = false;
+        handler.removeCallbacks(umsWatchdogRunnable);
     }
 
     public boolean isUsbConnected() {
@@ -302,8 +341,14 @@ public final class Y1UsbFocusHelper {
         return hostConnected;
     }
 
+    /** @deprecated Use {@link #isUmsWatchdogActive()} — enable prompt no longer polls. */
     public boolean isPolling() {
-        return polling;
+        return umsWatchdog;
+    }
+
+    /** True while slow UMS lock watchdog runs (not enable-prompt poll). */
+    public boolean isUmsWatchdogActive() {
+        return umsWatchdog;
     }
 
     public boolean isInterceptPaused() {
@@ -315,52 +360,63 @@ public final class Y1UsbFocusHelper {
     }
 
     /**
-     * User declined USB storage — stop in-app HOME/intercept loops so SystemUI's dialog
-     * can be dismissed; {@link UsbRecoveryAgent} re-homes Solar when needed.
+     * User declined USB storage — stop reclaim loops; manual enable via Settings only (2026-07-06).
+     * Reversal: re-arm {@code pollRunnable} and {@link UsbRecoveryAgent#ensureRunning}.
      */
     public void setInterceptPaused(boolean paused) {
         interceptPaused = paused;
         if (paused) {
             userDeclinedHostSession = true;
             massStorageIntercept = false;
-            stopPolling();
+            stopUmsWatchdog();
+            UsbHostSessionPolicy.markUserDismissed(activity.getApplicationContext());
             // #region agent log
             try {
                 JSONObject d = new JSONObject();
-                d.put("polling", polling);
+                d.put("umsWatchdog", umsWatchdog);
                 DebugSessionLog.log("Y1UsbFocusHelper.setInterceptPaused",
-                        "declined — polling stopped", "H-USB-IDLE", d);
+                        "declined — idle until disconnect", "H-USB-IDLE", d);
             } catch (Exception ignored) {}
             // #endregion
         }
     }
 
-    /** User chose Turn on USB storage — resume normal host intercept for this plug. */
+    /** User chose Turn on USB storage — resume UMS intercept for this plug. */
     public void clearHostInterceptDecline() {
         userDeclinedHostSession = false;
         interceptPaused = false;
+        UsbHostSessionPolicy.clearUserDismissed(activity.getApplicationContext());
         if (hostConnected) {
-            bringToFrontFull();
-            startPolling();
+            bringToFrontFullOnce();
+            if (massStorageIntercept) {
+                startUmsWatchdogIfNeeded();
+            }
         }
     }
 
-    /** While the user has the global context menu open on the USB lock screen, do not HOME-reclaim. */
+    /** While USB enable prompt or global menu owns keys, skip one-shot HOME reclaim. */
     public void setReclaimSuspended(boolean suspended) {
         reclaimSuspended = suspended;
+        if (suspended) {
+            stopUmsWatchdog();
+        } else if (hostConnected && massStorageIntercept && !isSessionIdle()) {
+            startUmsWatchdogIfNeeded();
+        }
     }
 
     public boolean isReclaimSuspended() {
         return reclaimSuspended;
     }
 
-    /** While UMS is exported, gently watch for SystemUI lock screen and replace with Solar's. */
+    /** While UMS is exported, slow-watch SystemUI lock screen and replace with Solar's. */
     public void setMassStorageInterceptActive(boolean active) {
         if (interceptPaused && active) return;
         massStorageIntercept = active;
-        if (active && hostConnected) {
+        if (active && hostConnected && !isSessionIdle()) {
             SystemUiUsbSuppressor.dismissNow(activity);
-            startPolling();
+            startUmsWatchdogIfNeeded();
+        } else if (!active) {
+            stopUmsWatchdog();
         }
     }
 
@@ -368,7 +424,8 @@ public final class Y1UsbFocusHelper {
         return massStorageIntercept;
     }
 
-    private void bringToFrontFullIfDue() {
+    /** One-shot HOME reclaim — not a poll loop (2026-07-06 session 86bbe0). */
+    private void bringToFrontFullOnce() {
         long now = System.currentTimeMillis();
         if (now - lastBringToFrontFullMs < BRING_FULL_MIN_INTERVAL_MS) {
             bringToFrontLightPublic();
@@ -378,9 +435,10 @@ public final class Y1UsbFocusHelper {
     }
 
     private void bringToFrontFull() {
-        if (reclaimSuspended || interceptPaused || userDeclinedHostSession) return;
+        if (OverlayKeyGate.isOverlayKeysActive()) return;
+        if (reclaimSuspended || isSessionIdle()) return;
+        if (isNonSolarAppForeground()) return;
         lastBringToFrontFullMs = System.currentTimeMillis();
-        noteHomeCall();
         String topBefore = topResumedActivityName();
         // #region agent log
         if (DebugSessionLog.ENABLED) {
@@ -389,12 +447,7 @@ public final class Y1UsbFocusHelper {
                 d.put("topBefore", topBefore);
                 d.put("massStorageIntercept", massStorageIntercept);
                 d.put("interceptPaused", interceptPaused);
-                d.put("homeCallsInWindow", homeCallsInWindow);
-                d.put("reclaimFailureStreak", reclaimFailureStreak);
-                if (activity instanceof MainActivity) {
-                    d.put("screen", ((MainActivity) activity).debugScreenState());
-                }
-                DebugSessionLog.log("Y1UsbFocusHelper.bringToFrontFull", "HOME", "H2", d);
+                DebugSessionLog.log("Y1UsbFocusHelper.bringToFrontFull", "HOME once", "H2", d);
             } catch (Exception ignored) {}
         }
         // #endregion
@@ -405,64 +458,6 @@ public final class Y1UsbFocusHelper {
             startMain.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(startMain);
         } catch (Exception ignored) {}
-        // #region agent log
-        if (DebugSessionLog.ENABLED) {
-            try {
-                JSONObject d = new JSONObject();
-                d.put("topBefore", topBefore);
-                d.put("topAfter", topResumedActivityName());
-                d.put("hasWindowFocus", activity.hasWindowFocus());
-                d.put("systemUiStillTop", isSystemUiUsbOnTop());
-                DebugSessionLog.log("Y1UsbFocusHelper.bringToFrontFull", "after HOME", "H1-H5", d);
-            } catch (Exception ignored) {}
-        }
-        // #endregion
-    }
-
-    private void noteHomeCall() {
-        long now = System.currentTimeMillis();
-        if (now - homeRateWindowStartMs > 5000L) {
-            homeRateWindowStartMs = now;
-            homeCallsInWindow = 0;
-        }
-        homeCallsInWindow++;
-        if (homeCallsInWindow >= 8) {
-            // #region agent log
-            try {
-                JSONObject d = new JSONObject();
-                d.put("homeCallsInWindow", homeCallsInWindow);
-                d.put("massStorageIntercept", massStorageIntercept);
-                d.put("polling", polling);
-                DebugSessionLog.log("Y1UsbFocusHelper.noteHomeCall", "HOME storm", "H1", d);
-            } catch (Exception ignored) {}
-            // #endregion
-        }
-    }
-
-    private void trackReclaimOutcome(boolean hadFocusBefore) {
-        if (interceptPaused || userDeclinedHostSession) return;
-        boolean systemUiTop = isSystemUiUsbOnTop();
-        boolean stillNoFocus = !activity.hasWindowFocus();
-        if (systemUiTop || (!hadFocusBefore && stillNoFocus)) {
-            reclaimFailureStreak++;
-        } else {
-            reclaimFailureStreak = 0;
-        }
-        if (reclaimFailureStreak == 3 || reclaimFailureStreak == 10 || reclaimFailureStreak == 20) {
-            // #region agent log
-            try {
-                JSONObject d = new JSONObject();
-                d.put("streak", reclaimFailureStreak);
-                d.put("systemUiTop", systemUiTop);
-                d.put("hasWindowFocus", activity.hasWindowFocus());
-                d.put("topActivity", topResumedActivityName());
-                d.put("massStorageIntercept", massStorageIntercept);
-                d.put("homeCallsInWindow", homeCallsInWindow);
-                DebugSessionLog.log("Y1UsbFocusHelper.trackReclaimOutcome",
-                        "reclaim failing", "H5", d);
-            } catch (Exception ignored) {}
-            // #endregion
-        }
     }
 
     private boolean isSystemUiUsbOnTop() {
@@ -470,41 +465,27 @@ public final class Y1UsbFocusHelper {
         return top != null && top.contains("UsbStorageActivity");
     }
 
+    /** True when another app (not Solar, not SystemUI USB) owns the screen. */
+    private boolean isNonSolarAppForeground() {
+        String top = topResumedActivityName();
+        if (top == null || top.startsWith("?") || top.startsWith("err:")) return false;
+        if (top.contains("com.solar.launcher")) return false;
+        if (top.contains("UsbStorageActivity")) return false;
+        return true;
+    }
+
     public void bringToFrontLightPublic() {
-        if (reclaimSuspended || interceptPaused || userDeclinedHostSession) return;
-        String topBefore = DebugSessionLog.ENABLED ? topResumedActivityName() : null;
-        boolean moveOk = false;
-        String moveErr = null;
+        if (reclaimSuspended || isSessionIdle()) return;
+        if (isNonSolarAppForeground()) return;
         try {
             ActivityManager am = (ActivityManager) activity.getSystemService(Context.ACTIVITY_SERVICE);
             if (am != null) {
                 am.moveTaskToFront(activity.getTaskId(), 0);
-                moveOk = true;
             }
-        } catch (Exception e) {
-            moveErr = e.getClass().getSimpleName() + ": " + e.getMessage();
-        }
-
+        } catch (Exception ignored) {}
         try {
             activity.getWindow().getDecorView().requestFocus();
         } catch (Exception ignored) {}
-
-        // #region agent log
-        if (DebugSessionLog.ENABLED) {
-            try {
-                JSONObject d = new JSONObject();
-                d.put("topBefore", topBefore);
-                d.put("topAfter", topResumedActivityName());
-                d.put("moveOk", moveOk);
-                d.put("moveErr", moveErr != null ? moveErr : JSONObject.NULL);
-                d.put("taskId", activity.getTaskId());
-                d.put("hasWindowFocus", activity.hasWindowFocus());
-                d.put("polling", polling);
-                d.put("hostConnected", hostConnected);
-                DebugSessionLog.log("Y1UsbFocusHelper.bringToFront", "moveTaskToFront", "H2-H5", d);
-            } catch (Exception ignored) {}
-        }
-        // #endregion
     }
 
     private String topResumedActivityName() {

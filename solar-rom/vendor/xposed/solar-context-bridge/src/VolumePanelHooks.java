@@ -7,7 +7,6 @@ import android.os.HandlerThread;
 import android.view.KeyEvent;
 
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
@@ -71,23 +70,12 @@ final class VolumePanelHooks {
         SolarContextBridge.log("AudioService/framework volume hooks=" + n);
     }
 
-    /** AOSP 4.4+ SystemUI volume panel — no-op when class missing (MTK uses framework). */
+    /** AOSP 4.4+ SystemUI volume panel — skipped on MTK Y1/Y2 (framework VolumePanel in system_server). */
     static void installSystemUi(LoadPackageParam lpparam) {
-        ClassLoader cl = lpparam.classLoader;
-        String[] classes = {
-                "com.android.systemui.volume.VolumePanel",
-                "com.android.systemui.settings.volume.VolumePanel"
-        };
-        int n = 0;
-        for (String name : classes) {
-            try {
-                Class<?> cls = XposedHelpers.findClass(name, cl);
-                n += hookAllSuppress(cls, "show");
-                n += hookAllSuppress(cls, "postShow");
-                n += hookAllSuppress(cls, "onShowRequested");
-            } catch (Throwable ignored) {}
-        }
-        SolarContextBridge.log("SystemUI VolumePanel hooks=" + n);
+        // MTK devices route volume UI through android.view.VolumePanel in system_server
+        // (installSystemServer). Hooking SystemUI VolumePanel with method replacement crashed
+        // system:ui ("Android System has stopped") when hooked methods return non-void types.
+        SolarContextBridge.log("SystemUI VolumePanel hooks skipped (MTK uses framework panel)");
     }
 
     /** MTK/AOSP KitKat — {@code android.view.VolumePanel} lives in framework, runs in system_server. */
@@ -176,15 +164,15 @@ final class VolumePanelHooks {
 
     private static int hookShowVolumePanel(Class<?> audioService) {
         try {
-            return XposedHookKit.hookAll(audioService, "showVolumePanel", new XC_MethodReplacement() {
+            return XposedHookKit.hookAll(audioService, "showVolumePanel", new XC_MethodHook() {
                 @Override
-                protected Object replaceHookedMethod(MethodHookParam param) {
+                protected void beforeHookedMethod(MethodHookParam param) {
                     int stream = param.args.length > 0 && param.args[0] instanceof Integer
                             ? (Integer) param.args[0] : AudioManager.STREAM_MUSIC;
                     if (MediaVolumeControlStub.isMediaStream(stream)) {
                         scheduleVolumeOverlay();
                     }
-                    return null;
+                    XposedHookKit.skipMethod(param);
                 }
             });
         } catch (Throwable t) {
@@ -263,13 +251,13 @@ final class VolumePanelHooks {
         }
     }
 
-    /** Replace stock panel method — show Solar overlay instead. */
+    /** Replace stock panel method — show Solar overlay instead; use type-safe default return. */
     private static int hookAllSuppress(Class<?> cls, String method) {
-        return XposedHookKit.hookAll(cls, method, new XC_MethodReplacement() {
+        return XposedHookKit.hookAll(cls, method, new XC_MethodHook() {
             @Override
-            protected Object replaceHookedMethod(MethodHookParam param) {
+            protected void beforeHookedMethod(MethodHookParam param) {
                 scheduleVolumeOverlay();
-                return null;
+                XposedHookKit.skipMethod(param);
             }
         });
     }
@@ -283,10 +271,23 @@ final class VolumePanelHooks {
         volumeHandler().post(SHOW_OVERLAY);
     }
 
+    private static volatile Class<?> sSystemPropertiesClass;
+    private static Class<?> getSystemPropertiesClass() {
+        Class<?> c = sSystemPropertiesClass;
+        if (c == null) {
+            try {
+                c = XposedHelpers.findClass("android.os.SystemProperties", null);
+                sSystemPropertiesClass = c;
+            } catch (Throwable ignored) {}
+        }
+        return c;
+    }
+
     /** Solar Now Playing uses inline transport pulse — never the global volume HUD. */
     private static boolean isSolarNowPlayingScreen() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_NOW_PLAYING_SCREEN, "0");
             return "1".equals(String.valueOf(v));
         } catch (Throwable ignored) {
@@ -297,7 +298,8 @@ final class VolumePanelHooks {
     /** Solar in-app slider sets this prop so hooks do not re-open the global overlay. */
     private static boolean isInternalVolumeAdjust() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_INTERNAL_ADJUST, "0");
             return "1".equals(String.valueOf(v));
         } catch (Throwable ignored) {
@@ -332,7 +334,8 @@ final class VolumePanelHooks {
 
         static boolean isSafetyEnabled() {
             try {
-                Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+                Class<?> sp = getSystemPropertiesClass();
+                if (sp == null) return false;
                 Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_HEARING_SAFETY, "0");
                 return "1".equals(String.valueOf(v));
             } catch (Throwable ignored) {
@@ -342,7 +345,8 @@ final class VolumePanelHooks {
 
         static int absoluteMaxIndex() {
             try {
-                Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+                Class<?> sp = getSystemPropertiesClass();
+                if (sp == null) return DEFAULT_ABS_MAX;
                 Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_ABSOLUTE_MAX, "");
                 String s = String.valueOf(v);
                 if (s.length() > 0) {

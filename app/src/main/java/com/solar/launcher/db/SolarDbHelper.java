@@ -1,10 +1,16 @@
 package com.solar.launcher.db;
 
 import android.content.Context;
+import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
+import android.database.sqlite.SQLiteDatabaseCorruptException;
 import android.database.sqlite.SQLiteOpenHelper;
+import android.os.Build;
 
+import com.solar.launcher.SolarLog;
 import com.solar.launcher.db.android.AndroidSolarDatabase;
+
+import java.io.File;
 
 /**
  * Base helper for Solar SQLite caches. Enables WAL so reads can run in parallel
@@ -17,6 +23,7 @@ import com.solar.launcher.db.android.AndroidSolarDatabase;
 public abstract class SolarDbHelper extends SQLiteOpenHelper {
 
     private final boolean walEnabled;
+    private final Context appContext;
 
     protected SolarDbHelper(Context context, String name, int version) {
         this(context, name, version, true);
@@ -24,8 +31,10 @@ public abstract class SolarDbHelper extends SQLiteOpenHelper {
 
     protected SolarDbHelper(Context context, String name, int version, boolean walEnabled) {
         super(context.getApplicationContext(), name, null, version);
+        this.appContext = context.getApplicationContext();
         this.walEnabled = walEnabled;
-        if (walEnabled) {
+        // API 18+ only — on 4.x setWriteAheadLoggingEnabled hits execSQL paths that reject PRAGMA.
+        if (walEnabled && Build.VERSION.SDK_INT >= 18) {
             setWriteAheadLoggingEnabled(true);
         }
     }
@@ -34,23 +43,63 @@ public abstract class SolarDbHelper extends SQLiteOpenHelper {
     public void onOpen(SQLiteDatabase db) {
         super.onOpen(db);
         if (!walEnabled) return;
-        // WAL already allows concurrent readers; NORMAL sync is durable enough
-        // for a local media cache while keeping writes from fsync-blocking.
-        db.execSQL("PRAGMA synchronous=NORMAL");
-        // Keep WAL files from growing without bound on the Y1's limited storage.
-        db.execSQL("PRAGMA journal_size_limit=1048576");
-        // Checkpoint after every 100 pages — balances read latency vs write throughput.
-        db.execSQL("PRAGMA wal_autocheckpoint=100");
+        // rawQuery accepts PRAGMA result rows; execSQL on API 17 throws SQLiteException.
+        if (Build.VERSION.SDK_INT < 18) {
+            applyPragma(db, "PRAGMA journal_mode=WAL");
+        }
+        applyPragma(db, "PRAGMA synchronous=NORMAL");
+        applyPragma(db, "PRAGMA journal_size_limit=1048576");
+        applyPragma(db, "PRAGMA wal_autocheckpoint=100");
+    }
+
+    private static void applyPragma(SQLiteDatabase db, String sql) {
+        Cursor cursor = null;
+        try {
+            cursor = db.rawQuery(sql, null);
+            if (cursor != null) cursor.moveToFirst();
+        } finally {
+            if (cursor != null) cursor.close();
+        }
     }
 
     /** Borrow a readable database handle wrapped for portability. */
     public SolarDatabase openReadable() {
-        return new AndroidSolarDatabase(getReadableDatabase());
+        return new AndroidSolarDatabase(openDatabase(false));
     }
 
     /** Borrow a writable database handle wrapped for portability. */
     public SolarDatabase openWritable() {
-        return new AndroidSolarDatabase(getWritableDatabase());
+        return new AndroidSolarDatabase(openDatabase(true));
+    }
+
+    /** 2026-07-05 — Rename corrupt DB and recreate schema on SQLITE_CORRUPT. */
+    private SQLiteDatabase openDatabase(boolean writable) {
+        try {
+            return writable ? getWritableDatabase() : getReadableDatabase();
+        } catch (SQLiteDatabaseCorruptException e) {
+            SolarLog.w("SolarDbHelper", "corrupt db " + getDatabaseName() + " — recovering");
+            recoverCorruptDatabaseFile();
+            return writable ? getWritableDatabase() : getReadableDatabase();
+        }
+    }
+
+    private void recoverCorruptDatabaseFile() {
+        Context ctx = appContext;
+        if (ctx == null) return;
+        File db = ctx.getDatabasePath(getDatabaseName());
+        if (db.isFile()) {
+            File corrupt = new File(db.getParentFile(),
+                    db.getName() + ".corrupt." + System.currentTimeMillis());
+            db.renameTo(corrupt);
+        }
+        deleteIfExists(db.getPath() + "-wal");
+        deleteIfExists(db.getPath() + "-shm");
+        deleteIfExists(db.getPath() + "-journal");
+    }
+
+    private static void deleteIfExists(String path) {
+        File f = new File(path);
+        if (f.isFile()) f.delete();
     }
 
     @Override

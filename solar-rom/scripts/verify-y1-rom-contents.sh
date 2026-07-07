@@ -48,6 +48,7 @@ errors=0
 fail() { echo "verify-y1-rom-contents: FAIL: $*" >&2; errors=$((errors + 1)); }
 
 require_path /app/com.solar.launcher.apk || fail "com.solar.launcher.apk"
+require_path /app/SolarHomeHelper.apk || fail "SolarHomeHelper.apk (HOME middle-man)"
 require_path /app/org.rockbox.apk || fail "org.rockbox.apk (rockbox-y1 base)"
 require_path /lib/librockbox.so || fail "librockbox.so"
 
@@ -70,6 +71,11 @@ for p in \
     /etc/solar/sync-rockbox-assets.sh \
     /etc/solar/disable-rockbox-for-solar.sh \
     /etc/solar/apply-preferred-home-boot.sh \
+    /etc/solar/disable-large-font-accessibility.sh \
+    /etc/solar/enable-gpu-performance.sh \
+    /etc/solar/solar-rescue-exec.sh \
+    /etc/solar/solar-rescue-daemon.sh \
+    /etc/solar/solar-rescue-hud-watch.sh \
     /etc/solar/Y1-Rockbox.kl \
     /etc/init.d/99SolarInit.sh \
     /etc/init.d/99Y1ButtonScript \
@@ -80,17 +86,43 @@ for p in \
     /framework/XposedBridge.jar \
     /xposed.prop \
     /app/XposedInstaller.apk \
+    /app/FMRadio.apk \
+    /lib/libfmjni.so \
     /app/SolarContextBridgeY1.apk \
-    /app/SolarThemeFont.apk; do
+    /app/SolarThemeFont.apk \
+    /app/SolarRockboxIme.apk \
+    /app/SolarNotPipeBridge.apk \
+    /app/io.github.gohoski.notpipe.apk; do
     require_path "$p" || fail "missing $p"
 done
 
 if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.themefont'; then
     fail "99XposedInit.sh must enable com.solar.launcher.xposed.themefont"
 fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.bridge.y1'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.bridge.y1"
+fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.rockbox.ime'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.ime"
+fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.notpipe'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.notpipe"
+fi
 
 if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'apply-preferred-home-boot.sh'; then
     fail "99SolarInit.sh must run apply-preferred-home-boot.sh"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'disable-large-font-accessibility.sh'; then
+    fail "99SolarInit.sh must reset large-font accessibility on boot"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'enable-gpu-performance.sh'; then
+    fail "99SolarInit.sh must enable GPU rendering + disable HW overlays on boot"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'SolarInputMethodService'; then
+    fail "99SolarInit.sh must set default SolarInputMethodService"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'SolarImeAccessibilityService'; then
+    fail "99SolarInit.sh must enable SolarImeAccessibilityService"
 fi
 if ! debugfs_cat /etc/install-recovery.sh | grep -q 'app_process.xposed.staged'; then
     fail "install-recovery.sh must apply staged Xposed app_process before zygote"
@@ -125,6 +157,19 @@ for kl in Generic.kl Stock.kl Rockbox.kl; do
     debugfs_dump "/usr/keylayout/$kl" "$kl" || fail "missing /usr/keylayout/$kl"
     cmp -s "$f" "$canon" || fail "/usr/keylayout/$kl differs from Y1-Rockbox.kl"
 done
+
+bridge_apk="$tmpdir/SolarContextBridgeY1.apk"
+debugfs_dump /app/SolarContextBridgeY1.apk SolarContextBridgeY1.apk \
+    || fail "could not extract SolarContextBridgeY1.apk"
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'AppAnrHooks' >/dev/null; then
+    fail "SolarContextBridgeY1.apk missing AppAnrHooks (rebuild build-context-bridge-apk.sh)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'AppErrorHooks' >/dev/null; then
+    fail "SolarContextBridgeY1.apk missing AppErrorHooks (rebuild build-context-bridge-apk.sh)"
+fi
+
+chmod +x "$SCRIPT_DIR/verify-rom-app-allowlist.sh"
+"$SCRIPT_DIR/verify-rom-app-allowlist.sh" "$sys" || fail "system APK allowlist audit"
 
 if [ "$errors" -ne 0 ]; then
     die "$errors check(s) failed — rebuild with ./solar-rom/scripts/build-rom.sh a|b"

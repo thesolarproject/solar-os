@@ -26,6 +26,7 @@ public final class ScreenTransitionMap {
     public static final int STATE_DEEZER_SETUP = 16;
     public static final int STATE_FLOW = 24;
     public static final int STATE_USB_STORAGE = 25;
+    public static final int STATE_NAVIDROME = 26;
 
     public enum Kind {
         /** No root animation — instant or in-place content swap. */
@@ -92,11 +93,13 @@ public final class ScreenTransitionMap {
     public static boolean sameBrowserRoot(int state) {
         return state == STATE_BROWSER || state == STATE_PODCASTS || state == STATE_SOULSEEK
                 || state == STATE_DEEZER || state == STATE_APPS || state == STATE_MORE
-                || state == STATE_USB_STORAGE
+                || state == STATE_USB_STORAGE || state == STATE_NAVIDROME
                 || state == MediaSuiteHost.STATE_RADIO
                 || state == MediaSuiteHost.STATE_RADIO_FM_BROWSE
                 || state == MediaSuiteHost.STATE_RADIO_NET_BROWSE
                 || state == MediaSuiteHost.STATE_VIDEOS
+                || state == MediaSuiteHost.STATE_VIDEO_HUB
+                || state == MediaSuiteHost.STATE_YOUTUBE_BROWSE
                 || state == MediaSuiteHost.STATE_PHOTOS;
     }
 

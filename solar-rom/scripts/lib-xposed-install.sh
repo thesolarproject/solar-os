@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Shared Xposed Dalvik install layout (API 17/19) — used by ROM mount + adb scripts.
-# Dalvik-era Xposed (JB/KK) embeds hooks in app_process; no separate libxposed_dalvik.so on /system.
+# 2026-07-05 — Canonical /system Xposed paths shared by ROM mount, adb install, and APK manifest.
+# APK/ROM parity: constants below must match manifest.json systemPaths and PlatformPrepManifest.
+# When changing: sync-platform-assets.sh, install-xposed-system.sh, XposedFrameworkInstaller.java.
+# Dalvik-era Xposed embeds hooks in app_process; no separate libxposed_dalvik.so on /system.
+# Reversal: revert path constants; ROM and APK prep drift until next sync-platform-assets.sh run.
 set -euo pipefail
 
 # Canonical /system paths required for a working framework (ROM + adb must match).
@@ -27,6 +30,16 @@ XPOSED_SYSTEM_CONTEXT_BRIDGE_APK="$XPOSED_SYSTEM_CONTEXT_BRIDGE_Y2_APK"
 # Solar theme font — shared Y1/Y2 module (sidecar path differs by device in Solar app).
 XPOSED_THEME_FONT_PKG="com.solar.launcher.xposed.themefont"
 XPOSED_SYSTEM_THEME_FONT_APK="/system/app/SolarThemeFont.apk"
+
+# Rockbox hook modules — split from context bridge for Debug menu toggles.
+XPOSED_ROCKBOX_IME_PKG="com.solar.launcher.xposed.rockbox.ime"
+XPOSED_ROCKBOX_COMPAT_PKG="com.solar.launcher.xposed.rockbox.compat"
+XPOSED_SYSTEM_ROCKBOX_IME_APK="/system/app/SolarRockboxIme.apk"
+XPOSED_SYSTEM_ROCKBOX_COMPAT_APK="/system/app/SolarRockboxCompat.apk"
+
+# Solar notPipe bridge — YouTube IPC + wheel player hooks (Y1 + Y2).
+XPOSED_NOTPIPE_BRIDGE_PKG="com.solar.launcher.xposed.notpipe"
+XPOSED_SYSTEM_NOTPIPE_BRIDGE_APK="/system/app/SolarNotPipeBridge.apk"
 
 # #region agent log
 # Debug-session NDJSON sink (host path — written by adb install/verify scripts).
@@ -177,6 +190,54 @@ xposed_theme_font_apk() {
     return 1
 }
 
+# Resolve or build SolarRockboxIme.apk (Y1 + Y2).
+xposed_rockbox_ime_apk() {
+    local script_dir="${1:?script dir}"
+    local out="$script_dir/../vendor/xposed/solar-rockbox-ime/SolarRockboxIme.apk"
+    if [ -f "$out" ]; then
+        echo "$out"
+        return 0
+    fi
+    if [ -x "$script_dir/build-rockbox-xposed-apks.sh" ]; then
+        "$script_dir/build-rockbox-xposed-apks.sh"
+        [ -f "$out" ] && echo "$out" && return 0
+    fi
+    echo "missing $out (run solar-rom/scripts/build-rockbox-xposed-apks.sh)" >&2
+    return 1
+}
+
+# Resolve or build SolarRockboxCompat.apk (Y2 only).
+xposed_rockbox_compat_apk() {
+    local script_dir="${1:?script dir}"
+    local out="$script_dir/../vendor/xposed/solar-rockbox-compat/SolarRockboxCompat.apk"
+    if [ -f "$out" ]; then
+        echo "$out"
+        return 0
+    fi
+    if [ -x "$script_dir/build-rockbox-xposed-apks.sh" ]; then
+        "$script_dir/build-rockbox-xposed-apks.sh"
+        [ -f "$out" ] && echo "$out" && return 0
+    fi
+    echo "missing $out (run solar-rom/scripts/build-rockbox-xposed-apks.sh)" >&2
+    return 1
+}
+
+# Resolve or build SolarNotPipeBridge.apk (Y1 + Y2).
+xposed_notpipe_bridge_apk() {
+    local script_dir="${1:?script dir}"
+    local out="$script_dir/../vendor/xposed/solar-notpipe-bridge/SolarNotPipeBridge.apk"
+    if [ -f "$out" ]; then
+        echo "$out"
+        return 0
+    fi
+    if [ -x "$script_dir/build-notpipe-bridge-apk.sh" ]; then
+        "$script_dir/build-notpipe-bridge-apk.sh"
+        [ -f "$out" ] && echo "$out" && return 0
+    fi
+    echo "missing $out (run solar-rom/scripts/build-notpipe-bridge-apk.sh)" >&2
+    return 1
+}
+
 # Copy framework files into a loop-mounted /system tree (offline ROM build).
 xposed_install_to_mount() {
     local mount="$1" api_level="$2" script_dir="$3"
@@ -197,7 +258,12 @@ xposed_install_to_mount() {
     echo "==> Xposed: install Dalvik framework (API $api_level) into $mount"
 
     sudo mkdir -p "$mount/framework" "$mount/etc/solar" "$mount/app" "$mount/etc/init.d"
-    sudo install -m 755 -o root -g shell "$vendor/app_process" "$mount/bin/app_process"
+    # Docker build hosts may lack Android's shell group — fall back to root:root (device images use root:shell).
+    if getent group shell >/dev/null 2>&1; then
+        sudo install -m 755 -o root -g shell "$vendor/app_process" "$mount/bin/app_process"
+    else
+        sudo install -m 755 -o root -g root "$vendor/app_process" "$mount/bin/app_process"
+    fi
     sudo install -m 644 -o root -g root "$vendor/XposedBridge.jar" "$mount/framework/XposedBridge.jar"
     sudo install -m 644 -o root -g root "$vendor/XposedBridge.jar" "$mount/etc/solar/XposedBridge.jar"
     sudo install -m 644 -o root -g root "$vendor/xposed.prop" "$mount/xposed.prop"
@@ -223,6 +289,25 @@ xposed_install_to_mount() {
     theme_apk="$(xposed_theme_font_apk "$script_dir")" || return 1
     echo "==> Xposed: install Solar theme font module (API $api_level)"
     sudo install -m 644 -o root -g root "$theme_apk" "$mount/app/SolarThemeFont.apk"
+
+    local rockbox_ime_apk
+    rockbox_ime_apk="$(xposed_rockbox_ime_apk "$script_dir")" || return 1
+    echo "==> Xposed: install Solar Rockbox IME module (API $api_level)"
+    sudo install -m 644 -o root -g root "$rockbox_ime_apk" "$mount/app/SolarRockboxIme.apk"
+
+    if [ "$api_level" != "17" ] && [ "$api_level" != "18" ]; then
+        local rockbox_compat_apk
+        rockbox_compat_apk="$(xposed_rockbox_compat_apk "$script_dir")" || return 1
+        echo "==> Xposed: install Solar Rockbox compat module (API $api_level)"
+        sudo install -m 644 -o root -g root "$rockbox_compat_apk" "$mount/app/SolarRockboxCompat.apk"
+    else
+        sudo rm -f "$mount/app/SolarRockboxCompat.apk"
+    fi
+
+    local notpipe_bridge_apk
+    notpipe_bridge_apk="$(xposed_notpipe_bridge_apk "$script_dir")" || return 1
+    echo "==> Xposed: install Solar NotPipe bridge module (API $api_level)"
+    sudo install -m 644 -o root -g root "$notpipe_bridge_apk" "$mount/app/SolarNotPipeBridge.apk"
 }
 
 # Seed /data/data/de.robv.android.xposed.installer paths on a live device (su).
@@ -291,6 +376,37 @@ xposed_fix_installer_data_ownership_via_adb() {
     # #endregion
 }
 
+# Merge one package into enabled_modules.xml on the host — avoids Y2 adb/su quote breakage.
+_xposed_merge_enabled_module_prefs_via_adb() {
+    local pkg="${1:?package name required}"
+    local remote="/data/data/de.robv.android.xposed.installer/shared_prefs/enabled_modules.xml"
+    local tmp
+    tmp="$(mktemp)"
+
+    if ! "${SOLAR_ADB[@]}" shell "su -c cat $remote" 2>/dev/null | tr -d '\r' > "$tmp"; then
+        : > "$tmp"
+    fi
+    if [ ! -s "$tmp" ] || ! grep -q '<?xml' "$tmp" || ! grep -q '<map>' "$tmp" || ! grep -q '^</map>' "$tmp"; then
+        {
+            echo "<?xml version='1.0' encoding='utf-8' standalone='yes' ?>"
+            echo "<map>"
+            grep '<int name=' "$tmp" 2>/dev/null || true
+            echo "</map>"
+        } > "${tmp}.repair"
+        mv "${tmp}.repair" "$tmp"
+    fi
+    if grep -q "name=\"$pkg\"" "$tmp"; then
+        sed -i "s|<int name=\"$pkg\" value=\"[^\"]*\"|<int name=\"$pkg\" value=\"1\"|" "$tmp"
+    else
+        sed -i "/<\\/map>/i\\    <int name=\"$pkg\" value=\"1\" />" "$tmp"
+    fi
+
+    "${SOLAR_ADB[@]}" push "$tmp" /data/local/tmp/enabled_modules.xml >/dev/null \
+        || { rm -f "$tmp"; return 1; }
+    rm -f "$tmp"
+    adb_su_sh "cp /data/local/tmp/enabled_modules.xml $remote && chmod 660 $remote && rm -f /data/local/tmp/enabled_modules.xml"
+}
+
 # Enable one module with live pm path — survives pm install -r suffix rotation (-1 → -2).
 # Merges enabled_modules.xml (does not wipe other modules). Purges stale modules.list paths.
 xposed_ensure_module_enabled_via_adb() {
@@ -315,15 +431,7 @@ xposed_ensure_module_enabled_via_adb() {
     adb_su_sh "grep -qxF '$apk_path' ${list}.tmp 2>/dev/null || echo '$apk_path' >> ${list}.tmp"
     adb_su_sh "mv ${list}.tmp $list"
 
-    # Merge enabled_modules — set value=1 without clobbering other Solar modules.
-    if adb_su_sh "test -f $prefs && grep -q '$pkg' $prefs"; then
-        adb_su_sh "sed -i 's|<int name=\"$pkg\" value=\"[^\"]*\"|<int name=\"$pkg\" value=\"1\"|' $prefs"
-    elif adb_su_sh "test -f $prefs && grep -q '</map>' $prefs"; then
-        adb_su_sh "sed -i 's|</map>|    <int name=\"$pkg\" value=\"1\" />\\n</map>|' $prefs"
-    else
-        # Single-line write — multiline heredoc breaks adb_su_sh quoting on Y2 stock sh.
-        adb_su_sh "printf '%s\n' \"<?xml version='1.0' encoding='utf-8' standalone='yes' ?>\" \"<map>\" \"    <int name=\\\"$pkg\\\" value=\\\"1\\\" />\" \"</map>\" > $prefs"
-    fi
+    _xposed_merge_enabled_module_prefs_via_adb "$pkg"
 
     xposed_fix_installer_data_ownership_via_adb
     echo "==> enabled $pkg ($apk_path)"
@@ -423,8 +531,8 @@ xposed_install_full_via_adb() {
     echo "==> Register XposedInstaller with PackageManager"
     # Never pm uninstall — that drops the system app from PM (launcher shows nothing / Activity not found).
     adb_su_sh "rm -rf /data/app/de.robv.android.xposed.installer* /data/app-lib/de.robv.android.xposed.installer*" 2>/dev/null || true
-    if ! "${SOLAR_ADB[@]}" shell "pm install -r $XPOSED_SYSTEM_INSTALLER_APK" 2>/dev/null | tr -d '\r' | grep -q Success; then
-        echo "WARN: pm install -r XposedInstaller failed — try reboot or manual: pm install -r /system/app/XposedInstaller.apk" >&2
+    if ! adb_pm_install_internal "$XPOSED_SYSTEM_INSTALLER_APK" "de.robv.android.xposed.installer" 2>/dev/null | tr -d '\r' | grep -q Success; then
+        echo "WARN: pm install -r -f XposedInstaller failed — try reboot or manual" >&2
     fi
     sleep 1
 
@@ -435,7 +543,7 @@ xposed_install_full_via_adb() {
     echo "==> push + pm install SolarContextBridge ($bridge_pkg)"
     if adb_push_to_system "$bridge_apk" "$bridge_system" 644; then
         adb_su_sh "rm -rf /data/app/${bridge_pkg}* /data/app-lib/${bridge_pkg}*" 2>/dev/null || true
-        "${SOLAR_ADB[@]}" shell "pm install -r $bridge_system" 2>/dev/null || true
+        adb_pm_install_internal "$bridge_system" "$bridge_pkg" 2>/dev/null || true
         sleep 1
         xposed_ensure_module_enabled_via_adb "$bridge_pkg" 2>/dev/null || true
     else
@@ -447,11 +555,49 @@ xposed_install_full_via_adb() {
     echo "==> push + pm install SolarThemeFont ($XPOSED_THEME_FONT_PKG)"
     if adb_push_to_system "$theme_apk" "$XPOSED_SYSTEM_THEME_FONT_APK" 644; then
         adb_su_sh "rm -rf /data/app/${XPOSED_THEME_FONT_PKG}* /data/app-lib/${XPOSED_THEME_FONT_PKG}*" 2>/dev/null || true
-        "${SOLAR_ADB[@]}" shell "pm install -r $XPOSED_SYSTEM_THEME_FONT_APK" 2>/dev/null || true
+        adb_pm_install_internal "$XPOSED_SYSTEM_THEME_FONT_APK" "$XPOSED_THEME_FONT_PKG" 2>/dev/null || true
         sleep 1
         xposed_ensure_module_enabled_via_adb "$XPOSED_THEME_FONT_PKG" 2>/dev/null || true
     else
         echo "WARN: theme font APK push failed — retry: enable-xposed-module-adb.sh $XPOSED_THEME_FONT_PKG on" >&2
+    fi
+
+    local rockbox_ime_apk
+    rockbox_ime_apk="$(xposed_rockbox_ime_apk "$script_dir")" || return 1
+    echo "==> push + pm install SolarRockboxIme ($XPOSED_ROCKBOX_IME_PKG)"
+    if adb_push_to_system "$rockbox_ime_apk" "$XPOSED_SYSTEM_ROCKBOX_IME_APK" 644; then
+        adb_su_sh "rm -rf /data/app/${XPOSED_ROCKBOX_IME_PKG}* /data/app-lib/${XPOSED_ROCKBOX_IME_PKG}*" 2>/dev/null || true
+        adb_pm_install_internal "$XPOSED_SYSTEM_ROCKBOX_IME_APK" "$XPOSED_ROCKBOX_IME_PKG" 2>/dev/null || true
+        sleep 1
+        xposed_ensure_module_enabled_via_adb "$XPOSED_ROCKBOX_IME_PKG" 2>/dev/null || true
+    else
+        echo "WARN: Rockbox IME APK push failed — retry: enable-xposed-module-adb.sh $XPOSED_ROCKBOX_IME_PKG on" >&2
+    fi
+
+    if [ "$api_level" != "17" ] && [ "$api_level" != "18" ]; then
+        local rockbox_compat_apk
+        rockbox_compat_apk="$(xposed_rockbox_compat_apk "$script_dir")" || return 1
+        echo "==> push + pm install SolarRockboxCompat ($XPOSED_ROCKBOX_COMPAT_PKG)"
+        if adb_push_to_system "$rockbox_compat_apk" "$XPOSED_SYSTEM_ROCKBOX_COMPAT_APK" 644; then
+            adb_su_sh "rm -rf /data/app/${XPOSED_ROCKBOX_COMPAT_PKG}* /data/app-lib/${XPOSED_ROCKBOX_COMPAT_PKG}*" 2>/dev/null || true
+            adb_pm_install_internal "$XPOSED_SYSTEM_ROCKBOX_COMPAT_APK" "$XPOSED_ROCKBOX_COMPAT_PKG" 2>/dev/null || true
+            sleep 1
+            xposed_ensure_module_enabled_via_adb "$XPOSED_ROCKBOX_COMPAT_PKG" 2>/dev/null || true
+        else
+            echo "WARN: Rockbox compat APK push failed — retry: enable-xposed-module-adb.sh $XPOSED_ROCKBOX_COMPAT_PKG on" >&2
+        fi
+    fi
+
+    local notpipe_bridge_apk
+    notpipe_bridge_apk="$(xposed_notpipe_bridge_apk "$script_dir")" || return 1
+    echo "==> push + pm install SolarNotPipeBridge ($XPOSED_NOTPIPE_BRIDGE_PKG)"
+    if adb_push_to_system "$notpipe_bridge_apk" "$XPOSED_SYSTEM_NOTPIPE_BRIDGE_APK" 644; then
+        adb_su_sh "rm -rf /data/app/${XPOSED_NOTPIPE_BRIDGE_PKG}* /data/app-lib/${XPOSED_NOTPIPE_BRIDGE_PKG}*" 2>/dev/null || true
+        adb_pm_install_internal "$XPOSED_SYSTEM_NOTPIPE_BRIDGE_APK" "$XPOSED_NOTPIPE_BRIDGE_PKG" 2>/dev/null || true
+        sleep 1
+        xposed_ensure_module_enabled_via_adb "$XPOSED_NOTPIPE_BRIDGE_PKG" 2>/dev/null || true
+    else
+        echo "WARN: NotPipe bridge APK push failed — retry: enable-xposed-module-adb.sh $XPOSED_NOTPIPE_BRIDGE_PKG on" >&2
     fi
 
     echo "==> Seed runtime jar + run 99XposedInit.sh"

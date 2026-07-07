@@ -1,14 +1,18 @@
 package com.solar.launcher;
 
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.View;
 import android.widget.AbsListView;
 import android.widget.ListView;
 import android.widget.ScrollView;
 
-/** Animated scroll-to-focus for single-axis hardware lists. */
+/** 2026-07-05 — Wheel index scroll on API 17; one primary scroll axis per list (no touch focus trees). */
 public final class FocusScrollHelper {
     private static final int LIST_IDLE_FOCUS_DELAY_MS = 80;
+    /** 2026-07-05 — Wheel repeat inside this window uses instant scrollTo (no smooth stack). */
+    private static final int RAPID_WHEEL_SCROLL_MS = 120;
+    private static long lastScrollToChildBottomMs;
 
     private FocusScrollHelper() {}
 
@@ -60,15 +64,22 @@ public final class FocusScrollHelper {
         }
     }
 
+    /**
+     * 2026-07-05 — Scroll focused row into view; rapid wheel uses scrollTo, isolated ticks smooth.
+     * Rollback: restore always-smooth + post Runnable wrapper.
+     */
     public static void scrollToChildBottom(ScrollView scroll, View child) {
         if (scroll == null || child == null) return;
-        scroll.post(new Runnable() {
-            @Override
-            public void run() {
-                int y = child.getBottom() - scroll.getHeight();
-                if (y < 0) y = 0;
-                scroll.smoothScrollTo(0, y);
-            }
-        });
+        long now = SystemClock.uptimeMillis();
+        boolean rapid = (now - lastScrollToChildBottomMs) < RAPID_WHEEL_SCROLL_MS;
+        lastScrollToChildBottomMs = now;
+        int y = child.getBottom() - scroll.getHeight();
+        if (y < 0) y = 0;
+        final int targetY = y;
+        if (rapid) {
+            scroll.scrollTo(0, targetY);
+            return;
+        }
+        scroll.smoothScrollTo(0, targetY);
     }
 }

@@ -114,7 +114,7 @@ ANDROID_ADB_TRANSPORT="${ANDROID_ADB_TRANSPORT:-}" \
     "$SCRIPT_DIR/install-xposed-adb.sh" --api 19 --no-reboot
 
 # --- Rockbox: fetch, patch for Y2, stage libs/.rockbox ---
-echo "==> Patch Rockbox for Y2 (sharedUserId strip + su -c)"
+echo "==> Resign Rockbox for Y2 (manifest-only sharedUserId strip; compat via Xposed)"
 chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh" \
     "$SCRIPT_DIR/patch-rockbox-y2.sh" \
     "$SCRIPT_DIR/extract-rockbox-staged-assets.sh"
@@ -152,9 +152,16 @@ push_to_system "$REPO_ROOT/solar-rom/system/99Y1ButtonScript" /system/etc/init.d
 "${ADB[@]}" shell "su -c 'rm -f /system/etc/init.d/99Y1LauncherInit.sh'" 2>/dev/null || true
 
 mkdir -p "$WORK/etc-solar"
+# 2026-07-05: rescue trio added — build-rom.sh bakes them into /etc/solar, so the adb overlay
+# must too (lab devices stay in lockstep with flashed ROMs; emergency-eject + HUD tick scripts).
 for f in switch-to-stock.sh switch-to-rockbox.sh sync-rockbox-libs.sh sync-rockbox-assets.sh \
-    sync-y1-keymap.sh disable-rockbox-for-solar.sh apply-preferred-home-boot.sh solar-usb-recovery-agent.sh; do
+    sync-y1-keymap.sh disable-rockbox-for-solar.sh apply-preferred-home-boot.sh disable-large-font-accessibility.sh enable-gpu-performance.sh solar-usb-recovery-agent.sh \
+    solar-rescue-exec.sh solar-rescue-daemon.sh solar-rescue-hud-watch.sh; do
     cp "$SCRIPT_DIR/$f" "$WORK/etc-solar/$f"
+    chmod 755 "$WORK/etc-solar/$f"
+done
+for f in solar-enable-ums.sh solar-disable-ums.sh y1-enable-ums.sh y1-disable-ums.sh; do
+    cp "$REPO_ROOT/app/src/main/assets/y1/$f" "$WORK/etc-solar/$f"
     chmod 755 "$WORK/etc-solar/$f"
 done
 cp "$REPO_ROOT/solar-rom/system/rockbox-y2-config.cfg" "$WORK/etc-solar/rockbox-y2-config.cfg"

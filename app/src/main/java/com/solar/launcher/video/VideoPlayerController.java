@@ -38,6 +38,15 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
         maybePrepare();
     }
 
+    /** 2026-07-06 — HTTP stream (experimental YouTube IJK path). */
+    public void openUrl(String url) throws IOException {
+        if (url == null || url.isEmpty()) throw new IOException("no url");
+        resetForNewSource();
+        pendingPath = url;
+        player.setDataSource(url);
+        maybePrepare();
+    }
+
     public boolean isPrepared() {
         return prepared;
     }

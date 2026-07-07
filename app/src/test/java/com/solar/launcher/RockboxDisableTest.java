@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStreamReader;
 
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RockboxDisableTest {
@@ -19,12 +20,13 @@ public class RockboxDisableTest {
     }
 
     @Test
-    public void disableScript_reRunsWhenRockboxReEnabled() throws Exception {
+    public void setupScript_setsPreferredSolarHomeWithoutDisablingRockbox() throws Exception {
         File f = scriptFile("disable-rockbox-for-solar.sh");
         String script = readFile(f);
-        assertTrue(script.contains("packages -d"));
-        assertTrue(script.contains("ROCKBOX_PKG"));
-        assertFalse(script.contains("[ -f \"$MARKER\" ] && exit 0"));
+        assertTrue(script.contains("SET_PREFERRED_HOME"));
+        assertTrue(script.contains("pm enable"));
+        assertFalse(script.contains("pm disable"));
+        assertTrue(script.contains("[ -f \"$MARKER\" ]"));
     }
 
     private static File scriptFile(String name) {
@@ -48,9 +50,5 @@ public class RockboxDisableTest {
         }
         r.close();
         return sb.toString();
-    }
-
-    private static void assertFalse(boolean condition) {
-        if (condition) throw new AssertionError("expected false");
     }
 }

@@ -20,8 +20,11 @@ public class Y1AssetsSyncTest {
             "sync-rockbox-libs.sh",
             "sync-y1-keymap.sh",
             "disable-rockbox-for-solar.sh",
+            "apply-preferred-home-boot.sh",
             "solar-usb-recovery-agent.sh",
-            "Y1-Rockbox.kl");
+            "Y1-Rockbox.kl",
+            "Y2-Rockbox.kl",
+            "mtk-kpd.y1.stock.kl");
 
     @Test
     public void apkAssetsMatchRomScripts() throws Exception {

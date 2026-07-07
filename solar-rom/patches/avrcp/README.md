@@ -66,7 +66,7 @@ Release builds are byte-identical without the env var. Coverage list: [`../../do
 Active patchers (wired into the bash):
 - `patch_mtkbt.py`, `patch_mtkbt_odex.py`, `patch_libextavrcp_jni.py`, `patch_libextavrcp.py`, `patch_libaudio_a2dp.py`, `patch_avrcp_kl.py`, `patch_y1_apk.py`
 
-Root escalation is handled by [`../su/`](../su/) (setuid `/system/xbin/su`).
+Root escalation is handled by Y1 permissive `/system/xbin/su` (Y2 baked at ROM build via `vendor/y1-su/`; Y1 from rockbox base).
 
 ## See also
 

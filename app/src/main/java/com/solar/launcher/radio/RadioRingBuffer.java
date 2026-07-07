@@ -17,7 +17,8 @@ public final class RadioRingBuffer {
 
   private static final int BYTES_PER_MS = (NOMINAL_KBPS * 1000) / (8 * 1000);
   private static final long MAX_BYTES = MAX_BUFFER_MS * BYTES_PER_MS;
-  private static final String SD_DIR = "/storage/sdcard0/RadioBuffer";
+  private static final String SD_DIR = com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot()
+          .getAbsolutePath() + "/RadioBuffer";
   private static final String FILE_NAME = "live.ts";
 
   private final File file;

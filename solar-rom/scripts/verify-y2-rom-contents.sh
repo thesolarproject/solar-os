@@ -48,8 +48,17 @@ require_path() {
 errors=0
 fail() { echo "verify-y2-rom-contents: FAIL: $*" >&2; errors=$((errors + 1)); }
 
-# Solar launcher + patched Rockbox (Y2-only install path in build-rom.sh).
+# Solar launcher + patched Rockbox (Y2-only when SOLAR_ROM_LEGACY_ROCKBOX=1).
 require_path /app/com.solar.launcher.apk || fail "/app/com.solar.launcher.apk"
+require_path /app/SolarHomeHelper.apk || fail "/app/SolarHomeHelper.apk (HOME middle-man)"
+
+ROCKBOX_ON_ROM=1
+if [ "${SOLAR_ROM_LEGACY_ROCKBOX:-0}" != "1" ]; then
+    ROCKBOX_ON_ROM=0
+    echo "verify-y2-rom-contents: note — org.rockbox prep-delivered via Solar APK platform bundle"
+fi
+
+if [ "$ROCKBOX_ON_ROM" = "1" ]; then
 require_path /app/org.rockbox.apk || fail "/app/org.rockbox.apk"
 require_path /lib/librockbox.so || fail "/lib/librockbox.so"
 require_path /etc/solar/rockbox-libs/librockbox.so || fail "/etc/solar/rockbox-libs/librockbox.so"
@@ -65,6 +74,7 @@ fi
 # grep -q + pipefail makes unzip SIGPIPE — count libmisc lines instead.
 rb_misc_count=$(unzip -l "$rb_apk" 2>/dev/null | grep -c 'lib/armeabi/libmisc.so' || true)
 [ "${rb_misc_count:-0}" -ge 1 ] || fail "org.rockbox.apk missing lib/armeabi/libmisc.so"
+fi
 
 # Launcher switch + keymap scripts (Rockbox-Y1 handoff parity).
 for p in \
@@ -75,6 +85,15 @@ for p in \
     /etc/solar/sync-rockbox-assets.sh \
     /etc/solar/disable-rockbox-for-solar.sh \
     /etc/solar/apply-preferred-home-boot.sh \
+    /etc/solar/disable-large-font-accessibility.sh \
+    /etc/solar/enable-gpu-performance.sh \
+    /etc/solar/solar-enable-ums.sh \
+    /etc/solar/solar-disable-ums.sh \
+    /etc/solar/solar-rescue-exec.sh \
+    /etc/solar/solar-rescue-daemon.sh \
+    /etc/solar/solar-rescue-hud-watch.sh \
+    /app/FMRadio.apk \
+    /lib/libfmjni.so \
     /etc/solar/Y2-Rockbox.kl \
     /etc/init.d/99SolarInit.sh \
     /etc/init.d/99Y1ButtonScript \
@@ -87,6 +106,18 @@ done
 
 if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'apply-preferred-home-boot.sh'; then
     fail "99SolarInit.sh must run apply-preferred-home-boot.sh"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'disable-large-font-accessibility.sh'; then
+    fail "99SolarInit.sh must reset large-font accessibility on boot"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'enable-gpu-performance.sh'; then
+    fail "99SolarInit.sh must enable GPU rendering + disable HW overlays on boot"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'SolarInputMethodService'; then
+    fail "99SolarInit.sh must set default SolarInputMethodService"
+fi
+if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'SolarImeAccessibilityService'; then
+    fail "99SolarInit.sh must enable SolarImeAccessibilityService"
 fi
 if ! debugfs_cat /etc/init.d/99SolarInit.sh | grep -q 'daemonsu'; then
     fail "99SolarInit.sh must start daemonsu for app su -c"
@@ -144,6 +175,10 @@ for p in \
     /app/XposedInstaller.apk \
     /app/SolarContextBridgeY2.apk \
     /app/SolarThemeFont.apk \
+    /app/SolarRockboxIme.apk \
+    /app/SolarRockboxCompat.apk \
+    /app/SolarNotPipeBridge.apk \
+    /app/io.github.gohoski.notpipe.apk \
     /etc/init.d/99XposedInit.sh; do
     require_path "$p" || fail "missing $p"
 done
@@ -153,15 +188,77 @@ fi
 if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.bridge.y2'; then
     fail "99XposedInit.sh must enable com.solar.launcher.xposed.bridge.y2"
 fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.rockbox.ime'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.ime"
+fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.rockbox.compat'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.compat"
+fi
+if ! debugfs_cat /etc/init.d/99XposedInit.sh | grep -q 'com.solar.launcher.xposed.notpipe'; then
+    fail "99XposedInit.sh must enable com.solar.launcher.xposed.notpipe"
+fi
 
-# Staged Rockbox assets (Y2 dual-storage + db_folder_select patch).
+# Staged Rockbox assets (Y2 dual-storage + db_folder_select patch) — ROM legacy path only.
+if [ "$ROCKBOX_ON_ROM" = "1" ]; then
 require_path /etc/solar/rockbox-y2-config.cfg || fail "rockbox-y2-config.cfg"
 require_path /etc/solar/rockbox-libs/librockbox.so || fail "staged rockbox-libs"
 require_path /etc/solar/rockbox-dot-rockbox/rocks/viewers/db_folder_select.rock \
     || fail "staged db_folder_select.rock"
 
+staged_lib="$tmpdir/staged-librockbox.so"
+debugfs_dump /etc/solar/rockbox-libs/librockbox.so staged-librockbox.so || fail "could not read staged librockbox.so"
+# 2026-07-05: full-read grep (no -q) — grep -q early-exit + pipefail made strings die with
+# SIGPIPE on this ~900KB lib, randomly failing the check even when the string is present.
+if ! strings "$staged_lib" 2>/dev/null | grep 'solar-rb-launch' >/dev/null; then
+    fail "staged librockbox.so missing solar-rb-launch (extract-rockbox-staged-assets patch)"
+fi
+
+apk_lib="$tmpdir/apk-librockbox.so"
+unzip -o -q -p "$rb_apk" lib/armeabi/librockbox.so > "$apk_lib" 2>/dev/null || true
+if [ -s "$apk_lib" ]; then
+    # 2026-07-05: no -q — under pipefail a match made grep quit early, SIGPIPE'd strings, and
+    # the pipeline read as "no match", silently skipping this pristine-APK guard.
+    if strings "$apk_lib" 2>/dev/null | grep 'solar-rb-launch' >/dev/null; then
+        fail "APK librockbox.so must stay pristine — native shim belongs in staged copy only"
+    fi
+fi
+fi
+
+if ! debugfs_cat /etc/solar/solar-enable-ums.sh | grep -q 'y2_export_volumes'; then
+    fail "solar-enable-ums.sh must discover Y2 volumes via vdc (y2_export_volumes)"
+fi
+
+bridge_apk="$tmpdir/SolarContextBridgeY2.apk"
+debugfs_dump /app/SolarContextBridgeY2.apk SolarContextBridgeY2.apk || fail "could not extract SolarContextBridgeY2.apk"
+compat_apk="$tmpdir/SolarRockboxCompat.apk"
+debugfs_dump /app/SolarRockboxCompat.apk SolarRockboxCompat.apk || fail "could not extract SolarRockboxCompat.apk"
+# RockboxCompatHooks moved out of bridge into standalone SolarRockboxCompat module.
+if ! unzip -p "$compat_apk" classes.dex 2>/dev/null | strings | grep 'RockboxCompatHooks' >/dev/null; then
+    fail "SolarRockboxCompat.apk missing RockboxCompatHooks (rebuild build-rockbox-xposed-apks.sh)"
+fi
+if unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'RockboxCompatHooks' >/dev/null; then
+    fail "SolarContextBridgeY2.apk must not embed RockboxCompatHooks (use SolarRockboxCompat.apk)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'AppAnrHooks' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing AppAnrHooks (rebuild build-context-bridge-apk.sh)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'AppErrorHooks' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing AppErrorHooks (rebuild build-context-bridge-apk.sh)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'UsbMassStorageServerHooks' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing UsbMassStorageServerHooks (rebuild build-context-bridge-apk.sh)"
+fi
+
+chmod +x "$SCRIPT_DIR/verify-rom-app-allowlist.sh"
+if [ "$ROCKBOX_ON_ROM" = "0" ]; then
+    SOLAR_ROCKBOX_PREP_DELIVERED=1 "$SCRIPT_DIR/verify-rom-app-allowlist.sh" "$sys" \
+        || fail "system APK allowlist audit"
+else
+    "$SCRIPT_DIR/verify-rom-app-allowlist.sh" "$sys" || fail "system APK allowlist audit"
+fi
+
 if [ "$errors" -ne 0 ]; then
     die "$errors check(s) failed — rebuild with ./solar-rom/scripts/build-rom.sh y2"
 fi
 
-echo "==> verify-y2-rom-contents: OK (patched Rockbox, keylayout, switch scripts, root)"
+echo "==> verify-y2-rom-contents: OK (Xposed compat, keylayout, root; Rockbox ROM or prep-delivered)"

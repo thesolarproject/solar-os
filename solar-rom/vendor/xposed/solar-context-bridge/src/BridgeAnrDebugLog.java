@@ -13,6 +13,8 @@ final class BridgeAnrDebugLog {
 
     private static final String SESSION = "edc27b";
     private static final String FILE = "debug-edc27b.log";
+    /** 2026-07-05 — off in production; sync SD I/O on PWM thread ANRs system_server. */
+    private static final boolean ENABLED = false;
     /** Log PWM hook work taking longer than this — sub-threshold is normal noise. */
     private static final long SLOW_MS = 8L;
     /** Burst detector — many hook hits in one window suggests input-thread overload. */
@@ -27,6 +29,7 @@ final class BridgeAnrDebugLog {
 
     /** Record hook duration; logs only slow paths or storm bursts. */
     static void hookTiming(String location, String hypothesisId, long startNs, JSONObject data) {
+        if (!ENABLED) return;
         long ms = (System.nanoTime() - startNs) / 1_000_000L;
         noteStorm(location, hypothesisId, ms, data);
         if (ms < SLOW_MS) return;
@@ -39,6 +42,7 @@ final class BridgeAnrDebugLog {
 
     /** Unconditional branch marker for rare paths (USB onCreate, GlobalActions). */
     static void event(String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         write(location, message, hypothesisId, data);
     }
 

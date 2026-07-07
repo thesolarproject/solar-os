@@ -80,7 +80,7 @@ public class SolarDeveloperAccountsTest {
   }
 
   @Test
-  public void experimentDefaultsOnWhenPrefAbsent() {
+  public void experimentDisabledAfterSupportUiRemoval() {
     android.content.SharedPreferences prefs = new android.content.SharedPreferences() {
       @Override public java.util.Map<String, ?> getAll() { return null; }
       @Override public String getString(String key, String defValue) { return defValue; }
@@ -94,8 +94,8 @@ public class SolarDeveloperAccountsTest {
       @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {}
       @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {}
     };
-    if (!SolarDeveloperAccounts.isExperimentEnabled(prefs)) {
-      throw new AssertionError("default should be on");
+    if (SolarDeveloperAccounts.isExperimentEnabled(prefs)) {
+      throw new AssertionError("developer support PM UI should be off");
     }
   }
 

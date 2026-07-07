@@ -10,11 +10,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
-/** On-device photo roots: Pictures, DCIM on MicroSD and Environment paths. */
+/** On-device photo roots: Pictures/DCIM on every user volume plus Environment paths. */
 public final class PhotoLibrary {
-    private static final File SDCARD_PICTURES = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Pictures");
-    private static final File SDCARD_DCIM = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "DCIM");
-
     private static final String[] IMAGE_EXT = {".jpg", ".jpeg", ".png"};
 
     private PhotoLibrary() {}

@@ -4,7 +4,9 @@
 
 # Solar
 
-Custom firmware and launcher for the **Innioasis Y1** — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).
+Custom firmware and launcher for the **Innioasis Y1** and **Y2** — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).
+
+**Full usage and developer guides:** [docs/README.md](docs/README.md)
 
 ## Features
 

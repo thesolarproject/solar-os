@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Stamp app/build.gradle versionName + versionCode from git tags before release/ROM builds.
-# ponytail: keeps About/OTA version aligned with published tag (nightly-YYYYMMDD-HHMM + matching code).
+# 2026-07-05 — Stamps app/build.gradle versionName + versionCode before release/ROM builds.
+# Single source: SOURCE_DATE_EPOCH (defaults to date -u +%s when unset in scripts/build.sh).
+# When changing: resolve-release-version.py output must match publish-ota-updates.sh tag format.
+# Reversal: remove call from preReleaseBuild; APK ships stale version fields.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

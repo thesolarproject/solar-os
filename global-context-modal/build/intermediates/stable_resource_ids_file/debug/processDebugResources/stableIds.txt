@@ -1,0 +1,11 @@
+com.solar.launcher.globalcontext:string/rescue_hold_countdown = 0x7f010009
+com.solar.launcher.globalcontext:string/overlay_power_title = 0x7f010008
+com.solar.launcher.globalcontext:string/overlay_power_placeholder = 0x7f010007
+com.solar.launcher.globalcontext:string/emergency_recovery_repair = 0x7f010004
+com.solar.launcher.globalcontext:string/emergency_recovery_launcher = 0x7f010003
+com.solar.launcher.globalcontext:string/emergency_recovery_clear = 0x7f010002
+com.solar.launcher.globalcontext:string/emergency_recovery_title = 0x7f010006
+com.solar.launcher.globalcontext:string/emergency_recovery_body = 0x7f010001
+com.solar.launcher.globalcontext:string/rescue_hold_restarting = 0x7f01000a
+com.solar.launcher.globalcontext:string/emergency_recovery_retry = 0x7f010005
+com.solar.launcher.globalcontext:string/companion_app_name = 0x7f010000

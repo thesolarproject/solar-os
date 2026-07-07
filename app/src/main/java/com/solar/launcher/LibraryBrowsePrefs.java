@@ -124,6 +124,8 @@ public final class LibraryBrowsePrefs {
 
     private static final String KEY_ALBUM_SONG_SORT = "lib_album_song_sort";
     private static final String KEY_ALBUM_RACK_SORT = "lib_album_rack_sort";
+    /** 2026-07-05: Append Reach peer hits below local library search (default off). */
+    private static final String KEY_SEARCH_REACH = "lib_search_include_reach";
 
     public int albumRackSort() {
         return prefs.getInt(KEY_ALBUM_RACK_SORT, ALBUM_RACK_SORT_TITLE);
@@ -143,6 +145,15 @@ public final class LibraryBrowsePrefs {
         int next = (albumSongSort() + 1) % 4;
         prefs.edit().putInt(KEY_ALBUM_SONG_SORT, next).commit();
         return next;
+    }
+
+    /** 2026-07-05: When true, library search also queries Reach (needs Reach + internet). */
+    public boolean includeReachInLibrarySearch() {
+        return prefs.getBoolean(KEY_SEARCH_REACH, false);
+    }
+
+    public void setIncludeReachInLibrarySearch(boolean on) {
+        prefs.edit().putBoolean(KEY_SEARCH_REACH, on).commit();
     }
 
     public static int guestBrowseModeLabelRes(int mode) {
@@ -207,6 +218,7 @@ public final class LibraryBrowsePrefs {
         if (RowKeys.LIB_ALBUM_RACK_SORT.equals(rowKey)) return R.string.lib_preview_album_rack_sort;
         if (RowKeys.LIB_ALBUM_SUB.equals(rowKey)) return R.string.lib_preview_album_sub;
         if (RowKeys.LIB_GUEST_SUB.equals(rowKey)) return R.string.lib_preview_guest_sub;
+        if (RowKeys.LIB_SEARCH_REACH.equals(rowKey)) return R.string.lib_preview_search_reach;
         return 0;
     }
 }

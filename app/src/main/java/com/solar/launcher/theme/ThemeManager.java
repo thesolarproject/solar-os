@@ -1,8 +1,10 @@
 package com.solar.launcher.theme;
 
 import com.solar.launcher.HomeMenuConfig;
+import com.solar.launcher.SolarOverlayHost;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.content.res.AssetManager;
 import android.os.Environment;
 import android.graphics.Bitmap;
@@ -27,6 +29,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * ponytail: one file — Y1 config.json themes only. Bundled Default from assets.
@@ -36,6 +40,12 @@ public class ThemeManager {
     /** Legacy Y1 path; use {@link #themesRoot()} after init. */
     public static final String PATH_THEMES = "/storage/sdcard0/Themes";
     public static final String BUILTIN_DEFAULT_FOLDER = "Default";
+    /** SharedPreferences keys — same store as {@link com.solar.launcher.MainActivity} settings. */
+    public static final String PREF_THEME_INDEX = "app_theme_index";
+    public static final String PREF_THEME_PATH = "app_theme_path";
+    /** Stable folder name — survives theme list reorder and internal/SD path moves. */
+    public static final String PREF_THEME_FOLDER = "app_theme_folder";
+    private static final String PREFS_NAME = "SOLAR_SETTINGS";
     private static final String BUNDLED_ASSET_DIR = "themes/default";
 
     private static String themesRootPath = PATH_THEMES;
@@ -65,8 +75,18 @@ public class ThemeManager {
     private static final Map<String, Bitmap> scaledRowBitmapCache = new HashMap<>();
     private static Typeface cachedFont;
     private static String cachedFontKey = "";
+    /** :overlay process finished full theme bootstrap — skip heavy I/O on every modal open. */
+    private static volatile boolean overlayThemeBootstrapped;
+    /** Last theme folder warmed for overlay — cheap stale check vs prefs. */
+    private static volatile String lastOverlayThemeFolder = "";
+    /** :overlay bootstrap latch — finishShowOverlay waits up to 500ms then fail-open paints. */
+    private static volatile CountDownLatch overlayThemeReadyLatch = new CountDownLatch(1);
+    /** 2026-07-05 — Snapshot restored theme entry before bitmap warm — instant overlay text/font. */
+    private static volatile boolean overlayRamCacheLoaded;
     /** While UMS exports SD card, avoid mmap on theme files so vold can unmount without killing us. */
     private static volatile boolean blockSdcardThemeAssets = false;
+    /** 2026-07-05 — SolarApplication bootstrap finished — MainActivity skips duplicate theme I/O. */
+    private static volatile boolean appThemeBootstrapComplete;
     private static boolean statusBarMatchItemText = false;
     /** User pref: Now Playing title/artist use list item text colour (default off — Y1 white). */
     private static boolean nowPlayingMatchItemText = false;
@@ -75,16 +95,10 @@ public class ThemeManager {
     /** User pref: dithered LCD-style album art tinted to theme font colour. */
     private static boolean nowPlayingLcdArtEnabled = false;
 
-    /** ponytail: external Themes/ with filesDir fallback when sdcard missing (emulator). */
+    /** Active theme assets live in app-private storage — survives MicroSD export and slow mounts. */
     public static String resolveThemesRoot(Context ctx) {
         if (ctx != null) {
-            try {
-                File ext = com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot();
-                if (ext != null) {
-                    return new File(ext, "Themes").getAbsolutePath();
-                }
-            } catch (Exception ignored) {}
-            return new File(ctx.getFilesDir(), "Themes").getAbsolutePath();
+            return internalThemesDir(ctx).getAbsolutePath();
         }
         return PATH_THEMES;
     }
@@ -122,7 +136,19 @@ public class ThemeManager {
     public static void ensureFastStartupTheme(Context ctx) {
         if (ctx != null) assetContext = ctx.getApplicationContext();
         ensureBundledFallback(ctx);
-        ensureThemesRootReady(ctx);
+        if (PATH_THEMES.equals(themesRootPath)) {
+            ensureThemesRootReady(ctx);
+        }
+    }
+
+    /** Called from SolarApplication bootstrap thread when full theme ladder completes. */
+    public static void markAppThemeBootstrapComplete() {
+        appThemeBootstrapComplete = true;
+    }
+
+    /** MainActivity defers duplicate ensureBundledDefault when Application already ran. */
+    public static boolean isAppThemeBootstrapComplete() {
+        return appThemeBootstrapComplete;
     }
 
     /**
@@ -173,23 +199,50 @@ public class ThemeManager {
         assetContext = app;
         ThemeEntry active = getCurrentTheme();
         if (active == null || active == bundledFallback || active.folderPath.startsWith("asset://")) {
+            finishThemeCachePipeline(app);
             return;
         }
         File cacheDir = new File(internalThemesDir(app), active.folderName);
-        File sourceDir;
+        // Already on internal MMC — nothing to copy from MicroSD.
         if (active.folderPath.startsWith(app.getFilesDir().getAbsolutePath())) {
-            File sdDir = new File(resolveThemesRoot(app), active.folderName);
-            if (!sdDir.isDirectory()) return;
-            sourceDir = sdDir;
-        } else {
-            sourceDir = new File(active.folderPath);
+            finishThemeCachePipeline(app);
+            return;
         }
+        File sourceDir = new File(active.folderPath);
         if (!sourceDir.isDirectory()) return;
+        File cachedCfg = new File(cacheDir, "config.json");
+        // Skip full tree copy when internal cache is already up to date.
+        if (cachedCfg.isFile() && cachedCfg.length() > 0
+                && sourceDir.lastModified() <= cacheDir.lastModified()) {
+            switchThemeEntryToInternal(app, active, cacheDir);
+            finishThemeCachePipeline(app);
+            return;
+        }
         if (!cacheDir.exists() && !cacheDir.mkdirs()) return;
         try {
             copyDirectory(sourceDir, cacheDir);
         } catch (Exception ignored) {}
         switchThemeEntryToInternal(app, active, cacheDir);
+        finishThemeCachePipeline(app);
+    }
+
+    /** 2026-07-05 — Mirror active theme to every .solar root, then publish sidecars + snapshot. */
+    private static void finishThemeCachePipeline(Context app) {
+        ThemeEntry active = getCurrentTheme();
+        if (active != null && active.folderName != null) {
+            File src = new File(internalThemesDir(app), active.folderName);
+            if (!new File(src, "config.json").isFile() && active.folderPath != null
+                    && !active.folderPath.startsWith("asset://")) {
+                src = new File(active.folderPath);
+            }
+            if (new File(src, "config.json").isFile()) {
+                ThemeMirrorHelper.mirrorActiveTheme(app, src, active.folderName);
+            }
+        }
+        SystemFontBridge.publish(app);
+        ThemeColorBridge.publish(app);
+        ThemeSnapshotBridge.publish(app);
+        ThemeSkinBridge.publish(app);
     }
 
     /** Prefer MMC cache for the active theme when config.json is present (faster + UMS-safe). */
@@ -197,12 +250,410 @@ public class ThemeManager {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         ThemeEntry cur = getCurrentTheme();
-        if (cur == null || cur.folderName == null) return;
-        File cacheDir = new File(internalThemesDir(app), cur.folderName);
-        File cachedCfg = new File(cacheDir, "config.json");
-        if (cachedCfg.isFile() && cachedCfg.length() > 0) {
-            switchThemeEntryToInternal(app, cur, cacheDir);
+        if (cur != null && cur.folderName != null) {
+            File cacheDir = new File(internalThemesDir(app), cur.folderName);
+            File cachedCfg = new File(cacheDir, "config.json");
+            if (cachedCfg.isFile() && cachedCfg.length() > 0) {
+                switchThemeEntryToInternal(app, cur, cacheDir);
+            }
         }
+        finishThemeCachePipeline(app);
+    }
+
+    /**
+     * 2026-07-05 — Synchronous RAM warm from dual-storage snapshot at Application onCreate.
+     * Layman: read the tiny theme cheat sheet before any overlay or modal paints.
+     */
+    public static void loadOverlayRamCacheSync(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        assetContext = app;
+        ActiveThemeEngine.init(app);
+        overlayRamCacheLoaded = ThemeSnapshotBridge.loadIntoThemeManager(app);
+    }
+
+    /** True when snapshot restored a theme entry — colors/font ready before bitmap warm. */
+    public static boolean isOverlayRamCacheLoaded() {
+        return overlayRamCacheLoaded;
+    }
+
+    /** 2026-07-05 — Overlay-only parse wrapper for {@link ThemeSnapshotBridge}. */
+    static ThemeEntry parseFolderForOverlay(File folder) {
+        return parseFolder(folder);
+    }
+
+    /** 2026-07-05 — Install one theme entry from snapshot without full Themes/ scan. */
+    static void installOverlayRamEntry(ThemeEntry entry, String folderName) {
+        if (entry == null) return;
+        availableThemes.clear();
+        availableThemes.add(entry);
+        currentThemeIndex = 0;
+        bitmapCache.clear();
+        scaledRowBitmapCache.clear();
+        cachedFont = null;
+        cachedFontKey = "";
+        auraFont = null;
+        lastOverlayThemeFolder = folderName != null ? folderName : entry.folderName;
+        overlayRamCacheLoaded = true;
+    }
+
+    /** 2026-07-05 — Decode theme font into RAM after snapshot entry install. */
+    static void preloadOverlayFontFromRam() {
+        getCustomFont();
+    }
+
+    /**
+     * 2026-07-05 — Instant overlay paint when theme snapshot is missing at cold boot.
+     * Layman: show the menu shell right away with bundled colors; PNG chrome warms in the background.
+     * Technical: asset config.json only — no Themes/ rescan or MMC copy (that blocked paint for minutes).
+     * Reversal: old loadOverlayAndFinish worker path waited on ensureOverlayThemeReady before finishShowOverlay.
+     */
+    public static void ensureOverlayPaintableMinimum(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        assetContext = app;
+        if (!overlayRamCacheLoaded) {
+            loadOverlayRamCacheSync(app);
+        }
+        if (overlayRamCacheLoaded) {
+            preloadOverlayFontFromRam();
+            return;
+        }
+        ensureBundledFallback(app);
+        if (availableThemes.isEmpty() && bundledFallback != null) {
+            availableThemes.add(bundledFallback);
+            currentThemeIndex = 0;
+        }
+        preloadOverlayFontFromRam();
+    }
+
+    /**
+     * Restore user's theme from prefs — required in :overlay process (separate from MainActivity).
+     * Path to folder name to index, in that order.
+     */
+    public static void restoreSavedThemeFromPrefs(Context ctx) {
+        if (ctx == null) return;
+        SharedPreferences prefs = ctx.getApplicationContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        applySavedThemeSelection(
+                prefs.getString(PREF_THEME_PATH, null),
+                prefs.getString(PREF_THEME_FOLDER, null),
+                prefs.getInt(PREF_THEME_INDEX, 0));
+    }
+
+    /** Test hook — selection logic without SharedPreferences / Robolectric. */
+    static void applySavedThemeSelection(String savedPath, String savedFolder, int savedIndex) {
+        if (savedPath != null && savedPath.length() > 0) {
+            int idx = findThemeIndexForPath(savedPath);
+            if (idx >= 0) {
+                setThemeIndex(idx);
+                return;
+            }
+        }
+        if (savedFolder != null && savedFolder.length() > 0) {
+            int idx = findThemeIndexForPath(savedFolder);
+            if (idx >= 0) {
+                setThemeIndex(idx);
+                return;
+            }
+        }
+        setThemeIndex(savedIndex);
+    }
+
+    /** Persist active theme path/folder/index after apply — readable from :overlay process. */
+    public static void syncSavedThemeToPrefs(Context ctx) {
+        if (ctx == null) return;
+        ThemeEntry active = getCurrentTheme();
+        if (active == null) return;
+        SharedPreferences prefs = ctx.getApplicationContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        SharedPreferences.Editor ed = prefs.edit()
+                .putInt(PREF_THEME_INDEX, getCurrentThemeIndex())
+                .putString(PREF_THEME_FOLDER, active.folderName);
+        String persistPath = persistPathForTheme(active, ctx);
+        if (active.folderPath != null && !active.folderPath.startsWith("asset://")) {
+            ed.putString(PREF_THEME_PATH, persistPath);
+        }
+        ed.apply();
+    }
+
+    /**
+     * Overlay theme bootstrap — load only the saved theme folder + decode menu chrome into RAM.
+     * Skips {@link #loadAllThemes} and {@link #cacheActiveTheme} (full home/settings scan).
+     */
+    public static void ensureOverlayThemeReady(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        assetContext = app;
+        if (!overlayRamCacheLoaded) {
+            loadOverlayRamCacheSync(app);
+        }
+        reloadSolarSettingsPrefsFromDisk(app);
+        SharedPreferences prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String folder = prefs.getString(PREF_THEME_FOLDER, "");
+        if (overlayRamCacheLoaded && folder.length() > 0 && folder.equals(lastOverlayThemeFolder)) {
+            preferInternalCacheForActiveTheme(app);
+        } else {
+            ensureOverlayActiveThemeOnly(app);
+        }
+        warmOverlayThemeCache(app);
+        ThemeEntry active = getCurrentTheme();
+        lastOverlayThemeFolder = active != null ? active.folderName : "";
+        overlayThemeBootstrapped = true;
+        overlayThemeReadyLatch.countDown();
+    }
+
+    /** Block overlay paint until :overlay warms theme chrome — fail-open after timeoutMs. */
+    public static void awaitOverlayThemeReady(long timeoutMs) {
+        if (overlayThemeBootstrapped) return;
+        if (overlayRamCacheLoaded && timeoutMs > 0) {
+            long ramWait = Math.min(timeoutMs, 1200L);
+            CountDownLatch latch = overlayThemeReadyLatch;
+            try {
+                latch.await(ramWait, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ignored) {}
+            if (overlayThemeBootstrapped || overlayRamCacheLoaded) return;
+        }
+        CountDownLatch latch = overlayThemeReadyLatch;
+        try {
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+    }
+
+    /** Drop overlay RAM cache — next show reloads saved theme folder. */
+    public static void invalidateOverlayThemeCache() {
+        overlayThemeBootstrapped = false;
+        overlayRamCacheLoaded = false;
+        lastOverlayThemeFolder = "";
+        overlayThemeReadyLatch = new CountDownLatch(1);
+    }
+
+    /** Main process theme pick — invalidate overlay cache and warm :overlay again. */
+    public static void notifyOverlayThemeChanged(Context ctx) {
+        invalidateOverlayThemeCache();
+        SolarOverlayHost.reloadOverlayTheme(ctx);
+    }
+
+    /**
+     * :overlay runs in a separate process — reload SOLAR_SETTINGS from disk so theme picks
+     * from the main Solar process are visible before painting global overlays.
+     */
+    public static void reloadSolarSettingsPrefsFromDisk(Context ctx) {
+        if (ctx == null) return;
+        try {
+            SharedPreferences prefs = ctx.getApplicationContext()
+                    .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            java.lang.reflect.Method reload = prefs.getClass().getDeclaredMethod("startLoadFromDisk");
+            reload.setAccessible(true);
+            reload.invoke(prefs);
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Resolve the user's saved theme for :overlay — internal MMC cache first, then one folder lookup.
+     */
+    private static void ensureOverlayActiveThemeOnly(Context ctx) {
+        reloadSolarSettingsPrefsFromDisk(ctx);
+        ensureThemesRootReady(ctx);
+        ensureBundledDefault(ctx);
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String folder = prefs.getString(PREF_THEME_FOLDER, "");
+        String savedPath = prefs.getString(PREF_THEME_PATH, "");
+        ThemeEntry cur = getCurrentTheme();
+        if (cur != null && folder.length() > 0 && folder.equals(cur.folderName)) {
+            preferInternalCacheForActiveTheme(ctx);
+            ensureActiveThemeOrFallback(ctx);
+            return;
+        }
+        availableThemes.clear();
+        bitmapCache.clear();
+        scaledRowBitmapCache.clear();
+        cachedFont = null;
+        cachedFontKey = "";
+        auraFont = null;
+        ThemeEntry loaded = resolveOverlayThemeEntry(ctx, folder, savedPath);
+        if (loaded != null) {
+            availableThemes.add(loaded);
+            currentThemeIndex = 0;
+        } else if (bundledFallback != null) {
+            availableThemes.add(bundledFallback);
+            currentThemeIndex = 0;
+        }
+        preferInternalCacheForActiveTheme(ctx);
+        ensureActiveThemeOrFallback(ctx);
+    }
+
+    /** Pick one theme dir for overlay paint — no full Themes/ rescan. */
+    private static ThemeEntry resolveOverlayThemeEntry(Context ctx, String folder, String savedPath) {
+        if (folder != null && folder.length() > 0) {
+            File cached = new File(internalThemesDir(ctx), folder);
+            ThemeEntry fromCache = parseFolder(cached);
+            if (fromCache != null) return fromCache;
+            File mirrored = ThemeMirrorHelper.findMirroredThemeDir(ctx, folder);
+            if (mirrored != null) {
+                ThemeEntry fromMirror = parseFolder(mirrored);
+                if (fromMirror != null) return fromMirror;
+            }
+        }
+        if (savedPath != null && savedPath.length() > 0) {
+            if (savedPath.startsWith("asset://") || "default".equalsIgnoreCase(savedPath.trim())) {
+                if (bundledFallback != null) return bundledFallback;
+            }
+            File pathFile = new File(savedPath);
+            File dir = pathFile.isFile() ? pathFile.getParentFile() : pathFile;
+            if (dir != null) {
+                ThemeEntry fromPath = parseFolder(dir);
+                if (fromPath != null) return fromPath;
+            }
+        }
+        if (folder != null && folder.length() > 0) {
+            File underRoot = new File(themesRootPath, folder);
+            ThemeEntry fromRoot = parseFolder(underRoot);
+            if (fromRoot != null) return fromRoot;
+            for (File themeRoot : com.solar.launcher.DeviceFeatures.getThemeRoots()) {
+                ThemeEntry fromSd = parseFolder(new File(themeRoot, folder));
+                if (fromSd != null) return fromSd;
+            }
+        }
+        File defaultDir = new File(themesRootPath, BUILTIN_DEFAULT_FOLDER);
+        ThemeEntry def = parseFolder(defaultDir);
+        if (def != null) return def;
+        return bundledFallback;
+    }
+
+    /**
+     * Fast path before painting global overlay — no loadAllThemes/cache copy when already warm.
+     * When bootstrapped and the saved theme folder is unchanged, this is a no-op so row bitmaps
+     * stay in RAM (restoreSavedThemeFromPrefs would clear bitmapCache every open).
+     */
+    public static void touchOverlayThemeForShow(Context ctx) {
+        if (ctx == null) return;
+        reloadSolarSettingsPrefsFromDisk(ctx);
+        if (!overlayThemeBootstrapped) {
+            ensureOverlayThemeReady(ctx);
+            return;
+        }
+        Context app = ctx.getApplicationContext();
+        assetContext = app;
+        SharedPreferences prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String folder = prefs.getString(PREF_THEME_FOLDER, "");
+        if (folder.length() > 0 && !folder.equals(lastOverlayThemeFolder)) {
+            overlayThemeBootstrapped = false;
+            overlayThemeReadyLatch = new CountDownLatch(1);
+            ensureOverlayThemeReady(ctx);
+        }
+    }
+
+    /** Test hook — simulate warm overlay bootstrap without Android context. */
+    static void markOverlayThemeBootstrappedForTest(String folder) {
+        overlayThemeBootstrapped = true;
+        lastOverlayThemeFolder = folder != null ? folder : "";
+    }
+
+    /** Test hook — overlay bootstrap flag without Android context. */
+    static void resetOverlayThemeBootstrapForTest() {
+        overlayThemeBootstrapped = false;
+        overlayRamCacheLoaded = false;
+        lastOverlayThemeFolder = "";
+        overlayThemeReadyLatch = new CountDownLatch(1);
+    }
+
+    static boolean isOverlayThemeBootstrappedForTest() {
+        return overlayThemeBootstrapped;
+    }
+
+    /** True when :overlay has warmed menu chrome — skip theme I/O on passive volume HUD. */
+    public static boolean isOverlayThemeReady() {
+        return overlayThemeBootstrapped;
+    }
+
+    /**
+     * Decode row/menu bitmaps and font into RAM — avoids Aura pop-in while overlay paints.
+     * Safe during USB mass-storage (uses internal MMC cache only).
+     */
+    public static void warmOverlayThemeCache(Context ctx) {
+        if (ctx == null) return;
+        Context app = ctx.getApplicationContext();
+        assetContext = app;
+        ThemeEntry active = getCurrentTheme();
+        if (active == null) return;
+        preloadOverlayEssentialBitmaps(active);
+        getCustomFont();
+        android.util.DisplayMetrics dm = app.getResources().getDisplayMetrics();
+        float density = dm.density;
+        int screenW = dm.widthPixels > 0 ? dm.widthPixels : 480;
+        int margin = (int) (10f * density);
+        int panelW = screenW > margin * 2 ? screenW - margin * 2 : screenW;
+        int rowH = (int) (45f * density);
+        if (rowH < 1) rowH = 45;
+        android.content.res.Resources res = app.getResources();
+        getItemRowBackgroundScaled(res, false, panelW, rowH);
+        getItemRowBackgroundScaled(res, true, panelW, rowH);
+        getMenuRowBackgroundScaled(res, false, panelW, rowH);
+        getMenuRowBackgroundScaled(res, true, panelW, rowH);
+        getDialogOptionRowBackgroundScaled(res, false, panelW, rowH);
+        getDialogOptionRowBackgroundScaled(res, true, panelW, rowH);
+        getScaledItemRightArrow(rowH);
+        getContextMenuPanelColor();
+        getRowSelectionFillColor();
+        buildContextMenuPanelDrawable(app);
+        ThemeSnapshotBridge.publish(app);
+    }
+
+    /** Preload only row/menu chrome used by {@link com.solar.launcher.ThemedContextMenu} overlay tiers. */
+    private static void preloadOverlayEssentialBitmaps(ThemeEntry entry) {
+        if (entry == null || entry.root == null) return;
+        JSONObject item = entry.root.optJSONObject("itemConfig");
+        if (item != null) {
+            preloadBitmapRef(item.optString("itemBackground", ""));
+            preloadBitmapRef(item.optString("itemSelectedBackground", ""));
+        }
+        JSONObject menu = entry.root.optJSONObject("menuConfig");
+        if (menu != null) {
+            preloadBitmapRef(menu.optString("menuItemBackground", ""));
+            preloadBitmapRef(menu.optString("menuItemSelectedBackground", ""));
+        }
+        JSONObject dialog = entry.root.optJSONObject("dialogConfig");
+        if (dialog != null) {
+            preloadBitmapRef(dialog.optString("dialogOptionBackground", ""));
+            preloadBitmapRef(dialog.optString("dialogOptionSelectedBackground", ""));
+        }
+        preloadBitmapRef(entry.root.optString("fontFamily", ""));
+    }
+
+    /** Load one theme asset path into {@link #bitmapCache} when it looks like a bitmap file. */
+    private static void preloadBitmapRef(String ref) {
+        if (ref == null || ref.length() == 0) return;
+        if (looksLikeThemeBitmapRef(ref)) {
+            getThemeBitmap(ref);
+        }
+    }
+
+    /** Walk config blocks and mmap theme PNGs into {@link #bitmapCache} while paths are readable. */
+    private static void preloadThemeAssetBitmaps(ThemeEntry entry) {
+        if (entry == null || entry.root == null) return;
+        for (String block : new String[]{
+                "itemConfig", "menuConfig", "homePageConfig", "settingConfig", "dialogConfig", "solarConfig"
+        }) {
+            JSONObject obj = entry.root.optJSONObject(block);
+            if (obj == null) continue;
+            java.util.Iterator<String> keys = obj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String val = obj.optString(key, "").trim();
+                if (val.length() > 0 && looksLikeThemeBitmapRef(val)) {
+                    getThemeBitmap(val);
+                }
+            }
+        }
+    }
+
+    /** True for relative theme asset paths (not colours or http URLs). */
+    static boolean looksLikeThemeBitmapRef(String ref) {
+        if (ref.contains("://") || ref.startsWith("#")) return false;
+        String lower = ref.toLowerCase(Locale.US);
+        return lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+                || lower.endsWith(".webp") || lower.endsWith(".bmp");
     }
 
     /** Copy active theme to MMC, switch entry off SD, then drop SD mmap before export. */
@@ -224,6 +675,7 @@ public class ThemeManager {
                     "ThemeManager.prepareThemeForUsbStorage", "mmc cache ready", "H-THEME-MMC", d);
         } catch (Exception ignored) {}
         // #endregion
+        warmOverlayThemeCache(ctx);
     }
 
     public static void setBlockSdcardThemeAssets(boolean block) {
@@ -479,12 +931,23 @@ public class ThemeManager {
 
     public static void loadAllThemes(Context ctx) {
         if (ctx != null) themesRootPath = resolveThemesRoot(ctx);
+        String prevFolder = availableThemes.isEmpty() ? null
+                : availableThemes.get(Math.min(currentThemeIndex, availableThemes.size() - 1)).folderName;
         availableThemes.clear();
         bitmapCache.clear();
+        scaledRowBitmapCache.clear();
         cachedFont = null;
         cachedFontKey = "";
         auraFont = null;
         availableThemes.addAll(scanDiscoveredThemes());
+        if (prevFolder != null) {
+            for (int i = 0; i < availableThemes.size(); i++) {
+                if (prevFolder.equalsIgnoreCase(availableThemes.get(i).folderName)) {
+                    currentThemeIndex = i;
+                    return;
+                }
+            }
+        }
         if (currentThemeIndex >= availableThemes.size()) currentThemeIndex = 0;
     }
 
@@ -509,8 +972,8 @@ public class ThemeManager {
     private static List<ThemeEntry> scanDiscoveredThemes() {
         List<ThemeEntry> out = new ArrayList<ThemeEntry>();
         Set<String> seen = new HashSet<String>();
-        File root = new File(themesRootPath);
-        File defaultDir = new File(root, BUILTIN_DEFAULT_FOLDER);
+        File primaryRoot = new File(themesRootPath);
+        File defaultDir = new File(primaryRoot, BUILTIN_DEFAULT_FOLDER);
         ThemeEntry def = parseFolder(defaultDir);
         if (def == null && bundledFallback != null) {
             def = bundledFallback;
@@ -519,7 +982,14 @@ public class ThemeManager {
             out.add(def);
             seen.add(BUILTIN_DEFAULT_FOLDER.toLowerCase(Locale.US));
         }
-        scanRoot(root, seen, out);
+        java.util.LinkedHashSet<String> rootPaths = new java.util.LinkedHashSet<String>();
+        rootPaths.add(primaryRoot.getAbsolutePath());
+        for (File themeRoot : com.solar.launcher.DeviceFeatures.getThemeRoots()) {
+            rootPaths.add(themeRoot.getAbsolutePath());
+        }
+        for (String rootPath : rootPaths) {
+            scanRoot(new File(rootPath), seen, out);
+        }
         if (out.isEmpty() && bundledFallback != null) {
             out.add(bundledFallback);
         }
@@ -1531,6 +2001,8 @@ public class ThemeManager {
 
     /** Max decode side for solarConfig icons (matches y1_setting_icon_max at ~2x density). */
     private static final int SOLAR_CONFIG_ICON_MAX_PX = 292;
+    /** 2026-07-05: @1x settingConfig icons — cap decode so Y2 never upscales blocky rasters in preview pane. */
+    private static final int SETTING_CONFIG_ICON_MAX_PX = 146;
 
     static Bitmap decodeBitmapFileMaxSide(String path, int maxSide) {
         if (path == null || maxSide <= 0) return null;
@@ -1705,7 +2177,7 @@ public class ThemeManager {
         if (setting == null) return null;
         String path = setting.optString(key, "").trim();
         if (path.isEmpty()) return null;
-        Bitmap bmp = getThemeBitmapFromActiveThemeOnly(path);
+        Bitmap bmp = decodeThemeBitmapForEntry(t, path, SETTING_CONFIG_ICON_MAX_PX);
         if (bmp != null) bitmapCache.put(cacheKey, bmp);
         return bmp;
     }

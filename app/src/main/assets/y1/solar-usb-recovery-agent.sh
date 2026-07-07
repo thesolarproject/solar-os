@@ -57,6 +57,12 @@ fi
 echo $$ >"$PIDFILE"
 
 while pidof "$SOLAR_PKG" >/dev/null 2>&1; do
+    # Tier-2 only — Xposed UsbStorageHooks owns plug-in UX when bridge is on system (2026-07-06).
+    if pm path com.solar.launcher.xposed.bridge.y1 >/dev/null 2>&1 \
+        || pm path com.solar.launcher.xposed.bridge.y2 >/dev/null 2>&1; then
+        sleep 60
+        continue
+    fi
     if solar_enabled && rockbox_disabled && systemui_usb_on_top && ! ums_exported; then
         bring_solar_home
         sleep "$COOLDOWN"

@@ -1,6 +1,6 @@
 package com.solar.launcher;
 
-import android.app.Activity;
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
@@ -26,7 +26,7 @@ import com.solar.launcher.ui.ScreenTransition;
 
 import org.json.JSONObject;
 
-/** Hold-Back context menu — quick bar, vertical list, slider/tier modes. */
+/** 2026-07-05 — Context modal tiers; PM/T&C use two-row-tall scrollable detail before action rows. */
 public final class ThemedContextMenu {
     private static final int TAG_LABEL = 0x70ca0001;
     private static final int TAG_ARROW = 0x70ca0002;
@@ -97,7 +97,12 @@ public final class ThemedContextMenu {
         void onBackActivated();
     }
 
-    private final Activity activity;
+    /** Optional key sink for system overlay host ({@link SolarOverlayService}). */
+    public interface OverlayKeyHandler {
+        boolean onKeyDown(int keyCode, android.view.KeyEvent event);
+    }
+
+    private final Context context;
     private FrameLayout overlay;
     private LinearLayout panel;
     private LinearLayout titleRow;
@@ -105,6 +110,8 @@ public final class ThemedContextMenu {
     private ImageView titleBackIcon;
     private HorizontalScrollView quickBarScroll;
     private LinearLayout quickBarHost;
+    /** 2026-07-06 — Rescue countdown strip inside global modal (7s..10s hold). */
+    private TextView rescueBannerView;
     private ScrollView itemsScroll;
     private LinearLayout itemsHost;
     private LinearLayout sliderRow;
@@ -174,11 +181,58 @@ public final class ThemedContextMenu {
     private static final int QUEUE_CONFIRM_HOLD_MS = 750;
     /** Bumped in dismiss() so posted layout runnables skip after the menu is torn down. */
     private int dismissGeneration = 0;
+    /** When set, wheel/back/center on the overlay scrim route here (system-wide overlay). */
+    private OverlayKeyHandler overlayKeyHandler;
+    /** System overlay host — skip modal fade that leaves a white scrim on KitKat WM surfaces. */
+    private boolean systemOverlayMode;
     /** True while modal shell enter/exit animation runs. */
     private boolean modalEnterExitAnimating = false;
 
-    public ThemedContextMenu(Activity activity) {
-        this.activity = activity;
+    public ThemedContextMenu(Context context) {
+        this.context = context;
+    }
+
+    /** Route hardware keys to {@link SolarOverlayService} when the modal is a system overlay. */
+    public void setOverlayKeyHandler(OverlayKeyHandler handler) {
+        this.overlayKeyHandler = handler;
+        attachOverlayKeyListener();
+    }
+
+    /** {@link SolarOverlayService} — no enter/exit anim; keep dark scrim opaque immediately. */
+    public void setSystemOverlayMode(boolean systemOverlayMode) {
+        this.systemOverlayMode = systemOverlayMode;
+    }
+
+    /** Scrim tint — transparent on WM overlay; in-app keeps dim for readability until Phase 5. */
+    private void styleOverlayScrim(FrameLayout scrim) {
+        int scrimArgb = 0x00000000;
+        scrim.setBackgroundColor(scrimArgb);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("systemOverlayMode", systemOverlayMode);
+            d.put("scrimArgb", scrimArgb);
+            DebugMenuLog.log("ThemedContextMenu.styleOverlayScrim", "scrim styled", "H2-H4", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    private void attachOverlayKeyListener() {
+        if (overlay == null || overlayKeyHandler == null) return;
+        overlay.setOnKeyListener(new View.OnKeyListener() {
+            @Override
+            public boolean onKey(View v, int keyCode, android.view.KeyEvent event) {
+                if (overlayKeyHandler == null) return false;
+                if (event.getAction() == android.view.KeyEvent.ACTION_DOWN) {
+                    return overlayKeyHandler.onKeyDown(keyCode, event);
+                }
+                if (event.getAction() == android.view.KeyEvent.ACTION_UP
+                        && Y1InputKeys.isBackKey(keyCode)) {
+                    return true;
+                }
+                return false;
+            }
+        });
     }
 
     public boolean isShowing() {
@@ -190,18 +244,48 @@ public final class ThemedContextMenu {
     }
 
     private void addOverlayWithPresentAnim(ViewGroup root, Runnable afterPresent) {
-        if (ModalTransition.enabled(activity)) {
-            ScreenTransition.prepareModalPresent(overlay, panel);
-        }
         root.addView(overlay, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        if (systemOverlayMode) {
+            overlay.setAlpha(1f);
+            if (!ModalTransition.enabled(context) || panel == null) {
+                if (panel != null) {
+                    panel.setScaleX(1f);
+                    panel.setScaleY(1f);
+                    panel.setAlpha(1f);
+                }
+                if (afterPresent != null) afterPresent.run();
+                return;
+            }
+            modalEnterExitAnimating = true;
+            ScreenTransition.prepareModalPresentPanelOnly(panel);
+            ModalTransition.animatePresentPanelOnly(panel, new Runnable() {
+                @Override
+                public void run() {
+                    modalEnterExitAnimating = false;
+                    if (afterPresent != null) afterPresent.run();
+                }
+            });
+            return;
+        }
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("branch", "inAppAnim");
+            d.put("modalTransition", com.solar.launcher.ui.ModalTransition.enabled(context));
+            DebugMenuLog.log("ThemedContextMenu.addOverlayWithPresentAnim", "present", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        if (ModalTransition.enabled(context)) {
+            ScreenTransition.prepareModalPresent(overlay, panel);
+        }
         runModalPresentAfterAdd(afterPresent);
     }
 
     /** Present animation after overlay is on screen — rest state first, anim on next frame. */
     private void runModalPresentAnimation() {
         if (overlay == null || panel == null) return;
-        if (!ModalTransition.enabled(activity)) {
+        if (!ModalTransition.enabled(context)) {
             overlay.setAlpha(1f);
             panel.setScaleX(1f);
             panel.setScaleY(1f);
@@ -320,9 +404,9 @@ public final class ThemedContextMenu {
 
     private void ensureContextTitleBar(boolean hasQuick) {
         if (panel == null || !shouldShowContextBackChip()) return;
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         if (titleRow == null) {
-            titleRow = new LinearLayout(activity);
+            titleRow = new LinearLayout(context);
             titleRow.setOrientation(LinearLayout.HORIZONTAL);
             titleRow.setGravity(Gravity.CENTER_VERTICAL);
             populateTitleRow(true, hasQuick, density);
@@ -497,6 +581,7 @@ public final class ThemedContextMenu {
 
     /** Keep key events on the overlay after panel morphs (tiers, volume expand, Options title). */
     public void requestOverlayFocus() {
+        if (systemOverlayMode) return;
         if (overlay != null) overlay.requestFocus();
     }
 
@@ -587,14 +672,14 @@ public final class ThemedContextMenu {
         quickBarHost = null;
         if (showBackChip) {
             int iconSize = (int) (rowHeightPx * 0.42f);
-            titleChip = new FrameLayout(activity);
-            titleBackIcon = new ImageView(activity);
+            titleChip = new FrameLayout(context);
+            titleBackIcon = new ImageView(context);
             titleBackIcon.setImageResource(R.drawable.ic_back);
             titleBackIcon.setScaleType(ImageView.ScaleType.FIT_CENTER);
             FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(iconSize, iconSize);
             iconLp.gravity = Gravity.CENTER;
             titleChip.addView(titleBackIcon, iconLp);
-            titleChip.setContentDescription(activity.getString(R.string.context_back));
+            titleChip.setContentDescription(context.getString(R.string.context_back));
             titleChip.setMinimumWidth((int) (rowHeightPx * 1.05f));
             LinearLayout.LayoutParams chipLp = new LinearLayout.LayoutParams(
                     hasQuick ? LinearLayout.LayoutParams.WRAP_CONTENT : LinearLayout.LayoutParams.MATCH_PARENT,
@@ -603,11 +688,11 @@ public final class ThemedContextMenu {
             titleRow.addView(titleChip, chipLp);
         }
         if (hasQuick) {
-            quickBarScroll = new HorizontalScrollView(activity);
+            quickBarScroll = new HorizontalScrollView(context);
             quickBarScroll.setHorizontalScrollBarEnabled(false);
             quickBarScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
             quickBarScroll.setFillViewport(!showBackChip);
-            quickBarHost = new LinearLayout(activity);
+            quickBarHost = new LinearLayout(context);
             quickBarHost.setOrientation(LinearLayout.HORIZONTAL);
             quickBarHost.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
             for (int i = 0; i < quickItems.length; i++) {
@@ -629,13 +714,13 @@ public final class ThemedContextMenu {
 
     private void addMediaSliderRowToPanel(LinearLayout targetPanel, float density) {
         int sliderH = (int) (24 * density);
-        sliderRow = new LinearLayout(activity);
+        sliderRow = new LinearLayout(context);
         sliderRow.setOrientation(LinearLayout.VERTICAL);
         sliderRow.setVisibility(View.GONE);
 
-        volumeSliderBlock = new LinearLayout(activity);
+        volumeSliderBlock = new LinearLayout(context);
         volumeSliderBlock.setOrientation(LinearLayout.VERTICAL);
-        sliderLabel = new TextView(activity);
+        sliderLabel = new TextView(context);
         sliderLabel.setGravity(Gravity.CENTER);
         sliderLabel.setSingleLine(true);
         sliderLabel.setEllipsize(TextUtils.TruncateAt.END);
@@ -643,14 +728,14 @@ public final class ThemedContextMenu {
                 ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
         volumeSliderBlock.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        sliderBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        sliderBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
         sliderBar.setMax(sliderMax);
         volumeSliderBlock.addView(sliderBar, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, sliderH));
 
-        brightnessSliderBlock = new LinearLayout(activity);
+        brightnessSliderBlock = new LinearLayout(context);
         brightnessSliderBlock.setOrientation(LinearLayout.VERTICAL);
-        brightnessLabel = new TextView(activity);
+        brightnessLabel = new TextView(context);
         brightnessLabel.setGravity(Gravity.CENTER);
         brightnessLabel.setSingleLine(true);
         brightnessLabel.setEllipsize(TextUtils.TruncateAt.END);
@@ -658,7 +743,7 @@ public final class ThemedContextMenu {
                 ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
         brightnessSliderBlock.addView(brightnessLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        brightnessBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        brightnessBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
         brightnessBar.setMax(brightnessMax);
         brightnessSliderBlock.addView(brightnessBar, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, sliderH));
@@ -954,7 +1039,7 @@ public final class ThemedContextMenu {
         queueMoveRibbonAnimating = false;
         itemsHost.setPadding(0, 0, 0, 0);
         itemsHost.removeAllViews();
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int rowH = queueRowHeightPx > 0 ? queueRowHeightPx : rowHeightPx;
         itemsHost.addView(createRibbonSlotRow(QueueMoveWindow.RIBBON_ABOVE, rowH, density));
         itemsHost.addView(createRibbonSlotRow(QueueMoveWindow.RIBBON_CENTER, rowH, density));
@@ -990,7 +1075,7 @@ public final class ThemedContextMenu {
             d.put("ribbonActive", queueMoveRibbonActive);
             d.put("ribbonAnimating", queueMoveRibbonAnimating);
             d.put("moveFrom", queueMoveFrom);
-            DebugAgentLog.log(activity, "ThemedContextMenu.bindQueueMoveRibbon",
+            DebugAgentLog.log(context, "ThemedContextMenu.bindQueueMoveRibbon",
                     "bindQueueMoveRibbon entry", "H1-H2", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -1044,7 +1129,7 @@ public final class ThemedContextMenu {
             d.put("slotH", slotH);
             d.put("startTy", startTy);
             d.put("path", Math.abs(startTy) < 0.5f ? "fade" : "slide");
-            DebugAgentLog.log(activity, "ThemedContextMenu.animateRibbonEnter",
+            DebugAgentLog.log(context, "ThemedContextMenu.animateRibbonEnter",
                     "ribbon enter animation", "H3-H5", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -1341,27 +1426,28 @@ public final class ThemedContextMenu {
         this.panelWidthPx = panelWidthPx;
         this.menuRows = menuStyleRows;
         this.dialogStyle = dialogStyleRows;
+        // Dark neutral panel — theme decorates row selection, not the panel fill (avoids light dialogConfig).
         this.panelBgColor = ThemeManager.getContextMenuPanelColor();
         this.focusIndex = firstFocusableIndex(0);
         this.quickFocusIndex = firstVisibleQuickIndex();
         optionsListVisible = labels.length > 0;
         this.focusZone = labels.length == 0 ? FocusZone.QUICK_BAR : FocusZone.TIER_CONTENT;
 
-        overlay = new FrameLayout(activity);
-        overlay.setBackgroundColor(0x99000000);
+        overlay = new FrameLayout(context);
+        styleOverlayScrim(overlay);
         overlay.setClickable(true);
         overlay.setFocusable(true);
 
-        panel = new LinearLayout(activity);
+        panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int padH = (int) (8 * density);
         panel.setPadding(padH, (int) (8 * density), padH, (int) (6 * density));
         panel.setBackground(buildPanelBackground());
 
         boolean hasQuick = quickItems.length > 0 && !dialogStyle;
         if (!dialogStyle) {
-            titleRow = new LinearLayout(activity);
+            titleRow = new LinearLayout(context);
             titleRow.setOrientation(LinearLayout.HORIZONTAL);
             titleRow.setGravity(Gravity.CENTER_VERTICAL);
             populateTitleRow(true, hasQuick, density);
@@ -1370,11 +1456,11 @@ public final class ThemedContextMenu {
             titleRowLp.bottomMargin = labels.length > 0 ? (int) (4 * density) : 0;
             panel.addView(titleRow, titleRowLp);
         } else if (title != null && title.length() > 0) {
-            TextView tit = new TextView(activity);
+            TextView tit = new TextView(context);
             tit.setText(title);
             tit.setTypeface(ThemeManager.getCustomFont());
             tit.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    activity.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.95f);
+                    context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.95f);
             ThemeManager.applyThemedTextStyle(tit,
                     ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
             tit.setPadding(0, 0, 0, (int) (4 * density));
@@ -1383,19 +1469,19 @@ public final class ThemedContextMenu {
         }
 
         if (subtitle != null && subtitle.length() > 0 && dialogStyle) {
-            int subMaxH = VerticalTextMarqueeHelper.defaultMaxHeightPx(activity);
-            FrameLayout subPanel = VerticalTextMarqueeHelper.createCappedPanel(activity, subtitle, subMaxH);
+            int subMaxH = VerticalTextMarqueeHelper.defaultMaxHeightPx(context);
+            FrameLayout subPanel = VerticalTextMarqueeHelper.createCappedPanel(context, subtitle, subMaxH);
             LinearLayout.LayoutParams subLp = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
             subLp.bottomMargin = (int) (4 * density);
             panel.addView(subPanel, subLp);
         }
 
-        itemsScroll = new Y1SafeScrollView(activity);
+        itemsScroll = new Y1SafeScrollView(context);
         itemsScroll.setFillViewport(false);
         Y1ScrollIndicators.applyVerticalScrollView(itemsScroll);
-        maxListHeightPx = (int) (activity.getResources().getDisplayMetrics().heightPixels * 0.42f);
-        itemsHost = new LinearLayout(activity);
+        maxListHeightPx = (int) (context.getResources().getDisplayMetrics().heightPixels * 0.42f);
+        itemsHost = new LinearLayout(context);
         itemsHost.setOrientation(LinearLayout.VERTICAL);
         rebuildListRows(itemIconKeys, itemStateTexts);
         itemsScroll.addView(itemsHost, new ScrollView.LayoutParams(
@@ -1411,6 +1497,19 @@ public final class ThemedContextMenu {
         panelLp.gravity = Gravity.CENTER;
         overlay.addView(panel, panelLp);
 
+        attachOverlayKeyListener();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("systemOverlayMode", systemOverlayMode);
+            d.put("panelBgColor", panelBgColor);
+            d.put("modalTransition", com.solar.launcher.ui.ModalTransition.enabled(context));
+            d.put("y1", DeviceFeatures.isY1());
+            d.put("y2", DeviceFeatures.isY2());
+            d.put("api", android.os.Build.VERSION.SDK_INT);
+            DebugMenuLog.log("ThemedContextMenu.show", "menu opening", "H2-H5", d);
+        } catch (Exception ignored) {}
+        // #endregion
         addOverlayWithPresentAnim(root, new Runnable() {
             @Override
             public void run() {
@@ -1424,6 +1523,50 @@ public final class ThemedContextMenu {
         });
         syncMediaQuickIconResFromItems();
         refreshQuickChipIcons();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("systemOverlayMode", systemOverlayMode);
+            d.put("rootChildCount", root != null ? root.getChildCount() : -1);
+            d.put("overlayParent", overlay != null && overlay.getParent() != null);
+            d.put("panelW", panel != null ? panel.getWidth() : -1);
+            d.put("panelH", panel != null ? panel.getHeight() : -1);
+            d.put("panelAlpha", panel != null ? panel.getAlpha() : -1f);
+            d.put("itemsHostCount", itemsHost != null ? itemsHost.getChildCount() : -1);
+            d.put("quickChipCount", quickBarHost != null ? quickBarHost.getChildCount() : -1);
+            d.put("menuShowing", isShowing());
+            Debug2d4745Log.log("ThemedContextMenu.show", "after addOverlay", "H2-H3-H5", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("quickItemCount", quickItems.length);
+            d.put("quickChipCount", quickBarHost != null ? quickBarHost.getChildCount() : -1);
+            d.put("hasQuick", quickItems.length > 0 && !dialogStyle);
+            d.put("systemOverlayMode", systemOverlayMode);
+            d.put("themeReady", ThemeManager.isOverlayThemeReady());
+            DebugAgentLog.log(context, "ThemedContextMenu.show", "menu painted", "H2-H4", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        // #region agent log
+        if (overlay != null) {
+            overlay.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (overlay == null) return;
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("scrimAlpha", overlay.getAlpha());
+                        d.put("systemOverlayMode", systemOverlayMode);
+                        d.put("modalEnterExitAnimating", modalEnterExitAnimating);
+                        d.put("y2", DeviceFeatures.isY2());
+                        DebugMenuLog.log("ThemedContextMenu.show+500ms", "scrim settled", "H1-H5", d);
+                    } catch (Exception ignored) {}
+                }
+            }, 500);
+        }
+        // #endregion
     }
 
     private void rebuildListRows(String[] itemIconKeys, String[] itemStateTexts) {
@@ -1475,7 +1618,7 @@ public final class ThemedContextMenu {
                         listener, resetFocus);
             }
         };
-        if (itemsScroll != null && ModalTransition.enabled(activity)) {
+        if (itemsScroll != null && ModalTransition.enabled(context)) {
             if (listDrill == LIST_DRILL_FORWARD) {
                 ListDrillTransition.push((ViewGroup) itemsScroll, apply);
                 return;
@@ -1838,7 +1981,7 @@ public final class ThemedContextMenu {
         TextView state = tag instanceof TextView ? (TextView) tag
                 : (TextView) row.findViewWithTag(TAG_STATE);
         ProgressBar spin = (ProgressBar) row.findViewWithTag(TAG_STATE_SPIN);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int arrowW = 0;
         Object arrowTag = row.getTag(TAG_ARROW);
         if (arrowTag instanceof ImageView) {
@@ -1854,7 +1997,7 @@ public final class ThemedContextMenu {
                 state.setVisibility(View.GONE);
             }
             if (spin == null) {
-                spin = new ProgressBar(activity, null, android.R.attr.progressBarStyleSmall);
+                spin = new ProgressBar(context, null, android.R.attr.progressBarStyleSmall);
                 spin.setTag(TAG_STATE_SPIN);
                 FrameLayout.LayoutParams spinLp = new FrameLayout.LayoutParams(spinSize, spinSize);
                 spinLp.gravity = Gravity.CENTER_VERTICAL | Gravity.END;
@@ -1904,7 +2047,12 @@ public final class ThemedContextMenu {
         queueRowHeightPx = rowHeightPx;
         invalidateQueueRowBgCache();
         rebuildQueueList();
-        refreshAll();
+        // ponytail: moveFrom>=0 needs ribbon bind — replaceQueueContent alone skips it (overlay regression).
+        if (moveFrom >= 0) {
+            bindQueueMoveRibbon(0);
+        } else {
+            refreshAll();
+        }
         ensureQueueListVisible();
         scrollFocusIntoView();
         requestOverlayFocus();
@@ -2106,7 +2254,7 @@ public final class ThemedContextMenu {
             d.put("moveFrom", moveFrom);
             d.put("ribbonActive", queueMoveRibbonActive);
             d.put("ribbonAnimating", queueMoveRibbonAnimating);
-            DebugAgentLog.log(activity, "ThemedContextMenu.setQueueMoveFrom",
+            DebugAgentLog.log(context, "ThemedContextMenu.setQueueMoveFrom",
                     "setQueueMoveFrom", "H1", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -2362,7 +2510,7 @@ public final class ThemedContextMenu {
         int scrollY = itemsScroll.getScrollY();
         int viewport = itemsScroll.getHeight();
         if (viewport <= 0) return;
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int pad = Math.max(1, (int) (2 * density));
         if (rowTop < scrollY + pad) {
             itemsScroll.scrollTo(0, Math.max(0, rowTop - pad));
@@ -2499,7 +2647,7 @@ public final class ThemedContextMenu {
                     d.put("count", count);
                     d.put("newStart", newStart);
                     d.put("maxStart", maxStart);
-                    DebugAgentLog.log(activity, "ThemedContextMenu.ensureQueueBrowseWindowForFocus",
+                    DebugAgentLog.log(context, "ThemedContextMenu.ensureQueueBrowseWindowForFocus",
                             "rebuild near end", "H6", d);
                 } catch (Exception ignored) {}
                 // #endregion
@@ -2524,7 +2672,7 @@ public final class ThemedContextMenu {
         if (newStart == oldStart) return;
 
         int slotH = queueRowSlotHeight();
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int rowH = queueRowHeightPx > 0 ? queueRowHeightPx : rowHeightPx;
         int oldEnd = oldStart + windowSize;
         int newEnd = newStart + windowSize;
@@ -2569,7 +2717,7 @@ public final class ThemedContextMenu {
                         topSpacer.setLayoutParams(lp);
                     }
                 } else {
-                    View topSpacer = new View(activity);
+                    View topSpacer = new View(context);
                     topSpacer.setFocusable(false);
                     itemsHost.addView(topSpacer, 0, new LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT, newStart * slotH));
@@ -2608,12 +2756,12 @@ public final class ThemedContextMenu {
         int buffer = QueueBrowseWindow.ROW_BUFFER;
         queueBrowseWindowStart = QueueBrowseWindow.windowStart(focusIndex, count, visible, buffer);
         int end = QueueBrowseWindow.windowEnd(queueBrowseWindowStart, count, visible, buffer);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int rowH = queueRowHeightPx > 0 ? queueRowHeightPx : rowHeightPx;
         int slotH = queueRowSlotHeight();
         itemsHost.removeAllViews();
         if (queueBrowseWindowStart > 0) {
-            View topSpacer = new View(activity);
+            View topSpacer = new View(context);
             topSpacer.setFocusable(false);
             itemsHost.addView(topSpacer, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, queueBrowseWindowStart * slotH));
@@ -2622,7 +2770,7 @@ public final class ThemedContextMenu {
             itemsHost.addView(createQueueRow(queueRows[i], i, rowH, density));
         }
         if (end < count) {
-            View bottomSpacer = new View(activity);
+            View bottomSpacer = new View(context);
             bottomSpacer.setFocusable(false);
             itemsHost.addView(bottomSpacer, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, (count - end) * slotH));
@@ -2633,7 +2781,7 @@ public final class ThemedContextMenu {
     private void rebuildQueueRows() {
         if (itemsHost == null) return;
         itemsHost.removeAllViews();
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int rowH = queueRowHeightPx > 0 ? queueRowHeightPx : rowHeightPx;
         for (int i = 0; i < queueRows.length; i++) {
             itemsHost.addView(createQueueRow(queueRows[i], i, rowH, density));
@@ -2642,18 +2790,18 @@ public final class ThemedContextMenu {
     }
 
     private FrameLayout createQueueRow(QueueRowSpec spec, int index, int rowH, float density) {
-        int textPadLeft = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
+        int textPadLeft = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
         int slotW = (int) (rowHeightPx * 0.55f);
 
-        FrameLayout row = new FrameLayout(activity);
+        FrameLayout row = new FrameLayout(context);
         row.setTag(Integer.valueOf(index));
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, rowH);
         rowLp.setMargins(0, 1, 0, 1);
         row.setLayoutParams(rowLp);
 
-        TextView title = new TextView(activity);
+        TextView title = new TextView(context);
         title.setTag(TAG_QUEUE_TITLE);
         title.setText(spec.displayLine());
         title.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
@@ -2669,14 +2817,14 @@ public final class ThemedContextMenu {
         titleLp.gravity = Gravity.CENTER_VERTICAL;
         row.addView(title, titleLp);
 
-        android.widget.FrameLayout rightSlot = new android.widget.FrameLayout(activity);
+        android.widget.FrameLayout rightSlot = new android.widget.FrameLayout(context);
         FrameLayout.LayoutParams slotLp = new FrameLayout.LayoutParams(slotW, rowH);
         slotLp.gravity = Gravity.CENTER_VERTICAL | Gravity.END;
         rightSlot.setLayoutParams(slotLp);
 
-        TextView grip = new TextView(activity);
+        TextView grip = new TextView(context);
         grip.setTag(TAG_QUEUE_GRIP);
-        grip.setText(activity.getString(R.string.home_screen_move_grip));
+        grip.setText(context.getString(R.string.home_screen_move_grip));
         grip.setGravity(Gravity.CENTER);
         grip.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
         grip.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx);
@@ -2685,14 +2833,14 @@ public final class ThemedContextMenu {
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
                 android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
 
-        ImageView pp = new ImageView(activity);
+        ImageView pp = new ImageView(context);
         pp.setTag(TAG_QUEUE_PP);
         pp.setScaleType(ImageView.ScaleType.FIT_CENTER);
         pp.setVisibility(View.GONE);
         int ppSz = (int) (rowHeightPx * 0.42f);
         rightSlot.addView(pp, new android.widget.FrameLayout.LayoutParams(ppSz, ppSz, Gravity.CENTER));
 
-        ImageView confirm = new ImageView(activity);
+        ImageView confirm = new ImageView(context);
         confirm.setTag(TAG_QUEUE_CONFIRM);
         confirm.setScaleType(ImageView.ScaleType.FIT_CENTER);
         confirm.setImageResource(R.drawable.ic_check);
@@ -2800,24 +2948,24 @@ public final class ThemedContextMenu {
         this.menuRows = false;
         this.panelBgColor = ThemeManager.getContextMenuPanelColor();
 
-        overlay = new FrameLayout(activity);
-        overlay.setBackgroundColor(0x99000000);
+        overlay = new FrameLayout(context);
+        styleOverlayScrim(overlay);
         overlay.setClickable(true);
         overlay.setFocusable(true);
 
-        panel = new LinearLayout(activity);
+        panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int padH = (int) (8 * density);
         panel.setPadding(padH, (int) (8 * density), padH, (int) (6 * density));
         panel.setBackground(buildPanelBackground());
 
         if (hintText != null && hintText.length() > 0) {
-            TextView hint = new TextView(activity);
+            TextView hint = new TextView(context);
             hint.setText(hintText);
             hint.setTypeface(ThemeManager.getCustomFont());
             hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    activity.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
+                    context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
             hint.setGravity(Gravity.CENTER);
             ThemeManager.applyThemedTextStyle(hint,
                     ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
@@ -2836,6 +2984,14 @@ public final class ThemedContextMenu {
     /** Compact volume overlay — hint line, no quick toggles or list. */
     public void showVolumeOnly(ViewGroup root, String hintText, String sliderTitle, int max, int value,
             int rowHeightPx, int panelWidthPx) {
+        showVolumeOnly(root, hintText, sliderTitle, max, value, rowHeightPx, panelWidthPx, true);
+    }
+
+    /**
+     * @param requestFocus false for passive system overlay HUD (Rockbox keeps foreground focus).
+     */
+    public void showVolumeOnly(ViewGroup root, String hintText, String sliderTitle, int max, int value,
+            int rowHeightPx, int panelWidthPx, boolean requestFocus) {
         dismiss();
         hintOnlyMode = false;
         volumeOnlyMode = true;
@@ -2849,24 +3005,24 @@ public final class ThemedContextMenu {
         sliderMax = Math.max(1, max);
         sliderValue = Math.max(0, Math.min(value, sliderMax));
 
-        overlay = new FrameLayout(activity);
-        overlay.setBackgroundColor(0x99000000);
-        overlay.setClickable(true);
-        overlay.setFocusable(true);
+        overlay = new FrameLayout(context);
+        styleOverlayScrim(overlay);
+        overlay.setClickable(requestFocus);
+        overlay.setFocusable(requestFocus);
 
-        panel = new LinearLayout(activity);
+        panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int padH = (int) (8 * density);
         panel.setPadding(padH, (int) (8 * density), padH, (int) (6 * density));
         panel.setBackground(buildPanelBackground());
 
         if (hintText != null && hintText.length() > 0) {
-            TextView hint = new TextView(activity);
+            TextView hint = new TextView(context);
             hint.setText(hintText);
             hint.setTypeface(ThemeManager.getCustomFont());
             hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    activity.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
+                    context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
             hint.setGravity(Gravity.CENTER);
             ThemeManager.applyThemedTextStyle(hint,
                     ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
@@ -2875,7 +3031,7 @@ public final class ThemedContextMenu {
                     LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
 
-        sliderLabel = new TextView(activity);
+        sliderLabel = new TextView(context);
         sliderLabel.setText(sliderTitle != null ? sliderTitle : "");
         sliderLabel.setGravity(Gravity.CENTER);
         ThemeManager.applyThemedTextStyle(sliderLabel,
@@ -2883,7 +3039,7 @@ public final class ThemedContextMenu {
         panel.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        sliderBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        sliderBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
         sliderBar.setMax(sliderMax);
         sliderBar.setProgress(sliderValue);
         panel.addView(sliderBar, new LinearLayout.LayoutParams(
@@ -2919,7 +3075,7 @@ public final class ThemedContextMenu {
         this.dialogStyle = false;
         this.focusIndex = firstFocusableIndex(0);
 
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int savedVol = sliderValue;
         int savedVolMax = sliderMax;
         for (int i = panel.getChildCount() - 1; i >= 0; i--) {
@@ -2934,7 +3090,7 @@ public final class ThemedContextMenu {
         brightnessLabel = null;
 
         boolean hasQuick = quickItems.length > 0;
-        titleRow = new LinearLayout(activity);
+        titleRow = new LinearLayout(context);
         titleRow.setOrientation(LinearLayout.HORIZONTAL);
         titleRow.setGravity(Gravity.CENTER_VERTICAL);
         populateTitleRow(true, hasQuick, density);
@@ -2943,12 +3099,12 @@ public final class ThemedContextMenu {
         titleRowLp.bottomMargin = labels.length > 0 ? (int) (4 * density) : 0;
         panel.addView(titleRow, titleRowLp);
 
-        itemsScroll = new Y1SafeScrollView(activity);
+        itemsScroll = new Y1SafeScrollView(context);
         itemsScroll.setFillViewport(false);
         Y1ScrollIndicators.applyVerticalScrollView(itemsScroll);
         itemsScroll.setVisibility(View.GONE);
-        maxListHeightPx = (int) (activity.getResources().getDisplayMetrics().heightPixels * 0.42f);
-        itemsHost = new LinearLayout(activity);
+        maxListHeightPx = (int) (context.getResources().getDisplayMetrics().heightPixels * 0.42f);
+        itemsHost = new LinearLayout(context);
         itemsHost.setOrientation(LinearLayout.VERTICAL);
         rebuildListRows(itemIconKeys, itemStateTexts);
         itemsScroll.addView(itemsHost, new ScrollView.LayoutParams(
@@ -2960,10 +3116,10 @@ public final class ThemedContextMenu {
         updateBrightnessSlider(brightnessValue, 255);
         if (sliderRow != null) sliderRow.setVisibility(View.VISIBLE);
         if (sliderLabel != null) {
-            sliderLabel.setText(activity.getString(R.string.context_quick_volume));
+            sliderLabel.setText(context.getString(R.string.context_quick_volume));
         }
         if (brightnessLabel != null) {
-            brightnessLabel.setText(activity.getString(R.string.context_quick_brightness));
+            brightnessLabel.setText(context.getString(R.string.context_quick_brightness));
         }
         optionsListVisible = false;
         collapseOptionsListPanel();
@@ -3056,7 +3212,7 @@ public final class ThemedContextMenu {
         showMediaSlidersWithQuickBarFocus(quickReturnIndex >= 0
                 ? quickReturnIndex : volumeQuickIndex,
                 label, max, value,
-                activity.getString(R.string.context_quick_brightness), 255, brightnessValue);
+                context.getString(R.string.context_quick_brightness), 255, brightnessValue);
     }
 
     /** Full context menu with volume + brightness sliders; quick-bar item pre-highlighted. */
@@ -3087,7 +3243,7 @@ public final class ThemedContextMenu {
     /** @deprecated use {@link #showMediaSlidersWithQuickBarFocus} */
     public void showSliderWithQuickBarFocus(String label, int max, int value, int quickIndex) {
         showMediaSlidersWithQuickBarFocus(quickIndex, label, max, value,
-                activity.getString(R.string.context_quick_brightness), 255, brightnessValue);
+                context.getString(R.string.context_quick_brightness), 255, brightnessValue);
     }
 
     public void hideSlider() {
@@ -3160,27 +3316,27 @@ public final class ThemedContextMenu {
         sliderMax = Math.max(1, max);
         sliderValue = 0;
         panelBgColor = ThemeManager.getContextMenuPanelColor();
-        overlay = new FrameLayout(activity);
-        overlay.setBackgroundColor(0x99000000);
+        overlay = new FrameLayout(context);
+        styleOverlayScrim(overlay);
         overlay.setClickable(true);
         overlay.setFocusable(true);
-        panel = new LinearLayout(activity);
+        panel = new LinearLayout(context);
         panel.setOrientation(LinearLayout.VERTICAL);
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int padH = (int) (12 * density);
         panel.setPadding(padH, (int) (12 * density), padH, (int) (10 * density));
         panel.setBackground(buildPanelBackground());
         if (title != null && title.length() > 0) {
-            TextView tv = new TextView(activity);
+            TextView tv = new TextView(context);
             tv.setText(title);
             tv.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
             tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
-                    activity.getResources().getDimension(R.dimen.y1_menu_text_size));
+                    context.getResources().getDimension(R.dimen.y1_menu_text_size));
             ThemeManager.applyThemedTextStyle(tv,
                     ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
             panel.addView(tv);
         }
-        sliderLabel = new TextView(activity);
+        sliderLabel = new TextView(context);
         sliderLabel.setGravity(Gravity.CENTER);
         sliderLabel.setPadding(0, (int) (8 * density), 0, (int) (4 * density));
         sliderLabel.setText(subtitle != null ? subtitle : "");
@@ -3188,7 +3344,7 @@ public final class ThemedContextMenu {
                 ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
         panel.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        sliderBar = new ProgressBar(activity, null, android.R.attr.progressBarStyleHorizontal);
+        sliderBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
         sliderBar.setMax(sliderMax);
         sliderBar.setProgress(0);
         panel.addView(sliderBar, new LinearLayout.LayoutParams(
@@ -3223,6 +3379,35 @@ public final class ThemedContextMenu {
         dismissInternal(null, false);
     }
 
+    /**
+     * 2026-07-06 — In-overlay rescue preview during 7s..10s BACK/POWER hold (menu stays usable).
+     * Layman: banner under the quick chips shows "Going back to Solar in 3…".
+     * Reversal: delete banner; {@link SolarRescueHoldService} bottom HUD remains.
+     */
+    public void setRescueCountdownBanner(String text) {
+        if (panel == null) return;
+        if (text == null || text.length() == 0) {
+            if (rescueBannerView != null) rescueBannerView.setVisibility(View.GONE);
+            return;
+        }
+        if (rescueBannerView == null) {
+            float density = context.getResources().getDisplayMetrics().density;
+            rescueBannerView = new TextView(context);
+            rescueBannerView.setGravity(Gravity.CENTER);
+            rescueBannerView.setSingleLine(true);
+            rescueBannerView.setEllipsize(TextUtils.TruncateAt.END);
+            ThemeManager.applyThemedTextStyle(rescueBannerView,
+                    ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(),
+                            panelBgColor));
+            rescueBannerView.setPadding(0, 0, 0, (int) (4 * density));
+            int insertAt = titleRow != null ? panel.indexOfChild(titleRow) + 1 : 0;
+            panel.addView(rescueBannerView, insertAt, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        rescueBannerView.setText(text);
+        rescueBannerView.setVisibility(View.VISIBLE);
+    }
+
     /** Animate modal out, then tear down. */
     public void dismissAnimated(final Runnable onComplete) {
         dismissInternal(onComplete, true);
@@ -3238,7 +3423,7 @@ public final class ThemedContextMenu {
         final FrameLayout scrim = overlay;
         final LinearLayout panelView = panel;
         if (!animated || scrim == null || scrim.getParent() == null
-                || !ModalTransition.enabled(activity)) {
+                || !ModalTransition.enabled(context)) {
             removeOverlayFromParent(scrim);
             clearOverlayState();
             if (onComplete != null) onComplete.run();
@@ -3247,6 +3432,18 @@ public final class ThemedContextMenu {
         modalEnterExitAnimating = true;
         panelView.setPivotX(panelView.getWidth() * 0.5f);
         panelView.setPivotY(panelView.getHeight() * 0.5f);
+        if (systemOverlayMode) {
+            ModalTransition.animateDismissPanelOnly(panelView, new Runnable() {
+                @Override
+                public void run() {
+                    modalEnterExitAnimating = false;
+                    removeOverlayFromParent(scrim);
+                    clearOverlayState();
+                    if (onComplete != null) onComplete.run();
+                }
+            });
+            return;
+        }
         ModalTransition.animateDismiss(scrim, panelView, new Runnable() {
             @Override
             public void run() {
@@ -3272,6 +3469,7 @@ public final class ThemedContextMenu {
         titleBackIcon = null;
         quickBarScroll = null;
         quickBarHost = null;
+        rescueBannerView = null;
         itemsScroll = null;
         itemsHost = null;
         sliderBar = null;
@@ -3340,7 +3538,7 @@ public final class ThemedContextMenu {
                     org.json.JSONObject d = new org.json.JSONObject();
                     d.put("quickIdx", quickFocusIndex);
                     d.put("chipCount", quickBarHost.getChildCount());
-                    DebugAgentLog.log(activity, "ThemedContextMenu.handleKeyHorizontal",
+                    DebugAgentLog.log(context, "ThemedContextMenu.handleKeyHorizontal",
                             "back→quick bar", "H-NAV", d);
                 } catch (Exception ignored) {}
                 // #endregion
@@ -3425,12 +3623,31 @@ public final class ThemedContextMenu {
                 if (handleScrollableDetailWheel(delta)) return;
             }
             if (delta < 0 && focusIndex == firstFocusableIndex(0)) {
+                if (isInfiniteScrollEnabled()) {
+                    int last = lastFocusableIndex();
+                    if (last >= 0 && last != focusIndex) {
+                        focusIndex = last;
+                        focusZone = FocusZone.TIER_CONTENT;
+                        refreshAll();
+                        scrollFocusIntoView();
+                        logInfiniteWrap("list-top-to-last", focusIndex);
+                    }
+                    return;
+                }
                 focusQuickBarFromListTopExit();
                 return;
             }
             focusZone = FocusZone.TIER_CONTENT;
             int prev = focusIndex;
             int next = nextFocusableIndex(focusIndex, delta);
+            if (next < 0 || next == focusIndex) {
+                if (isInfiniteScrollEnabled() && labels != null && labels.length > 0) {
+                    int wrapped = wrapFocusableIndex(focusIndex, delta);
+                    if (wrapped >= 0 && wrapped != focusIndex) {
+                        next = wrapped;
+                    }
+                }
+            }
             if (next < 0 || next == focusIndex) {
                 if (delta != 0) Y1ScrollIndicators.edgeGlowAtLimit(itemsScroll, delta);
                 return;
@@ -3486,10 +3703,26 @@ public final class ThemedContextMenu {
             return;
         }
         if (nextPos < 0) {
+            if (isInfiniteScrollEnabled()) {
+                quickFocusIndex = vis[vis.length - 1];
+                focusZone = FocusZone.QUICK_BAR;
+                refreshAll();
+                scrollQuickFocusIntoView();
+                logInfiniteWrap("quick-bar-wrap-back", quickFocusIndex);
+                return;
+            }
             Y1ScrollIndicators.edgeGlowAtLimit(itemsScroll, -1);
             return;
         }
         if (nextPos >= vis.length) {
+            if (isInfiniteScrollEnabled()) {
+                quickFocusIndex = vis[0];
+                focusZone = FocusZone.QUICK_BAR;
+                refreshAll();
+                scrollQuickFocusIntoView();
+                logInfiniteWrap("quick-bar-wrap-fwd", quickFocusIndex);
+                return;
+            }
             Y1ScrollIndicators.edgeGlowAtLimit(itemsScroll, 1);
             return;
         }
@@ -3517,7 +3750,7 @@ public final class ThemedContextMenu {
                 d.put("submenuOpen", submenuTierOpen);
                 d.put("queueMode", queueMode);
                 d.put("labelCount", labels != null ? labels.length : 0);
-                DebugAgentLog.log(activity, "ThemedContextMenu.activateFocused",
+                DebugAgentLog.log(context, "ThemedContextMenu.activateFocused",
                         "quick bar activate", "H1", d);
             } catch (Exception ignored) {}
             // #endregion
@@ -3570,7 +3803,7 @@ public final class ThemedContextMenu {
     /** Menu row slot height for scrollable message blocks (two rows minimum). */
     private int menuRowSlotPx() {
         if (rowHeightPx > 0) return rowHeightPx + 2;
-        int itemH = (int) activity.getResources().getDimension(R.dimen.y1_menu_item_height);
+        int itemH = (int) context.getResources().getDimension(R.dimen.y1_menu_item_height);
         return itemH + 2;
     }
 
@@ -3582,7 +3815,7 @@ public final class ThemedContextMenu {
         for (int i = 0; i < labels.length; i++) {
             if (!isHeaderRow(i) && !isDecorRow(i)) actionRows++;
         }
-        int defaultMax = VerticalTextMarqueeHelper.defaultMaxHeightPx(activity);
+        int defaultMax = VerticalTextMarqueeHelper.defaultMaxHeightPx(context);
         int rowSlot = menuRowSlotPx();
         int twoRowMin = rowSlot * 2;
         if (actionRows < 1) {
@@ -3600,7 +3833,7 @@ public final class ThemedContextMenu {
 
     private int scrollableDetailHeaderHeightPx() {
         if (detailHeaderMaxHeightPx > 0) return detailHeaderMaxHeightPx;
-        return VerticalTextMarqueeHelper.defaultMaxHeightPx(activity);
+        return VerticalTextMarqueeHelper.defaultMaxHeightPx(context);
     }
 
     private boolean isScrollableDetailHeaderIndex(int index) {
@@ -3620,7 +3853,7 @@ public final class ThemedContextMenu {
         if (panel == null) return;
         int maxH = scrollableDetailHeaderHeightPx();
         int w = panelWidthPx > 0 ? panelWidthPx : row.getWidth();
-        VerticalTextMarqueeHelper.updateCappedPanel(activity, panel, detailHeaderText, maxH, w);
+        VerticalTextMarqueeHelper.updateCappedPanel(context, panel, detailHeaderText, maxH, w);
         int panelH = panel.getLayoutParams() != null ? panel.getLayoutParams().height : maxH;
         int rowSlot = menuRowSlotPx();
         panelH = Math.max(panelH, rowSlot * 2);
@@ -3635,10 +3868,10 @@ public final class ThemedContextMenu {
 
     private FrameLayout createScrollableDetailHeaderRow() {
         int maxH = scrollableDetailHeaderHeightPx();
-        FrameLayout panel = VerticalTextMarqueeHelper.createCappedPanel(activity, detailHeaderText, maxH);
+        FrameLayout panel = VerticalTextMarqueeHelper.createCappedPanel(context, detailHeaderText, maxH);
         panel.setTag(TAG_DETAIL_PANEL);
 
-        FrameLayout row = new FrameLayout(activity);
+        FrameLayout row = new FrameLayout(context);
         row.setTag(TAG_SCROLL_HEADER, Boolean.TRUE);
         row.setFocusable(true);
         row.setFocusableInTouchMode(true);
@@ -3682,6 +3915,52 @@ public final class ThemedContextMenu {
         return from;
     }
 
+    /** 2026-07-06 — Opt-in wrap at list ends (overlay + in-app modals read persist.solar.nav.infinite_scroll). */
+    private boolean isInfiniteScrollEnabled() {
+        return NavigationPreferences.isInfiniteScrollEnabled(context);
+    }
+
+    private int wrapFocusableIndex(int from, int delta) {
+        if (labels == null || labels.length == 0 || delta == 0) return -1;
+        int[] focusable = focusableIndices();
+        if (focusable.length == 0) return -1;
+        int pos = 0;
+        for (int i = 0; i < focusable.length; i++) {
+            if (focusable[i] == from) { pos = i; break; }
+        }
+        int nextPos = NavigationPreferences.advanceIndex(pos, delta, focusable.length, true);
+        if (nextPos < 0) return -1;
+        int wrapped = focusable[nextPos];
+        logInfiniteWrap("list-wrap", wrapped);
+        return wrapped;
+    }
+
+    private int[] focusableIndices() {
+        if (labels == null || labels.length == 0) return new int[0];
+        int count = 0;
+        for (int i = 0; i < labels.length; i++) {
+            if (!isHeaderRow(i) && !isDecorRow(i)) count++;
+        }
+        int[] out = new int[count];
+        int j = 0;
+        for (int i = 0; i < labels.length; i++) {
+            if (!isHeaderRow(i) && !isDecorRow(i)) out[j++] = i;
+        }
+        return out;
+    }
+
+    private void logInfiniteWrap(String path, int index) {
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("path", path);
+            d.put("index", index);
+            DebugE93bdbLog.log("ThemedContextMenu.logInfiniteWrap",
+                    "infinite scroll wrap", "H-WRAP", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
     private boolean isDecorRow(int index) {
         if (itemsHost == null || index < 0 || index >= itemsHost.getChildCount()) return false;
         View row = itemsHost.getChildAt(index);
@@ -3723,7 +4002,7 @@ public final class ThemedContextMenu {
         if (panel == null) return false;
         if (delta > 0) {
             if (!VerticalTextMarqueeHelper.isPanelScrolledToBottom(panel)) {
-                VerticalTextMarqueeHelper.scrollPanelByStep(activity, panel, 1);
+                VerticalTextMarqueeHelper.scrollPanelByStep(context, panel, 1);
                 return true;
             }
             int next = nextFocusableIndex(focusIndex, 1);
@@ -3736,7 +4015,7 @@ public final class ThemedContextMenu {
             return true;
         }
         if (!VerticalTextMarqueeHelper.isPanelScrolledToTop(panel)) {
-            VerticalTextMarqueeHelper.scrollPanelByStep(activity, panel, -1);
+            VerticalTextMarqueeHelper.scrollPanelByStep(context, panel, -1);
             return true;
         }
         focusQuickBarFromListTopExit();
@@ -3793,16 +4072,16 @@ public final class ThemedContextMenu {
     }
 
     private FrameLayout createQuickChip(QuickItem item, int heightPx, int index) {
-        float density = activity.getResources().getDisplayMetrics().density;
+        float density = context.getResources().getDisplayMetrics().density;
         int iconSize = (int) (heightPx * 0.62f);
         int chipW = (int) (heightPx * 1.05f);
-        FrameLayout chip = new FrameLayout(activity);
+        FrameLayout chip = new FrameLayout(context);
         chip.setTag(index);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(chipW, heightPx);
         lp.setMargins((int) (1 * density), 0, (int) (1 * density), 0);
         chip.setLayoutParams(lp);
 
-        ImageView icon = new ImageView(activity);
+        ImageView icon = new ImageView(context);
         icon.setTag("quick_icon");
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
         int iconRes = iconResForQuickIndex(index, item.iconResId);
@@ -3816,6 +4095,12 @@ public final class ThemedContextMenu {
         iconLp.gravity = Gravity.CENTER;
         chip.addView(icon, iconLp);
         return chip;
+    }
+
+    /** Reapply row chrome after async overlay theme warm — main thread only. */
+    public void refreshThemeDecorAfterWarm() {
+        if (!isShowing()) return;
+        refreshAll();
     }
 
     private void refreshAll() {
@@ -3884,7 +4169,7 @@ public final class ThemedContextMenu {
     }
 
     private Drawable buildPanelBackground() {
-        return ThemeManager.buildContextMenuPanelDrawable(activity);
+        return ThemeManager.buildContextMenuPanelDrawable(context);
     }
 
     private int iconResForQuickIndex(int index, int fallbackResId) {
@@ -3950,7 +4235,7 @@ public final class ThemedContextMenu {
             return ThemeManager.getPlaybackModeIcon(iconKey);
         }
         if (iconKey.startsWith("flag.")) {
-            Bitmap flag = SoulseekCountryFlags.loadFlag(activity, iconKey.substring(5));
+            Bitmap flag = SoulseekCountryFlags.loadFlag(context, iconKey.substring(5));
             if (flag == null) return null;
             int w = (int) (rowHeightPx * 0.5f);
             int h = (int) (rowHeightPx * 0.33f);
@@ -3960,7 +4245,7 @@ public final class ThemedContextMenu {
     }
 
     private android.graphics.Bitmap tintedDrawableBitmap(int resId) {
-        Drawable d = activity.getResources().getDrawable(resId);
+        Drawable d = context.getResources().getDrawable(resId);
         if (d == null) return null;
         int size = (int) (rowHeightPx * 0.72f);
         Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
@@ -3976,10 +4261,10 @@ public final class ThemedContextMenu {
     }
 
     private TextView createHeaderRow(String text, String iconKey) {
-        float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
-        int textPadLeft = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        float density = activity.getResources().getDisplayMetrics().density;
-        TextView tv = new TextView(activity);
+        float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
+        int textPadLeft = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        float density = context.getResources().getDisplayMetrics().density;
+        TextView tv = new TextView(context);
         tv.setTag(TAG_HEADER, Boolean.TRUE);
         tv.setFocusable(false);
         tv.setText(text);
@@ -3991,23 +4276,23 @@ public final class ThemedContextMenu {
         if (iconBmp != null) {
             int pad = (int) (4 * density);
             android.graphics.drawable.BitmapDrawable d =
-                    new android.graphics.drawable.BitmapDrawable(activity.getResources(), iconBmp);
+                    new android.graphics.drawable.BitmapDrawable(context.getResources(), iconBmp);
             d.setBounds(0, 0, iconBmp.getWidth(), iconBmp.getHeight());
             tv.setCompoundDrawables(d, null, null, null);
             tv.setCompoundDrawablePadding(pad);
         }
         tv.setPadding(textPadLeft, (int) (8 * density), textPadLeft,
-                VerticalTextMarqueeHelper.messagePadBottomExtraPx(activity) + (int) (4 * density));
+                VerticalTextMarqueeHelper.messagePadBottomExtraPx(context) + (int) (4 * density));
         return tv;
     }
 
     private FrameLayout createRow(String text, String iconKey, String stateText) {
-        int textPadLeft = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
+        int textPadLeft = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
         android.graphics.Bitmap arrowBmp = ThemeManager.getScaledItemRightArrow(rowHeightPx);
         int arrowW = arrowBmp != null ? arrowBmp.getWidth() : 0;
-        int arrowMarginEnd = (int) activity.getResources().getDimension(R.dimen.y1_arrow_margin_end);
-        float density = activity.getResources().getDisplayMetrics().density;
+        int arrowMarginEnd = (int) context.getResources().getDimension(R.dimen.y1_arrow_margin_end);
+        float density = context.getResources().getDisplayMetrics().density;
         int iconSize = (int) (rowHeightPx * 0.72f);
         int iconGap = (int) (4 * density);
         boolean hasState = stateText != null && stateText.length() > 0;
@@ -4022,7 +4307,7 @@ public final class ThemedContextMenu {
         int labelLeft = textPadLeft + (iconW > 0 ? iconW + iconGap : 0);
         int rowH = stackHint ? rowHeightPx + (int) (menuTextPx * 0.95f) : rowHeightPx;
 
-        FrameLayout row = new FrameLayout(activity);
+        FrameLayout row = new FrameLayout(context);
         row.setFocusable(false);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, rowH);
@@ -4030,7 +4315,7 @@ public final class ThemedContextMenu {
         row.setLayoutParams(rowLp);
 
         if (iconBmp != null) {
-            ImageView icon = new ImageView(activity);
+            ImageView icon = new ImageView(context);
             icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
             icon.setImageBitmap(iconBmp);
             FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(iconSize, iconSize);
@@ -4039,7 +4324,7 @@ public final class ThemedContextMenu {
             row.addView(icon, iconLp);
         }
 
-        TextView label = new TextView(activity);
+        TextView label = new TextView(context);
         label.setText(text);
         label.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
         label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx);
@@ -4050,7 +4335,7 @@ public final class ThemedContextMenu {
         ThemeManager.applyThemedTextStyle(label, textNormal());
 
         if (stackHint) {
-            LinearLayout stack = new LinearLayout(activity);
+            LinearLayout stack = new LinearLayout(context);
             stack.setOrientation(LinearLayout.VERTICAL);
             stack.setGravity(Gravity.CENTER_VERTICAL);
             FrameLayout.LayoutParams stackLp = new FrameLayout.LayoutParams(
@@ -4059,7 +4344,7 @@ public final class ThemedContextMenu {
             stackLp.rightMargin = arrowW + arrowMarginEnd + (int) (6 * density);
             stack.addView(label, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
-            TextView state = new TextView(activity);
+            TextView state = new TextView(context);
             state.setText(stateText);
             state.setTypeface(ThemeManager.getCustomFont());
             state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.82f);
@@ -4078,7 +4363,7 @@ public final class ThemedContextMenu {
             labelLp.rightMargin = arrowW + arrowMarginEnd + (hasState ? (int) (48 * density) : 0);
             row.addView(label, labelLp);
             if (hasState) {
-                TextView state = new TextView(activity);
+                TextView state = new TextView(context);
                 state.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
                 state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.9f);
                 state.setSingleLine(true);
@@ -4095,7 +4380,7 @@ public final class ThemedContextMenu {
             }
         }
 
-        ImageView arrow = new ImageView(activity);
+        ImageView arrow = new ImageView(context);
         arrow.setScaleType(ImageView.ScaleType.FIT_CENTER);
         if (arrowBmp != null) arrow.setImageBitmap(arrowBmp);
         arrow.setVisibility(View.GONE);
@@ -4112,12 +4397,12 @@ public final class ThemedContextMenu {
 
     /** Non-interactive scan/status row — spinner on the right, skipped by wheel focus. */
     private FrameLayout createLoadingRow(String text) {
-        int textPadLeft = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
-        float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
-        float density = activity.getResources().getDisplayMetrics().density;
+        int textPadLeft = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
+        float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
+        float density = context.getResources().getDisplayMetrics().density;
         int spinSize = (int) (rowHeightPx * 0.55f);
 
-        FrameLayout row = new FrameLayout(activity);
+        FrameLayout row = new FrameLayout(context);
         row.setTag(TAG_DECOR, Boolean.TRUE);
         row.setFocusable(false);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
@@ -4125,7 +4410,7 @@ public final class ThemedContextMenu {
         rowLp.setMargins(0, 1, 0, 1);
         row.setLayoutParams(rowLp);
 
-        TextView label = new TextView(activity);
+        TextView label = new TextView(context);
         label.setText(text);
         label.setTypeface(ThemeManager.getCustomFont());
         label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.9f);
@@ -4140,7 +4425,7 @@ public final class ThemedContextMenu {
         labelLp.rightMargin = spinSize + (int) (12 * density);
         row.addView(label, labelLp);
 
-        ProgressBar spin = new ProgressBar(activity, null, android.R.attr.progressBarStyleSmall);
+        ProgressBar spin = new ProgressBar(context, null, android.R.attr.progressBarStyleSmall);
         FrameLayout.LayoutParams spinLp = new FrameLayout.LayoutParams(spinSize, spinSize);
         spinLp.gravity = Gravity.CENTER_VERTICAL | Gravity.END;
         spinLp.rightMargin = (int) (10 * density);
@@ -4258,9 +4543,9 @@ public final class ThemedContextMenu {
         View drop = row.findViewWithTag(TAG_QUEUE_DROP);
         if (visible) {
             if (drop == null) {
-                drop = new View(activity);
+                drop = new View(context);
                 drop.setTag(TAG_QUEUE_DROP);
-                float density = activity.getResources().getDisplayMetrics().density;
+                float density = context.getResources().getDisplayMetrics().density;
                 int h = Math.max(1, (int) (2 * density));
                 FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.MATCH_PARENT, h);
@@ -4287,7 +4572,7 @@ public final class ThemedContextMenu {
             }
             GradientDrawable none = new GradientDrawable();
             none.setColor(0x00000000);
-            none.setCornerRadius(ThemeManager.getButtonRadius() * activity.getResources().getDisplayMetrics().density);
+            none.setCornerRadius(ThemeManager.getButtonRadius() * context.getResources().getDisplayMetrics().density);
             if (queueMode) {
                 cachedQueueRowBg = none;
                 cachedQueueRowBgWidth = widthPx;
@@ -4297,11 +4582,18 @@ public final class ThemedContextMenu {
         if (queueMode && cachedQueueRowBgFocused != null && widthPx == cachedQueueRowBgWidth) {
             return cachedQueueRowBgFocused;
         }
+        if (focused && dialogStyle) {
+            Drawable dialogRow = ThemeManager.getDialogOptionRowBackgroundScaled(
+                    context.getResources(), true, widthPx, heightPx);
+            if (dialogRow != null) {
+                return dialogRow;
+            }
+        }
         Drawable scaled = menuRows
                 ? ThemeManager.getMenuRowBackgroundScaled(
-                        activity.getResources(), true, widthPx, heightPx)
+                        context.getResources(), true, widthPx, heightPx)
                 : ThemeManager.getItemRowBackgroundScaled(
-                        activity.getResources(), true, widthPx, heightPx);
+                        context.getResources(), true, widthPx, heightPx);
         if (scaled != null) {
             if (queueMode) {
                 cachedQueueRowBgFocused = scaled;
@@ -4310,7 +4602,7 @@ public final class ThemedContextMenu {
             return scaled;
         }
         GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(ThemeManager.getButtonRadius() * activity.getResources().getDisplayMetrics().density);
+        g.setCornerRadius(ThemeManager.getButtonRadius() * context.getResources().getDisplayMetrics().density);
         g.setColor(ThemeManager.getRowSelectionFillColor());
         if (queueMode) {
             cachedQueueRowBgFocused = g;
@@ -4320,6 +4612,10 @@ public final class ThemedContextMenu {
     }
 
     private int textNormal() {
+        if (dialogStyle) {
+            return ThemeManager.ensureReadableOnBackground(
+                    ThemeManager.getDialogOptionTextColorNormal(), panelBgColor);
+        }
         int themeNormal = menuRows ? ThemeManager.getSettingMenuTextColorNormal()
                 : ThemeManager.getItemTextColorNormal();
         int themeSelected = menuRows ? ThemeManager.getSettingMenuTextColorSelected()
@@ -4328,6 +4624,10 @@ public final class ThemedContextMenu {
     }
 
     private int textSelected() {
+        if (dialogStyle) {
+            return ThemeManager.ensureReadableOnBackground(
+                    ThemeManager.getDialogOptionTextColorSelected(), panelBgColor);
+        }
         int themeSelected = menuRows ? ThemeManager.getSettingMenuTextColorSelected()
                 : ThemeManager.getItemTextColorSelected();
         return ThemeManager.contextMenuTextSelected(themeSelected, menuRows);

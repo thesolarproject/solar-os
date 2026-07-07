@@ -338,6 +338,71 @@ public final class ScreenTransition {
         }
     }
 
+    /** WM overlay — animate panel only; scrim stays transparent (avoids KitKat white flash). */
+    public static void prepareModalPresentPanelOnly(View panel) {
+        if (panel != null) {
+            panel.setPivotX(panel.getWidth() > 0 ? panel.getWidth() * 0.5f : 0f);
+            panel.setPivotY(panel.getHeight() > 0 ? panel.getHeight() * 0.5f : 0f);
+            panel.setScaleX(MODAL_PANEL_START_SCALE);
+            panel.setScaleY(MODAL_PANEL_START_SCALE);
+            panel.setAlpha(0f);
+        }
+    }
+
+    public static void animateModalPresentPanelOnly(final View panel, final Runnable onComplete) {
+        if (panel == null) {
+            if (onComplete != null) onComplete.run();
+            return;
+        }
+        modalAnimating = true;
+        enableHardwareLayer(panel);
+        final Runnable start = new Runnable() {
+            @Override
+            public void run() {
+                panel.setPivotX(panel.getWidth() * 0.5f);
+                panel.setPivotY(panel.getHeight() * 0.5f);
+                final Runnable done = new Runnable() {
+                    @Override
+                    public void run() {
+                        modalAnimating = false;
+                        panel.setScaleX(1f);
+                        panel.setScaleY(1f);
+                        panel.setAlpha(1f);
+                        clearHardwareLayer(panel);
+                        if (onComplete != null) onComplete.run();
+                    }
+                };
+                panel.animate().scaleX(1f).scaleY(1f).alpha(1f)
+                        .setDuration(MODAL_MS).setInterpolator(EASE)
+                        .setListener(endListener(done)).start();
+            }
+        };
+        panel.postOnAnimation(start);
+    }
+
+    public static void animateModalDismissPanelOnly(final View panel, final Runnable onComplete) {
+        if (panel == null) {
+            modalAnimating = false;
+            if (onComplete != null) onComplete.run();
+            return;
+        }
+        modalAnimating = true;
+        enableHardwareLayer(panel);
+        panel.setPivotX(panel.getWidth() * 0.5f);
+        panel.setPivotY(panel.getHeight() * 0.5f);
+        final Runnable done = new Runnable() {
+            @Override
+            public void run() {
+                modalAnimating = false;
+                clearHardwareLayer(panel);
+                if (onComplete != null) onComplete.run();
+            }
+        };
+        panel.animate().scaleX(MODAL_PANEL_START_SCALE).scaleY(MODAL_PANEL_START_SCALE).alpha(0f)
+                .setDuration(MODAL_MS).setInterpolator(EASE)
+                .setListener(endListener(done)).start();
+    }
+
     /** Initial modal state before present animation. */
     public static void prepareModalPresent(View scrim, View panel) {
         if (scrim != null) scrim.setAlpha(0f);
@@ -471,7 +536,9 @@ public final class ScreenTransition {
 
             @Override
             public void onAnimationCancel(Animator animation) {
-                // Cancel is not completion — resetView clears transforms without firing done.
+                // 2026-07-06 — Clear animating on cancel so wheel keys are not stuck swallowed.
+                animating = false;
+                modalAnimating = false;
             }
         };
     }

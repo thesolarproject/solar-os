@@ -68,7 +68,9 @@ public class FlowCatalogTest {
         assertEquals(1, albums.size());
         assertEquals("No Art Album", albums.get(0).title);
         assertFalse(albums.get(0).coverKey.isEmpty());
-        assertEquals(1, albums.get(0).tracks.size());
+        assertEquals(1, FlowCatalog.tracksForAlbum(albums.get(0), rows, prefs).size());
+        assertFalse(albums.get(0).hasEmbeddedTracks());
+        assertEquals(1, FlowCatalog.tracksForCover(albums.get(0), rows, prefs).size());
     }
 
     @Test
@@ -89,7 +91,7 @@ public class FlowCatalogTest {
         LibraryBrowsePrefs albumSortPrefs = new LibraryBrowsePrefs(mem);
         List<FlowItem> albums = FlowCatalog.buildAlbums(library, albumSortPrefs, policyFromRows(library));
         assertEquals(1, albums.size());
-        List<File> sorted = albums.get(0).tracks;
+        List<File> sorted = FlowCatalog.tracksForAlbum(albums.get(0), library, albumSortPrefs);
         assertEquals(3, sorted.size());
         assertEquals(f2, sorted.get(0));
         assertEquals(f3, sorted.get(1));
@@ -114,7 +116,7 @@ public class FlowCatalogTest {
         mem.edit().putInt("lib_album_song_sort", LibraryBrowsePrefs.SONG_SORT_ALBUM).commit();
         LibraryBrowsePrefs albumPrefs = new LibraryBrowsePrefs(mem);
         List<FlowItem> albums = FlowCatalog.buildAlbums(library, albumPrefs, policyFromRows(library));
-        List<File> sorted = albums.get(0).tracks;
+        List<File> sorted = FlowCatalog.tracksForAlbum(albums.get(0), library, albumPrefs);
         assertEquals(f2, sorted.get(0));
         assertEquals(f3, sorted.get(1));
         assertEquals(f1, sorted.get(2));
@@ -250,6 +252,62 @@ public class FlowCatalogTest {
         LibraryBrowsePrefs artistPrefs = new LibraryBrowsePrefs(mem);
         int keyArtist = FlowCatalog.catalogOptionsKey(artistPrefs, false);
         assertTrue(keyTitle != keyArtist);
+    }
+
+    @Test
+    public void unknownAlbumsAppearPerArtistInFlow() throws IOException {
+        File f1 = File.createTempFile("flow_unk_a1", ".mp3");
+        File f2 = File.createTempFile("flow_unk_b1", ".mp3");
+        File f3 = File.createTempFile("flow_unk_a2", ".mp3");
+        f1.deleteOnExit();
+        f2.deleteOnExit();
+        f3.deleteOnExit();
+        List<FlowCatalog.SongRow> rows = Arrays.asList(
+                new FlowCatalog.SongRow(f1, "Single A", "Artist A", "Unknown Album", "Artist A", 1L),
+                new FlowCatalog.SongRow(f2, "Single B", "Artist B", "Unknown Album", "Artist B", 1L),
+                new FlowCatalog.SongRow(f3, "Loose A", "Artist A", "Unknown Album", "Artist A", 2L));
+        List<FlowItem> albums = FlowCatalog.buildAlbums(rows, prefs, policyFromRows(rows));
+        assertEquals(2, albums.size());
+        int totalTracks = 0;
+        FlowItem artistAItem = null;
+        FlowItem artistBItem = null;
+        for (FlowItem item : albums) {
+            assertEquals("Unknown Album", item.title);
+            totalTracks += FlowCatalog.tracksForAlbum(item, rows, prefs).size();
+            if (item.matchKey.endsWith("|artist a")) artistAItem = item;
+            if (item.matchKey.endsWith("|artist b")) artistBItem = item;
+        }
+        assertEquals(3, totalTracks);
+        assertTrue(artistAItem != null);
+        assertTrue(artistBItem != null);
+        assertEquals(2, FlowCatalog.tracksForAlbum(artistAItem, rows, prefs).size());
+        assertEquals(1, FlowCatalog.tracksForAlbum(artistBItem, rows, prefs).size());
+        assertEquals("Artist A", artistAItem.subtitle);
+        assertEquals("Artist B", artistBItem.subtitle);
+    }
+
+    @Test
+    public void unknownAlbumNotMergedWithTaggedAlbum() throws IOException {
+        File tagged = File.createTempFile("flow_tagged", ".mp3");
+        File loose = File.createTempFile("flow_loose", ".mp3");
+        tagged.deleteOnExit();
+        loose.deleteOnExit();
+        List<FlowCatalog.SongRow> rows = Arrays.asList(
+                new FlowCatalog.SongRow(tagged, "Hit", "Artist A", "Real Album", "Artist A", 1L),
+                new FlowCatalog.SongRow(loose, "B-side", "Artist A", "Unknown Album", "Artist A", 1L));
+        List<FlowItem> albums = FlowCatalog.buildAlbums(rows, prefs, policyFromRows(rows));
+        assertEquals(2, albums.size());
+        boolean sawReal = false;
+        boolean sawUnknown = false;
+        for (FlowItem item : albums) {
+            if ("Real Album".equals(item.title)) sawReal = true;
+            if ("Unknown Album".equals(item.title)) {
+                sawUnknown = true;
+                assertEquals(1, FlowCatalog.tracksForAlbum(item, rows, prefs).size());
+            }
+        }
+        assertTrue(sawReal);
+        assertTrue(sawUnknown);
     }
 
     @Test

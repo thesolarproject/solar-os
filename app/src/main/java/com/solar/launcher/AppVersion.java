@@ -1,5 +1,7 @@
 package com.solar.launcher;
 
+import com.solar.ota.SolarUpdateClient;
+
 import android.content.Context;
 import android.content.pm.PackageInfo;
 

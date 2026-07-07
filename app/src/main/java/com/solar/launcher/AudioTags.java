@@ -22,6 +22,8 @@ public final class AudioTags {
         public String album = "";
         public String albumArtist = "";
         public String genre = "";
+        /** Release year from ID3; 0 when unknown. */
+        public int year = 0;
         public int trackNumber = -1;
         public String durationMs = "";
         public byte[] embeddedArt;
@@ -51,6 +53,7 @@ public final class AudioTags {
             info.artist = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ARTIST));
             info.album = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_ALBUM));
             info.genre = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_GENRE));
+            info.year = parseYear(mmr);
             info.durationMs = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION));
             
             String trackNumStr = mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER);
@@ -193,6 +196,29 @@ public final class AudioTags {
 
     private static String safe(String s) {
         return s != null ? s.trim() : "";
+    }
+
+    /** 2026-07-06: Year from YEAR or DATE tag; 0 when missing. */
+    static int parseYear(MediaMetadataRetriever mmr) {
+        if (mmr == null) return 0;
+        String y = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_YEAR));
+        int parsed = parseYearString(y);
+        if (parsed > 0) return parsed;
+        String date = safe(mmr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DATE));
+        if (date.length() >= 4) return parseYearString(date.substring(0, 4));
+        return 0;
+    }
+
+    static int parseYearString(String raw) {
+        if (raw == null) return 0;
+        String t = raw.trim();
+        if (t.length() < 4) return 0;
+        try {
+            int y = Integer.parseInt(t.substring(0, 4));
+            return y >= 1900 && y <= 2100 ? y : 0;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
     }
 
     static final class ParsedName {

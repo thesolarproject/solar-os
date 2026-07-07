@@ -8,10 +8,16 @@ FILES=(
     switch-to-stock.sh
     switch-to-rockbox.sh
     sync-rockbox-libs.sh
+    sync-rockbox-assets.sh
     sync-y1-keymap.sh
     disable-rockbox-for-solar.sh
+    apply-preferred-home-boot.sh
+    disable-large-font-accessibility.sh
+    enable-gpu-performance.sh
     solar-usb-recovery-agent.sh
     Y1-Rockbox.kl
+    Y2-Rockbox.kl
+    mtk-kpd.y1.stock.kl
 )
 errors=0
 for f in "${FILES[@]}"; do

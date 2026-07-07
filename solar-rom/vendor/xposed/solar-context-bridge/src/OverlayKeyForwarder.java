@@ -3,19 +3,26 @@ package com.solar.launcher.xposed.bridge;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.os.SystemClock;
 import android.view.KeyEvent;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * Forward hardware keys to Solar while the global overlay is active (sys.solar.overlay.active=1).
- * WM overlay is NOT_FOCUSABLE — all navigation must flow through here into OverlayKeyReceiver.
+ * 2026-07-05 — Tier-1 overlay key forward: highest mutex tier while sys.solar.overlay.active=1.
+ * Read-only consumer of OverlayKeyGate props; WM overlay is NOT_FOCUSABLE — keys flow through here.
+ * When changing: OPENING_STALE_MS must match OverlayKeyGate; disarm pulse clears stale BACK holds.
+ * Reversal: remove PWM hook; global quick menu keys leak to foreground app.
  */
 final class OverlayKeyForwarder {
 
     /** Must match {@link com.solar.launcher.OverlayKeyGate#ACTIVE_PROPERTY}. */
     static final String ACTIVE_PROPERTY = "sys.solar.overlay.active";
+    /** Must match {@link com.solar.launcher.OverlayKeyGate#OPENING_PROPERTY}. */
+    static final String OPENING_PROPERTY = "sys.solar.overlay.opening";
+    /** Elapsed-realtime ms when opening=1 was set — stale via shared StaleOverlayGate JAR. */
+    static final String OPENING_AT_PROPERTY = "sys.solar.overlay.opening_at";
     /** Legacy persist prop — auto-cleared by Solar; never swallow Rockbox when this alone is set. */
     private static final String LEGACY_ACTIVE_PROPERTY = "persist.solar.overlay.active";
     static final String ACTION_OVERLAY_KEY = "com.solar.launcher.action.OVERLAY_KEY";
@@ -68,7 +75,7 @@ final class OverlayKeyForwarder {
             param.setResult(queueing ? KEY_CONSUMED_QUEUE : KEY_CONSUMED_DISPATCH);
             return;
         }
-        if (!isOverlayActive()) {
+        if (!isOverlayKeyCaptureArmed()) {
             if (!queueing) {
                 SystemServerHooks.absorbOverlayDisarmPulse();
             }
@@ -105,6 +112,7 @@ final class OverlayKeyForwarder {
                 return;
             }
             if (ctx != null) {
+                SystemServerHooks.trackOverlayRescueHold(ctx, event, fg);
                 forwardKey(ctx, keyCode, action);
                 forwarded = true;
             }
@@ -149,7 +157,7 @@ final class OverlayKeyForwarder {
      */
     static boolean tryForwardFromAppContext(Context ctx, KeyEvent event) {
         if (event == null) return false;
-        if (!isOverlayActive()) {
+        if (!isOverlayKeyCaptureArmed()) {
             if (Y1InputKeysBridge.isBackKey(event.getKeyCode())
                     && SystemServerHooks.isPostOverlayCooldown()) {
                 return true;
@@ -176,7 +184,7 @@ final class OverlayKeyForwarder {
     /** keyCode/action with repeat count — skips OK repeat storms while overlay is up. */
     static boolean tryForwardFromAppContext(Context ctx, int keyCode, int action, int repeatCount) {
         if (ctx == null) return false;
-        if (!isOverlayActive()) {
+        if (!isOverlayKeyCaptureArmed()) {
             // Dismiss uses BACK down — block the matching up/repeat from reaching the stock Activity.
             if (Y1InputKeysBridge.isBackKey(keyCode) && SystemServerHooks.isPostOverlayCooldown()) {
                 return true;
@@ -236,21 +244,34 @@ final class OverlayKeyForwarder {
         return isOverlayNavigationKey(keyCode);
     }
 
-    /** Third-party, Rockbox (Y2 power tier), and Solar — not stock Innioasis shells. */
     private static boolean shouldCaptureOverlayKeys(String fg) {
-        if (fg == null || fg.length() == 0) return false;
-        if ("com.solar.launcher".equals(fg)) return true;
-        if ("org.rockbox".equals(fg)) return true;
-        if (fg.startsWith("com.innioasis.")) return false;
         return true;
+    }
+
+    static boolean isOverlayKeyCaptureArmed() {
+        clearOpeningGateIfStale();
+        return isOverlayOpening() || isOverlayActive();
     }
 
     private static final long KEY_CONSUMED_DISPATCH = -1L;
     private static final int KEY_CONSUMED_QUEUE = 0;
 
+    private static volatile Class<?> sSystemPropertiesClass;
+    private static Class<?> getSystemPropertiesClass() {
+        Class<?> c = sSystemPropertiesClass;
+        if (c == null) {
+            try {
+                c = XposedHelpers.findClass("android.os.SystemProperties", null);
+                sSystemPropertiesClass = c;
+            } catch (Throwable ignored) {}
+        }
+        return c;
+    }
+
     static boolean isOverlayActive() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", ACTIVE_PROPERTY, "0");
             if ("1".equals(String.valueOf(v))) return true;
             // Legacy stuck persist — treat as inactive so Rockbox keeps back/OK.
@@ -259,6 +280,28 @@ final class OverlayKeyForwarder {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    /** Clear opening=1 when :overlay died mid-load — restores Y2 power-hold over Rockbox. */
+    static void clearOpeningGateIfStale() {
+        com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+    }
+
+    /** True while :overlay paints — duplicate power/BACK triggers must not restart load. */
+    static boolean isOverlayOpening() {
+        clearOpeningGateIfStale();
+        try {
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
+            Object v = XposedHelpers.callStaticMethod(sp, "get", OPENING_PROPERTY, "0");
+            return "1".equals(String.valueOf(v));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    static boolean isOverlayActiveOrOpening() {
+        return com.solar.input.policy.StaleOverlayGate.isActiveOrOpening();
     }
 
     private static void forwardKey(Context ctx, int keyCode, int action) {

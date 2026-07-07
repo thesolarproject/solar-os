@@ -10,7 +10,11 @@ public final class RowKeys {
     public static final String PLAYBACK = "settings.playback";
     public static final String BUTTON_SOUND = "settings.button_sound";
     public static final String BUTTON_VIBRATE = "settings.button_vibrate";
+    /** When on, cap headphone volume at 80% hardware max with Solar warnings. */
+    public static final String HEARING_SAFETY = "settings.hearing_safety";
     public static final String SCREEN_OFF_CTRL = "settings.screen_off_control";
+    /** Xposed skin — paint stock apps (Settings, etc.) with active Solar theme. */
+    public static final String PAINT_SYSTEM_APPS = "settings.paint_system_apps";
     public static final String APP_THEME = "settings.app_theme";
     public static final String GET_THEMES = "settings.get_themes";
     public static final String THEMES = "settings.themes";
@@ -27,6 +31,8 @@ public final class RowKeys {
     public static final String NOW_PLAYING_3D_ALBUM_ART = "settings.now_playing_3d_album_art";
     public static final String SCREEN_TIMEOUT = "settings.screen_timeout";
     public static final String FULL_WIDTH = "settings.full_width";
+    /** 2026-07-06 — Wrap wheel focus at list ends (Solar + global overlay). */
+    public static final String INFINITE_SCROLL = "settings.infinite_scroll";
     public static final String MENU_TRANSITIONS = "settings.menu_transitions";
     public static final String POWER_OFF = "settings.power_off";
     public static final String POWER_RESTART = "settings.power_restart";
@@ -41,6 +47,11 @@ public final class RowKeys {
     public static final String USB_SUPPRESS_PROMPT = "settings.usb_suppress_prompt";
     public static final String USB_TURN_ON = "settings.usb_turn_on";
     public static final String SWITCH_ROCKBOX = "settings.switch_rockbox";
+    public static final String HOME_LAUNCHER = "settings.home_launcher";
+    public static final String HOME_LAUNCHER_STATUS = "settings.home_launcher.status";
+    public static final String HOME_LAUNCHER_TO_SOLAR = "settings.home_launcher.to_solar";
+    public static final String HOME_LAUNCHER_TO_ROCKBOX = "settings.home_launcher.to_rockbox";
+    public static final String HOME_LAUNCHER_TO_JJ = "settings.home_launcher.to_jj";
     public static final String RESET = "settings.reset";
     public static final String RESET_ROCKBOX = "settings.reset.rockbox";
     public static final String RESET_SOLAR = "settings.reset.solar";
@@ -67,22 +78,45 @@ public final class RowKeys {
     public static final String LIB_ALBUM_RACK_SORT = "library.album_rack_sort";
     public static final String LIB_ALBUM_SUB = "library.album_sub";
     public static final String LIB_GUEST_SUB = "library.guest_sub";
+    /** Library browse — append Reach online hits in on-device search (default off). */
+    public static final String LIB_SEARCH_REACH = "library.search_reach";
+    public static final String LIST_WRAPAROUND = "library.list_wraparound";
+    public static final String NAVIDROME_URL = "settings.navidrome.url";
+    public static final String NAVIDROME_USER = "settings.navidrome.user";
+    public static final String NAVIDROME_PASS = "settings.navidrome.pass";
+    public static final String NAVIDROME_TEST = "settings.navidrome.test";
     public static final String ABOUT = "settings.about";
     public static final String DIAG_AUTO_REPORT = "settings.diag_auto_report";
-    /** Debug experiment — Solar Developer support thread + Report a Problem. */
-    public static final String DEBUG_DEV_SUPPORT_EXPERIMENT = "settings.debug.dev_support_experiment";
+    /** Root Settings — GitHub Issues URL screen. */
+    public static final String REPORT_ISSUE = "settings.report_issue";
+    /** Dev-support experiment — in-app report thread (2026-07-05). */
     public static final String REPORT_PROBLEM = "settings.report_problem";
     public static final String CONTACT_DEVELOPER = "settings.contact_developer";
+    public static final String DEBUG_DEV_SUPPORT_EXPERIMENT = "settings.debug.dev_support_experiment";
+    /** Root Settings — Donations (Ko-fi URL) screen. */
+    public static final String SUPPORT_DEVELOPER = "settings.support_developer";
+    /** Donations sub-screen — online donor roll from donators.xml. */
+    public static final String OUR_DONORS = "settings.our_donors";
     public static final String DEBUG = "settings.debug";
     public static final String DEBUG_JJ_THEMES = "settings.debug.jj_themes";
     public static final String DEBUG_WIRELESS_ADB = "settings.debug.wireless_adb";
     public static final String DEBUG_SHOW_ERROR_TOASTS = "settings.debug.show_error_toasts";
     public static final String DEBUG_BLUETOOTH_EXPERIMENT = "settings.debug.bluetooth_experiment";
     public static final String DEBUG_RADIO_EXPERIMENT = "settings.debug.radio_experiment";
+    /** Y2-only — USB mass storage (UMS) lab toggle; off by default until MT6582 path works (2026-07-05). */
+    public static final String DEBUG_USB_MASS_STORAGE_EXPERIMENT = "settings.debug.usb_mass_storage_experiment";
     public static final String DEBUG_FLOW_ENABLED = "settings.debug.flow_enabled";
     public static final String DEBUG_FLOW_OK_LIBRARY = "settings.debug.flow_ok_library";
     public static final String DEBUG_FLOW_THEME = "settings.debug.flow_theme";
     public static final String DEBUG_FLOW_NO_REFLECTIONS = "settings.debug.flow_no_reflections";
+    /** Debug → Xposed modules submenu entry (matches {@link SettingsScreens#XPOSED_MODULES}). */
+    public static final String DEBUG_XPOSED_MODULES = "settings.debug.xposed_modules";
+    public static final String DEBUG_XPOSED_APPLY = "settings.debug.xposed_apply";
+    public static final String XPOSED_MODULE_ROW_PREFIX = "settings.debug.xposed.pkg.";
+    /** Inline config toggle on module detail — suffix is option key. */
+    public static final String XPOSED_MODULE_CONFIG_ROW_PREFIX = "settings.debug.xposed.cfg.";
+    /** Open external MODULE_SETTINGS activity for one package. */
+    public static final String XPOSED_MODULE_OPEN_SETTINGS_PREFIX = "settings.debug.xposed.open.";
     /** Root Settings — master Flow on/off (experimental toggles stay under Debug → Flow). */
     public static final String FLOW = "settings.flow_enabled";
     public static final String FLOW_SETTINGS = "settings.flow";
@@ -95,6 +129,8 @@ public final class RowKeys {
     public static final String STORAGE = "settings.storage";
     /** Y2 — save new media on internal storage (sdcard0) when on; scans always include both volumes. */
     public static final String Y2_INTERNAL_MEDIA = "settings.y2_internal_media";
+    /** Y2 only — long OK sleeps screen instead of opening quick menu (legacy behaviour). */
+    public static final String Y2_HOLD_OK_TO_SLEEP = "settings.y2_hold_ok_to_sleep";
     /** Y2 — submenu to pick MicroSD vs internal as primary save target. */
     public static final String Y2_PRIMARY_STORAGE = "settings.y2_primary_storage";
     public static final String Y2_PRIMARY_MICROSD = "settings.y2_primary.microsd";
@@ -108,6 +144,7 @@ public final class RowKeys {
     public static final String DATETIME = "settings.datetime";
     public static final String LANGUAGE = "settings.language";
     public static final String RADIO = "settings.radio";
+    public static final String RADIO_FM = "settings.radio.fm";
     public static final String VIDEO = "settings.video";
     public static final String HOME_SCREEN = "settings.home_screen";
     public static final String SOULSEEK_SEARCH = "soulseek.search";
@@ -161,8 +198,35 @@ public final class RowKeys {
         return "home.shortcut." + id;
     }
 
+    /** Row key for one Xposed module toggle in Debug → Xposed modules. */
+    public static String xposedModuleRowKey(String packageName) {
+        return XPOSED_MODULE_ROW_PREFIX + (packageName != null ? packageName : "");
+    }
+
+    /** True for staged module rows — not persisted until Apply + reboot. */
+    public static boolean isXposedModuleRow(String rowKey) {
+        return rowKey != null && rowKey.startsWith(XPOSED_MODULE_ROW_PREFIX)
+                && !rowKey.startsWith(XPOSED_MODULE_CONFIG_ROW_PREFIX)
+                && !rowKey.startsWith(XPOSED_MODULE_OPEN_SETTINGS_PREFIX);
+    }
+
+    /** Row to launch a hook module's own settings activity. */
+    public static String xposedModuleOpenSettingsKey(String packageName) {
+        return XPOSED_MODULE_OPEN_SETTINGS_PREFIX + (packageName != null ? packageName : "");
+    }
+
+    /** True for inline module config toggles on detail screen. */
+    public static boolean isXposedModuleConfigRow(String rowKey) {
+        return rowKey != null && rowKey.startsWith(XPOSED_MODULE_CONFIG_ROW_PREFIX);
+    }
+
     public static int labelResId(String rowKey) {
         if (rowKey == null) return 0;
+        if (isXposedModuleRow(rowKey)) {
+            String pkg = rowKey.substring(XPOSED_MODULE_ROW_PREFIX.length());
+            XposedModuleRegistry.Entry e = XposedModuleRegistry.findByPackage(pkg);
+            return e != null ? e.labelResId : 0;
+        }
         if (rowKey.startsWith("home.shortcut.")) {
             String id = rowKey.substring("home.shortcut.".length());
             HomeMenuConfig.Entry e = HomeMenuConfig.find(id);
@@ -174,7 +238,9 @@ public final class RowKeys {
         if (PLAYBACK.equals(rowKey)) return R.string.settings_playback;
         if (BUTTON_SOUND.equals(rowKey)) return R.string.settings_button_sound;
         if (BUTTON_VIBRATE.equals(rowKey)) return R.string.settings_button_vibrate;
+        if (HEARING_SAFETY.equals(rowKey)) return R.string.settings_hearing_safety;
         if (SCREEN_OFF_CTRL.equals(rowKey)) return R.string.settings_screen_off_control;
+        if (PAINT_SYSTEM_APPS.equals(rowKey)) return R.string.settings_paint_system_apps;
         if (APP_THEME.equals(rowKey)) return R.string.settings_app_theme;
         if (GET_THEMES.equals(rowKey) || THEMES.equals(rowKey)) return R.string.settings_themes;
         if (STATUS_BAR_LEFT.equals(rowKey)) return R.string.settings_status_bar_text;
@@ -189,6 +255,7 @@ public final class RowKeys {
         if (NOW_PLAYING_3D_ALBUM_ART.equals(rowKey)) return R.string.settings_now_playing_3d_album_art;
         if (SCREEN_TIMEOUT.equals(rowKey)) return R.string.settings_screen_timeout;
         if (FULL_WIDTH.equals(rowKey)) return R.string.settings_full_width_menus;
+        if (INFINITE_SCROLL.equals(rowKey)) return R.string.settings_infinite_scroll;
         if (MENU_TRANSITIONS.equals(rowKey)) return R.string.settings_menu_transitions;
         if (POWER_OFF.equals(rowKey)) return R.string.settings_power_off;
         if (POWER_RESTART.equals(rowKey)) return R.string.settings_power_restart;
@@ -203,6 +270,10 @@ public final class RowKeys {
         if (USB_SUPPRESS_PROMPT.equals(rowKey)) return R.string.settings_usb_suppress_prompt;
         if (USB_TURN_ON.equals(rowKey)) return R.string.settings_usb_turn_on;
         if (SWITCH_ROCKBOX.equals(rowKey)) return R.string.settings_switch_rockbox;
+        if (HOME_LAUNCHER.equals(rowKey)) return R.string.settings_home_launcher;
+        if (HOME_LAUNCHER_TO_SOLAR.equals(rowKey)) return R.string.settings_home_launcher_switch_solar;
+        if (HOME_LAUNCHER_TO_ROCKBOX.equals(rowKey)) return R.string.settings_home_launcher_switch_rockbox;
+        if (HOME_LAUNCHER_TO_JJ.equals(rowKey)) return R.string.settings_home_launcher_switch_jj;
         if (RESET.equals(rowKey)) return R.string.settings_reset;
         if (RESET_ROCKBOX.equals(rowKey)) return R.string.settings_reset_rockbox;
         if (RESET_SOLAR.equals(rowKey)) return R.string.settings_reset_solar;
@@ -228,23 +299,32 @@ public final class RowKeys {
         if (LIB_ALBUM_SONG_SORT.equals(rowKey)) return R.string.lib_album_song_sort;
         if (LIB_ALBUM_SUB.equals(rowKey)) return R.string.lib_album_owner_sub;
         if (LIB_GUEST_SUB.equals(rowKey)) return R.string.lib_guest_song_sub;
+        if (LIB_SEARCH_REACH.equals(rowKey)) return R.string.lib_search_include_reach;
+        if (LIST_WRAPAROUND.equals(rowKey)) return R.string.settings_list_wraparound;
+        if (NAVIDROME_URL.equals(rowKey)) return R.string.navidrome_settings_url;
+        if (NAVIDROME_USER.equals(rowKey)) return R.string.navidrome_settings_user;
+        if (NAVIDROME_PASS.equals(rowKey)) return R.string.navidrome_settings_pass;
+        if (NAVIDROME_TEST.equals(rowKey)) return R.string.navidrome_settings_test;
         if (ABOUT.equals(rowKey)) return R.string.settings_about;
         if (DIAG_AUTO_REPORT.equals(rowKey)) return R.string.settings_diag_auto_report;
-        if (DEBUG_DEV_SUPPORT_EXPERIMENT.equals(rowKey)) {
-            return R.string.settings_debug_dev_support_experiment;
-        }
-        if (REPORT_PROBLEM.equals(rowKey)) return R.string.settings_report_problem;
-        if (CONTACT_DEVELOPER.equals(rowKey)) return R.string.settings_contact_developer;
+        if (REPORT_ISSUE.equals(rowKey)) return R.string.settings_report_issue;
+        if (SUPPORT_DEVELOPER.equals(rowKey)) return R.string.settings_support_developer;
+        if (OUR_DONORS.equals(rowKey)) return R.string.settings_our_donors;
         if (DEBUG.equals(rowKey)) return R.string.settings_sub_debug;
         if (DEBUG_JJ_THEMES.equals(rowKey)) return R.string.settings_debug_jj_themes;
         if (DEBUG_WIRELESS_ADB.equals(rowKey)) return R.string.settings_debug_wireless_adb;
         if (DEBUG_SHOW_ERROR_TOASTS.equals(rowKey)) return R.string.settings_debug_show_error_toasts;
         if (DEBUG_BLUETOOTH_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_bluetooth_experiment;
         if (DEBUG_RADIO_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_radio_experiment;
+        if (DEBUG_USB_MASS_STORAGE_EXPERIMENT.equals(rowKey)) {
+            return R.string.settings_debug_usb_mass_storage_experiment;
+        }
         if (DEBUG_FLOW_ENABLED.equals(rowKey)) return R.string.settings_debug_flow_enabled;
         if (DEBUG_FLOW_OK_LIBRARY.equals(rowKey)) return R.string.settings_debug_flow_ok_library;
         if (DEBUG_FLOW_THEME.equals(rowKey)) return R.string.settings_debug_flow_theme;
         if (DEBUG_FLOW_NO_REFLECTIONS.equals(rowKey)) return R.string.settings_debug_flow_no_reflections;
+        if (DEBUG_XPOSED_MODULES.equals(rowKey)) return R.string.settings_debug_xposed_modules;
+        if (DEBUG_XPOSED_APPLY.equals(rowKey)) return R.string.settings_debug_xposed_apply;
         if (FLOW.equals(rowKey)) return R.string.settings_flow;
         if (FLOW_SETTINGS.equals(rowKey)) return R.string.settings_sub_flow;
         if (FLOW_MULTI_TRACK_ALBUMS.equals(rowKey)) return R.string.settings_flow_multi_track_albums;
@@ -254,6 +334,7 @@ public final class RowKeys {
         if (BRIGHTNESS.equals(rowKey)) return R.string.settings_display_brightness;
         if (STORAGE.equals(rowKey)) return R.string.settings_storage_info;
         if (Y2_INTERNAL_MEDIA.equals(rowKey)) return R.string.settings_y2_internal_media;
+        if (Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) return R.string.settings_y2_hold_ok_to_sleep;
         if (Y2_PRIMARY_STORAGE.equals(rowKey)) return R.string.settings_y2_primary_storage;
         if (Y2_PRIMARY_MICROSD.equals(rowKey)) return R.string.settings_y2_primary_microsd;
         if (Y2_PRIMARY_INTERNAL.equals(rowKey)) return R.string.settings_y2_primary_internal;
@@ -265,6 +346,7 @@ public final class RowKeys {
         if (DATETIME.equals(rowKey)) return R.string.settings_datetime;
         if (LANGUAGE.equals(rowKey)) return R.string.settings_language;
         if (RADIO.equals(rowKey)) return R.string.settings_sub_radio;
+        if (RADIO_FM.equals(rowKey)) return R.string.settings_sub_fm;
         if (VIDEO.equals(rowKey)) return R.string.settings_sub_video;
         if (MediaSuiteHost.ROW_AUTO_DETECT.equals(rowKey)) return R.string.radio_settings_auto_region;
         if (MediaSuiteHost.ROW_BUFFER_SD.equals(rowKey)) return R.string.radio_settings_buffer_sd;

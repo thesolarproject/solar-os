@@ -13,7 +13,7 @@ public final class Debug843b96Log {
     private static final String TAG = "SolarDevDbg843";
     private static final String SESSION = "843b96";
     private static final String SDCARD_FILE = "/storage/sdcard0/debug-843b96.log";
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false;
 
     private Debug843b96Log() {}
 
@@ -28,7 +28,7 @@ public final class Debug843b96Log {
             o.put("message", message);
             o.put("hypothesisId", hypothesisId);
             if (data != null) o.put("data", data);
-            String line = o.toString();
+            String line = com.solar.launcher.SolarLog.scrub(ctx, o.toString());
             Log.i(TAG, line);
             try {
                 FileWriter w = new FileWriter(new File(SDCARD_FILE), true);

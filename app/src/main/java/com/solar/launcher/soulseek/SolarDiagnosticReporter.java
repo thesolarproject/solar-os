@@ -56,33 +56,93 @@ public final class SolarDiagnosticReporter {
     private SolarDiagnosticReporter() {}
 
     public static boolean isEnabled(SharedPreferences prefs) {
-        return false;
+        return prefs != null && prefs.getBoolean(PREF_DIAG_AUTO_REPORT, false)
+                && ReachPolicy.isMasterEnabled(prefs);
     }
 
     private static boolean isBackgroundShippingAllowed(SharedPreferences prefs) {
-        return false;
+        return isEnabled(prefs);
     }
 
     public static void shipOnDeveloperSupportOpen(final Context context, final SharedPreferences prefs) {
+        if (!isEnabled(prefs) || context == null) return;
+        startScan(context.getApplicationContext(), prefs, ScanMode.SUPPORT_OPEN);
     }
 
     public static void onProcessStart(final Context context) {
+        if (context == null) return;
+        final Context app = context.getApplicationContext();
+        final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        if (!isEnabled(prefs)) return;
+        scheduleBootScan(app, prefs);
     }
 
     public static void onReachInternetAvailable(final Context context, final SharedPreferences prefs) {
+        if (!isBackgroundShippingAllowed(prefs) || context == null) return;
+        if (!firstInternetScanDone) {
+            firstInternetScanDone = true;
+            startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP);
+            return;
+        }
+        scheduleIfNeeded(context, prefs);
     }
 
     public static void onWifiAvailable(final Context context, final SharedPreferences prefs) {
+        if (!isBackgroundShippingAllowed(prefs) || context == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastScanMs < MIN_RECONNECT_INTERVAL_MS) return;
+        scheduleIfNeeded(context, prefs);
     }
 
     public static void scheduleIfNeeded(final Context context, final SharedPreferences prefs) {
+        if (!isBackgroundShippingAllowed(prefs) || context == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastScanMs < MIN_SCAN_INTERVAL_MS) return;
+        startScan(context.getApplicationContext(), prefs, ScanMode.ROUTINE);
     }
 
     public static void scheduleUrgent(final Context context, final SharedPreferences prefs) {
+        if (!isEnabled(prefs) || context == null) return;
+        startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP);
+    }
+
+    private static void scheduleBootScan(final Context context, final SharedPreferences prefs) {
+        if (!bootScanPending) return;
+        bootScanPending = false;
+        final int gen = retryGeneration.incrementAndGet();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                for (long delay : BOOT_RETRY_MS) {
+                    if (gen != retryGeneration.get()) return;
+                    try {
+                        Thread.sleep(delay);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                    if (!ConnectivityHelper.isOnline(context)) continue;
+                    startScan(context, prefs, ScanMode.STARTUP);
+                    return;
+                }
+            }
+        }, "SolarDiagBoot").start();
     }
 
     private static void startScan(final Context context, final SharedPreferences prefs,
             final ScanMode mode) {
+        if (context == null || prefs == null) return;
+        if (!scanRunning.compareAndSet(false, true)) return;
+        lastScanMs = System.currentTimeMillis();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    runScan(context, prefs, mode);
+                } finally {
+                    scanRunning.set(false);
+                }
+            }
+        }, "SolarDiagScan").start();
     }
 
     static void runScan(Context context, SharedPreferences prefs, ScanMode mode) {
@@ -92,15 +152,12 @@ public final class SolarDiagnosticReporter {
         JSONObject manifest = loadManifest(prefs);
         JSONObject updated = new JSONObject();
         if (!SolarDiagSessionManager.ensureSessionSync(context, prefs)) {
-            // #region agent log
             try {
                 JSONObject d = new JSONObject();
-                d.put("diagUser", diag.username);
                 d.put("mode", mode.name());
                 Debug843b96Log.log(context, "SolarDiagnosticReporter.runScan",
                         "diag session unavailable", "G-H", d);
             } catch (Exception ignored) {}
-            // #endregion
             scheduleSessionRetry(context, prefs, mode);
             return;
         }
@@ -132,16 +189,13 @@ public final class SolarDiagnosticReporter {
                 shipped++;
             }
             prefs.edit().putString(PREF_DIAG_SENT_MANIFEST, updated.toString()).apply();
-            // #region agent log
             try {
                 JSONObject d = new JSONObject();
                 d.put("shipped", shipped);
                 d.put("sources", sources.size());
-                d.put("diagUser", diag.username);
                 d.put("mode", mode.name());
                 Debug843b96Log.log(context, "SolarDiagnosticReporter.runScan", "scan done", "H", d);
             } catch (Exception ignored) {}
-            // #endregion
         } catch (Exception e) {
             // #region agent log
             try {
@@ -176,11 +230,10 @@ public final class SolarDiagnosticReporter {
             String mainUser, String diagUser, String event) {
         String body = SolarDeveloperAccounts.DIAG_MARKER
                 + "event: " + event + "\n"
-                + "user: " + (mainUser != null ? mainUser : "?") + "\n"
-                + "diag: " + (diagUser != null ? diagUser : "?") + "\n"
                 + "sdk: " + Build.VERSION.SDK_INT + "\n"
                 + "model: " + Build.MODEL + "\n"
                 + "time: " + System.currentTimeMillis() + "\n";
+        body = com.solar.launcher.SolarLog.scrub(context, body);
         String[] devs = SolarDeveloperAccounts.developerUsernames();
         com.solar.launcher.soulseek.SoulseekClient mainClient = null;
         try {
@@ -221,15 +274,15 @@ public final class SolarDiagnosticReporter {
             return false;
         }
         if (content == null || content.isEmpty()) return true;
+        content = com.solar.launcher.SolarLog.scrub(context, content);
         List<String> chunks = splitContent(content, MAX_CHUNK_CHARS);
         String pathLabel = src.file != null ? src.file.getName() : src.label;
         for (int i = 0; i < chunks.size(); i++) {
             String body = SolarDeveloperAccounts.DIAG_MARKER
-                    + "user: " + mainUser + "\n"
-                    + "diag: " + diagUser + "\n"
                     + "file: " + src.label + " (" + (i + 1) + "/" + chunks.size() + ")\n"
                     + "path: " + pathLabel + "\n"
                     + chunks.get(i);
+            body = com.solar.launcher.SolarLog.scrub(context, body);
             if (!sendDiagChunk(context, prefs, body)) {
                 return false;
             }
@@ -363,7 +416,7 @@ public final class SolarDiagnosticReporter {
         File tmp = new File("/data/data/com.solar.launcher/cache/solar_device_snapshot.txt");
         try {
             java.io.FileWriter w = new java.io.FileWriter(tmp);
-            w.write(sb.toString());
+            w.write(com.solar.launcher.SolarLog.scrub(sb.toString()));
             w.close();
             out.add(new LogSource("Device/snapshot.txt", tmp));
         } catch (Exception ignored) {}
@@ -383,7 +436,7 @@ public final class SolarDiagnosticReporter {
             br.close();
             File tmp = new File("/data/data/com.solar.launcher/cache/solar_logcat_snapshot.txt");
             java.io.FileWriter w = new java.io.FileWriter(tmp);
-            w.write(sb.toString());
+            w.write(com.solar.launcher.SolarLog.scrub(sb.toString()));
             w.close();
             out.add(new LogSource("Android/logcat.txt", tmp));
         } catch (Exception ignored) {}

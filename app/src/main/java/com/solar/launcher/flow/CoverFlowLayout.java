@@ -134,15 +134,20 @@ public final class CoverFlowLayout {
     /**
      * Classipod / PageView-style pose from continuous carousel offset.
      * {@code relativePos} 0 = front center, +1 = first slot on the right, −1 = first on the left.
+     * 2026-07-05 — out-param overload pools SlidePose per frame (rollback: alloc-only overload).
      */
-    public static SlidePose poseFromRelative(float relativePos, Metrics m) {
-        SlidePose out = new SlidePose();
+    public static SlidePose poseFromRelative(float relativePos, Metrics m, SlidePose out) {
+        if (out == null) out = new SlidePose();
         float abs = Math.abs(relativePos);
         // Deep scroll fade — slots far past the visible rack.
         float deepFadeStart = SIDE_SLIDES + 0.55f;
         float deepFadeEnd = SIDE_SLIDES + 1.05f;
         if (abs > deepFadeEnd) {
             out.alpha = 0;
+            out.cx = 0f;
+            out.cy = 0f;
+            out.angle = 0;
+            out.angleDeg = 0f;
             return out;
         }
         // Unified floor lerp — negative rel must mirror positive (Classipod continuous page).
@@ -160,6 +165,10 @@ public final class CoverFlowLayout {
             out.alpha = (int) (out.alpha * (1f - edgeT));
         }
         return out;
+    }
+
+    public static SlidePose poseFromRelative(float relativePos, Metrics m) {
+        return poseFromRelative(relativePos, m, new SlidePose());
     }
 
     /** Rank ±2+ slide outward, fade, and tilt away during scroll — iPod-class depth cue. */
@@ -249,12 +258,13 @@ public final class CoverFlowLayout {
         return toSlotTransform(poseFromRelative(relativePos, m), m);
     }
 
-    /** Map slide pose to screen transform for {@link FlowView}. */
-    public static FlowEngine.SlotTransform toSlotTransform(SlidePose pose, Metrics m) {
-        FlowEngine.SlotTransform t = new FlowEngine.SlotTransform();
+    /** 2026-07-05 — Reuse caller SlotTransform to avoid per-slot Dalvik alloc during draw. */
+    public static FlowEngine.SlotTransform toSlotTransform(SlidePose pose, Metrics m,
+            FlowEngine.SlotTransform out) {
+        if (out == null) out = new FlowEngine.SlotTransform();
         if (pose == null || pose.alpha <= 0) {
-            t.alpha = 0f;
-            return t;
+            out.alpha = 0f;
+            return out;
         }
         float angleRad = (float) Math.toRadians(pose.angleDeg);
         float sinr = (float) Math.sin(angleRad);
@@ -270,34 +280,39 @@ public final class CoverFlowLayout {
             zForward = m.displaySize * 0.06f * (1f - centerness);
         }
 
-        t.width = m.displaySize * scale;
-        t.height = m.displaySize * scale;
-        t.centerX = m.viewW * 0.5f + pose.cx;
-        t.centerY = m.viewH * 0.5f + m.centerY + pose.cy;
-        t.rotationYDeg = pose.angleDeg;
-        t.zDepth = -zo + zForward;
-        t.alpha = pose.alpha / 256f;
+        out.width = m.displaySize * scale;
+        out.height = m.displaySize * scale;
+        out.centerX = m.viewW * 0.5f + pose.cx;
+        out.centerY = m.viewH * 0.5f + m.centerY + pose.cy;
+        out.rotationYDeg = pose.angleDeg;
+        out.zDepth = -zo + zForward;
+        out.alpha = pose.alpha / 256f;
         // Shadow recession — outer rack dims and sinks as covers leave the lit center.
         float rackDist = m.offsetX > 0f ? Math.abs(pose.cx) / m.offsetX : 0f;
-        t.shadowStrength = Math.min(1f, Math.max(0f, (rackDist - 0.55f) / 1.65f));
-        if (t.shadowStrength > 0.01f) {
-            float sh = t.shadowStrength;
-            t.zDepth -= m.displaySize * 0.10f * sh;
+        out.shadowStrength = Math.min(1f, Math.max(0f, (rackDist - 0.55f) / 1.65f));
+        if (out.shadowStrength > 0.01f) {
+            float sh = out.shadowStrength;
+            out.zDepth -= m.displaySize * 0.10f * sh;
             float shrink = 1f - sh * 0.07f;
-            t.width *= shrink;
-            t.height *= shrink;
+            out.width *= shrink;
+            out.height *= shrink;
         }
         // Inner-edge pivot like Classipod — avoids full-texture spin that reads as a 3D cube.
         if (pose.angle > m.sideTilt / 6) {
-            t.pivotXFrac = 1f;
+            out.pivotXFrac = 1f;
         } else if (pose.angle < -m.sideTilt / 6) {
-            t.pivotXFrac = 0f;
+            out.pivotXFrac = 0f;
         } else {
-            t.pivotXFrac = 0.5f;
+            out.pivotXFrac = 0.5f;
         }
         // Continuous depth: focused cover advances with scroll, no end-of-scroll pop.
-        t.depthOrder = depthOrderFromPose(pose, m);
-        return t;
+        out.depthOrder = depthOrderFromPose(pose, m);
+        return out;
+    }
+
+    /** Map slide pose to screen transform for {@link FlowView}. */
+    public static FlowEngine.SlotTransform toSlotTransform(SlidePose pose, Metrics m) {
+        return toSlotTransform(pose, m, new FlowEngine.SlotTransform());
     }
 
     /** Paint-order key only — cheaper than full {@link #toSlotTransform} during sort. */

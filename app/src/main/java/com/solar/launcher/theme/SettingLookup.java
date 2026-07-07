@@ -8,32 +8,21 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Utility class to map human-readable setting labels (as they appear in theme config.json)
- * to the corresponding SharedPreferences keys used by the app.
- *
- * The mapping is case-insensitive and ignores any parenthetical text.
- * For example, "Full Width Menus (experimental)" maps to "full_width_menus".
- *
- * Themes can specify overrides using the "solarConfig" object, e.g.
- * {
- *   "solarConfig": {
- *     "enableFull_Width_Menus": true,
- *     "disableLCD_Album_Art": false,
- *     "enableMatch_Now_Playing_To_Theme": true
- *   }
- * }
- *
- * Called by {@link ThemeManager} when a theme is applied. Updates SharedPreferences
- * so the rest of the application reads the overridden values.
+ * 2026-07-05 — Maps theme solarConfig keys ({enable|disable|set}Label_With_Underscores) to prefs.
+ * Unknown labels silently skip — add put("human label", "pref_key") when introducing new theme setting.
+ * Called by ThemeManager on theme apply; updates SharedPreferences for the rest of the app.
+ * When changing: document new key in theme config.json example; respect skipLcd3dFromTheme guard.
+ * Reversal: remove mapping row; theme override for that label stops applying.
  */
 public class SettingLookup {
     /** Maps normalised English label → SharedPreferences key string. */
     private static final Map<String, String> LABEL_TO_PREF_KEY = new HashMap<>();
 
     static {
-        // ponytail: map theme config labels to actual pref keys used in MainActivity.
+        // 2026-07-05 — Map theme config labels to actual pref keys used in MainActivity.
         // Labels are normalised (lowercase, underscores→spaces, parentheses stripped).
         put("full width menus", "full_width_menus");
+        put("infinite scroll", "infinite_scroll");
         put("menu transitions", "menu_transitions");
         put("auto shut down", "inactivity_shutdown_minutes");
         put("turn off wi-fi when idle", "wifi_sleep_power_off");

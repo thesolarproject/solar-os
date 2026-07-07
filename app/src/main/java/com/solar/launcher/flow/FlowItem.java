@@ -40,6 +40,11 @@ public final class FlowItem {
         this.podcastArtUrl = podcastArtUrl != null ? podcastArtUrl : "";
     }
 
+    /** Tracks resolve lazily via {@link FlowCatalog#tracksForAlbum} on flip/play — saves heap at 30k. */
+    public boolean hasEmbeddedTracks() {
+        return tracks != null && !tracks.isEmpty();
+    }
+
     public static FlowItem album(String album, String subtitle, String matchKey,
             List<File> tracks, String browsedArtist) {
         return new FlowItem(Kind.ALBUM, matchKey, album, subtitle, matchKey, matchKey,

@@ -41,6 +41,37 @@ public class ThemeManagerTest {
     }
 
     @Test
+    public void applySavedThemeSelection_prefersPathThenFolderThenIndex() throws Exception {
+        ThemeManager.availableThemes.clear();
+        ThemeManager.availableThemes.add(new ThemeManager.ThemeEntry(
+                "/internal/Themes/Default", "Default", "Aura", new JSONObject()));
+        ThemeManager.availableThemes.add(new ThemeManager.ThemeEntry(
+                "/internal/Themes/Melody", "Melody", "Melody", new JSONObject()));
+        ThemeManager.applySavedThemeSelection("/old/sd/Themes/Melody", null, 0);
+        if (ThemeManager.getCurrentThemeIndex() != 1) {
+            throw new AssertionError("folder name should resolve Melody");
+        }
+        ThemeManager.applySavedThemeSelection(null, "Melody", 0);
+        if (ThemeManager.getCurrentThemeIndex() != 1) {
+            throw new AssertionError("folder pref should select Melody");
+        }
+        ThemeManager.applySavedThemeSelection(null, null, 0);
+        if (ThemeManager.getCurrentThemeIndex() != 0) {
+            throw new AssertionError("index fallback");
+        }
+    }
+
+    @Test
+    public void looksLikeThemeBitmapRef_filtersColoursAndUrls() {
+        if (ThemeManager.looksLikeThemeBitmapRef("#FF00AA")) {
+            throw new AssertionError("colour hash is not a bitmap");
+        }
+        if (!ThemeManager.looksLikeThemeBitmapRef("item_selected.png")) {
+            throw new AssertionError("png ref");
+        }
+    }
+
+    @Test
     public void internalThemesDir_nullContextUsesTempFallback() {
         java.io.File dir = ThemeManager.internalThemesDir(null);
         if (!dir.getPath().endsWith("Themes")) {
@@ -211,6 +242,38 @@ public class ThemeManagerTest {
         ThemeManager.setThemeIndex(0);
         if (!ThemeManager.hasThemeSolarConfigKey("appMusic")) {
             throw new AssertionError("appMusic set");
+        }
+    }
+
+    @Test
+    public void touchOverlayThemeForShow_nullContextIsNoOp() {
+        ThemeManager.resetOverlayThemeBootstrapForTest();
+        ThemeManager.touchOverlayThemeForShow(null);
+        if (ThemeManager.isOverlayThemeBootstrappedForTest()) {
+            throw new AssertionError("null ctx must not bootstrap overlay theme");
+        }
+    }
+
+    @Test
+    public void touchOverlayThemeForShow_warmPathKeepsBootstrap() {
+        ThemeManager.markOverlayThemeBootstrappedForTest("Default");
+        ThemeManager.touchOverlayThemeForShow(null);
+        if (!ThemeManager.isOverlayThemeBootstrappedForTest()) {
+            throw new AssertionError("warm path must not reset bootstrap");
+        }
+    }
+
+    @Test
+    public void ensureOverlayPaintableMinimum_nullContextIsNoOp() {
+        ThemeManager.resetOverlayThemeBootstrapForTest();
+        ThemeManager.ensureOverlayPaintableMinimum(null);
+    }
+
+    @Test
+    public void overlayRamCacheLoaded_defaultsFalse() {
+        ThemeManager.resetOverlayThemeBootstrapForTest();
+        if (ThemeManager.isOverlayRamCacheLoaded()) {
+            throw new AssertionError("RAM cache should start false in unit tests");
         }
     }
 

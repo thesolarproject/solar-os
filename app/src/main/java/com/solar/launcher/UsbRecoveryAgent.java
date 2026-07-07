@@ -24,10 +24,14 @@ public final class UsbRecoveryAgent {
 
     private UsbRecoveryAgent() {}
 
-    /** Start the singleton recovery loop (no-op if already running). */
+    /** Start the singleton recovery loop (no-op if dismissed, concierge active, or already running). */
     public static void ensureRunning(final Context context) {
         if (context == null) return;
         if (!RockboxDisable.isSolarEnabled(context)) return;
+        // 2026-07-06 — User dismissed USB modal or Xposed owns plug-in UX — no su HOME loop.
+        if (UsbHostSessionPolicy.isAggressiveUsbWorkSuppressed(context)) return;
+        // 2026-07-06 — Xposed UsbStorageHooks is tier-1; recovery agent fought concierge + caused HOME storms.
+        if (isContextBridgeInstalled(context)) return;
         long now = System.currentTimeMillis();
         if (now - lastStartMs < START_MIN_INTERVAL_MS) return;
         lastStartMs = now;
@@ -98,5 +102,22 @@ public final class UsbRecoveryAgent {
 
     private static String shellQuote(String path) {
         return "'" + path.replace("'", "'\\''") + "'";
+    }
+
+    /** Production bridge on /system — USB concierge replaces this recovery loop (2026-07-06). */
+    private static boolean isContextBridgeInstalled(Context context) {
+        if (context == null) return false;
+        try {
+            if (DeviceFeatures.isY1()) {
+                context.getPackageManager().getPackageInfo(
+                        "com.solar.launcher.xposed.bridge.y1", 0);
+                return true;
+            }
+            context.getPackageManager().getPackageInfo(
+                    "com.solar.launcher.xposed.bridge.y2", 0);
+            return true;
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 }

@@ -213,10 +213,10 @@ public final class SoulseekBrowseAdapter extends BaseAdapter {
             btn = (Button) convertView;
         } else {
             btn = new Button(activity);
-            btn.setLayoutParams(new AbsListView.LayoutParams(
-                    AbsListView.LayoutParams.MATCH_PARENT,
-                    AbsListView.LayoutParams.WRAP_CONTENT));
         }
+        btn.setLayoutParams(new AbsListView.LayoutParams(
+                AbsListView.LayoutParams.MATCH_PARENT,
+                AbsListView.LayoutParams.WRAP_CONTENT));
         if (entry.type == TYPE_FOLDER) {
             btn.setText("\uD83D\uDCC1 " + entry.folderPath);
             btn.setOnClickListener(new View.OnClickListener() {

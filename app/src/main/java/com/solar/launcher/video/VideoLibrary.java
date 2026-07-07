@@ -8,7 +8,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-/** Local video files on MicroSD: /storage/sdcard0/Videos and browsable parents. */
+/** Local video files under Videos/ on each user volume (Y2 scans both storages). */
 public final class VideoLibrary {
     public static final File DEVICE_ROOT = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot().getAbsolutePath());
     public static final File ROOT = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Videos");
@@ -54,6 +54,10 @@ public final class VideoLibrary {
     public static boolean isBrowsablePath(File dir) {
         if (dir == null || !dir.isDirectory()) return false;
         String path = dir.getAbsolutePath();
+        if (deviceRootOverride != null) {
+            String rootPath = deviceRootOverride.getAbsolutePath();
+            return path.equals(rootPath) || path.startsWith(rootPath + File.separator);
+        }
         for (File root : com.solar.launcher.DeviceFeatures.getStorageRoots()) {
             String rootPath = root.getAbsolutePath();
             if (path.equals(rootPath) || path.startsWith(rootPath + File.separator)) {

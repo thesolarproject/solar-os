@@ -5,6 +5,7 @@ import android.content.Context;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 
+import com.solar.ota.SolarUpdateClient;
 import com.solar.launcher.net.TlsHelper;
 
 import org.junit.Test;

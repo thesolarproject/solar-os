@@ -12,6 +12,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 /**
  * App-process fallback when PWM hooks miss keys — common with Dialog context menus and MTK media keys.
  * Forwards wheel/back/OK to Solar while sys.solar.overlay.active=1.
+ * Short BACK is never blocked here — long BACK global menu lives in system_server hooks.
  */
 final class ActivityOverlayKeyHooks {
 
@@ -25,74 +26,6 @@ final class ActivityOverlayKeyHooks {
         hookActivityDispatch(lpparam);
         hookDialogDispatch(lpparam);
         hookActivityOnKey(lpparam);
-        hookActivityBackExit(lpparam);
-    }
-
-    /**
-     * Block BACK from finishing the root Activity in third-party apps — dialogs/menus still dismiss
-     * via dispatchKeyEvent before onBackPressed runs.
-     */
-    private static void hookActivityBackExit(LoadPackageParam lpparam) {
-        try {
-            Class<?> activity = XposedHelpers.findClass("android.app.Activity", lpparam.classLoader);
-            XposedHookKit.hookAll(activity, "onBackPressed", new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
-                    Activity a = (Activity) param.thisObject;
-                    if (!shouldGateAppBackExit(a)) return;
-                    if (collapseActionBarView(a)) {
-                        param.setResult(null);
-                        return;
-                    }
-                    if (popFragmentBackStack(a)) {
-                        param.setResult(null);
-                        return;
-                    }
-                    // #region agent log
-                    SolarContextBridge.log("edc27b BACK-EXIT-BLOCK pkg=" + a.getPackageName());
-                    // #endregion
-                    param.setResult(null);
-                }
-            });
-            SolarContextBridge.log("hooked Activity.onBackPressed exit gate in " + lpparam.packageName);
-        } catch (Throwable t) {
-            SolarContextBridge.log("Activity.onBackPressed skip " + lpparam.packageName + ": "
-                    + t.getClass().getSimpleName());
-        }
-    }
-
-    /** Third-party apps only — Rockbox/Solar/Innioasis keep stock BACK exit behavior. */
-    private static boolean shouldGateAppBackExit(Activity activity) {
-        if (activity == null) return false;
-        String pkg = activity.getPackageName();
-        if (pkg == null || pkg.length() == 0) return false;
-        if (!SystemServerHooks.shouldOfferOverlayForPackage(pkg)) return false;
-        if (OverlayKeyForwarder.isOverlayActive()) return false;
-        return true;
-    }
-
-    /** AOSP onBackPressed — collapse expanded action bar search view first. */
-    private static boolean collapseActionBarView(Activity activity) {
-        try {
-            Object ab = XposedHelpers.callMethod(activity, "getActionBar");
-            if (ab == null) return false;
-            Object collapsed = XposedHelpers.callMethod(ab, "collapseActionView");
-            return Boolean.TRUE.equals(collapsed);
-        } catch (Throwable ignored) {
-            return false;
-        }
-    }
-
-    /** AOSP onBackPressed — pop fragment back stack before finish(). */
-    private static boolean popFragmentBackStack(Activity activity) {
-        try {
-            Object fm = XposedHelpers.callMethod(activity, "getFragmentManager");
-            if (fm == null) return false;
-            Object popped = XposedHelpers.callMethod(fm, "popBackStackImmediate");
-            return Boolean.TRUE.equals(popped);
-        } catch (Throwable ignored) {
-            return false;
-        }
     }
 
     /** Activity window — catches keys before app onKeyDown handlers. */
@@ -142,6 +75,11 @@ final class ActivityOverlayKeyHooks {
                     if (OverlayKeyForwarder.tryForwardFromAppContext(
                             (Activity) param.thisObject, keyCode, KeyEvent.ACTION_DOWN)) {
                         param.setResult(true);
+                        return;
+                    }
+                    if (ImeKeyForwarder.tryForwardFromAppContext(
+                            (Activity) param.thisObject, keyCode, KeyEvent.ACTION_DOWN)) {
+                        param.setResult(true);
                     }
                 }
             });
@@ -150,6 +88,11 @@ final class ActivityOverlayKeyHooks {
                 protected void beforeHookedMethod(MethodHookParam param) {
                     int keyCode = (Integer) param.args[0];
                     if (OverlayKeyForwarder.tryForwardFromAppContext(
+                            (Activity) param.thisObject, keyCode, KeyEvent.ACTION_UP)) {
+                        param.setResult(true);
+                        return;
+                    }
+                    if (ImeKeyForwarder.tryForwardFromAppContext(
                             (Activity) param.thisObject, keyCode, KeyEvent.ACTION_UP)) {
                         param.setResult(true);
                     }
@@ -177,6 +120,10 @@ final class ActivityOverlayKeyHooks {
                         + " action=" + event.getAction());
             }
             // #endregion
+            param.setResult(true);
+            return;
+        }
+        if (ImeKeyForwarder.tryForwardFromAppContext(ctx, event)) {
             param.setResult(true);
         }
     }

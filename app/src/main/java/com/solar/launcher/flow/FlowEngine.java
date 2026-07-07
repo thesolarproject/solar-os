@@ -28,6 +28,12 @@ public final class FlowEngine {
             new CoverFlowLayout.SlidePose[CoverFlowLayout.SIDE_SLIDES];
     private final CoverFlowLayout.SlidePose[] rightSlides =
             new CoverFlowLayout.SlidePose[CoverFlowLayout.SIDE_SLIDES];
+    /** 2026-07-05 — Pooled draw scratch; one transform reused per slotTransform call. */
+    private final SlotTransform pooledSlotTransform = new SlotTransform();
+    private final SlotTransform pooledEmptySlotTransform = new SlotTransform();
+    private final CoverFlowLayout.SlidePose pooledPose = new CoverFlowLayout.SlidePose();
+    /** O(1) matchKey lookup — set at catalog bind for 30k racks. */
+    private java.util.Map<String, Integer> matchKeyIndex;
 
     private float viewportW = 480f;
     private float viewportH = 360f;
@@ -97,6 +103,11 @@ public final class FlowEngine {
     public void setViewportMetrics(CoverFlowLayout.Metrics metrics, float w, float h) {
         viewportMetrics = metrics;
         setViewport(w, h);
+    }
+
+    /** 2026-07-05 — Inject catalog index map; rollback: leave null for linear scan. */
+    public void setMatchKeyIndex(java.util.Map<String, Integer> index) {
+        matchKeyIndex = index;
     }
 
     private CoverFlowLayout.Metrics metrics() {
@@ -195,16 +206,41 @@ public final class FlowEngine {
         public float pivotXFrac = 0.5f;
     }
 
-    public SlotTransform slotTransform(int itemIndex, float viewW, float viewH, float ignoredVisual) {
+    /**
+     * 2026-07-05 — Write transform into caller buffer (pooled pose scratch, no alloc).
+     */
+    public void slotTransformInto(SlotTransform out, int itemIndex, float viewW, float viewH,
+            float ignoredVisual) {
+        if (out == null) return;
         if (itemIndex < 0 || itemIndex >= itemCount) {
-            SlotTransform empty = new SlotTransform();
-            empty.alpha = 0f;
-            return empty;
+            out.alpha = 0f;
+            return;
         }
         float rel = itemIndex - getVisualOffset();
-        CoverFlowLayout.SlidePose pose = CoverFlowLayout.poseFromRelative(rel, metrics());
-        pose.itemIndex = itemIndex;
-        return CoverFlowLayout.toSlotTransform(pose, metrics());
+        CoverFlowLayout.poseFromRelative(rel, metrics(), pooledPose);
+        pooledPose.itemIndex = itemIndex;
+        CoverFlowLayout.toSlotTransform(pooledPose, metrics(), out);
+    }
+
+    /** Returns a copy — safe for tests holding multiple transforms at once. */
+    public SlotTransform slotTransform(int itemIndex, float viewW, float viewH, float ignoredVisual) {
+        slotTransformInto(pooledSlotTransform, itemIndex, viewW, viewH, ignoredVisual);
+        SlotTransform copy = new SlotTransform();
+        copySlotTransform(copy, pooledSlotTransform);
+        return copy;
+    }
+
+    private static void copySlotTransform(SlotTransform dst, SlotTransform src) {
+        dst.centerX = src.centerX;
+        dst.centerY = src.centerY;
+        dst.width = src.width;
+        dst.height = src.height;
+        dst.alpha = src.alpha;
+        dst.rotationYDeg = src.rotationYDeg;
+        dst.zDepth = src.zDepth;
+        dst.depthOrder = src.depthOrder;
+        dst.shadowStrength = src.shadowStrength;
+        dst.pivotXFrac = src.pivotXFrac;
     }
 
     public SlotTransform centerSlotTransform(float viewW, float viewH) {
@@ -213,6 +249,10 @@ public final class FlowEngine {
 
     public int findIndexForKey(java.util.List<FlowItem> items, String focusKey) {
         if (focusKey == null || focusKey.isEmpty() || items == null) return -1;
+        if (matchKeyIndex != null) {
+            Integer exact = matchKeyIndex.get(focusKey);
+            if (exact != null) return exact;
+        }
         for (int i = 0; i < items.size(); i++) {
             FlowItem item = items.get(i);
             if (focusKey.equals(item.matchKey)) return i;
@@ -380,9 +420,9 @@ public final class FlowEngine {
         CoverFlowLayout.Metrics m = metrics();
         for (int i = 0; i < raw; i++) {
             float rel = out[i] - getVisualOffset();
-            CoverFlowLayout.SlidePose pose = CoverFlowLayout.poseFromRelative(rel, m);
-            pose.itemIndex = out[i];
-            depthOut[i] = CoverFlowLayout.depthOrderFromPose(pose, m);
+            CoverFlowLayout.poseFromRelative(rel, m, pooledPose);
+            pooledPose.itemIndex = out[i];
+            depthOut[i] = CoverFlowLayout.depthOrderFromPose(pooledPose, m);
         }
         for (int i = 1; i < raw; i++) {
             int idx = out[i];
@@ -407,8 +447,8 @@ public final class FlowEngine {
         CoverFlowLayout.Metrics m = metrics();
         int n = 0;
         for (int idx = lo; idx <= hi && n < out.length; idx++) {
-            CoverFlowLayout.SlidePose pose = CoverFlowLayout.poseFromRelative(idx - visual, m);
-            if (pose.alpha > 0) out[n++] = idx;
+            CoverFlowLayout.poseFromRelative(idx - visual, m, pooledPose);
+            if (pooledPose.alpha > 0) out[n++] = idx;
         }
         return n;
     }
@@ -420,10 +460,9 @@ public final class FlowEngine {
             empty.alpha = 0;
             return empty;
         }
-        CoverFlowLayout.SlidePose pose =
-                CoverFlowLayout.poseFromRelative(itemIndex - getVisualOffset(), metrics());
-        pose.itemIndex = itemIndex;
-        return pose;
+        CoverFlowLayout.poseFromRelative(itemIndex - getVisualOffset(), metrics(), pooledPose);
+        pooledPose.itemIndex = itemIndex;
+        return pooledPose;
     }
 
     /** Exposed for flip fan-out in {@link FlowView}. */

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="companion_app_name">Solar Global Context</string>
+    <string name="rescue_hold_countdown">Going back to Solar in %1$d…</string>
+    <string name="rescue_hold_restarting">Restarting</string>
+    <string name="overlay_power_title">Quick menu</string>
+    <string name="overlay_power_placeholder">Loading…</string>
+    <string name="emergency_recovery_title">Solar could not start</string>
+    <string name="emergency_recovery_body">Solar hit a crash loop. You can repair, pick another app, or retry Solar.</string>
+    <string name="emergency_recovery_repair">Repair platform</string>
+    <string name="emergency_recovery_launcher">Open app picker</string>
+    <string name="emergency_recovery_clear">Clear crash streak</string>
+    <string name="emergency_recovery_retry">Retry Solar</string>
+</resources>

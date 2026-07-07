@@ -3,7 +3,10 @@ package com.solar.launcher;
 import android.content.Context;
 
 /**
- * Keymap + codec prep before Solar ↔ Rockbox handoff (see rockbox-y1-coexistence.mdc).
+ * 2026-07-05 — Rockbox handoff prep: unified keymap + native lib sync before launcher switch.
+ * Rockbox calls switch-to-stock.sh with no reboot — see LauncherSwitch handoff contract.
+ * When changing: Y1KeymapSync + RockboxLibSync; sync-y1-assets.sh for ROM/asset parity.
+ * Reversal: stop prepareForRockboxSwitch; Rockbox switch may use stale keylayout or codecs.
  */
 public final class RockboxCoexistence {
     private RockboxCoexistence() {}

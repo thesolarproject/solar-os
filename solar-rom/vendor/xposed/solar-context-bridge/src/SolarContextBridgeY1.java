@@ -3,7 +3,7 @@ package com.solar.launcher.xposed.bridge;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
-/** Y1 module entry — long BACK global quick modal + app context menus (no dedicated power key). */
+/** Y1 bridge entry — long BACK opens global quick modal (no dedicated power key on Y1). */
 public final class SolarContextBridgeY1 implements IXposedHookLoadPackage {
 
     private static final SolarContextBridge DELEGATE =

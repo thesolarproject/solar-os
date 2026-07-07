@@ -32,7 +32,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Flow screen coordinator: picker, Cover Flow carousel, in-place flip tracklist.
+ * 2026-07-05 — Flow carousel host; syncs focus to now-playing unless flip/guided scroll active.
+ * When changing: call syncCarouselToNowPlayingIfActive from bind/resume/handoff entry points.
+ * Reversal: remove sync calls; carousel may not center on playing album on resume.
  */
 public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolver.Host {
 
@@ -2261,7 +2263,8 @@ public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolve
 
     @Override
     public boolean onIdleThumbBakeTick() {
-        return false;
+        // 2026-07-05 — Re-enabled idle thumb precook; was hardwired false (rollback: return false).
+        return incrementalFlowThumbBakeOne();
     }
 
     @Override
@@ -2312,7 +2315,7 @@ public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolve
             android.graphics.Bitmap disk = AlbumArtCache.get(artDir, item.coverKey);
             if (disk == null) {
                 disk = FlowCoverResolver.resolveFromTracks(
-                        item.tracks, this, thumbPx, item.coverKey, artDir, flowDir);
+                        tracksForCover(item), this, thumbPx, item.coverKey, artDir, flowDir);
             }
             if (disk != null) {
                 FlowThumbCache.put(flowDir, item.coverKey, disk, thumbPx);
@@ -2400,7 +2403,7 @@ public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolve
         if (disk == null) {
             // Decode on worker — placeholders stay in memory only.
             disk = FlowCoverResolver.resolveFromTracks(
-                    item.tracks, this, thumb, item.coverKey,
+                    tracksForCover(item), this, thumb, item.coverKey,
                     actions.getAlbumArtCacheDir(), actions.getFlowThumbCacheDir());
         }
         if (disk != null) {
@@ -2448,6 +2451,12 @@ public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolve
     @Override
     public File coverFileForTrack(File track) {
         return actions.coverFileForTrack(track);
+    }
+
+    /** 2026-07-06: Rack albums store tracks lazily — resolve from library rows for art reads. */
+    @Override
+    public List<File> tracksForCover(FlowItem item) {
+        return FlowCatalog.tracksForCover(item, actions.libraryRows(), actions.libraryBrowsePrefs());
     }
 
     @Override

@@ -23,11 +23,25 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-command -v adb >/dev/null || { echo "error: adb not in PATH" >&2; exit 1; }
-[ -f "$APK" ] || { echo "error: Solar APK missing: $APK" >&2; exit 1; }
+die() { echo "apply-y1-rom-patches-adb: $*" >&2; exit 1; }
+
+command -v adb >/dev/null || die "adb not in PATH"
+[ -f "$APK" ] || die "Solar APK missing: $APK (build with ./scripts/build.sh or pass --apk PATH)"
+
+# 2026-07-06 — Refuse wrong device family; duplicate USB serials need ANDROID_SERIAL set.
+export SOLAR_EXPECT_MODEL="${SOLAR_EXPECT_MODEL:-y1}"
 
 adb_system_init
 adb_system_preflight
+# 2026-07-06 — Child scripts (install-xposed-adb) read ANDROID_SERIAL, not SOLAR_ADB_SERIAL alone.
+if [ -n "${SOLAR_ADB_SERIAL:-}" ]; then
+    export ANDROID_SERIAL="$SOLAR_ADB_SERIAL"
+fi
+
+# 2026-07-06 — Fail fast when platform scripts missing from tree (recent solar-launcher-exec addition).
+for _req in solar-launcher-exec.sh solar-platform-daemon.sh; do
+    [ -f "$SCRIPT_DIR/$_req" ] || die "missing $SCRIPT_DIR/$_req — sync solar-rom/scripts from repo"
+done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/y1-adb-patch-XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
@@ -61,6 +75,13 @@ ANDROID_ADB_TRANSPORT="${ANDROID_ADB_TRANSPORT:-}" \
 # --- Solar APK + TLS prep ---
 echo "==> Solar APK + TLS (Conscrypt JNI + CA roots)"
 adb_push_to_system "$APK" /system/app/com.solar.launcher.apk 644
+# 2026-07-06 — Truncated USB push yields INSTALL_FAILED_INVALID_APK at pm install.
+_local_apk_bytes=$(stat -c%s "$APK" 2>/dev/null || wc -c < "$APK")
+_device_apk_bytes=$("${SOLAR_ADB[@]}" shell "su -c 'wc -c < /system/app/com.solar.launcher.apk'" 2>/dev/null | tr -d '\r
+ ')
+if [ -z "$_device_apk_bytes" ] || [ "$_local_apk_bytes" != "$_device_apk_bytes" ]; then
+    die "Solar APK size mismatch local=${_local_apk_bytes} device=${_device_apk_bytes:-missing} — retry push (avoid parallel adb runs)"
+fi
 TLS_STAGE="$WORK/system-tls"
 chmod +x "$REPO_ROOT/scripts/stage-y1-system-prep.sh"
 "$REPO_ROOT/scripts/stage-y1-system-prep.sh" "$TLS_STAGE" "$APK" "$REPO_ROOT"
@@ -77,13 +98,22 @@ adb_push_to_system "$SOLAR_SYS/99Y1ButtonScript" /system/etc/init.d/99Y1ButtonSc
 adb_su_sh "rm -f /system/etc/init.d/99Y1LauncherInit.sh" 2>/dev/null || true
 
 mkdir -p "$WORK/etc-solar"
+# 2026-07-05: rescue trio added — build-rom.sh bakes them into /etc/solar, so the adb overlay
+# must too (lab devices stay in lockstep with flashed ROMs; emergency-eject + HUD tick scripts).
 for f in switch-to-stock.sh switch-to-rockbox.sh sync-rockbox-libs.sh sync-rockbox-assets.sh \
-    sync-y1-keymap.sh disable-rockbox-for-solar.sh apply-preferred-home-boot.sh solar-usb-recovery-agent.sh; do
+    sync-y1-keymap.sh disable-rockbox-for-solar.sh apply-preferred-home-boot.sh disable-large-font-accessibility.sh enable-gpu-performance.sh solar-usb-recovery-agent.sh \
+    solar-rescue-exec.sh solar-rescue-daemon.sh solar-rescue-hud-watch.sh \
+    solar-launcher-exec.sh solar-platform-daemon.sh; do
     cp "$SCRIPT_DIR/$f" "$WORK/etc-solar/$f"
     chmod 755 "$WORK/etc-solar/$f"
 done
+for f in solar-enable-ums.sh solar-disable-ums.sh y1-enable-ums.sh y1-disable-ums.sh; do
+    cp "$REPO_ROOT/app/src/main/assets/y1/$f" "$WORK/etc-solar/$f"
+    chmod 755 "$WORK/etc-solar/$f"
+done
 cp "$SCRIPT_DIR/Y1-Rockbox.kl" "$WORK/etc-solar/Y1-Rockbox.kl"
-chmod 644 "$WORK/etc-solar/Y1-Rockbox.kl"
+cp "$SCRIPT_DIR/mtk-kpd.y1.stock.kl" "$WORK/etc-solar/mtk-kpd.y1.stock.kl"
+chmod 644 "$WORK/etc-solar/Y1-Rockbox.kl" "$WORK/etc-solar/mtk-kpd.y1.stock.kl"
 for f in "$WORK/etc-solar"/*; do
     base=$(basename "$f")
     mode=755

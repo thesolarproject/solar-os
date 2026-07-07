@@ -1,5 +1,9 @@
 package com.solar.launcher.net;
 
+import com.solar.launcher.debug.AgentDebugLog;
+
+import org.json.JSONObject;
+
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
@@ -239,14 +243,36 @@ public final class SolarHttp {
 
     private static Response execute(Request req) throws IOException {
         OkHttpClient base = TlsHelper.client();
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("url", req.url().toString());
+            d.put("scheme", req.url().scheme());
+            d.put("connectionSpecs", "RESTRICTED_TLS-only via TlsHelper");
+            AgentDebugLog.log("SolarHttp.execute", "A", "OkHttp execute", d);
+        } catch (Exception ignored) {}
+        // #endregion
         Call call = base.newCall(req);
-        Response resp = call.execute();
-        if (!resp.isSuccessful()) {
-            int code = resp.code();
-            resp.close();
-            throw new IOException("HTTP " + code + " for " + req.url());
+        try {
+            Response resp = call.execute();
+            if (!resp.isSuccessful()) {
+                int code = resp.code();
+                resp.close();
+                throw new IOException("HTTP " + code + " for " + req.url());
+            }
+            return resp;
+        } catch (IOException e) {
+            // #region agent log
+            try {
+                JSONObject d = new JSONObject();
+                d.put("url", req.url().toString());
+                d.put("scheme", req.url().scheme());
+                d.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getName());
+                AgentDebugLog.log("SolarHttp.execute", "A", "OkHttp execute failed", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            throw e;
         }
-        return resp;
     }
 
     /** Long downloads (OTA APK) with extended read timeout. */

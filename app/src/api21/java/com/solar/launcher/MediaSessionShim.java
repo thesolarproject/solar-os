@@ -16,10 +16,14 @@ final class MediaSessionShim {
       @Override
       public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
         KeyEvent event = mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
-        if (event != null && event.getAction() == KeyEvent.ACTION_DOWN) {
-          // ponytail: Y1 wheel keycodes match AVRCP play/pause — never delegate to framework transport.
-          if (Y1InputKeys.isWheelKey(event.getKeyCode())) return true;
-          if (activity.handleMediaSessionKey(event.getKeyCode())) return true;
+        if (event != null) {
+          // Static handoff path (Rockbox parity) — same remap the manifest receiver uses.
+          if (ExternalInputHandoff.handleMediaButton(activity, event, true)) return true;
+          if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            // ponytail: Y1 wheel keycodes match AVRCP play/pause — never delegate to framework transport.
+            if (Y1InputKeys.isWheelKey(event.getKeyCode())) return true;
+            if (activity.handleMediaSessionKey(event.getKeyCode())) return true;
+          }
         }
         return super.onMediaButtonEvent(mediaButtonIntent);
       }

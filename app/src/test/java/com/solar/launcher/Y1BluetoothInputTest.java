@@ -21,6 +21,8 @@ public class Y1BluetoothInputTest {
         assertTrue(Y1InputKeys.isDiscreteMediaPlay(126));
         assertTrue(Y1InputKeys.isAvrcpSkipNext(87));
         assertFalse(Y1InputKeys.isAvrcpSkipNext(22));
+        assertFalse(Y1InputKeys.isTrackPreviousKey(21));
+        assertFalse(Y1InputKeys.isTrackNextKey(22));
     }
 
     @Test

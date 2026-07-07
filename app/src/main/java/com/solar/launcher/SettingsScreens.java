@@ -1,6 +1,6 @@
 package com.solar.launcher;
 
-/** Stable settings sub-screen keys (locale-independent navigation). */
+/** 2026-07-05 — Stable settings screen keys; dual-pane preview allowed for toggles only, not browse. */
 public final class SettingsScreens {
     public static final String APPEARANCE = "settings.appearance";
     public static final String APPEARANCE_STATUS = "settings.appearance.status";
@@ -24,10 +24,17 @@ public final class SettingsScreens {
     public static final String DEEZER_ACCOUNT = "settings.deezer.account";
     public static final String DEEZER_CONNECTION = "settings.deezer.connection";
     public static final String ABOUT = "settings.about";
-    public static final String REPORT_PROBLEM = "settings.report_problem";
+    /** Full-screen GitHub Issues URL for bug reports (no in-app browser). */
+    public static final String REPORT_ISSUE = "settings.report_issue";
+    /** Full-screen Donations / Ko-fi URL (no in-app browser). */
+    public static final String SUPPORT_DEVELOPER = "settings.support_developer";
+    /** Online-only donor roll fetched from donators.xml on GitHub Pages. */
+    public static final String DONORS_LIST = "settings.donors_list";
     public static final String CONNECTIONS = "settings.connections";
     public static final String USB = "settings.usb";
     public static final String DEVICE = "settings.device";
+    /** Solar vs Rockbox HOME — user picks here instead of Android launcher dialogs. */
+    public static final String HOME_LAUNCHER = "settings.device.home_launcher";
     public static final String PLAYBACK = "settings.playback";
     public static final String LIBRARY = "settings.library";
     public static final String MEDIA = "settings.media";
@@ -35,6 +42,10 @@ public final class SettingsScreens {
     public static final String RESET = "settings.reset";
     public static final String DEBUG = "settings.debug";
     public static final String FLOW = "settings.flow";
+    /** Debug submenu — staged Xposed module toggles (reboot to apply). */
+    public static final String XPOSED_MODULES = "settings.debug.xposed_modules";
+    /** One installed hook — enable + inline / external config; extra = module label. */
+    public static final String XPOSED_MODULE_DETAIL = "settings.debug.xposed_module_detail";
     public static final String SYSTEM_UPDATE = "settings.system_update";
     public static final String HOME = "settings.home";
     public static final String HOME_ARRANGE = "settings.home.arrange";
@@ -44,12 +55,16 @@ public final class SettingsScreens {
     public static final String NOW_PLAYING = "settings.now_playing";
     public static final String DATETIME = "settings.datetime";
     public static final String LANGUAGE = "settings.language";
+    /** Y2 primary storage medium picker (MicroSD vs internal). */
+    public static final String Y2_PRIMARY_STORAGE = "settings.y2_primary_storage";
     /** Theme variant picker: key + dynamic theme name in settingsSubScreenExtra. */
     public static final String THEME_VARIANT = "settings.theme_variant";
     /** EQ preset picker: key + preset name in settingsSubScreenExtra. */
     public static final String EQ = "settings.eq";
     public static final String LIBRARY_BROWSE = "settings.library_browse";
+    public static final String NAVIDROME = "settings.navidrome";
     public static final String RADIO = "settings.radio";
+    public static final String RADIO_FM = "settings.radio.fm";
     public static final String RADIO_FM_BAND = "settings.radio.fm_band";
     public static final String RADIO_INTERNET_COUNTRY = "settings.radio.internet_country";
     public static final String VIDEO = "settings.video";
@@ -78,10 +93,13 @@ public final class SettingsScreens {
         if (DEEZER_ACCOUNT.equals(key)) return R.string.settings_sub_deezer_account;
         if (DEEZER_CONNECTION.equals(key)) return R.string.settings_sub_deezer_connection;
         if (ABOUT.equals(key)) return R.string.settings_sub_about;
-        if (REPORT_PROBLEM.equals(key)) return R.string.settings_sub_report_problem;
+        if (REPORT_ISSUE.equals(key)) return R.string.settings_sub_report_issue;
+        if (SUPPORT_DEVELOPER.equals(key)) return R.string.settings_sub_support_developer;
+        if (DONORS_LIST.equals(key)) return R.string.settings_sub_our_donors;
         if (CONNECTIONS.equals(key)) return R.string.settings_sub_connections;
         if (USB.equals(key)) return R.string.settings_sub_usb;
         if (DEVICE.equals(key)) return R.string.settings_sub_device;
+        if (HOME_LAUNCHER.equals(key)) return R.string.settings_home_launcher;
         if (PLAYBACK.equals(key)) return R.string.settings_sub_playback;
         if (LIBRARY.equals(key)) return R.string.settings_sub_library;
         if (MEDIA.equals(key)) return R.string.settings_sub_media;
@@ -89,6 +107,8 @@ public final class SettingsScreens {
         if (RESET.equals(key)) return R.string.settings_sub_reset;
         if (DEBUG.equals(key)) return R.string.settings_sub_debug;
         if (FLOW.equals(key)) return R.string.settings_sub_flow;
+        if (XPOSED_MODULES.equals(key)) return R.string.settings_debug_xposed_modules;
+        if (XPOSED_MODULE_DETAIL.equals(key)) return R.string.settings_debug_xposed_module_detail_title;
         if (SYSTEM_UPDATE.equals(key)) return R.string.settings_sub_system_update;
         if (HOME.equals(key)) return R.string.settings_sub_home;
         if (HOME_ARRANGE.equals(key)) return R.string.settings_sub_home_arrange;
@@ -98,10 +118,13 @@ public final class SettingsScreens {
         if (NOW_PLAYING.equals(key)) return R.string.settings_sub_now_playing;
         if (DATETIME.equals(key)) return R.string.settings_sub_datetime;
         if (LANGUAGE.equals(key)) return R.string.settings_sub_language;
+        if (Y2_PRIMARY_STORAGE.equals(key)) return R.string.settings_sub_y2_primary_storage;
         if (EQ.equals(key)) return R.string.settings_sub_eq;
         if (THEME_VARIANT.equals(key)) return R.string.settings_sub_theme_variant;
         if (LIBRARY_BROWSE.equals(key)) return R.string.settings_sub_library_browse;
+        if (NAVIDROME.equals(key)) return R.string.settings_navidrome;
         if (RADIO.equals(key)) return R.string.settings_sub_radio;
+        if (RADIO_FM.equals(key)) return R.string.settings_sub_fm;
         if (RADIO_FM_BAND.equals(key)) return R.string.settings_sub_radio_fm_band;
         if (RADIO_INTERNET_COUNTRY.equals(key)) return R.string.settings_sub_radio_internet_country;
         if (VIDEO.equals(key)) return R.string.settings_sub_video;
@@ -121,6 +144,7 @@ public final class SettingsScreens {
     }
 
     public static boolean isHome(String key) {
+        if (HOME_LAUNCHER.equals(key)) return false;
         return key != null && key.startsWith("settings.home");
     }
 

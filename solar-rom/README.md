@@ -34,13 +34,23 @@ Each ROM includes, on the **system** partition:
 | `/system/lib/libconscrypt_jni.so` | Conscrypt JNI for TLS 1.2+ (Reach, podcasts, themes via OkHttp) |
 | `/system/etc/security/cacerts/*.0` | Modern CA roots (Let's Encrypt, etc.) for **MediaPlayer** HTTPS and all apps |
 | `/system/etc/solar/disable-rockbox-for-solar.sh` | One-shot `pm disable org.rockbox` on first boot (marker wiped on flash) |
-| `/system/etc/init.d/99SolarInit.sh` | Boot: SD library folders; runs disable script + switch scripts + keymap/codec sync |
+| `/system/etc/init.d/99SolarInit.sh` | Boot: SD folders; default Solar IME + accessibility fallback; switch scripts + keymap/codec sync |
+| `/system/bin/app_process` | Xposed-modified zygote (Dalvik framework) |
+| `/system/bin/app_process.orig` | Stock zygote backup |
+| `/system/framework/XposedBridge.jar` | Xposed bridge (persistent on /system) |
+| `/system/xposed.prop` | Xposed version label |
+| `/system/app/XposedInstaller.apk` | Xposed module manager |
+| `/system/etc/init.d/99XposedInit.sh` | Boot: seed runtime jar into installer data dir |
+
+**Xposed** is installed on **all three ROM variants** (Y1 type A/B API 17, Y2 API 19) via `install-xposed-system.sh`. Lab devices without reflash: `solar-rom/scripts/install-xposed-adb.sh` or full overlay `apply-y1-rom-patches-adb.sh` / `apply-y2-rom-patches-adb.sh`. See [`solar-rom/patches/xposed/README.md`](patches/xposed/README.md).
 
 **Y2 only** — Y1 permissive `su` is baked into `/system` during `build-rom.sh y2` (see `solar-rom/vendor/y1-su/` and `install-y1-su-system.sh`). Same setuid binary as the Y1 rockbox base — no Superuser.apk grant dialog. Y1 rockbox bases already ship this root; Y2 ATA stock base does not. **`org.rockbox.apk` + `librockbox.so`** are not vendored in git — `fetch-rockbox-y1-y2-assets.sh` downloads them from the rockbox-y1 type-A base at build time (cached under `~/.cache/solar-rom-build/rockbox-y1-y2/`). **AVRCP Bluetooth metadata patches** (`apply-avrcp-patches.sh`) run on **Y1 type A/B only** — the Y2 MT6582 base ships a different `MtkBt.odex` / `mtkbt` layout without `libextavrcp_jni.so`.
 
 The ROM zip root also ships **`boot.img`** and **`logo.bin`** from `solar-rom/system/`.
 
 These match what `./scripts/clean_install_system.sh` applies on a rooted device. Shared staging: `scripts/stage-y1-system-prep.sh` → `apply-y1-system-prep.sh` (ROM) or `push-y1-system-prep.sh` (adb). `SolarApplication` loads Conscrypt at boot; system cacerts are still required for stock HTTPS stacks (podcast streaming via MediaPlayer).
+
+**First Solar system IME release:** ship all three ROM zips with a ROM-only OTA catalog row (`scripts/rom-only-entries.json` → `romOnly="true"` in `updates.xml`) so users on pre-IME builds must flash ROM; subsequent releases may ship APK + ROM normally. See [`.cursor/rules/layered-fallback.mdc`](../.cursor/rules/layered-fallback.mdc).
 
 ## Device install (rooted, without full ROM flash)
 

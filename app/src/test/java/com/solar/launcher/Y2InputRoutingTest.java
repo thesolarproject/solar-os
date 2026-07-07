@@ -16,11 +16,18 @@ public class Y2InputRoutingTest {
     private static final int STATE_SETTINGS = 5;
 
     @Test
-    public void y2DpadMapsToMediaPrevNext() {
-        DeviceFeatures.setCachedFamilyForTest("y2");
-        assertTrue(Y1InputKeys.isY2TrackPreviousKey(KeyEvent.KEYCODE_DPAD_LEFT));
-        assertTrue(Y1InputKeys.isY2TrackNextKey(KeyEvent.KEYCODE_DPAD_RIGHT));
-        DeviceFeatures.resetCacheForTest();
+    public void y2PowerKeyIsDedicatedSleepLockButton() {
+        assertTrue(Y1InputKeys.isPowerKey(KeyEvent.KEYCODE_POWER));
+        assertFalse(Y1InputKeys.isPowerKey(KeyEvent.KEYCODE_BACK));
+        assertFalse(Y1InputKeys.isWheelKey(KeyEvent.KEYCODE_POWER));
+    }
+
+    @Test
+    public void unifiedSideKeysUseMediaCodesOnly() {
+        assertTrue(Y1InputKeys.isTrackPreviousKey(KeyEvent.KEYCODE_MEDIA_PREVIOUS));
+        assertTrue(Y1InputKeys.isTrackNextKey(KeyEvent.KEYCODE_MEDIA_NEXT));
+        assertFalse(Y1InputKeys.isTrackPreviousKey(KeyEvent.KEYCODE_DPAD_LEFT));
+        assertFalse(Y1InputKeys.isTrackNextKey(KeyEvent.KEYCODE_DPAD_RIGHT));
     }
 
     @Test
@@ -61,5 +68,20 @@ public class Y2InputRoutingTest {
                 true, STATE_PLAYER, STATE_FLOW, STATE_WIFI_KEYBOARD,
                 STATE_PLAYER, STATE_VIDEO_PLAYER,
                 false, false, false, false));
+    }
+
+    @Test
+    public void dispatchInterceptsWheelOnMenuNotPlayer() {
+        assertTrue(MainActivity.shouldDispatchInterceptWheelForTest(
+                0, STATE_WIFI_KEYBOARD, STATE_PLAYER, STATE_VIDEO_PLAYER, false));
+        assertFalse(MainActivity.shouldDispatchInterceptWheelForTest(
+                STATE_PLAYER, STATE_WIFI_KEYBOARD, STATE_PLAYER, STATE_VIDEO_PLAYER, false));
+    }
+
+    @Test
+    public void dispatchInterceptsMediaSideExceptKeyboard() {
+        assertTrue(MainActivity.shouldDispatchInterceptMediaSideForTest(0, STATE_WIFI_KEYBOARD));
+        assertFalse(MainActivity.shouldDispatchInterceptMediaSideForTest(
+                STATE_WIFI_KEYBOARD, STATE_WIFI_KEYBOARD));
     }
 }

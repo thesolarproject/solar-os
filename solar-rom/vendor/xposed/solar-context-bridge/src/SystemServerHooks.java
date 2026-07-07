@@ -22,9 +22,11 @@ final class SystemServerHooks {
 
     private static final String PWM = "com.android.internal.policy.impl.PhoneWindowManager";
     private static final String GLOBAL_ACTIONS = "com.android.internal.policy.impl.GlobalActions";
-    private static final long LONG_PRESS_MS = 600L;
+    /** OK/center app-menu long-press — separate from BACK/POWER modal tiers. */
+    private static final long CENTER_LONG_MS =
+            com.solar.input.policy.GlobalInputPolicy.CENTER_MENU_HOLD_MS;
     /** Ultra-long BACK — restart Solar from Rockbox / third-party apps (Solar handles in-app). */
-    private static final long BACK_RESTART_SOLAR_MS = 6000L;
+    private static final long BACK_RESTART_SOLAR_MS = 10000L;
     /** PWM interceptKeyBeforeDispatching: return value >= 0 means key consumed. */
     private static final long KEY_CONSUMED_DISPATCH = 0L;
     /** PWM interceptKeyBeforeQueueing: return 0 drops the key before dispatch. */
@@ -41,6 +43,8 @@ final class SystemServerHooks {
     private static HandlerThread mainHandlerThread;
 
     private static boolean backLongFired;
+    /** 2026-07-06 — Opening-gesture finger still down after modal fired — block dismiss-forward until UP. */
+    private static boolean backOpenGestureHeld;
     private static boolean backRestartFired;
     private static boolean backTracking;
     private static boolean backUpHandled;
@@ -48,8 +52,25 @@ final class SystemServerHooks {
     private static volatile boolean ignoreBackHookForInject;
     private static Runnable backLongRunnable;
     private static Runnable backRestartRunnable;
-    /** Foreground pkg captured on BACK DOWN — avoids getRunningTasks again at 600ms fire. */
+    /** Foreground pkg captured on BACK DOWN — avoids getRunningTasks again at 4s fire. */
     private static String cachedBackLongFg;
+    /** Uptime when BACK DOWN began — Rockbox passthrough timing on UP. */
+    private static long backDownAt;
+
+    /** Y2 dedicated power key — MTK may never call showGlobalActionsDialog. */
+    private static boolean powerLongFired;
+    private static boolean powerRestartFired;
+    private static boolean powerTracking;
+    private static long powerDownAt;
+    private static Runnable powerLongRunnable;
+    private static Runnable powerRestartRunnable;
+    private static Runnable powerRescueArmRunnable;
+    private static Runnable backRescueArmRunnable;
+    private static String cachedPowerLongFg;
+    /** 2026-07-06 — Rescue-only hold while sys.solar.overlay.active=1 (USB prompt stall). */
+    private static boolean overlayRescueBackHeld;
+    private static boolean overlayRescuePowerHeld;
+    private static String overlayRescueFg;
 
     private static boolean centerLongFired;
     private static boolean centerTracking;
@@ -68,6 +89,48 @@ final class SystemServerHooks {
     private static Object[] lastDispatchArgs;
     private static long lastDisarmPulseSeen;
 
+    /** Y2 install — power-hold may open global modal over Rockbox; BACK-long still blocked there. */
+    private static boolean allowRockboxPowerLongOverlay;
+
+    private static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
+    private static final String COMPANION_COORDINATOR =
+            COMPANION_PKG + ".GlobalInputCoordinatorService";
+    private static final String ACTION_HOLD_DOWN =
+            "com.solar.launcher.globalcontext.action.HOLD_DOWN";
+    private static final String ACTION_HOLD_UP =
+            "com.solar.launcher.globalcontext.action.HOLD_UP";
+    private static final String EXTRA_KEY_CODE = "key_code";
+    private static final String EXTRA_FOREGROUND_PKG = "foreground_pkg";
+    private static final String EXTRA_HOLD_MS = "hold_ms";
+    private static final String EXTRA_Y2_DEVICE = "y2_device";
+
+    /** 2026-07-06 — Companion owns hold FSM when installed; PWM stays thin forwarder. */
+    private static boolean forwardHoldDownToCoordinator(Context ctx, int keyCode, String fg) {
+        if (ctx == null || !SolarOverlayClient.isCompanionInstalled(ctx)) return false;
+        android.content.Intent i = new android.content.Intent(ACTION_HOLD_DOWN);
+        i.setComponent(new android.content.ComponentName(COMPANION_PKG, COMPANION_COORDINATOR));
+        i.putExtra(EXTRA_KEY_CODE, keyCode);
+        i.putExtra(EXTRA_FOREGROUND_PKG, fg != null ? fg : "");
+        i.putExtra(EXTRA_Y2_DEVICE, allowRockboxPowerLongOverlay);
+        i.putExtra(EXTRA_HOLD_MS, 0L);
+        try {
+            ctx.startService(i);
+            return true;
+        } catch (Throwable t) {
+            SolarContextBridge.log("coordinator HOLD_DOWN failed: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    private static void forwardHoldUpToCoordinator(Context ctx) {
+        if (ctx == null || !SolarOverlayClient.isCompanionInstalled(ctx)) return;
+        android.content.Intent i = new android.content.Intent(ACTION_HOLD_UP);
+        i.setComponent(new android.content.ComponentName(COMPANION_PKG, COMPANION_COORDINATOR));
+        try {
+            ctx.startService(i);
+        } catch (Throwable ignored) {}
+    }
+
     private SystemServerHooks() {}
 
     /** Y1: long BACK (no power key) + long OK in third-party apps → Solar global context modal. */
@@ -77,22 +140,51 @@ final class SystemServerHooks {
         SolarContextBridge.log("Y1 PhoneWindowManager loaded");
         installLongPressHooks(pwm);
         VolumePanelHooks.installSystemServer(lpparam);
+        AppErrorHooks.install(lpparam);
+        AppAnrHooks.install(lpparam);
+        AnrDialogKeyForwarder.install(pwm);
+        ImeFocusHooks.installSystemServer(lpparam);
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("target", "Y1");
+            d.put("pwm", pwm.getName());
+            PowerMenuDebugLog.event("SystemServerHooks.installY1", "hooks installed", "H1", d);
+        } catch (Throwable ignored) {}
+        // #endregion
     }
 
     /** Y2: power-hold or long BACK + long OK in third-party apps → same global modal. */
     static void installY2(LoadPackageParam lpparam) {
+        allowRockboxPowerLongOverlay = true;
         Class<?> pwm = findPhoneWindowManager(lpparam);
         if (pwm == null) return;
         SolarContextBridge.log("Y2 PhoneWindowManager loaded");
         hookSuppressGlobalActions(pwm, lpparam.classLoader);
+        hookY2PowerLongPress(pwm);
         installLongPressHooks(pwm);
         VolumePanelHooks.installSystemServer(lpparam);
+        AppErrorHooks.install(lpparam);
+        AppAnrHooks.install(lpparam);
+        AnrDialogKeyForwarder.install(pwm);
+        ImeFocusHooks.installSystemServer(lpparam);
+        // 2026-07-05 — Y2 UMS: MountService/vold sync for Mac-native mass storage (dual volume).
+        UsbMassStorageServerHooks.installY2(lpparam);
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("target", "Y2");
+            d.put("pwm", pwm.getName());
+            PowerMenuDebugLog.event("SystemServerHooks.installY2", "hooks installed", "H1", d);
+        } catch (Throwable ignored) {}
+        // #endregion
     }
 
     private static void installLongPressHooks(Class<?> pwm) {
         ensureMainHandler();
         initBackLongRunnable();
         initBackRestartRunnable();
+        initPowerRestartRunnable();
         initCenterLongRunnable();
         hookBackLongPress(pwm);
         hookBackLongPressQueueing(pwm);
@@ -100,6 +192,7 @@ final class SystemServerHooks {
         hookCenterBeforeQueueing(pwm);
         hookBackBeforeQueueing(pwm);
         OverlayKeyForwarder.hookPhoneWindowManager(pwm);
+        ImeKeyForwarder.hookPhoneWindowManager(pwm);
     }
 
     /** HandlerThread — system_server may not have MainLooper when Xposed first hooks android. */
@@ -119,27 +212,51 @@ final class SystemServerHooks {
         }
     }
 
-    /** Y2 power-hold — Solar overlay in third-party apps; Rockbox/Solar/Innioasis keep stock menu. */
+    /** Y2 power-hold — Solar overlay in third-party apps; Rockbox allowed on Y2 power-hold only. */
     private static void hookSuppressGlobalActions(Class<?> pwm, ClassLoader cl) {
         XC_MethodHook intercept = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
-                phoneWindowManagerRef = param.thisObject;
-                Context ctx = resolveContext(param.thisObject);
-                String fg = foregroundPackage(ctx);
-                // Solar foreground — in-app context menu at power tier (:overlay not needed).
-                if ("com.solar.launcher".equals(fg)) {
-                    SolarOverlayClient.showInAppPowerMenu(ctx);
-                    param.setResult(null);
-                    SolarContextBridge.log("suppressed GlobalActions → Solar in-app power");
-                    return;
+                try {
+                    phoneWindowManagerRef = param.thisObject;
+                    Context ctx = resolveContext(param.thisObject);
+                    String fg = foregroundPackageFromArgs(null, ctx, param.thisObject);
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("fg", fg != null ? fg : "");
+                        PowerMenuDebugLog.event("SystemServerHooks.GlobalActions", "intercept", "H5", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
+                    // 2026-07-06 — Short tap must reach stock sleep; only replace GlobalActions after long-hold fired.
+                    if (!powerLongFired) {
+                        return;
+                    }
+                    // Solar foreground — companion/overlay path (same as third-party); not broken in-app intent.
+                    if ("com.solar.launcher".equals(fg)) {
+                        com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+                        if (!com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
+                            SolarOverlayClient.showPowerOverlay(ctx);
+                        }
+                        XposedHookKit.skipMethod(param);
+                        SolarContextBridge.log("suppressed GlobalActions → Solar overlay power");
+                        return;
+                    }
+                    com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+                    if (!shouldOfferPowerLongOverlayForPackage(fg)) {
+                        return;
+                    }
+                    if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
+                        XposedHookKit.skipMethod(param);
+                        SolarContextBridge.log("suppressed GlobalActions — overlay already opening");
+                        return;
+                    }
+                    showSolarPowerOverlay(param.thisObject);
+                    XposedHookKit.skipMethod(param);
+                    SolarContextBridge.log("suppressed GlobalActions → Solar overlay fg=" + fg);
+                } catch (Throwable t) {
+                    SolarContextBridge.log("GlobalActions intercept error: " + t.getClass().getSimpleName());
                 }
-                if (!shouldOfferOverlayForPackage(fg)) {
-                    return;
-                }
-                showSolarPowerOverlay(param.thisObject);
-                param.setResult(null);
-                SolarContextBridge.log("suppressed GlobalActions → Solar overlay fg=" + fg);
             }
         };
         int n = 0;
@@ -154,6 +271,326 @@ final class SystemServerHooks {
             SolarContextBridge.log("GlobalActions class missing: " + t.getClass().getSimpleName());
         }
         SolarContextBridge.log("GlobalActions hooks=" + n);
+        // #region agent log
+        try {
+            JSONObject d = new JSONObject();
+            d.put("hookCount", n);
+            PowerMenuDebugLog.event("SystemServerHooks.hookSuppressGlobalActions", "hook attach result", "H1", d);
+        } catch (Throwable ignored) {}
+        // #endregion
+    }
+
+    /** Y2 power-hold — queueing/dispatch hooks; MTK often skips showGlobalActionsDialog. */
+    private static void hookY2PowerLongPress(Class<?> pwm) {
+        ensureMainHandler();
+        initPowerLongRunnable();
+        XposedHookKit.hookAll(pwm, "interceptKeyBeforeQueueing", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (consumePowerHeldAfterLongOpen(param, param.args, KEY_CONSUMED_QUEUE)) {
+                    return;
+                }
+                if (handlePowerLongPressEvent(param.thisObject, param.args)) {
+                    param.setResult(KEY_CONSUMED_QUEUE);
+                }
+            }
+        });
+        XposedHookKit.hookAll(pwm, "interceptKeyBeforeDispatching", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (consumePowerHeldAfterLongOpen(param, param.args, KEY_CONSUMED_DISPATCH)) {
+                    return;
+                }
+                if (handlePowerLongPressEvent(param.thisObject, param.args)) {
+                    param.setResult(KEY_CONSUMED_DISPATCH);
+                }
+            }
+        });
+        // Belt-and-suspenders when PWM calls interceptPowerKeyDown before GlobalActions.
+        XposedHookKit.hookDeclared(pwm, "interceptPowerKeyDown", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (powerLongFired) return;
+                if (param.args == null || param.args.length < 2) return;
+                boolean hungUp = Boolean.TRUE.equals(param.args[1]);
+                if (!hungUp) {
+                    armPowerLongPress(param.thisObject, null, null);
+                }
+            }
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                if (powerLongFired) {
+                    param.setResult(Boolean.TRUE);
+                }
+            }
+        });
+        SolarContextBridge.log("Y2 power-long hooks installed");
+    }
+
+    /** 2026-07-05 — Re-resolve fg at fire; Y2 fail-open when task probe returns systemui/null over Rockbox. */
+    private static String resolvePowerLongForegroundAtFire(Context ctx) {
+        String live = foregroundPackageForBackLong(null, ctx, phoneWindowManagerRef);
+        if (live != null && live.length() > 0 && !isSystemShellPackage(live)) {
+            return live;
+        }
+        String cached = cachedPowerLongFg;
+        if (cached != null && cached.length() > 0 && !isSystemShellPackage(cached)) {
+            return cached;
+        }
+        return live;
+    }
+
+    /**
+     * 2026-07-06 — Re-resolve fg when BACK-long fires — SystemUI shell over stock app gets fast tier.
+     * Layman: USB dialog on screen still opens quick menu at ~420ms like the concierge overlay.
+     * Reversal: use cachedBackLongFg only — systemui fg may skip modal eligibility.
+     */
+    private static String resolveBackLongForegroundAtFire(Context ctx) {
+        String live = foregroundPackageForBackLong(null, ctx, phoneWindowManagerRef);
+        if (live != null && live.length() > 0 && !isSystemShellPackage(live)) {
+            return live;
+        }
+        String cached = cachedBackLongFg;
+        if (cached != null && cached.length() > 0 && !isSystemShellPackage(cached)) {
+            return cached;
+        }
+        return live;
+    }
+
+    private static void initPowerLongRunnable() {
+        if (powerLongRunnable != null) return;
+        powerLongRunnable = new Runnable() {
+            @Override
+            public void run() {
+                powerLongFired = true;
+                Context ctx = resolveContext(phoneWindowManagerRef);
+                if (ctx == null) return;
+                com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+                String fg = resolvePowerLongForegroundAtFire(ctx);
+                if (!com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
+                        fg, allowRockboxPowerLongOverlay)) {
+                    SolarContextBridge.log("power-long skipped fg=" + fg);
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("fg", fg != null ? fg : "");
+                        d.put("rockboxPower", allowRockboxPowerLongOverlay);
+                        PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable", "skipped not eligible", "H-ROCKBOX", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
+                    return;
+                }
+                if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
+                    SolarContextBridge.log("power-long skipped overlay opening");
+                    return;
+                }
+                SolarOverlayClient.warmOverlayProcess(ctx);
+                SolarOverlayClient.showPowerOverlay(ctx);
+                SolarContextBridge.log("power-long global modal fg=" + fg);
+                // #region agent log
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("fg", fg != null ? fg : "");
+                    d.put("rockbox", "org.rockbox".equals(fg));
+                    PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable", "overlay fired", "H-ROCKBOX", d);
+                } catch (Throwable ignored) {}
+                // #endregion
+            }
+        };
+    }
+
+    /** Swallow POWER until finger lifts after long-hold opened the overlay. */
+    private static boolean consumePowerHeldAfterLongOpen(XC_MethodHook.MethodHookParam param,
+            Object[] args, Object consumeResult) {
+        if (!powerLongFired) return false;
+        KeyEvent event = findKeyEvent(args);
+        if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_POWER) return false;
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            clearPowerLongPressState();
+            SolarContextBridge.log("power-long release swallowed");
+        }
+        param.setResult(consumeResult);
+        return true;
+    }
+
+    private static void clearPowerLongPressState() {
+        boolean restartWasFired = powerRestartFired;
+        powerLongFired = false;
+        powerRestartFired = false;
+        powerTracking = false;
+        powerDownAt = 0L;
+        cachedPowerLongFg = null;
+        if (mainHandler != null) {
+            mainHandler.removeCallbacks(powerLongRunnable);
+            mainHandler.removeCallbacks(powerRestartRunnable);
+            removePowerRescueArmCallback();
+        }
+        if (!restartWasFired) {
+            SolarRescueHoldClient.disarm();
+        }
+    }
+
+    /** Y2 hardware power — long-hold opens Solar modal; short tap passes through for sleep (RC-SLEEP). */
+    private static boolean handlePowerLongPressEvent(Object pwmThis, Object[] args) {
+        absorbOverlayDisarmPulse();
+        com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+        if (powerLongFired) {
+            return consumePowerHeldAfterLongOpenQueue(args);
+        }
+        phoneWindowManagerRef = pwmThis;
+        KeyEvent event = findKeyEvent(args);
+        if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_POWER) return false;
+        int action = event.getAction();
+        Context ctx = resolveContext(pwmThis);
+        String fg = foregroundPackageForBackLong(args, ctx, pwmThis);
+        if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
+            // 2026-07-06 — Modal already up — skip second quick menu; still allow 10s power rescue.
+            trackOverlayRescueHold(ctx, event, fg);
+            if (action == KeyEvent.ACTION_UP) {
+                forwardHoldUpToCoordinator(ctx);
+                if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
+                    powerTracking = false;
+                    cachedPowerLongFg = null;
+                    powerDownAt = 0L;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        if (action == KeyEvent.ACTION_DOWN) {
+            if (event.getRepeatCount() == 0 && !powerTracking) {
+                armPowerLongPress(pwmThis, fg, ctx);
+            }
+            return false;
+        }
+        if (action == KeyEvent.ACTION_UP) {
+            forwardHoldUpToCoordinator(ctx);
+            mainHandler.removeCallbacks(powerLongRunnable);
+            mainHandler.removeCallbacks(powerRestartRunnable);
+            removePowerRescueArmCallback();
+            if (!powerRestartFired) {
+                SolarRescueHoldClient.disarm();
+            }
+            if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
+                powerTracking = false;
+                cachedPowerLongFg = null;
+                powerDownAt = 0L;
+                return true;
+            }
+            if (powerLongFired || powerRestartFired) {
+                clearPowerLongPressState();
+                return true;
+            }
+            if (powerTracking) {
+                long held = powerDownAt > 0 ? SystemClock.uptimeMillis() - powerDownAt : 0L;
+                if (allowRockboxPowerLongOverlay
+                        && com.solar.input.policy.GlobalInputPolicy.shouldPassthroughPowerTap(held)) {
+                    triggerGoToSleep(pwmThis);
+                }
+                powerTracking = false;
+                cachedPowerLongFg = null;
+                powerDownAt = 0L;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    /** Arm modal-hold timer — shared by queue hooks and interceptPowerKeyDown (RC3). */
+    private static void armPowerLongPress(Object pwmThis, String fg, Context ctx) {
+        if (powerTracking) return;
+        phoneWindowManagerRef = pwmThis;
+        if (ctx == null) ctx = resolveContext(pwmThis);
+        if (fg == null || fg.length() == 0) {
+            fg = foregroundPackageForBackLong(null, ctx, pwmThis);
+        }
+        powerLongFired = false;
+        powerRestartFired = false;
+        powerTracking = true;
+        powerDownAt = SystemClock.uptimeMillis();
+        cachedPowerLongFg = fg;
+        ensureMainHandler();
+        if (forwardHoldDownToCoordinator(ctx, KeyEvent.KEYCODE_POWER, fg)) {
+            return;
+        }
+        mainHandler.removeCallbacks(powerLongRunnable);
+        mainHandler.removeCallbacks(powerRestartRunnable);
+        removePowerRescueArmCallback();
+        mainHandler.postDelayed(powerLongRunnable,
+                com.solar.input.policy.GlobalInputPolicy.powerModalHoldMsForPackage(fg));
+        if (shouldTrackPowerUltraLong(fg)) {
+            initPowerRestartRunnable();
+            initPowerRescueArmRunnable();
+            mainHandler.postDelayed(powerRescueArmRunnable,
+                    com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
+            mainHandler.postDelayed(powerRestartRunnable, BACK_RESTART_SOLAR_MS);
+        }
+    }
+
+    /** 2026-07-06 — BACK rescue HUD at 7s — deadline anchored to hold DOWN (10s total). */
+    private static void initBackRescueArmRunnable() {
+        if (backRescueArmRunnable != null) return;
+        backRescueArmRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if ((!backTracking && !overlayRescueBackHeld) || backRestartFired) return;
+                Context ctx = resolveContext(phoneWindowManagerRef);
+                if (ctx != null) {
+                    SolarRescueHoldClient.armBackFromHoldStart(ctx, backDownAt > 0L ? backDownAt
+                            : SystemClock.uptimeMillis());
+                }
+            }
+        };
+    }
+
+    private static void removeBackRescueArmCallback() {
+        if (mainHandler != null && backRescueArmRunnable != null) {
+            mainHandler.removeCallbacks(backRescueArmRunnable);
+        }
+    }
+
+    /** 2026-07-06 — Rescue HUD at 7s only; short tap must not startService/setprop on DOWN. */
+    private static void initPowerRescueArmRunnable() {
+        if (powerRescueArmRunnable != null) return;
+        powerRescueArmRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if ((!powerTracking && !overlayRescuePowerHeld) || powerRestartFired) return;
+                Context ctx = resolveContext(phoneWindowManagerRef);
+                if (ctx != null) SolarRescueHoldClient.armPowerFromHoldStart(ctx, powerDownAt);
+            }
+        };
+    }
+
+    private static void removePowerRescueArmCallback() {
+        if (mainHandler != null && powerRescueArmRunnable != null) {
+            mainHandler.removeCallbacks(powerRescueArmRunnable);
+        }
+    }
+
+    /** Y2 short POWER tap — explicit sleep when MTK PWM miss leaves screen on (RC-SLEEP). */
+    private static void triggerGoToSleep(Object pwmThis) {
+        try {
+            Object pm = XposedHelpers.getObjectField(pwmThis, "mPowerManager");
+            if (pm != null) {
+                XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis());
+                SolarContextBridge.log("power short-tap goToSleep");
+            }
+        } catch (Throwable t) {
+            SolarContextBridge.log("goToSleep failed: " + t.getClass().getSimpleName());
+        }
+    }
+
+    /** Swallow POWER queue events after long-hold fired until finger lifts. */
+    private static boolean consumePowerHeldAfterLongOpenQueue(Object[] args) {
+        KeyEvent event = findKeyEvent(args);
+        if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_POWER) return true;
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            clearPowerLongPressState();
+            SolarContextBridge.log("power-long release swallowed");
+        }
+        return true;
     }
 
     private static void initBackLongRunnable() {
@@ -164,32 +601,184 @@ final class SystemServerHooks {
                 backLongFired = true;
                 Context ctx = resolveContext(phoneWindowManagerRef);
                 if (ctx == null) return;
-                String fg = cachedBackLongFg;
+                String fg = resolveBackLongForegroundAtFire(ctx);
+                if (fg == null || fg.length() == 0) {
+                    fg = cachedBackLongFg;
+                }
                 if (!shouldOfferOverlayForPackage(fg)) {
                     SolarContextBridge.log("back-long skipped fg=" + fg);
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("fg", fg != null ? fg : "");
+                        PowerMenuDebugLog.event("SystemServerHooks.backLongRunnable", "skipped not eligible", "H3", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
                     return;
                 }
+                if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
+                    SolarContextBridge.log("back-long skipped overlay opening");
+                    return;
+                }
+                SolarOverlayClient.warmOverlayProcess(ctx);
                 SolarOverlayClient.showPowerOverlay(ctx);
-                SolarContextBridge.log("back-long overlay fg=" + fg);
+                backOpenGestureHeld = true;
+                SolarContextBridge.log("back-long global modal fg=" + fg);
+                // #region agent log
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("fg", fg != null ? fg : "");
+                    d.put("holdMs", com.solar.input.policy.GlobalInputPolicy
+                            .backModalHoldMsForPackage(fg));
+                    d.put("thirdPartyLauncher", com.solar.input.policy.GlobalInputPolicy
+                            .isThirdPartyHomeLauncher(fg));
+                    d.put("failOpenShell", com.solar.input.policy.GlobalInputPolicy
+                            .shouldFailOpenBackFg(fg));
+                    PowerMenuDebugLog.event("SystemServerHooks.backLongRunnable",
+                            "showPowerOverlay fired", "bee1b8-H-A", d);
+                } catch (Throwable ignored) {}
+                // #endregion
             }
         };
     }
 
-    /** Schedule 6s BACK hold → force-stop Solar and relaunch HOME (Rockbox + stock apps). */
+    /** Schedule 10s BACK hold → SolarRescue (continued hold after 4s modal). */
     private static void initBackRestartRunnable() {
         if (backRestartRunnable != null) return;
         backRestartRunnable = new Runnable() {
             @Override
             public void run() {
-                if (!backTracking) return;
+                if ((!backTracking && !overlayRescueBackHeld) || backRestartFired) return;
                 backRestartFired = true;
                 Context ctx = resolveContext(phoneWindowManagerRef);
                 if (ctx == null) return;
-                SolarRestartClient.restartSolarApp(ctx);
-                SolarContextBridge.log("back-ultra restart Solar");
+                SolarRescueHoldClient.signalRestarting();
+                mainHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        SolarRescueHoldClient.disarm();
+                        String fg = cachedBackLongFg != null ? cachedBackLongFg
+                                : (overlayRescueFg != null ? overlayRescueFg : "");
+                        SolarRescueClient.execute(ctx, fg);
+                        SolarContextBridge.log("back-ultra rescue Solar");
+                        overlayRescueBackHeld = false;
+                        overlayRescueFg = null;
+                    }
+                }, 400L);
             }
         };
     }
+
+    /**
+     * 2026-07-06 — Ultra-long BACK/power rescue while global overlay is armed (USB stall, hung modal).
+     * Layman: hold Back or sleep button ~10s to force Solar home even when the USB prompt is on screen.
+     * Technical: parallel to {@link OverlayKeyForwarder} — does not open a second quick menu.
+     */
+    static void trackOverlayRescueHold(Context ctx, KeyEvent event, String fg) {
+        if (ctx == null || event == null) return;
+        ensureMainHandler();
+        initBackRestartRunnable();
+        initPowerRestartRunnable();
+        initPowerRescueArmRunnable();
+        initBackRescueArmRunnable();
+        int code = event.getKeyCode();
+        int action = event.getAction();
+        if (code == KeyEvent.KEYCODE_BACK) {
+            if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                if (!shouldTrackBackUltraLong(fg)) return;
+                overlayRescueBackHeld = true;
+                overlayRescueFg = fg;
+                cachedBackLongFg = fg;
+                backRestartFired = false;
+                if (backDownAt <= 0L) {
+                    backDownAt = SystemClock.uptimeMillis();
+                }
+                mainHandler.removeCallbacks(backRestartRunnable);
+                removeBackRescueArmCallback();
+                mainHandler.postDelayed(backRescueArmRunnable,
+                        com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
+                mainHandler.postDelayed(backRestartRunnable, BACK_RESTART_SOLAR_MS);
+            } else if (action == KeyEvent.ACTION_UP) {
+                if (!overlayRescueBackHeld) return;
+                overlayRescueBackHeld = false;
+                mainHandler.removeCallbacks(backRestartRunnable);
+                removeBackRescueArmCallback();
+                if (!backRestartFired) {
+                    SolarRescueHoldClient.disarm();
+                }
+                backRestartFired = false;
+                overlayRescueFg = null;
+            }
+            return;
+        }
+        if (code == KeyEvent.KEYCODE_POWER && allowRockboxPowerLongOverlay) {
+            if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                if (!shouldTrackPowerUltraLong(fg)) return;
+                overlayRescuePowerHeld = true;
+                overlayRescueFg = fg;
+                cachedPowerLongFg = fg;
+                powerRestartFired = false;
+                mainHandler.removeCallbacks(powerRestartRunnable);
+                removePowerRescueArmCallback();
+                mainHandler.postDelayed(powerRescueArmRunnable,
+                        com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
+                mainHandler.postDelayed(powerRestartRunnable, BACK_RESTART_SOLAR_MS);
+            } else if (action == KeyEvent.ACTION_UP) {
+                if (!overlayRescuePowerHeld) return;
+                overlayRescuePowerHeld = false;
+                mainHandler.removeCallbacks(powerRestartRunnable);
+                removePowerRescueArmCallback();
+                if (!powerRestartFired) {
+                    SolarRescueHoldClient.disarm();
+                }
+                powerRestartFired = false;
+                overlayRescueFg = null;
+            }
+        }
+    }
+
+    /** Y2 — 10s power hold → same rescue path as ultra-long BACK. */
+    private static void initPowerRestartRunnable() {
+        if (powerRestartRunnable != null) return;
+        powerRestartRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if ((!powerTracking && !overlayRescuePowerHeld) || powerRestartFired) return;
+                powerRestartFired = true;
+                Context ctx = resolveContext(phoneWindowManagerRef);
+                if (ctx == null) return;
+                String fg = cachedPowerLongFg != null ? cachedPowerLongFg
+                        : (overlayRescueFg != null ? overlayRescueFg
+                        : foregroundPackageForBackLong(null, ctx, phoneWindowManagerRef));
+                SolarRescueHoldClient.signalRestarting();
+                mainHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        SolarRescueHoldClient.disarm();
+                        SolarRescueClient.execute(ctx, fg);
+                        SolarContextBridge.log("power-ultra rescue Solar");
+                        overlayRescuePowerHeld = false;
+                        overlayRescueFg = null;
+                    }
+                }, 400L);
+            }
+        };
+    }
+
+    /** Short BACK while IME — dismiss tray without injecting BACK into foreground app. */
+    private static void dismissImeTray(Context ctx) {
+        if (ctx == null) return;
+        SolarContextBridge.log("dismissImeTray IME_DISMISS broadcast");
+        try {
+            android.content.Intent svc = new android.content.Intent(
+                    "com.solar.launcher.action.IME_DISMISS");
+            svc.setComponent(new android.content.ComponentName("com.solar.launcher",
+                    "com.solar.launcher.SolarInputMethodService"));
+            ctx.startService(svc);
+        } catch (Throwable ignored) {}
+    }
+
+    private static long centerMenuOpenGraceUntil;
 
     private static void initCenterLongRunnable() {
         if (centerLongRunnable != null) return;
@@ -197,12 +786,15 @@ final class SystemServerHooks {
             @Override
             public void run() {
                 centerLongFired = true;
+                centerMenuOpenGraceUntil = SystemClock.uptimeMillis() + 900L;
                 Context ctx = resolveContext(phoneWindowManagerRef);
                 if (ctx == null) return;
                 String fg = foregroundPackageFromArgs(lastDispatchArgs, ctx, phoneWindowManagerRef);
                 if (!shouldOfferOverlayForPackage(fg)) return;
                 if (openOptionsMenuForForeground(ctx)) {
                     SolarContextBridge.log("center-long openOptionsMenu fg=" + fg);
+                } else if (openContextMenuForFocusedView(ctx)) {
+                    SolarContextBridge.log("center-long performLongClick fg=" + fg);
                 } else {
                     injectKeyEvent(KeyEvent.KEYCODE_MENU);
                     SolarContextBridge.log("center-long injected MENU fg=" + fg);
@@ -215,10 +807,11 @@ final class SystemServerHooks {
     private static boolean consumeBackHeldAfterLongOpen(XC_MethodHook.MethodHookParam param,
             Object[] args, Object consumeResult) {
         absorbOverlayDisarmPulse();
-        if (!backLongFired && !backRestartFired) return false;
+        if (!backLongFired && !backRestartFired && !backOpenGestureHeld) return false;
         KeyEvent event = findKeyEvent(args);
         if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_BACK) return false;
         if (event.getAction() == KeyEvent.ACTION_UP) {
+            backOpenGestureHeld = false;
             clearBackLongPressState();
             SolarContextBridge.log("back-long release swallowed");
         }
@@ -305,6 +898,13 @@ final class SystemServerHooks {
         }
         // Solar in-app handles BACK short/long/restart — never steal here.
         if ("com.solar.launcher".equals(fg)) {
+            // #region agent log
+            try {
+                JSONObject d = new JSONObject();
+                d.put("action", action);
+                PowerMenuDebugLog.event("SystemServerHooks.handleBackLongPress", "solar fg skip bridge", "H2", d);
+            } catch (Throwable ignored) {}
+            // #endregion
             clearBackLongPressState();
             return false;
         }
@@ -313,7 +913,7 @@ final class SystemServerHooks {
             clearBackLongPressState();
             return false;
         }
-        boolean overlayEligible = shouldOfferOverlayForPackage(fg);
+        boolean overlayEligible = shouldOfferBackLongOverlayForPackage(fg);
 
         if (action == KeyEvent.ACTION_DOWN) {
             if (event.getRepeatCount() == 0 && !backTracking) {
@@ -322,33 +922,94 @@ final class SystemServerHooks {
                 backUpHandled = false;
                 backTracking = true;
                 cachedBackLongFg = fg;
+                backDownAt = SystemClock.uptimeMillis();
                 mainHandler.removeCallbacks(backLongRunnable);
                 mainHandler.removeCallbacks(backRestartRunnable);
-                mainHandler.postDelayed(backRestartRunnable, BACK_RESTART_SOLAR_MS);
-                if (overlayEligible) {
-                    SolarOverlayClient.warmOverlayProcess(ctx);
-                    mainHandler.postDelayed(backLongRunnable, LONG_PRESS_MS);
+                boolean coordinatorOwns = forwardHoldDownToCoordinator(ctx, KeyEvent.KEYCODE_BACK, fg);
+                if (!coordinatorOwns) {
+                    initBackRescueArmRunnable();
+                    removeBackRescueArmCallback();
+                    mainHandler.postDelayed(backRescueArmRunnable,
+                            com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
+                    mainHandler.postDelayed(backRestartRunnable, BACK_RESTART_SOLAR_MS);
+                    if (overlayEligible) {
+                        SolarOverlayClient.warmOverlayProcess(ctx);
+                        long backHoldMs = com.solar.input.policy.GlobalInputPolicy
+                                .backModalHoldMsForPackage(fg);
+                        mainHandler.postDelayed(backLongRunnable, backHoldMs);
+                    }
                 }
+                // #region agent log
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("fg", fg != null ? fg : "");
+                    d.put("overlayEligible", overlayEligible);
+                    d.put("scheduledOverlay", overlayEligible);
+                    PowerMenuDebugLog.event("SystemServerHooks.handleBackLongPress", "back down tracked", "H3", d);
+                } catch (Throwable ignored) {}
+                // #endregion
             }
-            return true;
+            // 2026-07-06 — Pass BACK DOWN through until modal/rescue confirms; was swallowing too early.
+            return shouldConsumeBackDuringLongPress();
         }
         if (action == KeyEvent.ACTION_UP) {
+            forwardHoldUpToCoordinator(ctx);
             mainHandler.removeCallbacks(backLongRunnable);
             mainHandler.removeCallbacks(backRestartRunnable);
+            removeBackRescueArmCallback();
+            if (!backRestartFired) {
+                SolarRescueHoldClient.disarm();
+            }
+            if (OverlayKeyForwarder.isOverlayActiveOrOpening() && backLongFired) {
+                backRestartFired = false;
+                backLongFired = false;
+                backOpenGestureHeld = false;
+                backTracking = false;
+                backDownAt = 0L;
+                return true;
+            }
             if (backRestartFired || backLongFired) {
                 backRestartFired = false;
                 backLongFired = false;
                 backTracking = false;
                 return true;
             }
+            if (backOpenGestureHeld) {
+                backOpenGestureHeld = false;
+                clearBackLongPressState();
+                return true;
+            }
             if (backTracking && !backUpHandled) {
                 backTracking = false;
                 backUpHandled = true;
-                scheduleBackInject();
+                long holdMs = backDownAt > 0 ? SystemClock.uptimeMillis() - backDownAt : 0L;
+                backDownAt = 0L;
+                // #region agent log
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("fg", cachedBackLongFg != null ? cachedBackLongFg : "");
+                    d.put("holdMs", holdMs);
+                    d.put("overlayActive", OverlayKeyForwarder.isOverlayActiveOrOpening());
+                    PowerMenuDebugLog.event("SystemServerHooks.handleBackLongPress",
+                            "back up pass-through", "bee1b8-H-B", d);
+                } catch (Throwable ignored) {}
+                // #endregion
+                // 2026-07-06 — Short tap: real DOWN already reached fg app; pass UP unchanged.
+                if (ImeKeyForwarder.isImeActive()) {
+                    dismissImeTray(ctx);
+                    return true;
+                }
+                return false;
             }
-            return true;
+            return shouldConsumeBackDuringLongPress();
         }
-        return backTracking;
+        return shouldConsumeBackDuringLongPress();
+    }
+
+    /** 2026-07-06 — Steal BACK only after modal/rescue fired or overlay mutex is armed. */
+    private static boolean shouldConsumeBackDuringLongPress() {
+        return backLongFired || backRestartFired || backOpenGestureHeld
+                || OverlayKeyForwarder.isOverlayActiveOrOpening();
     }
 
     /** Long OK / center / MENU — open app options menu; AppMenuHooks redecorates the rows. */
@@ -389,7 +1050,7 @@ final class SystemServerHooks {
                         centerTracking = true;
                         centerUpHandled = false;
                         mainHandler.removeCallbacks(centerLongRunnable);
-                        mainHandler.postDelayed(centerLongRunnable, LONG_PRESS_MS);
+                        mainHandler.postDelayed(centerLongRunnable, CENTER_LONG_MS);
                     }
                     param.setResult(KEY_CONSUMED_DISPATCH);
                     return;
@@ -447,10 +1108,23 @@ final class SystemServerHooks {
         SolarContextBridge.log("hooked OK/center swallow on interceptKeyBeforeQueueing");
     }
 
+    private static volatile Class<?> sSystemPropertiesClass;
+    private static Class<?> getSystemPropertiesClass() {
+        Class<?> c = sSystemPropertiesClass;
+        if (c == null) {
+            try {
+                c = XposedHelpers.findClass("android.os.SystemProperties", null);
+                sSystemPropertiesClass = c;
+            } catch (Throwable ignored) {}
+        }
+        return c;
+    }
+
     /** True while Solar is remapping wheel/side MEDIA keys into a stock app (blocks OK re-inject). */
     private static boolean isHandoffInjectActive() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", HANDOFF_ACTIVE_PROPERTY, "0");
             return "1".equals(String.valueOf(v));
         } catch (Throwable t) {
@@ -468,7 +1142,8 @@ final class SystemServerHooks {
                 }
                 if (OverlayKeyForwarder.isOverlayActive()) return;
                 if (ignoreBackHookForInject) return;
-                if (!backTracking && !backLongFired && !backRestartFired) return;
+                // 2026-07-06 — Queue swallow only after long-press confirmed, not during detection.
+                if (!backLongFired && !backRestartFired && !backOpenGestureHeld) return;
                 KeyEvent event = findKeyEvent(param.args);
                 if (event == null || event.getKeyCode() != KeyEvent.KEYCODE_BACK) return;
                 Context ctx = resolveContext(param.thisObject);
@@ -488,11 +1163,17 @@ final class SystemServerHooks {
         if (mainHandler != null) {
             mainHandler.removeCallbacks(backLongRunnable);
             mainHandler.removeCallbacks(backRestartRunnable);
+            removeBackRescueArmCallback();
         }
         backLongFired = false;
         backRestartFired = false;
         backTracking = false;
         backUpHandled = false;
+        backOpenGestureHeld = false;
+        overlayRescueBackHeld = false;
+        overlayRescuePowerHeld = false;
+        overlayRescueFg = null;
+        SolarRescueHoldClient.disarm();
     }
 
     /** Reset center/OK long-press after overlay dismiss — blocks spurious MENU inject. */
@@ -508,7 +1189,8 @@ final class SystemServerHooks {
     /** Overlay disarm pulse from Solar — drop stale BACK/center tracking from the open gesture. */
     static void absorbOverlayDisarmPulse() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return;
             Object v = XposedHelpers.callStaticMethod(sp, "get", DISARM_PULSE_PROPERTY, "0");
             long pulse = Long.parseLong(String.valueOf(v));
             if (pulse > 0 && pulse != lastDisarmPulseSeen) {
@@ -521,24 +1203,26 @@ final class SystemServerHooks {
     }
 
     /**
-     * BACK long-press still held after opening overlay — do not forward to modal dismiss handler.
+     * 2026-07-06 — Opening-gesture BACK still held — swallow; lift-off UP must not dismiss modal.
      * Power-hold opens without BACK tracking so this stays false for that path.
      */
     static boolean shouldBlockBackForwardToOverlay() {
-        return backLongFired;
+        return backLongFired || backOpenGestureHeld;
     }
 
     /**
      * OK/MENU long-press still held after app menu opened — do not forward repeats to overlay.
      */
     static boolean shouldBlockCenterForwardToOverlay() {
-        return centerLongFired;
+        return centerLongFired
+                || SystemClock.uptimeMillis() < centerMenuOpenGraceUntil;
     }
 
     /** True briefly after global modal dismiss — swallow BACK so stock apps never see dismiss gesture. */
     static boolean isPostOverlayCooldown() {
         try {
-            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", COOLDOWN_UNTIL_PROPERTY, "0");
             long until = Long.parseLong(String.valueOf(v));
             return until > 0 && SystemClock.uptimeMillis() < until;
@@ -571,6 +1255,14 @@ final class SystemServerHooks {
                 injectKeyEvent(KeyEvent.KEYCODE_BACK);
             }
         }, BACK_INJECT_DELAY_MS);
+    }
+
+    /**
+     * 2026-07-05 — inject wheel-remapped DPAD for stock Holo ANR buttons (AnrDialogKeyForwarder).
+     * Reversal: remove AnrDialogKeyForwarder.install — this entry unused.
+     */
+    static void injectDpadTap(int dpadKeyCode) {
+        injectKeyEvent(dpadKeyCode);
     }
 
     /** Inject a short tap so apps still get quick BACK / OK after we swallowed the real key. */
@@ -657,6 +1349,45 @@ final class SystemServerHooks {
         return false;
     }
 
+    /**
+     * 2026-07-07 — OK-long on focused list row / button — performLongClick opens Holo context menu;
+     * AppMenuHooks intercepts MenuPopupHelper.show and paints Solar overlay rows.
+     * Reversal: delete — center-long falls back to openOptionsMenu / MENU inject only.
+     */
+    @SuppressWarnings("unchecked")
+    private static boolean openContextMenuForFocusedView(Context ctx) {
+        try {
+            Class<?> atm = XposedHelpers.findClass("android.app.ActivityThread", null);
+            Object thread = XposedHelpers.callStaticMethod(atm, "currentActivityThread");
+            if (thread == null) return false;
+            Object mapObj = XposedHelpers.getObjectField(thread, "mActivities");
+            if (!(mapObj instanceof Map)) return false;
+            Map<Object, Object> map = (Map<Object, Object>) mapObj;
+            for (Object record : map.values()) {
+                if (record == null) continue;
+                Object paused = XposedHelpers.getObjectField(record, "paused");
+                if (Boolean.TRUE.equals(paused)) continue;
+                Object activity = XposedHelpers.getObjectField(record, "activity");
+                if (activity == null) continue;
+                Object window = XposedHelpers.callMethod(activity, "getWindow");
+                if (window == null) continue;
+                Object decor = XposedHelpers.callMethod(window, "getDecorView");
+                if (decor == null) continue;
+                Object focus = XposedHelpers.callMethod(decor, "findFocus");
+                if (focus == null) {
+                    focus = decor;
+                }
+                Object result = XposedHelpers.callMethod(focus, "performLongClick");
+                if (Boolean.TRUE.equals(result)) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            SolarContextBridge.log("performLongClick failed: " + t.getClass().getSimpleName());
+        }
+        return false;
+    }
+
     static Context resolveContext(Object hookThis) {
         if (hookThis != null) {
             try {
@@ -673,7 +1404,7 @@ final class SystemServerHooks {
             ctx = currentContext();
         }
         if (ctx == null) {
-            SolarContextBridge.log("showPowerOverlay: no context");
+            SolarContextBridge.log("showLauncherPicker: no context");
             return;
         }
         SolarContextBridge.log("showPowerOverlay ctx=" + ctx.getPackageName());
@@ -823,24 +1554,59 @@ final class SystemServerHooks {
     }
 
     /**
-     * BACK-long and Y2 power-hold eligibility — mirrors {@code GlobalOverlayPolicy} in the Solar app.
-     * Rockbox excluded on Y1 and Y2 (use switch-to-stock to return to Solar).
+     * BACK-long and center-long eligibility — Rockbox excluded on Y1 and Y2 (BACK stays in Rockbox).
      */
+    /** BACK-long / app-menu long-OK — delegates to shared GlobalInputPolicy JAR. */
+    static boolean shouldOfferBackLongOverlayForPackage(String pkg) {
+        return com.solar.input.policy.GlobalInputPolicy.shouldOfferBackLongModal(
+                pkg, allowRockboxPowerLongOverlay, ImeKeyForwarder.isImeActive(),
+                isEmergencyMode());
+    }
+
+    /** 2026-07-06 — Companion sets persist.solar.emergency_mode after crash loop. */
+    private static boolean isEmergencyMode() {
+        try {
+            Class<?> sp = de.robv.android.xposed.XposedHelpers.findClass(
+                    "android.os.SystemProperties", null);
+            Object v = de.robv.android.xposed.XposedHelpers.callStaticMethod(
+                    sp, "get", "persist.solar.emergency_mode", "0");
+            return "1".equals(String.valueOf(v));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** @deprecated use {@link #shouldOfferBackLongOverlayForPackage} */
     static boolean shouldOfferOverlayForPackage(String pkg) {
-        if (pkg == null || pkg.length() == 0) return false;
-        if (isSystemShellPackage(pkg)) return false;
-        if ("org.rockbox".equals(pkg)) return false;
+        return shouldOfferBackLongOverlayForPackage(pkg);
+    }
+
+    /** IME + ultra-long trackers — ImeKeyForwarder must not swallow BACK/power during hold. */
+    static boolean isBackUltraLongTracking() {
+        return backTracking;
+    }
+
+    /**
+     * Y2 power-hold eligibility — Rockbox allowed when {@link #installY2} set the flag.
+     * Mirrors {@code GlobalOverlayPolicy#shouldOfferPowerLongGlobalModalForPackage}.
+     */
+    static boolean shouldOfferPowerLongOverlayForPackage(String pkg) {
+        return com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
+                pkg, allowRockboxPowerLongOverlay);
+    }
+
+    /** Ultra-long BACK restart — any fg except Solar (in-app handler); bare WM + shells OK. */
+    static boolean shouldTrackBackUltraLong(String pkg) {
         if ("com.solar.launcher".equals(pkg)) return false;
-        if (pkg.startsWith("com.innioasis.")) return false;
         return true;
     }
 
-    /** Ultra-long BACK restart — any real app except Solar (in-app handler) and system shells. */
-    static boolean shouldTrackBackUltraLong(String pkg) {
-        if (pkg == null || pkg.length() == 0) return false;
-        if (isSystemShellPackage(pkg)) return false;
-        if ("com.solar.launcher".equals(pkg)) return false;
-        return true;
+    /**
+     * 2026-07-05 — Y2 power 10s rescue — includes Solar foreground (MainActivity passes POWER to PWM).
+     * Layman: hold sleep button in Solar also triggers restart countdown.
+     */
+    static boolean shouldTrackPowerUltraLong(String pkg) {
+        return shouldTrackBackUltraLong(pkg) || "com.solar.launcher".equals(pkg);
     }
 
     /** Process-list noise — never treat as third-party app for BACK-long intercept. */

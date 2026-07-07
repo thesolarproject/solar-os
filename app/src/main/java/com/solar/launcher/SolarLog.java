@@ -22,15 +22,26 @@ public final class SolarLog {
     private static final String ERROR_FILE = "error.log";
     private static final long MAX_BYTES = 512 * 1024;
     private static final Object LOCK = new Object();
+    private static volatile android.content.Context appCtx;
 
     private SolarLog() {}
 
     public static void installUncaughtHandler() {
+        installUncaughtHandler(null);
+    }
+
+    public static void installUncaughtHandler(android.content.Context context) {
+        updateContext(context);
+        final android.content.Context appCtx = context != null
+                ? context.getApplicationContext() : null;
         final Thread.UncaughtExceptionHandler previous = Thread.getDefaultUncaughtExceptionHandler();
         Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
             @Override
             public void uncaughtException(Thread thread, Throwable e) {
                 logCrash(thread, e);
+                if (appCtx != null) {
+                    SolarRecoveryCoordinator.onUncaughtCrash(appCtx);
+                }
                 if (previous != null) {
                     previous.uncaughtException(thread, e);
                 } else {
@@ -41,6 +52,7 @@ public final class SolarLog {
     }
 
     public static void e(String tag, String message, Throwable t) {
+        message = scrub(message);
         if (t != null) {
             Log.e(tag, message, t);
         } else {
@@ -50,11 +62,13 @@ public final class SolarLog {
     }
 
     public static void w(String tag, String message) {
+        message = scrub(message);
         Log.w(tag, message);
         append(ERROR_FILE, formatLine("WARN", tag, message, null));
     }
 
     public static void i(String tag, String message) {
+        message = scrub(message);
         Log.i(tag, message);
     }
 
@@ -64,21 +78,19 @@ public final class SolarLog {
             PrintWriter pw = new PrintWriter(sw);
             e.printStackTrace(pw);
             String body = sw.toString();
-            Log.e("SolarCrash", body);
+            Log.e("SolarCrash", scrub(body));
             String header = "\n--- CRASH " + ts() + " thread=" + thread.getName() + " ---\n";
             append(CRASH_FILE, header + body);
             append(ERROR_FILE, header + body);
-            // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
                 d.put("thread", thread.getName());
                 d.put("exception", e.getClass().getName());
-                d.put("message", e.getMessage() != null ? e.getMessage() : "");
-                d.put("stack", body.length() > 2000 ? body.substring(0, 2000) : body);
+                d.put("message", scrub(e.getMessage() != null ? e.getMessage() : ""));
+                d.put("stack", body.length() > 2000 ? scrub(body.substring(0, 2000)) : scrub(body));
                 DebugSessionLog.log("SolarLog.logCrash", "uncaught", "H1", d);
                 DebugB8b871Log.log(null, "SolarLog.logCrash", "uncaught", "H-E", d);
             } catch (Exception ignoredDbg) {}
-            // #endregion
         } catch (Exception ignored) {}
     }
 
@@ -98,6 +110,7 @@ public final class SolarLog {
     }
 
     private static void append(String fileName, String text) {
+        text = scrub(text);
         synchronized (LOCK) {
             try {
                 File dir = new File(LOG_DIR);
@@ -119,10 +132,159 @@ public final class SolarLog {
         }
     }
 
-    // ponytail self-check
+    private static volatile String[] cachedSensitive = new String[0];
+    private static volatile long lastSensitiveUpdate = 0;
+
+    private static String[] getSensitiveStrings() {
+        long now = System.currentTimeMillis();
+        if (now - lastSensitiveUpdate < 5000 && cachedSensitive.length > 0) {
+            return cachedSensitive;
+        }
+        java.util.ArrayList<String> list = new java.util.ArrayList<String>();
+        addSensitive(list, com.solar.launcher.deezer.DeezerAccount.bundledDemoArl());
+        addSensitive(list, com.solar.launcher.deezer.DeezerAccount.bundledFreeArl());
+        if (appCtx != null) {
+            try {
+                android.content.SharedPreferences prefs = appCtx.getSharedPreferences("SOLAR_SETTINGS", android.content.Context.MODE_PRIVATE);
+                addSensitive(list, prefs.getString("deezer_arl", ""));
+                addSensitive(list, prefs.getString("deezer_user_name", ""));
+                addSensitive(list, prefs.getString("soulseek_user", ""));
+                addSensitive(list, prefs.getString("solar_diag_user", ""));
+                addSensitive(list, com.solar.launcher.soulseek.SoulseekAccount.generateUsername(appCtx, false));
+                android.content.SharedPreferences leg = appCtx.getSharedPreferences("solar_prefs", android.content.Context.MODE_PRIVATE);
+                addSensitive(list, leg.getString("deezer_arl", ""));
+                addSensitive(list, leg.getString("deezer_user_name", ""));
+            } catch (Exception ignored) {}
+        }
+        java.util.Collections.sort(list, new java.util.Comparator<String>() {
+            @Override
+            public int compare(String a, String b) {
+                return b.length() - a.length();
+            }
+        });
+        String[] arr = list.toArray(new String[0]);
+        cachedSensitive = arr;
+        lastSensitiveUpdate = now;
+        return arr;
+    }
+
+    private static void addSensitive(java.util.ArrayList<String> list, String s) {
+        if (s != null) {
+            s = s.trim();
+            if (s.length() >= 3 && !list.contains(s)) {
+                list.add(s);
+            }
+        }
+    }
+
+    public static String scrub(android.content.Context context, String text) {
+        updateContext(context);
+        return scrub(text);
+    }
+
+    public static void updateContext(android.content.Context context) {
+        if (context != null && appCtx == null) {
+            appCtx = context.getApplicationContext();
+        }
+    }
+
+    public static String scrub(String text) {
+        if (text == null || text.isEmpty()) return text;
+        String[] s = getSensitiveStrings();
+        for (String str : s) {
+            if (text.contains(str)) {
+                text = text.replace(str, "***");
+            }
+        }
+        return text;
+    }
+
+    public static void scrubExistingLogs(android.content.Context context) {
+        updateContext(context);
+        scrubExistingLogs();
+    }
+
+    public static void scrubExistingLogs() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    scrubDir(new File("/storage/sdcard0/solar/logs"), 0);
+                    scrubDir(new File("/data/data/com.solar.launcher/files/solar/logs"), 0);
+                    scrubDir(new File("/storage/sdcard0/solar"), 0);
+                    scrubDir(new File("/storage/sdcard0"), 0);
+                    if (appCtx != null) {
+                        scrubDir(appCtx.getFilesDir(), 0);
+                        File cache = appCtx.getCacheDir();
+                        if (cache != null) scrubDir(cache, 0);
+                    }
+                    scrubDir(new File("/data/data/com.solar.launcher/files"), 0);
+                    scrubDir(new File("/data/data/com.solar.launcher/cache"), 0);
+                    scrubDir(new File("/storage/sdcard0/.rockbox"), 0);
+                } catch (Exception ignored) {}
+            }
+        }, "SolarLogScrub").start();
+    }
+
+    private static void scrubDir(File f, int depth) {
+        if (f == null || !f.exists() || depth > 3) return;
+        if (f.isFile()) {
+            String name = f.getName().toLowerCase(Locale.US);
+            if (name.endsWith(".log") || name.endsWith(".old") || name.endsWith(".txt")
+                    || name.startsWith("debug-") || name.contains("log")) {
+                scrubFile(f);
+            }
+            return;
+        }
+        File[] kids = f.listFiles();
+        if (kids != null) {
+            for (File kid : kids) {
+                scrubDir(kid, depth + 1);
+            }
+        }
+    }
+
+    private static void scrubFile(File f) {
+        try {
+            if (f.length() == 0 || f.length() > 5 * 1024 * 1024) return;
+            java.io.FileInputStream fis = new java.io.FileInputStream(f);
+            byte[] buf = new byte[(int) f.length()];
+            int read = 0;
+            while (read < buf.length) {
+                int n = fis.read(buf, read, buf.length - read);
+                if (n <= 0) break;
+                read += n;
+            }
+            fis.close();
+            if (read <= 0) return;
+            String content = new String(buf, 0, read, "UTF-8");
+            String[] sensitive = getSensitiveStrings();
+            boolean changed = false;
+            for (String str : sensitive) {
+                if (content.contains(str)) {
+                    content = content.replace(str, "***");
+                    changed = true;
+                }
+            }
+            if (changed) {
+                synchronized (LOCK) {
+                    File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
+                    FileOutputStream fos = new FileOutputStream(tmp);
+                    fos.write(content.getBytes("UTF-8"));
+                    fos.flush();
+                    fos.close();
+                    if (tmp.exists() && tmp.length() > 0) {
+                        tmp.renameTo(f);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+    }
+
     static void selfCheck() {
         if (!"crash.log".equals(CRASH_FILE)) throw new AssertionError("crash file");
         if (quotedSsidForTest("a").equals("\"a\"")) { /* ok */ } else throw new AssertionError("quote");
+        if (!"abc***xyz".equals(scrub("abc" + com.solar.launcher.deezer.DeezerAccount.bundledDemoArl() + "xyz"))) throw new AssertionError("scrub arl");
     }
 
     static String quotedSsidForTest(String ssid) {

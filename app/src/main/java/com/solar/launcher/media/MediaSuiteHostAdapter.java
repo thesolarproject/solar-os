@@ -58,11 +58,35 @@ public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
     @Override public void showVirtualSongList(boolean virtual) { act.showVirtualSongList(virtual); }
     @Override public void setStatusBarVisible(boolean visible) { act.mediaSetStatusBarVisible(visible); }
     @Override public void refreshPlayerUi() { act.mediaRefreshPlayerUi(); }
+    @Override public void syncFmTuneScrubUi() { act.syncFmTuneScrubUi(); }
     @Override public void exitToHomeMenu() { act.mediaExitToHomeMenu(); }
+
+    @Override public void openYouTubeSearchKeyboard(String prefill) { act.mediaOpenYouTubeSearchKeyboard(prefill); }
+
+    @Override public View createTwoLineBrowseRow(String title, String subtitle) {
+        return act.mediaCreateTwoLineBrowseRow(title, subtitle);
+    }
 
     @Override public String getString(int resId) { return act.getString(resId); }
     @Override public String getString(int resId, Object arg) { return act.getString(resId, arg); }
+    @Override public String getString(int resId, Object arg1, Object arg2) {
+        return act.getString(resId, arg1, arg2);
+    }
     @Override public android.content.res.Resources getResources() { return act.getResources(); }
 
     @Override public <T extends View> T findViewById(int id) { return act.findViewById(id); }
+
+    @Override public void offerFmMtkFallback(String errorMessage) {
+        act.mediaOfferFmMtkFallback(errorMessage);
+    }
+
+    @Override public void showThemedConfirm(
+            String title,
+            String message,
+            String confirmLabel,
+            String cancelLabel,
+            Runnable onConfirm,
+            Runnable onCancel) {
+        act.mediaShowThemedConfirm(title, message, confirmLabel, cancelLabel, onConfirm, onCancel);
+    }
 }

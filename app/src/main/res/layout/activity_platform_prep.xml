@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2026-07-05 — Blocking platform prep wizard (wheel-friendly full screen). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/platform_prep_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/platform_prep_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/platform_prep_title"
+        android:textSize="18sp"
+        android:paddingBottom="8dp" />
+
+    <TextView
+        android:id="@+id/platform_prep_subtitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/platform_prep_subtitle"
+        android:textSize="14sp"
+        android:paddingBottom="12dp" />
+
+    <ProgressBar
+        android:id="@+id/platform_prep_progress"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="100"
+        android:progress="0"
+        android:paddingBottom="8dp" />
+
+    <TextView
+        android:id="@+id/platform_prep_percent"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="0%"
+        android:paddingBottom="8dp" />
+
+    <ScrollView
+        android:id="@+id/platform_prep_log_scroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/platform_prep_log"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="12sp" />
+    </ScrollView>
+
+    <Button
+        android:id="@+id/platform_prep_action"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:visibility="gone"
+        android:text="@string/platform_prep_continue" />
+</LinearLayout>

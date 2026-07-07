@@ -16,6 +16,7 @@ import java.util.Set;
 
 /**
  * Shared album rack for Library → Albums and Flow → Albums — one canonical order.
+ * 2026-07-05: Unknown-album tracks appear as one "Unknown Album" per artist (Classipod/iPod).
  */
 public final class LibraryAlbumRack {
 
@@ -29,57 +30,68 @@ public final class LibraryAlbumRack {
         Map<String, List<File>> tracksByAlbumKey = new HashMap<String, List<File>>();
         Map<String, Map<String, Integer>> artistVotesByAlbumKey = new HashMap<String, Map<String, Integer>>();
         Map<String, Long> maxModifiedByAlbumKey = new HashMap<String, Long>();
+        Map<String, String> unknownArtistByRackKey = new HashMap<String, String>();
 
         for (FlowCatalog.SongRow song : library) {
-            if (song.album == null || song.album.trim().isEmpty()
-                    || "Unknown Album".equalsIgnoreCase(song.album.trim())) continue;
-            String album = song.album.trim();
-            String albumKey = AlbumNames.matchKey(album);
-            if (prefs != null && prefs.normalizeAlbumCase()) {
-                registerAlbumVariant(albumByKey, album);
+            if (song.album == null || song.album.trim().isEmpty()) continue;
+            String rackKey = rackKeyForSong(song, prefs);
+            if (rackKey.isEmpty()) continue;
+            if (AlbumNames.isUnknownAlbum(song.album)) {
+                albumByKey.put(rackKey, AlbumNames.UNKNOWN_ALBUM);
+                String owner = unknownAlbumOwner(song, prefs);
+                unknownArtistByRackKey.put(rackKey, owner);
+            } else if (prefs != null && prefs.normalizeAlbumCase()) {
+                registerAlbumVariant(albumByKey, rackKey, song.album.trim());
             } else {
-                albumByKey.put(albumKey, album);
+                albumByKey.put(rackKey, song.album.trim());
             }
             String rawArtist = song.artist != null ? song.artist.trim() : "";
-            if (!rawArtist.isEmpty()) {
-                Map<String, Integer> votes = artistVotesByAlbumKey.get(albumKey);
+            if (!rawArtist.isEmpty() && !AlbumNames.isUnknownAlbum(song.album)) {
+                Map<String, Integer> votes = artistVotesByAlbumKey.get(rackKey);
                 if (votes == null) {
                     votes = new HashMap<String, Integer>();
-                    artistVotesByAlbumKey.put(albumKey, votes);
+                    artistVotesByAlbumKey.put(rackKey, votes);
                 }
                 Integer n = votes.get(rawArtist);
                 votes.put(rawArtist, n != null ? n + 1 : 1);
             }
-            Long prev = maxModifiedByAlbumKey.get(albumKey);
+            Long prev = maxModifiedByAlbumKey.get(rackKey);
             if (prev == null || song.lastModified > prev) {
-                maxModifiedByAlbumKey.put(albumKey, song.lastModified);
+                maxModifiedByAlbumKey.put(rackKey, song.lastModified);
             }
         }
 
         for (FlowCatalog.SongRow song : library) {
-            if (song.album == null || song.album.trim().isEmpty()
-                    || "Unknown Album".equalsIgnoreCase(song.album.trim())) continue;
-            String albumKey = AlbumNames.matchKey(song.album.trim());
-            List<File> tracks = tracksByAlbumKey.get(albumKey);
+            if (song.album == null || song.album.trim().isEmpty()) continue;
+            String rackKey = rackKeyForSong(song, prefs);
+            if (rackKey.isEmpty()) continue;
+            List<File> tracks = tracksByAlbumKey.get(rackKey);
             if (tracks == null) {
                 tracks = new ArrayList<File>();
-                tracksByAlbumKey.put(albumKey, tracks);
+                tracksByAlbumKey.put(rackKey, tracks);
             }
             if (song.file != null && song.file.isFile()) tracks.add(song.file);
         }
 
         List<FlowItem> out = new ArrayList<FlowItem>();
-        for (String albumKey : tracksByAlbumKey.keySet()) {
-            List<File> tracks = tracksByAlbumKey.get(albumKey);
+        for (String rackKey : tracksByAlbumKey.keySet()) {
+            List<File> tracks = tracksByAlbumKey.get(rackKey);
             if (multiTrackOnly && (tracks == null || tracks.size() <= 1)) continue;
-            String album = albumByKey.get(albumKey);
-            String artist = FlowCatalog.primaryArtistFromVotes(
-                    artistVotesByAlbumKey.get(albumKey), "");
+            String album = albumByKey.get(rackKey);
+            if (album == null || album.isEmpty()) continue;
+            String artist;
+            if (AlbumNames.isUnknownAlbum(album)) {
+                artist = unknownArtistByRackKey.get(rackKey);
+                if (artist == null || artist.isEmpty()) artist = "Unknown Artist";
+            } else {
+                artist = FlowCatalog.primaryArtistFromVotes(
+                        artistVotesByAlbumKey.get(rackKey), "");
+            }
             String itemKey = FlowCoverResolver.albumMatchKey(album, artist);
             String sub = ArtistBrowsePolicy.albumBrowseSubtitle(album, artist, policyTracks, prefs);
             if (sub == null || sub.isEmpty()) sub = artist;
             FlowItem item = FlowItem.album(album, sub, itemKey,
-                    FlowCatalog.sortTracksForAlbum(tracks, prefs, library), "");
+                    java.util.Collections.<java.io.File>emptyList(), "");
             out.add(item);
         }
         return orderAlbums(out, policyTracks, prefs, maxModifiedByAlbumKey, tracksByAlbumKey);
@@ -110,7 +122,7 @@ public final class LibraryAlbumRack {
                     long ma = modifiedForItem(a, maxModifiedByAlbumKey);
                     long mb = modifiedForItem(b, maxModifiedByAlbumKey);
                     if (ma != mb) return ma > mb ? -1 : 1;
-                    return a.title.compareToIgnoreCase(b.title);
+                    return titleCompare(a, b);
                 }
             });
             return filtered;
@@ -122,7 +134,7 @@ public final class LibraryAlbumRack {
                     int ca = trackCount(a, tracksByAlbumKey);
                     int cb = trackCount(b, tracksByAlbumKey);
                     if (ca != cb) return ca > cb ? -1 : 1;
-                    return a.title.compareToIgnoreCase(b.title);
+                    return titleCompare(a, b);
                 }
             });
             return filtered;
@@ -130,10 +142,35 @@ public final class LibraryAlbumRack {
         Collections.sort(filtered, new Comparator<FlowItem>() {
             @Override
             public int compare(FlowItem a, FlowItem b) {
-                return a.title.compareToIgnoreCase(b.title);
+                return titleCompare(a, b);
             }
         });
         return filtered;
+    }
+
+    /** Rack bucket key — album title for tagged albums; artist-scoped key for unknown albums. */
+    private static String rackKeyForSong(FlowCatalog.SongRow song, LibraryBrowsePrefs prefs) {
+        if (song == null || song.album == null || song.album.trim().isEmpty()) return "";
+        if (AlbumNames.isUnknownAlbum(song.album)) {
+            return AlbumNames.unknownAlbumRackKey(unknownAlbumOwner(song, prefs));
+        }
+        return AlbumNames.matchKey(song.album.trim());
+    }
+
+    /** Classipod: albumArtist falls back to primary track artist when album tag is missing. */
+    private static String unknownAlbumOwner(FlowCatalog.SongRow song, LibraryBrowsePrefs prefs) {
+        if (song.albumArtist != null && !song.albumArtist.isEmpty()
+                && !AudioTags.isUnknownArtist(song.albumArtist)) {
+            return song.albumArtist.trim();
+        }
+        String primary = ArtistParser.primaryArtist(song.artist);
+        if (primary != null && !primary.isEmpty() && !AudioTags.isUnknownArtist(primary)) {
+            return primary.trim();
+        }
+        if (song.artist != null && !song.artist.trim().isEmpty()) {
+            return song.artist.trim();
+        }
+        return "Unknown Artist";
     }
 
     private static List<FlowItem> filterByArtistPolicy(List<FlowItem> items,
@@ -177,34 +214,51 @@ public final class LibraryAlbumRack {
                 int ra = artistRank.containsKey(ak) ? artistRank.get(ak) : Integer.MAX_VALUE;
                 int rb = artistRank.containsKey(bk) ? artistRank.get(bk) : Integer.MAX_VALUE;
                 if (ra != rb) return ra < rb ? -1 : 1;
-                return a.title.compareToIgnoreCase(b.title);
+                return titleCompare(a, b);
             }
         });
         return sorted;
     }
 
+    /** Lookup key in maxModified / trackCount maps — unknown albums need artist-scoped keys. */
+    private static String rackLookupKey(FlowItem item) {
+        if (item == null) return "";
+        if (AlbumNames.isUnknownAlbum(item.title) && item.matchKey != null && !item.matchKey.isEmpty()) {
+            return item.matchKey;
+        }
+        return AlbumNames.matchKey(item.title);
+    }
+
     private static long modifiedForItem(FlowItem item, Map<String, Long> maxModifiedByAlbumKey) {
         if (item == null || item.title == null) return 0L;
-        Long v = maxModifiedByAlbumKey.get(AlbumNames.matchKey(item.title));
+        Long v = maxModifiedByAlbumKey.get(rackLookupKey(item));
         return v != null ? v : 0L;
     }
 
     private static int trackCount(FlowItem item, Map<String, List<File>> tracksByAlbumKey) {
         if (item == null || item.title == null) return 0;
-        List<File> t = tracksByAlbumKey.get(AlbumNames.matchKey(item.title));
+        List<File> t = tracksByAlbumKey.get(rackLookupKey(item));
         return t != null ? t.size() : (item.tracks != null ? item.tracks.size() : 0);
     }
 
-    private static void registerAlbumVariant(Map<String, String> albumByKey, String raw) {
-        String key = AlbumNames.matchKey(raw);
-        String existing = albumByKey.get(key);
+    /** Title sort with artist tie-break so multiple "Unknown Album" rows stay stable. */
+    private static int titleCompare(FlowItem a, FlowItem b) {
+        int t = a.title.compareToIgnoreCase(b.title);
+        if (t != 0) return t;
+        String as = a.subtitle != null ? a.subtitle : "";
+        String bs = b.subtitle != null ? b.subtitle : "";
+        return as.compareToIgnoreCase(bs);
+    }
+
+    private static void registerAlbumVariant(Map<String, String> albumByKey, String rackKey, String raw) {
+        String existing = albumByKey.get(rackKey);
         if (existing == null) {
-            albumByKey.put(key, raw);
+            albumByKey.put(rackKey, raw);
         } else if (!existing.equals(raw)) {
             Map<String, Integer> counts = new HashMap<String, Integer>();
             counts.put(existing, 1);
             counts.put(raw, 1);
-            albumByKey.put(key, AlbumNames.chooseCanonical(counts));
+            albumByKey.put(rackKey, AlbumNames.chooseCanonical(counts));
         }
     }
 }

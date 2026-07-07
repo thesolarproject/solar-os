@@ -8,20 +8,31 @@ import java.io.File;
 import java.io.FileWriter;
 
 /**
- * Debug-mode NDJSON logger — session 6a585a.
- * ponytail: writes to SD card + app files; pull with adb to .cursor/debug-6a585a.log
+ * Debug-mode NDJSON logger — session a4dee8.
+ * Writes to SD + app files; pull to .cursor/debug-a4dee8.log on host.
  */
 public final class DebugSessionLog {
-    private static final String TAG = "SolarDbg6a585a";
-    private static final String SESSION = "6a585a";
-    private static final String FILE = "debug-6a585a.log";
-    /** ponytail: hot-path sync SD I/O — on only for short debug sessions. */
-    public static volatile boolean ENABLED = false;
+    private static final String TAG = "SolarDbga4dee8";
+    private static final String SESSION = "a4dee8";
+    private static final String FILE = "debug-a4dee8.log";
+    /** 2026-07-05 — Off in release; hot-path sync SD I/O only in debug builds. */
+    public static volatile boolean ENABLED = BuildConfig.DEBUG;
 
     private DebugSessionLog() {}
 
     public static void log(String location, String message, String hypothesisId, JSONObject data) {
         if (!ENABLED) return;
+        emit(location, message, hypothesisId, data);
+    }
+
+    /** Root / Rockbox switch diagnostics — same ENABLED gate as log() (2026-07-05). */
+    public static void logAlways(String location, String message, String hypothesisId,
+            JSONObject data) {
+        if (!ENABLED) return;
+        emit(location, message, hypothesisId, data);
+    }
+
+    private static void emit(String location, String message, String hypothesisId, JSONObject data) {
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

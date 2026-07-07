@@ -15,8 +15,9 @@ public final class FlowCoverCache {
         void onCoverReady(String coverKey, Bitmap bitmap);
     }
 
-    private static final int MAX_ENTRIES = 48;
-    private static final int EVICT_DISTANCE = 6;
+    /** 2026-07-05 — Tighter LOD window for 30k catalogs; rollback: 48 / 6. */
+    private static final int MAX_ENTRIES = 32;
+    private static final int EVICT_DISTANCE = 4;
 
     private final Map<String, Bitmap> cache = new LinkedHashMap<String, Bitmap>(16, 0.75f, true) {
         @Override
@@ -73,16 +74,26 @@ public final class FlowCoverCache {
 
     /**
      * Evict covers far from carousel focus — keeps RAM for nearby slides.
-     * ponytail: linear scan of LRU map; upgrade to index→key if catalog grows huge.
+     * 2026-07-05 — optional coverKey→index map skips O(n) item scan at 30k.
      */
-    public synchronized void evictFarFrom(int focusIndex, List<FlowItem> items) {
+    public synchronized void evictFarFrom(int focusIndex, List<FlowItem> items,
+            java.util.Map<String, Integer> coverKeyIndex) {
         if (items == null || items.isEmpty() || cache.size() <= MAX_ENTRIES / 2) return;
         java.util.Set<String> cachedKeys = new java.util.HashSet<String>(cache.keySet());
-        Map<String, Integer> keyToIndex = new java.util.HashMap<String, Integer>(cachedKeys.size());
-        for (int i = 0; i < items.size(); i++) {
-            FlowItem item = items.get(i);
-            if (item != null && item.coverKey != null && cachedKeys.contains(item.coverKey)) {
-                keyToIndex.put(item.coverKey, i);
+        Map<String, Integer> keyToIndex;
+        if (coverKeyIndex != null && !coverKeyIndex.isEmpty()) {
+            keyToIndex = new java.util.HashMap<String, Integer>(cachedKeys.size());
+            for (String key : cachedKeys) {
+                Integer idx = coverKeyIndex.get(key);
+                if (idx != null) keyToIndex.put(key, idx);
+            }
+        } else {
+            keyToIndex = new java.util.HashMap<String, Integer>(cachedKeys.size());
+            for (int i = 0; i < items.size(); i++) {
+                FlowItem item = items.get(i);
+                if (item != null && item.coverKey != null && cachedKeys.contains(item.coverKey)) {
+                    keyToIndex.put(item.coverKey, i);
+                }
             }
         }
         Iterator<Map.Entry<String, Bitmap>> it = cache.entrySet().iterator();
@@ -94,6 +105,11 @@ public final class FlowCoverCache {
                 it.remove();
             }
         }
+    }
+
+    /** Back-compat wrapper — linear scan when no index map supplied. */
+    public synchronized void evictFarFrom(int focusIndex, List<FlowItem> items) {
+        evictFarFrom(focusIndex, items, null);
     }
 
     private void recycleUnlessPlaceholder(Bitmap b) {

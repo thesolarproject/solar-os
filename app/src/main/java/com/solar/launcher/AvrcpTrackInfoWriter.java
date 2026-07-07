@@ -210,7 +210,7 @@ public final class AvrcpTrackInfoWriter {
         intent.putExtra("artist", artist);
         intent.putExtra("album", album);
         // Sticky so late-starting mtkbt sees metadata after BT connect.
-        appContext.sendStickyBroadcast(intent);
+        sendLegacyMusicBroadcast(intent);
     }
 
     private void wakePlayStateChanged() {
@@ -225,7 +225,18 @@ public final class AvrcpTrackInfoWriter {
         intent.putExtra("artist", artist);
         intent.putExtra("album", album);
         intent.putExtra("playing", playStatus == PLAY_PLAYING);
-        appContext.sendStickyBroadcast(intent);
+        sendLegacyMusicBroadcast(intent);
+    }
+
+    private void sendLegacyMusicBroadcast(Intent intent) {
+        try {
+            appContext.sendStickyBroadcast(intent);
+        } catch (SecurityException denied) {
+            try {
+                appContext.sendBroadcast(intent);
+            } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
     }
 
     private static long stableAudioId(String title, String artist, String album) {

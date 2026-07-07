@@ -127,6 +127,28 @@ public class HomeMenuConfigTest {
     }
 
     @Test
+    public void homeMenuRowCount_includesMoreTilePastEntries() {
+        prefs.edit().putBoolean(HomeMenuConfig.PREF_MORE_ENABLED, true).commit();
+        HomeMenuConfig.setShortcutEnabled(prefs, HomeMenuConfig.ID_PODCASTS, true);
+        List<HomeMenuConfig.Entry> visible = HomeMenuConfig.loadVisibleForDisplay(prefs, true, true);
+        boolean showMore = HomeMenuConfig.shouldShowMoreTile(prefs, true, true);
+        int rows = HomeMenuConfig.homeMenuRowCount(visible, showMore);
+        if (showMore) {
+            if (rows != visible.size() + 1) {
+                throw new AssertionError("rows=" + rows + " entries=" + visible.size());
+            }
+            if (!HomeMenuConfig.isMoreTileFocusIndex(visible.size(), visible.size(), true)) {
+                throw new AssertionError("More tile index should equal entry count");
+            }
+            if (HomeMenuConfig.isMoreTileFocusIndex(visible.size() - 1, visible.size(), true)) {
+                throw new AssertionError("last entry is not More tile");
+            }
+        } else if (rows != visible.size()) {
+            throw new AssertionError("rows without More=" + rows + " entries=" + visible.size());
+        }
+    }
+
+    @Test
     public void unknownIdsStripped() {
         HomeMenuConfig.saveOrder(prefs, Arrays.asList(
                 HomeMenuConfig.ID_MUSIC, "bogus", HomeMenuConfig.ID_SETTINGS));
@@ -285,31 +307,54 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void radioHiddenUntilExperimentEnabled() {
-        List<HomeMenuConfig.Entry> hidden = HomeMenuConfig.loadVisibleForDisplay(prefs, true, true);
-        for (HomeMenuConfig.Entry e : hidden) {
-            if (HomeMenuConfig.ID_RADIO.equals(e.id) || HomeMenuConfig.ID_FM.equals(e.id)) {
-                throw new AssertionError("radio visible while experiment off");
-            }
-        }
-        prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, true)
-                .commit();
+    public void radioVisibleWithoutExperiment() {
         boolean hasRadio = false;
         for (HomeMenuConfig.Entry e : HomeMenuConfig.loadVisibleForDisplay(prefs, true, true)) {
             if (HomeMenuConfig.ID_RADIO.equals(e.id)) hasRadio = true;
         }
-        if (!hasRadio) throw new AssertionError("radio missing when experiment on");
+        if (!hasRadio) throw new AssertionError("radio should be visible without experiment");
         boolean editorHasRadio = false;
         for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
             if (HomeMenuConfig.ID_RADIO.equals(e.id)) editorHasRadio = true;
         }
-        if (!editorHasRadio) throw new AssertionError("editor missing radio when experiment on");
-        prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, false)
-                .commit();
+        if (!editorHasRadio) throw new AssertionError("editor missing radio");
+    }
+
+    @Test
+    public void radioAlwaysInEditorCatalog() {
         for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
-            if (HomeMenuConfig.ID_RADIO.equals(e.id)) {
-                throw new AssertionError("editor shows radio while experiment off");
+            if (HomeMenuConfig.ID_RADIO.equals(e.id)) return;
+        }
+        throw new AssertionError("radio missing from editor catalog");
+    }
+
+    @Test
+    public void bluetoothVisibleEvenWhenExperimentDisabled() {
+        boolean visibleHasBluetooth = false;
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadVisibleForDisplay(prefs, true, true)) {
+            if (HomeMenuConfig.ID_BLUETOOTH.equals(e.id)) {
+                visibleHasBluetooth = true;
             }
+        }
+        if (!visibleHasBluetooth) throw new AssertionError("bluetooth hidden while experiment off");
+        boolean editorHasBluetooth = false;
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
+            if (HomeMenuConfig.ID_BLUETOOTH.equals(e.id)) {
+                editorHasBluetooth = true;
+            }
+        }
+        if (!editorHasBluetooth) throw new AssertionError("editor missing bluetooth while experiment off");
+        HomeMenuConfig.setMoreEnabled(prefs, true);
+        HomeMenuConfig.saveMoreOrder(prefs, Arrays.asList(HomeMenuConfig.ID_BLUETOOTH));
+        boolean moreHasBluetooth = false;
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadMoreVisible(prefs, true, true)) {
+            if (HomeMenuConfig.ID_BLUETOOTH.equals(e.id)) {
+                moreHasBluetooth = true;
+            }
+        }
+        if (!moreHasBluetooth) throw new AssertionError("more missing bluetooth while experiment off");
+        if (!HomeMenuConfig.shouldShowMoreTile(prefs, true, true)) {
+            throw new AssertionError("more tile should show when bluetooth is the only item");
         }
     }
 

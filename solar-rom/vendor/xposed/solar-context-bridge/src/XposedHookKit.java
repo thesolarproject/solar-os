@@ -5,6 +5,7 @@ import java.util.Arrays;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XC_MethodReplacement;
+import de.robv.android.xposed.XposedHelpers;
 
 /**
  * Hook via runtime XposedBridge reflection — compile stubs must not call hookAllMethods directly
@@ -97,5 +98,33 @@ final class XposedHookKit {
 
     private static String paramSig(Class<?>... types) {
         return Arrays.toString(types);
+    }
+
+    /**
+     * Skip the original method with a type-safe stub return — never pass null for boolean/int
+     * hooks or callers NPE and system:ui shows "Android System has stopped".
+     */
+    static void skipMethod(XC_MethodHook.MethodHookParam param) {
+        if (param == null) return;
+        param.setResult(defaultReturnValue(param));
+    }
+
+    /** Primitive/boxed return types must not get null from replacement hooks (NPE in callers). */
+    static Object defaultReturnValue(XC_MethodHook.MethodHookParam param) {
+        try {
+            Object member = XposedHelpers.getObjectField(param, "method");
+            if (!(member instanceof java.lang.reflect.Method)) return null;
+            Class<?> ret = ((java.lang.reflect.Method) member).getReturnType();
+            if (ret == void.class || ret == Void.class) return null;
+            if (ret == boolean.class || ret == Boolean.class) return Boolean.FALSE;
+            if (ret == int.class || ret == Integer.class) return 0;
+            if (ret == long.class || ret == Long.class) return 0L;
+            if (ret == float.class || ret == Float.class) return 0f;
+            if (ret == double.class || ret == Double.class) return 0d;
+            if (ret == byte.class || ret == Byte.class) return (byte) 0;
+            if (ret == short.class || ret == Short.class) return (short) 0;
+            if (ret == char.class || ret == Character.class) return (char) 0;
+        } catch (Throwable ignored) {}
+        return null;
     }
 }

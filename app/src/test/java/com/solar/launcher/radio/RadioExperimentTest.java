@@ -2,6 +2,8 @@ package com.solar.launcher.radio;
 
 import android.content.SharedPreferences;
 
+import com.solar.launcher.media.MediaSuiteHost;
+
 import org.junit.Before;
 import org.junit.Test;
 
@@ -19,17 +21,66 @@ public class RadioExperimentTest {
     }
 
     @Test
-    public void disabledByDefault() {
-        if (RadioExperiment.isEnabled(prefs)) {
-            throw new AssertionError("radio experiment should default off");
+    public void internetRadioDisabledByDefault() {
+        if (RadioExperiment.isInternetRadioEnabled(prefs)) {
+            throw new AssertionError("internet radio should default off");
+        }
+    }
+
+    @Test
+    public void fmAlwaysProduction() {
+        if (!RadioExperiment.isFmProduction()) {
+            throw new AssertionError("FM should always be production");
+        }
+    }
+
+    @Test
+    public void netBrowseBlockedWhenExperimentOff() {
+        if (!RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_NET_BROWSE, prefs)) {
+            throw new AssertionError("net browse should be blocked");
+        }
+    }
+
+    @Test
+    public void fmScreensAllowedWhenExperimentOff() {
+        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_FM_BROWSE, prefs)) {
+            throw new AssertionError("FM browse should be allowed");
+        }
+        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO, prefs)) {
+            throw new AssertionError("radio hub should be allowed");
+        }
+        if (!RadioExperiment.isInAppRadioUiEnabled(prefs)) {
+            throw new AssertionError("in-app FM UI should always be on");
+        }
+    }
+
+    @Test
+    public void hubRedirectsToFmPlayerWhenExperimentOff() {
+        int target = RadioExperiment.resolveRadioHomeTarget(MediaSuiteHost.STATE_RADIO, prefs);
+        if (target != MediaSuiteHost.STATE_RADIO_FM_PLAYER) {
+            throw new AssertionError("hub should open FM player when experiment off");
+        }
+    }
+
+    @Test
+    public void inAppRadioUiEnabledWhenExperimentOn() {
+        prefs.edit().putBoolean(RadioExperiment.PREF_RADIO_EXPERIMENT, true).commit();
+        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_FM_BROWSE, prefs)) {
+            throw new AssertionError("FM browse should be allowed when experiment on");
+        }
+        if (!RadioExperiment.isInAppRadioUiEnabled(prefs)) {
+            throw new AssertionError("in-app radio UI should be on");
         }
     }
 
     @Test
     public void enabledWhenPrefOn() {
         prefs.edit().putBoolean(RadioExperiment.PREF_RADIO_EXPERIMENT, true).commit();
-        if (!RadioExperiment.isEnabled(prefs)) {
-            throw new AssertionError("radio experiment should be on");
+        if (!RadioExperiment.isInternetRadioEnabled(prefs)) {
+            throw new AssertionError("internet radio should be on");
+        }
+        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_NET_BROWSE, prefs)) {
+            throw new AssertionError("net browse should be allowed");
         }
     }
 

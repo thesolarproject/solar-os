@@ -7,6 +7,7 @@ import org.json.JSONObject;
 /**
  * Gently replaces SystemUI {@code UsbStorageActivity} with Solar's USB lock screen.
  * ponytail: one rooted BACK + HOME every {@link #MIN_INTERVAL_MS} — not a 50ms HOME storm.
+ * 2026-07-06 — Tier-2 fallback only when Xposed concierge missed; tier-1 is {@code UsbStorageHooks}.
  * {@code pm disable} on UsbStorageActivity crashes SystemUI in a loop; finishing it is safe.
  */
 public final class SystemUiUsbSuppressor {
@@ -18,15 +19,21 @@ public final class SystemUiUsbSuppressor {
     private SystemUiUsbSuppressor() {}
 
     /**
-     * If SystemUI's USB activity is foreground, send BACK then bring Solar HOME once.
-     * Safe to call from main thread — work runs on a background thread.
+     * If SystemUI's USB activity is foreground, send BACK — HOME only when Solar already
+     * owns the screen (UMS lock). Never yank focus from a third-party app on plug/unplug.
      */
     public static void dismissIfNeeded(final Context context) {
         if (context == null) return;
+        // Xposed concierge finishes UsbStorageActivity — suppressor only for UMS lock reclaim gaps.
+        if (UsbStorageConcierge.isXposedConciergeActive()
+                && !GlobalOverlayPolicy.isSolarForegroundPackage(
+                        ExternalInputHandoff.getForegroundPackageName(context))) {
+            return;
+        }
         final long now = System.currentTimeMillis();
         if (now - lastRunMs < MIN_INTERVAL_MS) return;
         lastRunMs = now;
-        runDismiss(context.getPackageName());
+        runDismiss(context);
     }
 
     /** Force the next call through (e.g. right after enabling UMS). */
@@ -36,18 +43,24 @@ public final class SystemUiUsbSuppressor {
         dismissIfNeeded(context);
     }
 
-    private static void runDismiss(final String pkg) {
+    private static void runDismiss(final Context context) {
+        final String pkg = context.getPackageName();
+        final boolean solarForeground = GlobalOverlayPolicy.isSolarForegroundPackage(
+                ExternalInputHandoff.getForegroundPackageName(context));
         new Thread(new Runnable() {
             @Override
             public void run() {
                 boolean ran = false;
                 String err = null;
                 try {
-                    // ponytail: BACK finishes UsbStorageActivity; HOME shows Solar lock screen.
+                    // BACK finishes UsbStorageActivity; HOME only when Solar already owns UMS lock.
+                    String home = solarForeground
+                            ? (" sleep 0.15; am start -a android.intent.action.MAIN "
+                            + "-c android.intent.category.HOME -n " + pkg
+                            + "/.MainActivity -f 0x34000000;")
+                            : "";
                     String cmd = "dumpsys activity top 2>/dev/null | grep -q UsbStorageActivity && "
-                            + "{ input keyevent 4; sleep 0.15; "
-                            + "am start -a android.intent.action.MAIN -c android.intent.category.HOME "
-                            + "-n " + pkg + "/.MainActivity -f 0x34000000; echo ran; }";
+                            + "{ input keyevent 4;" + home + " echo ran; }";
                     Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
                     java.io.BufferedReader br = new java.io.BufferedReader(
                             new java.io.InputStreamReader(p.getInputStream()));

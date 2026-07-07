@@ -7,7 +7,10 @@ import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
- * Shared Xposed router — Y1 and Y2 entry classes pick which hooks load.
+ * 2026-07-05 — Shared Xposed hook router; Y1/Y2 entry APKs pick Target enum at construction.
+ * APK/ROM parity: separate bridge APKs per family; Rockbox org.rockbox is special (BACK hold excluded).
+ * When changing: add hooks in installY1/installY2 paths; never rethrow — stock app must keep running.
+ * Reversal: remove hook install calls; affected behavior reverts to stock Android paths.
  */
 public final class SolarContextBridge implements IXposedHookLoadPackage {
 
@@ -30,6 +33,7 @@ public final class SolarContextBridge implements IXposedHookLoadPackage {
                 } else {
                     SystemServerHooks.installY1(lpparam);
                 }
+                // system:ui hosts android/com.android.internal.app.ResolverActivity for HOME picks.
                 LauncherResolverHooks.install(lpparam);
                 return;
             }
@@ -48,12 +52,18 @@ public final class SolarContextBridge implements IXposedHookLoadPackage {
         }
         AppMenuHooks.install(lpparam);
         DialogHooks.install(lpparam);
+        ToastHooks.install(lpparam);
+        BluetoothPairingHooks.install(lpparam);
+        JjInputHooks.install(lpparam);
         ActivityOverlayKeyHooks.install(lpparam);
+        ImeSessionHooks.install(lpparam);
+        ImeFocusHooks.installApp(lpparam);
         LauncherResolverHooks.install(lpparam);
         } catch (Throwable t) {
             log("handleLoadPackage failed pkg=" + (lpparam != null ? lpparam.packageName : "?")
                     + ": " + t.getClass().getSimpleName() + " " + t.getMessage());
-            throw t;
+            // Never rethrow — an uncaught hook init exception kills system:ui / system_server
+            // and surfaces as "Android System has stopped" on Y1/Y2.
         }
     }
 

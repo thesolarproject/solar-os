@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2026-07-05 — Shared full-screen wheel keyboard (Solar app + system IME overlay). -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/layout_solar_wheel_keyboard"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:paddingTop="@dimen/y1_status_bar_height"
+    android:padding="15dp"
+    android:background="#00000000">
+
+    <TextView
+        android:id="@+id/tv_keyboard_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tv_keyboard_input"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="@dimen/y1_menu_item_height"
+        android:text=""
+        android:textSize="@dimen/y1_menu_text_size"
+        android:textStyle="bold"
+        android:gravity="center"
+        android:layout_marginTop="10dp"
+        android:layout_marginBottom="15dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center">
+
+        <TextView
+            android:id="@+id/tv_key_pprev"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textSize="@dimen/y1_menu_text_size" />
+
+        <TextView
+            android:id="@+id/tv_key_prev"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textSize="@dimen/y1_menu_text_size" />
+
+        <TextView
+            android:id="@+id/tv_key_current"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textSize="@dimen/y1_menu_text_size"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_key_next"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textSize="@dimen/y1_menu_text_size" />
+
+        <TextView
+            android:id="@+id/tv_key_nnext"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:textSize="@dimen/y1_menu_text_size" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tv_keyboard_hint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:text="@string/keyboard_hint"
+        android:textSize="@dimen/y1_menu_text_size"
+        android:layout_marginTop="15dp" />
+</LinearLayout>

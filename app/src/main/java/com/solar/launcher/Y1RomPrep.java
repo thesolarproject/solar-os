@@ -13,9 +13,10 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 
 /**
- * Patches Rockbox-y1 launcher switch scripts at runtime via root.
- * Rockbox APK calls {@code sh /data/data/switch-to-stock.sh} — must be our rebootless script,
- * not the rockbox-y1 base image copy that swaps keylayouts and reboots.
+ * 2026-07-05 — APK-side mirror of ROM switch/keymap/sync scripts staged under /system/etc/solar.
+ * APK/ROM parity: Rockbox calls /data/data/switch-to-stock.sh — must match ROM-baked rebootless script.
+ * When changing: sync-y1-assets.sh; Y2 uses Y2-Rockbox.kl branch; assets/y1/ script copies.
+ * Reversal: stop calling from SolarApplication bootstrap; rely on ROM 99SolarInit.sh seed only.
  */
 public final class Y1RomPrep {
     private static final String TAG = "Y1RomPrep";
@@ -27,7 +28,15 @@ public final class Y1RomPrep {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                try {
+                ensureSwitchScriptsSync(context);
+            }
+        }, "Y1RomPrep").start();
+    }
+
+    /** Blocking switch-script patch — platform prep wizard waits for completion. */
+    public static void ensureSwitchScriptsSync(Context context) {
+        if (context == null) return;
+        try {
                     boolean legacy = isLegacyRockboxSwitchScript("/data/data/switch-to-stock.sh");
                     runSu("mkdir -p /data/data /system/etc/solar");
                     int patched = 0;
@@ -45,10 +54,31 @@ public final class Y1RomPrep {
                             "/system/etc/solar/sync-y1-keymap.sh") ? 1 : 0;
                     patched += patchSwitchScript(context, "y1/disable-rockbox-for-solar.sh",
                             "/system/etc/solar/disable-rockbox-for-solar.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/apply-preferred-home-boot.sh",
+                            "/system/etc/solar/apply-preferred-home-boot.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/solar-launcher-exec.sh",
+                            "/system/etc/solar/solar-launcher-exec.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/solar-launcher-exec.sh",
+                            "/data/data/solar-launcher-exec.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/solar-platform-daemon.sh",
+                            "/system/etc/solar/solar-platform-daemon.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/disable-large-font-accessibility.sh",
+                            "/system/etc/solar/disable-large-font-accessibility.sh") ? 1 : 0;
+                    patched += patchSwitchScript(context, "y1/enable-gpu-performance.sh",
+                            "/system/etc/solar/enable-gpu-performance.sh") ? 1 : 0;
                     patched += patchSwitchScript(context, "y1/solar-usb-recovery-agent.sh",
                             "/system/etc/solar/solar-usb-recovery-agent.sh") ? 1 : 0;
                     patched += patchSwitchScript(context, "y1/Y1-Rockbox.kl",
                             "/system/etc/solar/Y1-Rockbox.kl") ? 1 : 0;
+                    if (!DeviceFeatures.isY2()) {
+                        patched += patchSwitchScript(context, "y1/mtk-kpd.y1.stock.kl",
+                                "/system/etc/solar/mtk-kpd.y1.stock.kl") ? 1 : 0;
+                        runSu("rm -f /system/etc/solar/Y2-Rockbox.kl 2>/dev/null");
+                    }
+                    if (DeviceFeatures.isY2()) {
+                        patched += patchSwitchScript(context, "y1/Y2-Rockbox.kl",
+                                "/system/etc/solar/Y2-Rockbox.kl") ? 1 : 0;
+                    }
                     RockboxCoexistence.ensureOnSolarStart(context);
                     RockboxDisable.ensureOnce(context);
                     LauncherSwitch.assertRockboxDisabledWhileSolarHome(context);
@@ -56,8 +86,14 @@ public final class Y1RomPrep {
                             + "/system/etc/solar/switch-to-stock.sh /system/etc/solar/switch-to-rockbox.sh "
                             + "/system/etc/solar/sync-rockbox-libs.sh /system/etc/solar/sync-y1-keymap.sh "
                             + "/system/etc/solar/disable-rockbox-for-solar.sh "
+                            + "/system/etc/solar/apply-preferred-home-boot.sh "
+                            + "/system/etc/solar/solar-launcher-exec.sh "
+                            + "/system/etc/solar/solar-platform-daemon.sh "
+                            + "/system/etc/solar/disable-large-font-accessibility.sh "
+                            + "/system/etc/solar/enable-gpu-performance.sh "
                             + "/system/etc/solar/solar-usb-recovery-agent.sh "
-                            + "2>/dev/null; chmod 644 /system/etc/solar/Y1-Rockbox.kl 2>/dev/null");
+                            + "2>/dev/null; chmod 644 /system/etc/solar/Y1-Rockbox.kl /system/etc/solar/Y2-Rockbox.kl "
+                            + "/system/etc/solar/mtk-kpd.y1.stock.kl 2>/dev/null");
                     Log.i(TAG, "patched " + patched + "/4 switch script paths"
                             + (legacy ? " (replaced legacy rockbox-y1 script)" : ""));
                     // #region agent log
@@ -73,8 +109,6 @@ public final class Y1RomPrep {
                 } catch (Exception e) {
                     Log.w(TAG, "switch script patch failed: " + e.getMessage());
                 }
-            }
-        }, "Y1RomPrep").start();
     }
 
     /** True when rockbox-y1 base script (reboot / keylayout swap) is still present. */

@@ -62,6 +62,8 @@ public final class FlowView extends View {
     private final Camera camera = new Camera();
     private final int[] drawOrder = new int[CoverFlowLayout.SIDE_SLIDES * 2 + 1];
     private final float[] drawDepth = new float[CoverFlowLayout.SIDE_SLIDES * 2 + 1];
+    /** 2026-07-05 — Reused draw scratch; slotTransformInto avoids per-slot alloc. */
+    private final FlowEngine.SlotTransform drawSlotScratch = new FlowEngine.SlotTransform();
     private final FlowMarquee titleMarquee = new FlowMarquee();
     private final FlowMarquee subtitleMarquee = new FlowMarquee();
     private final FlowMarquee backTitleMarquee = new FlowMarquee();
@@ -70,13 +72,22 @@ public final class FlowView extends View {
     private FlowCoverCache cache;
     private final FlowCoverBakeCache bakeCache = new FlowCoverBakeCache();
     private List<FlowItem> items = java.util.Collections.emptyList();
+    /** 2026-07-05 — O(1) carousel key lookups at bind; avoids 30k linear scans on scroll settle. */
+    private final java.util.HashMap<String, Integer> catalogMatchKeyIndex = new java.util.HashMap<String, Integer>();
+    private final java.util.HashMap<String, Integer> catalogCoverKeyIndex = new java.util.HashMap<String, Integer>();
+    private static final int PREFETCH_RADIUS = 5;
     private Callback callback;
     private int reflectionTint = 0x44FFFFFF;
     /** Debug: skip floor reflection draws — compare carousel perf on device. */
     private boolean noReflections = false;
+    /** Gloss peak for floor mirror — uniform via {@link #reflectionAlphaForDraw}. */
     private static final float FLOW_REFLECTION_ALPHA = 0.50f;
+    /** Side slots use fewer bands — center keeps full gloss; cuts drawBitmap cost while scrolling. */
+    /** Center cover reflection bands — full quality on the focused carousel slot. */
     private static final int CENTER_REFLECTION_MAX_BANDS = 36;
-    private static final int SIDE_REFLECTION_MAX_BANDS = 14;
+    private static final int SIDE_REFLECTION_MAX_BANDS = 12;
+    /** 2026-07-05: Y1 uses same in-slot floor gloss as Y2 — screen-space path looked coarse on MT6572. Rollback: SDK_INT <= 17. */
+    private static final boolean REFLECTION_SCREEN_SPACE = false;
     private boolean debugTheme;
     private int lastNotifiedFocus = -1;
     private float viewW;
@@ -216,7 +227,8 @@ public final class FlowView extends View {
 
     private void initFlowView() {
         coverPaint.setFilterBitmap(false);
-        reflectionPaint.setFilterBitmap(false);
+        // Bilinear floor gloss — same on Y1/Y2 in-slot reflection path.
+        reflectionPaint.setFilterBitmap(true);
         textPaint.setColor(0xFFFFFFFF);
         textPaint.setTextAlign(Paint.Align.CENTER);
         textPaint.setTypeface(ThemeManager.getFlowFont(debugTheme));
@@ -251,6 +263,8 @@ public final class FlowView extends View {
     /** Bind catalog and focus atomically — avoids one frame of wrong covers at old index. */
     public void setItemsAndFocus(List<FlowItem> items, int focusIndex) {
         this.items = items != null ? items : java.util.Collections.<FlowItem>emptyList();
+        rebuildCatalogIndexMaps();
+        engine.setMatchKeyIndex(catalogMatchKeyIndex);
         engine.setItemCount(this.items.size());
         if (!this.items.isEmpty()) {
             int idx = focusIndex;
@@ -271,6 +285,26 @@ public final class FlowView extends View {
             viewportMetrics();
             postOnAnimation(animTick);
         }
+    }
+
+    /** 2026-07-05 — Rebuild match/cover key → index maps when catalog binds. */
+    private void rebuildCatalogIndexMaps() {
+        catalogMatchKeyIndex.clear();
+        catalogCoverKeyIndex.clear();
+        for (int i = 0; i < items.size(); i++) {
+            FlowItem item = items.get(i);
+            if (item == null) continue;
+            if (item.matchKey != null && !item.matchKey.isEmpty()) {
+                catalogMatchKeyIndex.put(item.matchKey, i);
+            }
+            if (item.coverKey != null && !item.coverKey.isEmpty()) {
+                catalogCoverKeyIndex.put(item.coverKey, i);
+            }
+        }
+    }
+
+    public java.util.Map<String, Integer> coverKeyIndexMap() {
+        return catalogCoverKeyIndex;
     }
 
     public void setCallback(Callback callback) {
@@ -874,7 +908,7 @@ public final class FlowView extends View {
             int center = deferredPrefetchCenter;
             deferredPrefetchCenter = -1;
             prefetchAround(center);
-            if (cache != null) cache.evictFarFrom(center, items);
+            if (cache != null) cache.evictFarFrom(center, items, catalogCoverKeyIndex);
             if (callback != null) callback.scheduleCenterBakes(center, 2);
         }
         if (deferredFocusNotify >= 0 && callback != null) {
@@ -887,8 +921,8 @@ public final class FlowView extends View {
     public void prefetchAround(int center) {
         if (callback == null || cache == null) return;
         // Worker warm even mid-scroll — disk hits land without waiting for scroll end.
-        callback.warmCarouselCovers(center, 3);
-        for (int d = -3; d <= 3; d++) {
+        callback.warmCarouselCovers(center, PREFETCH_RADIUS);
+        for (int d = -PREFETCH_RADIUS; d <= PREFETCH_RADIUS; d++) {
             int idx = center + d;
             if (idx < 0 || idx >= items.size()) continue;
             FlowItem item = items.get(idx);
@@ -1113,7 +1147,8 @@ public final class FlowView extends View {
             for (int dIdx = -2; dIdx <= 2; dIdx++) {
                 int idx = focus + dIdx;
                 if (idx < 0 || idx >= items.size()) continue;
-                FlowEngine.SlotTransform t = engine.slotTransform(idx, vw, vh, 0f);
+                engine.slotTransformInto(drawSlotScratch, idx, vw, vh, 0f);
+                FlowEngine.SlotTransform t = drawSlotScratch;
                 float rel = idx - visualOff;
                 org.json.JSONObject slot = new org.json.JSONObject();
                 slot.put("d", dIdx);
@@ -1128,7 +1163,8 @@ public final class FlowView extends View {
                 slot.put("drawAlpha", t.alpha * (idx == visualCenter
                         ? handoffCenterRevealAlpha : handoffSideRevealAlpha));
                 if (idx == visualCenter + 1 || idx == visualCenter - 1) {
-                    FlowEngine.SlotTransform c = engine.slotTransform(visualCenter, vw, vh, 0f);
+                    engine.slotTransformInto(drawSlotScratch, visualCenter, vw, vh, 0f);
+                    FlowEngine.SlotTransform c = drawSlotScratch;
                     float centerEdge = idx > visualCenter
                             ? c.centerX + c.width * 0.5f
                             : c.centerX - c.width * 0.5f;
@@ -1297,7 +1333,8 @@ public final class FlowView extends View {
 
     private void drawSlot(Canvas canvas, int index, CoverFlowLayout.Metrics metrics,
             float alphaMul, float flipP, int centerIdx) {
-        FlowEngine.SlotTransform t = engine.slotTransform(index, metrics.viewW, metrics.viewH, 0f);
+        engine.slotTransformInto(drawSlotScratch, index, metrics.viewW, metrics.viewH, 0f);
+        FlowEngine.SlotTransform t = drawSlotScratch;
         if (t.alpha <= 0.01f) return;
         if (flipP > 0f && index != centerIdx) {
             CoverFlowLayout.SlidePose pose = engine.poseForItemPublic(index);
@@ -1373,17 +1410,21 @@ public final class FlowView extends View {
         }
         drawSlotShadow(canvas, t, slotAlpha);
 
+        boolean skipReflect = false;
+        boolean deferScreenReflection = false;
+
         if (backFace) {
             drawBackFace(canvas, drawRect);
         } else {
             coverPaint.setAlpha((int) (255 * slotAlpha));
             if (bmp != null && !bmp.isRecycled()) {
-                // iPod Classic: center cover keeps floor reflection while idle; deferred after handoff.
-                boolean skipReflect = shouldSkipCoverReflection(noReflections, isVisualCenter);
+                // 2026-07-05 — Floor mirror stays on while scrolling; rollback: re-add isCarouselScrolling().
+                skipReflect = shouldSkipCoverReflection(noReflections, isVisualCenter);
                 // Scale reflection band with perspective-shrunk cover — baked bitmap is displaySize-native.
                 float coverScale = metrics.displaySize > 0f
                         ? drawRect.width() / metrics.displaySize : 1f;
                 reflectH = skipReflect ? 0f : metrics.reflectHeight * coverScale;
+                deferScreenReflection = REFLECTION_SCREEN_SPACE && !skipReflect && reflectH > 0f;
                 // #region agent log
                 if (isVisualCenter && com.solar.launcher.Debug898913Log.ENABLED
                         && System.currentTimeMillis() - debugReflectLogMs > 800L) {
@@ -1433,13 +1474,19 @@ public final class FlowView extends View {
                     logDrawPathIfNeeded(index, "coverOnly", totalRotY, t, metrics, false);
                     // #endregion
                     FlowAlbumArt3d.drawCover(canvas, bmp, drawRect, 0f, slotAlpha, coverPaint);
+                } else if (deferScreenReflection) {
+                    // #region agent log
+                    logDrawPathIfNeeded(index, isVisualCenter ? "reflect-center" : "reflect-side",
+                            totalRotY, t, metrics, false);
+                    // #endregion
+                    FlowAlbumArt3d.drawCover(canvas, bmp, drawRect, 0f, slotAlpha, coverPaint);
                 } else {
                     // #region agent log
                     logDrawPathIfNeeded(index, isVisualCenter ? "reflect-center" : "reflect-side",
                             totalRotY, t, metrics, false);
                     // #endregion
                     drawDynamicCoverAndReflection(canvas, bmp, drawRect, slotAlpha,
-                            reflectH, metrics, isVisualCenter);
+                            reflectH, metrics, isVisualCenter, null);
                 }
             } else {
                 if (isVisualCenter && handoffPinBitmap != null && !handoffPinBitmap.isRecycled()
@@ -1463,17 +1510,25 @@ public final class FlowView extends View {
             }
         }
         canvas.restore();
+        // 2026-07-05: Y1 — floor mirror after restore; slotMatrix maps clip bands to tilted side covers.
+        if (deferScreenReflection && bmp != null && !bmp.isRecycled()) {
+            float reflectionAlpha = reflectionAlphaForDraw(slotAlpha, handoffReflectRevealAlpha, isVisualCenter);
+            int bands = reflectionBandCount(isVisualCenter);
+            FlowAlbumArt3d.drawReflectionFloorCoarse(canvas, bmp, drawRect, reflectionAlpha,
+                    reflectH, metrics.reflectTable, reflectionPaint, matrix, bands);
+        }
         coverPaint.setAlpha(255);
     }
 
     private void drawDynamicCoverAndReflection(Canvas canvas, Bitmap bmp, RectF rect, float slotAlpha,
-            float reflectH, CoverFlowLayout.Metrics metrics, boolean isVisualCenter) {
+            float reflectH, CoverFlowLayout.Metrics metrics, boolean isVisualCenter, Matrix slotMatrix) {
         FlowAlbumArt3d.drawCover(canvas, bmp, rect, 0f, slotAlpha, coverPaint);
         if (reflectH <= 0f) return;
+        // Mirror uses the same slot dim as cover art — flip sideDim, scroll pose alpha, handoff fade.
         float reflectionAlpha = reflectionAlphaForDraw(slotAlpha, handoffReflectRevealAlpha, isVisualCenter);
-        int bands = isVisualCenter ? CENTER_REFLECTION_MAX_BANDS : SIDE_REFLECTION_MAX_BANDS;
+        int bands = reflectionBandCount(isVisualCenter);
         FlowAlbumArt3d.drawReflectionFloorCoarse(canvas, bmp, rect, reflectionAlpha,
-                reflectH, metrics.reflectTable, reflectionPaint, null, bands);
+                reflectH, metrics.reflectTable, reflectionPaint, slotMatrix, bands);
     }
 
     private void drawSlotShadow(Canvas canvas, FlowEngine.SlotTransform t, float slotAlpha) {
@@ -1620,6 +1675,15 @@ public final class FlowView extends View {
         return handoffSideRevealAlpha;
     }
 
+    /** Side slots use fewer bands; while scrolling all slots use side count — MT6572 draw budget. */
+    private int reflectionBandCount(boolean isVisualCenter) {
+        // 2026-07-05 — Cheap coarse mirror during wheel scroll; full center gloss when settled.
+        if (engine.isCarouselScrolling()) {
+            return SIDE_REFLECTION_MAX_BANDS;
+        }
+        return isVisualCenter ? CENTER_REFLECTION_MAX_BANDS : SIDE_REFLECTION_MAX_BANDS;
+    }
+
     /** Floor reflection on every visible cover unless debug No Reflections is on. */
     static boolean shouldSkipCoverReflection(boolean noReflections, boolean isVisualCenter) {
         return noReflections;
@@ -1636,7 +1700,7 @@ public final class FlowView extends View {
     }
 
     static float reflectionAlphaForDraw(float coverAlpha, float revealAlpha, boolean isVisualCenter) {
-        // Cover alpha can differ per slot during scroll/flip; reflections stay uniformly low.
+        // 2026-07-05 — Uniform gloss; per-slot coverAlpha caused scroll flicker. Rollback: base * slot.
         return reflectionAlphaForSlot(revealAlpha, isVisualCenter);
     }
 

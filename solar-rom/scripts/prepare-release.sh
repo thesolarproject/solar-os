@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Emit release tag and metadata for CI — version is sequential from latest git release tag.
+# 2026-07-05 — Emits release tag/metadata for CI; version from SOURCE_DATE_EPOCH build-start time.
+# APK/ROM parity: versionName must match OTA publish tag (YYYYMMDD-HHMM or nightly-…) and About UI.
+# When changing: resolve-release-version.py; sync-gradle-version.sh; publish-ota-updates.sh tag shape.
+# Reversal: revert to git-commit-based versioning; OTA tags drift from APK About screen.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

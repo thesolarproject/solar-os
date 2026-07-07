@@ -1,0 +1,136 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:3:1-65:12
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:3:1-65:12
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:3:1-65:12
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:3:1-65:12
+MERGED from [:solar-overlay-ui] /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/solar-overlay-ui/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml:2:1-7:12
+	package
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+	android:versionName
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+	android:versionCode
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+	xmlns:android
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:3:11-69
+uses-permission#android.permission.RECEIVE_BOOT_COMPLETED
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:5:5-81
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:5:22-78
+uses-permission#android.permission.SYSTEM_ALERT_WINDOW
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:6:5-78
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:6:22-75
+uses-permission#android.permission.GET_TASKS
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:7:5-68
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:7:22-65
+uses-permission#com.solar.launcher.permission.OVERLAY_TRIGGER
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:8:5-85
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:8:22-82
+permission#com.solar.launcher.permission.OVERLAY_TRIGGER
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:10:5-12:55
+	android:protectionLevel
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:12:9-52
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:11:9-69
+application
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:14:5-64:19
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:14:5-64:19
+	android:extractNativeLibs
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+	android:supportsRtl
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:18:9-35
+	android:label
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:17:9-51
+	android:icon
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:16:9-62
+	android:allowBackup
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:15:9-36
+	android:theme
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:19:9-59
+service#com.solar.launcher.globalcontext.GlobalContextOverlayService
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:21:9-24:42
+	android:process
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:24:13-39
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:23:13-36
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:22:13-56
+service#com.solar.launcher.globalcontext.RescueHoldService
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:26:9-29:39
+	android:process
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:29:13-36
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:28:13-36
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:27:13-46
+service#com.solar.launcher.globalcontext.GlobalInputCoordinatorService
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:31:9-33:39
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:33:13-36
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:32:13-58
+service#com.solar.launcher.globalcontext.CompanionImeOverlayService
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:35:9-38:42
+	android:process
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:38:13-39
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:37:13-37
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:36:13-55
+service#com.solar.launcher.globalcontext.SolarCrashWatchdog
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:40:9-43:43
+	android:process
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:43:13-40
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:42:13-37
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:41:13-47
+receiver#com.solar.launcher.globalcontext.CompanionBootReceiver
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:45:9-51:20
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:47:13-36
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:46:13-50
+intent-filter#action:name:android.intent.action.BOOT_COMPLETED
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:48:13-50:29
+action#android.intent.action.BOOT_COMPLETED
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:49:17-79
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:49:25-76
+activity#com.solar.launcher.globalcontext.EmergencyRecoveryActivity
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:53:9-63:20
+	android:launchMode
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:56:13-44
+	android:exported
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:55:13-36
+	android:theme
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:57:13-75
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:54:13-54
+intent-filter#action:name:android.intent.action.MAIN+category:name:android.intent.category.DEFAULT+category:name:android.intent.category.HOME
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:58:13-62:29
+action#android.intent.action.MAIN
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:59:17-69
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:59:25-66
+category#android.intent.category.HOME
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:60:17-73
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:60:27-70
+category#android.intent.category.DEFAULT
+ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:61:17-76
+	android:name
+		ADDED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml:61:27-73
+uses-sdk
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+MERGED from [:solar-overlay-ui] /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/solar-overlay-ui/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml:5:5-44
+MERGED from [:solar-overlay-ui] /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/solar-overlay-ui/build/intermediates/merged_manifest/debug/processDebugManifest/AndroidManifest.xml:5:5-44
+	android:targetSdkVersion
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/AndroidManifest.xml

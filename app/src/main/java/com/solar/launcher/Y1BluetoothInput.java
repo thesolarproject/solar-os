@@ -4,18 +4,17 @@ import android.view.InputDevice;
 import android.view.KeyEvent;
 
 /**
- * Separates Bluetooth AVRCP uinput from Y1 physical keys.
- * Koensayr's {@code libextavrcp_jni} injects into a kernel device named {@code AVRCP};
- * the scroll wheel uses {@code mtk-tpd-kpd} / {@code mtk-kpd} with the same Android keycodes
- * ({@code 126}/{@code 127}) — so we must never remap by keycode alone.
+ * 2026-07-05 — AVRCP-only transport remap; wheel scancodes 105/106 must never change in keylayout.
+ * Positive AVRCP device match + mtk-kpd/mtk-tpd denylist — no source-bit fallback (misclassifies wheel).
+ * When changing: remaps 126/127/86/87/88 only when isBluetoothTransportKey is true.
+ * Reversal: delete guard; Bluetooth and wheel may both fire transport on same keycodes.
  */
 public final class Y1BluetoothInput {
 
     private Y1BluetoothInput() {}
 
     /**
-     * True when this {@link KeyEvent} came from the BT AVRCP uinput device, not Y1 hardware.
-     * ponytail: positive AVRCP match + explicit mtk denylist; no fuzzy source-bit fallback.
+     * True when KeyEvent came from BT AVRCP uinput, not Y1 wheel (mtk-tpd-kpd / mtk-kpd).
      */
     public static boolean isBluetoothTransportKey(KeyEvent event) {
         if (event == null) return false;

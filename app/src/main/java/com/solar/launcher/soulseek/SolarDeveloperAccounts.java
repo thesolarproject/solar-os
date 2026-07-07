@@ -35,8 +35,9 @@ public final class SolarDeveloperAccounts {
 
     private SolarDeveloperAccounts() {}
 
+    /** Developer support PM UI removed — background diag shipping may still use wire accounts. */
     public static boolean isExperimentEnabled(SharedPreferences prefs) {
-        return true;
+        return false;
     }
 
     public static boolean isDeveloper(String username) {

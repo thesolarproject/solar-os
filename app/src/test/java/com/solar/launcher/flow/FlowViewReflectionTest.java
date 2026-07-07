@@ -20,12 +20,26 @@ public class FlowViewReflectionTest {
     }
 
     @Test
-    public void reflectionAlphaIsUniformLowOpacity() {
+    public void reflectionBaseAlphaIsUniformLowOpacity() {
         assertEquals(0.5f, FlowView.reflectionAlphaForSlot(1f, true), 0.001f);
         assertEquals(0.5f, FlowView.reflectionAlphaForSlot(1f, false), 0.001f);
         assertEquals(0.25f, FlowView.reflectionAlphaForSlot(0.5f, false), 0.001f);
-        assertEquals(0.5f, FlowView.reflectionAlphaForDraw(0.25f, 1f, false), 0.001f);
+    }
+
+    @Test
+    public void reflectionDrawAlphaIgnoresCoverDim() {
         assertEquals(0.5f, FlowView.reflectionAlphaForDraw(1f, 1f, true), 0.001f);
+        assertEquals(0.5f, FlowView.reflectionAlphaForDraw(0.25f, 1f, false), 0.001f);
+        assertEquals(0.5f, FlowView.reflectionAlphaForDraw(0.47f, 1f, false), 0.001f);
+    }
+
+    @Test
+    public void reflectionDrawAlphaUniformAcrossSlots() {
+        float center = FlowView.reflectionAlphaForDraw(1f, 1f, true);
+        float sideLowCover = FlowView.reflectionAlphaForDraw(0.47f, 1f, false);
+        float sideMidCover = FlowView.reflectionAlphaForDraw(0.6f, 1f, false);
+        assertEquals(center, sideLowCover, 0.001f);
+        assertEquals(center, sideMidCover, 0.001f);
     }
 
     @Test

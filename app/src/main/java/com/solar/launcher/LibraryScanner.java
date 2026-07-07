@@ -152,14 +152,28 @@ public final class LibraryScanner {
 
     private static void partitionByFreshness(List<File> files, MusicLibraryStore store,
             List<MainActivity.SongItem> freshOut, List<File> staleOut) {
+        java.util.HashMap<String, MusicLibraryStore.Track> freshMap = store.getFreshBatch(files);
+        int freshYearZero = 0;
         for (File f : files) {
-            MusicLibraryStore.Track cached = store.getFresh(f);
+            MusicLibraryStore.Track cached = freshMap.get(f.getAbsolutePath());
             if (cached != null) {
+                if (cached.year <= 0) freshYearZero++;
                 freshOut.add(songItemFromTrack(cached, f));
             } else {
                 staleOut.add(f);
             }
         }
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("total", files.size());
+            d.put("fresh", freshOut.size());
+            d.put("stale", staleOut.size());
+            d.put("freshYearZero", freshYearZero);
+            Debug3b26caLog.log("LibraryScanner.partitionByFreshness",
+                    "scan partition", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
     }
 
     private static List<TagResult> readTagsParallel(List<File> files, SharedPreferences prefs,
@@ -214,7 +228,7 @@ public final class LibraryScanner {
         List<MusicLibraryStore.Upsert> upserts = new ArrayList<MusicLibraryStore.Upsert>(results.size());
         for (TagResult r : results) {
             upserts.add(new MusicLibraryStore.Upsert(r.file, r.title, r.artist, r.album,
-                    r.genre, r.albumArtist, r.durationMs, r.trackNumber));
+                    r.genre, r.albumArtist, r.durationMs, r.trackNumber, r.year));
         }
         store.upsertBatch(upserts);
     }
@@ -240,7 +254,7 @@ public final class LibraryScanner {
             String key = metaKey(r.title, r.artist, r.durationMs);
             if (!metaKeys.add(key)) continue;
             out.add(new MainActivity.SongItem(r.file, r.title, r.artist, r.album,
-                    r.genre, r.albumArtist, r.trackNumber));
+                    r.genre, r.albumArtist, r.trackNumber, r.year));
             if (++resolved % interval == 0) cb.onProgress(resolved);
         }
 
@@ -256,7 +270,7 @@ public final class LibraryScanner {
         String genre = t.genre != null && t.genre.trim().length() > 0
                 ? t.genre.trim() : "Unknown Genre";
         return new MainActivity.SongItem(f, t.title, t.artist, t.album, genre,
-                t.albumArtist, t.trackNumber);
+                t.albumArtist, t.trackNumber, t.year);
     }
 
     private static final class TagReader implements Callable<TagResult> {
@@ -276,8 +290,20 @@ public final class LibraryScanner {
                 String album = tags.album;
                 if (artist.isEmpty()) artist = "Unknown Artist";
                 if (album.isEmpty()) album = "Unknown Album";
-                return new TagResult(file, tags.title, artist, album, tags.genre,
-                        tags.albumArtist, tags.durationMs, tags.trackNumber);
+                TagResult r = new TagResult(file, tags.title, artist, album, tags.genre,
+                        tags.albumArtist, tags.durationMs, tags.trackNumber, tags.year);
+                // #region agent log
+                if (tags.year > 0) {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("path", file.getName());
+                        d.put("year", tags.year);
+                        Debug3b26caLog.log("LibraryScanner.TagReader",
+                                "stale tag read year>0", "H2", d);
+                    } catch (Exception ignored) {}
+                }
+                // #endregion
+                return r;
             } catch (Exception e) {
                 return null;
             }
@@ -293,9 +319,10 @@ public final class LibraryScanner {
         final String albumArtist;
         final String durationMs;
         final int trackNumber;
+        final int year;
 
         TagResult(File file, String title, String artist, String album, String genre,
-                String albumArtist, String durationMs, int trackNumber) {
+                String albumArtist, String durationMs, int trackNumber, int year) {
             this.file = file;
             this.title = title;
             this.artist = artist;
@@ -304,6 +331,7 @@ public final class LibraryScanner {
             this.albumArtist = albumArtist;
             this.durationMs = durationMs;
             this.trackNumber = trackNumber;
+            this.year = year;
         }
     }
 }

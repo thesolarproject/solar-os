@@ -124,8 +124,7 @@ key 100   ALT_RIGHT
 key 102   MOVE_HOME
 key 114   DPAD_UP
 key 104   PAGE_UP
-# ponytail: Y1 mtk-tpd-kpd wheel uses scancodes 105/106 — map to MEDIA_PLAY/PAUSE (126/127)
-# so RockboxFramebuffer scroll keys work (vanilla Rockbox.kl wrongly maps these to 88/87).
+# ponytail: Y1 wheel scancodes 105/106 → MEDIA_PLAY/PAUSE (126/127) for Solar + Rockbox.
 key 105   MEDIA_PLAY
 key 106   MEDIA_PAUSE
 key 107   MOVE_END
@@ -181,9 +180,10 @@ key 156   BOOKMARK
 # key 157 "KEY_COMPUTER
 key 158   BACK              
 key 159   FORWARD
+# ponytail: wheel scancodes 103/108 → MEDIA_PLAY/PAUSE (126/127), same as 105/106 above.
 key 103   MEDIA_PLAY
 key 108   MEDIA_PAUSE
-# ponytail: Y1 InputReader binds mtk-kpd/mtk-tpd-kpd to Generic.kl (dumpsys) — side keys must be MEDIA here.
+# ponytail: side keys scancodes 163/165 → MEDIA_NEXT/PREVIOUS (87/88).
 key 163   MEDIA_NEXT
 key 164   MEDIA_PLAY_PAUSE
 key 165   MEDIA_PREVIOUS

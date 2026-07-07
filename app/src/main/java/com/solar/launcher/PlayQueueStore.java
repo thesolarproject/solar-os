@@ -42,6 +42,15 @@ public final class PlayQueueStore {
                 if (q.reachPeerUsername != null) o.put("reachPeer", q.reachPeerUsername);
                 if (q.deezerMeta != null) o.put("deezerMeta", q.deezerMeta);
                 if (q.deezerTrackId > 0) o.put("deezerTrackId", q.deezerTrackId);
+                if (q.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+                    o.put("navidromeId", q.navidromeSongId);
+                    o.put("navidromeTitle", q.navidromeTitle);
+                    o.put("navidromeArtist", q.navidromeArtist);
+                    o.put("navidromeAlbum", q.navidromeAlbum);
+                    if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
+                        o.put("navidromeCover", q.navidromeCoverArtId);
+                    }
+                }
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -91,6 +100,19 @@ public final class PlayQueueStore {
                             o.optString("epShow", ""), o.optBoolean("epSaved", false)));
                 } else {
                     String path = o.optString("path", "");
+                    if ("NAVIDROME_STREAM".equals(kind)) {
+                        String navId = o.optString("navidromeId", "");
+                        if (navId.isEmpty()) {
+                            if (i < savedIndex) savedIndex--;
+                            continue;
+                        }
+                        items.add(PlayQueue.QueueItem.navidrome(navId,
+                                o.optString("navidromeTitle", ""),
+                                o.optString("navidromeArtist", ""),
+                                o.optString("navidromeAlbum", ""),
+                                o.optString("navidromeCover", "")));
+                        continue;
+                    }
                     if (path.isEmpty()) {
                         if (i < savedIndex) savedIndex--;
                         continue;
@@ -156,7 +178,8 @@ public final class PlayQueueStore {
                 // ponytail: stream kinds / radio stations are not static local files — skip check.
                 String kind = o.optString("kind", "");
                 if ("REACH_STREAM".equals(kind) || "DEEZER_STREAM".equals(kind) || "PODCAST_EPISODE".equals(kind)
-                        || "FM_STATION".equals(kind) || "INTERNET_RADIO_STATION".equals(kind)) continue;
+                        || "FM_STATION".equals(kind) || "INTERNET_RADIO_STATION".equals(kind)
+                        || "NAVIDROME_STREAM".equals(kind)) continue;
                 String path = o.optString("path", "");
                 if (path.isEmpty()) continue;
                 if (!new File(path).isFile()) missing++;

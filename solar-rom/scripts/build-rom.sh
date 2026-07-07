@@ -241,6 +241,34 @@ install_fm_from_y1_base() {
 }
 
 # Y2 ATA stock base has no Rockbox; fetch org.rockbox.apk + librockbox.so from rockbox-y1 type-A base.
+install_notpipe_system() {
+    local mount_sys="$1"
+    local cache apk_name
+    chmod +x "$SCRIPT_DIR/fetch-notpipe-apk.sh"
+    cache="$("$SCRIPT_DIR/fetch-notpipe-apk.sh")"
+    apk_name="notPipe-0.3.0-release.apk"
+    [ -f "$cache/$apk_name" ] || die "fetch-notpipe-apk.sh did not populate $apk_name"
+    echo "==> Installing notPipe YouTube client (io.github.gohoski.notpipe)"
+    sudo cp "$cache/$apk_name" "$mount_sys/app/io.github.gohoski.notpipe.apk"
+    sudo chmod 644 "$mount_sys/app/io.github.gohoski.notpipe.apk"
+    sudo chown root:root "$mount_sys/app/io.github.gohoski.notpipe.apk"
+}
+
+# 2026-07-06 — Permanent PM preferred HOME middle-man; routes to Solar/Rockbox/JJ via persist prop.
+install_launcher_helper_system() {
+    local mount_sys="$1"
+    local helper_apk="$REPO_ROOT/launcher-helper/build/outputs/apk/debug/launcher-helper-debug.apk"
+    if [ ! -f "$helper_apk" ]; then
+        echo "==> Build SolarHomeHelper.apk (first run)"
+        (cd "$REPO_ROOT" && ./gradlew :launcher-helper:assembleDebug -q)
+    fi
+    [ -f "$helper_apk" ] || die "missing $helper_apk — run ./gradlew :launcher-helper:assembleDebug"
+    echo "==> Installing Solar Home Helper (com.solar.launcher.homehelper)"
+    sudo cp "$helper_apk" "$mount_sys/app/SolarHomeHelper.apk"
+    sudo chmod 644 "$mount_sys/app/SolarHomeHelper.apk"
+    sudo chown root:root "$mount_sys/app/SolarHomeHelper.apk"
+}
+
 install_rockbox_from_y1_base() {
     local mount_sys="$1"
     local cache patched staged_libs staged_rb
@@ -505,6 +533,11 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
+    if [ ! -f "$sys_mount/app/SolarHomeHelper.apk" ]; then
+        echo "audit fail: SolarHomeHelper.apk missing from /system/app (HOME middle-man)" >&2
+        errors=$((errors + 1))
+    fi
+
     if [ ! -f "$sys_mount/lib/libconscrypt_jni.so" ]; then
         echo "audit fail: libconscrypt_jni.so missing from /system/lib (OkHttp/Reach TLS)" >&2
         errors=$((errors + 1))
@@ -554,14 +587,23 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
-    if [ ! -f "$sys_mount/app/org.rockbox.apk" ]; then
-        echo "audit fail: org.rockbox.apk missing (launcher switch requires Rockbox)" >&2
-        errors=$((errors + 1))
+    rockbox_on_rom=1
+    if [ "$TYPE" = "y2" ] && [ "${SOLAR_ROM_LEGACY_ROCKBOX:-0}" != "1" ]; then
+        rockbox_on_rom=0
     fi
 
-    if [ ! -f "$sys_mount/lib/librockbox.so" ]; then
-        echo "audit fail: librockbox.so missing" >&2
-        errors=$((errors + 1))
+    if [ "$rockbox_on_rom" = "1" ]; then
+        if [ ! -f "$sys_mount/app/org.rockbox.apk" ]; then
+            echo "audit fail: org.rockbox.apk missing (launcher switch requires Rockbox)" >&2
+            errors=$((errors + 1))
+        fi
+
+        if [ ! -f "$sys_mount/lib/librockbox.so" ]; then
+            echo "audit fail: librockbox.so missing" >&2
+            errors=$((errors + 1))
+        fi
+    elif [ "$TYPE" = "y2" ]; then
+        echo "audit note: Y2 org.rockbox prep-delivered via Solar APK platform bundle" >&2
     fi
 
     # FM radio — warn when mtk FM stack is absent (Solar FM browse still opens; tune may fail).
@@ -609,7 +651,7 @@ audit_rom_contents() {
     fi
 
     # ponytail: codec plugins ship inside org.rockbox.apk (lib/armeabi/*.so) — must survive ROM build.
-    if [ -f "$sys_mount/app/org.rockbox.apk" ]; then
+    if [ "$rockbox_on_rom" = "1" ] && [ -f "$sys_mount/app/org.rockbox.apk" ]; then
         rb_so_count=$(unzip -l "$sys_mount/app/org.rockbox.apk" 2>/dev/null \
             | grep -c 'lib/armeabi/.*\.so' || true)
         if [ "${rb_so_count:-0}" -lt 35 ]; then
@@ -645,7 +687,7 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
-    if [ "$TYPE" = "y2" ]; then
+    if [ "$TYPE" = "y2" ] && [ "$rockbox_on_rom" = "1" ]; then
         if [ ! -f "$sys_mount/etc/solar/rockbox-y2-config.cfg" ]; then
             echo "audit fail: /system/etc/solar/rockbox-y2-config.cfg missing (Y2 dual-storage)" >&2
             errors=$((errors + 1))
@@ -825,6 +867,8 @@ audit_rom_contents() {
     fi
     [ -f "$sys_mount/app/SolarThemeFont.apk" ] || { echo "audit fail: SolarThemeFont.apk missing" >&2; errors=$((errors + 1)); }
     [ -f "$sys_mount/app/SolarRockboxIme.apk" ] || { echo "audit fail: SolarRockboxIme.apk missing" >&2; errors=$((errors + 1)); }
+    [ -f "$sys_mount/app/SolarNotPipeBridge.apk" ] || { echo "audit fail: SolarNotPipeBridge.apk missing" >&2; errors=$((errors + 1)); }
+    [ -f "$sys_mount/app/io.github.gohoski.notpipe.apk" ] || { echo "audit fail: io.github.gohoski.notpipe.apk missing" >&2; errors=$((errors + 1)); }
     if [ "$TYPE" = "y2" ]; then
         [ -f "$sys_mount/app/SolarRockboxCompat.apk" ] || { echo "audit fail: SolarRockboxCompat.apk missing" >&2; errors=$((errors + 1)); }
     fi
@@ -835,6 +879,10 @@ audit_rom_contents() {
         fi
         if ! grep -q 'com.solar.launcher.xposed.rockbox.ime' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
             echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.rockbox.ime" >&2
+            errors=$((errors + 1))
+        fi
+        if ! grep -q 'com.solar.launcher.xposed.notpipe' "$sys_mount/etc/init.d/99XposedInit.sh" 2>/dev/null; then
+            echo "audit fail: 99XposedInit.sh must enable com.solar.launcher.xposed.notpipe" >&2
             errors=$((errors + 1))
         fi
         if [ "$TYPE" = "y2" ]; then
@@ -988,7 +1036,11 @@ if [ "$TYPE" = "y2" ] \
 fi
 
 if [ "$TYPE" = "y2" ]; then
-    install_rockbox_from_y1_base "$MOUNT_SYS"
+    if [ "${SOLAR_ROM_LEGACY_ROCKBOX:-0}" = "1" ]; then
+        install_rockbox_from_y1_base "$MOUNT_SYS"
+    else
+        echo "==> Y2 Rockbox — platform prep bundle (org.rockbox via Solar APK self-heal)"
+    fi
 fi
 
 # Keep org.rockbox.apk + librockbox.so from base firmware for launcher switching.
@@ -1028,10 +1080,14 @@ sudo mkdir -p "$MOUNT_SYS/etc/solar"
 sudo cp "$SCRIPT_DIR/solar-rescue-hud-watch.sh" "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh"
 sudo cp "$SCRIPT_DIR/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh"
 sudo cp "$SCRIPT_DIR/solar-rescue-daemon.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
+sudo cp "$SCRIPT_DIR/solar-launcher-exec.sh" "$MOUNT_SYS/etc/solar/solar-launcher-exec.sh"
+sudo cp "$SCRIPT_DIR/solar-platform-daemon.sh" "$MOUNT_SYS/etc/solar/solar-platform-daemon.sh"
 sudo chmod 755 "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh" \
-    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
+    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh" \
+    "$MOUNT_SYS/etc/solar/solar-launcher-exec.sh" "$MOUNT_SYS/etc/solar/solar-platform-daemon.sh"
 sudo chown root:root "$MOUNT_SYS/etc/solar/solar-rescue-hud-watch.sh" \
-    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh"
+    "$MOUNT_SYS/etc/solar/solar-rescue-exec.sh" "$MOUNT_SYS/etc/solar/solar-rescue-daemon.sh" \
+    "$MOUNT_SYS/etc/solar/solar-launcher-exec.sh" "$MOUNT_SYS/etc/solar/solar-platform-daemon.sh"
 sudo cp "$SCRIPT_DIR/switch-to-stock.sh" "$MOUNT_SYS/etc/solar/switch-to-stock.sh"
 sudo cp "$SCRIPT_DIR/switch-to-rockbox.sh" "$MOUNT_SYS/etc/solar/switch-to-rockbox.sh"
 sudo cp "$SCRIPT_DIR/sync-rockbox-libs.sh" "$MOUNT_SYS/etc/solar/sync-rockbox-libs.sh"
@@ -1087,6 +1143,11 @@ fi
 sudo cp "$CANONICAL_KL" "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
 sudo chmod 644 "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
 sudo chown root:root "$MOUNT_SYS/etc/solar/$CANONICAL_KL_NAME"
+if [ "$TYPE" != "y2" ] && [ -f "$SCRIPT_DIR/mtk-kpd.y1.stock.kl" ]; then
+    sudo cp "$SCRIPT_DIR/mtk-kpd.y1.stock.kl" "$MOUNT_SYS/etc/solar/mtk-kpd.y1.stock.kl"
+    sudo chmod 644 "$MOUNT_SYS/etc/solar/mtk-kpd.y1.stock.kl"
+    sudo chown root:root "$MOUNT_SYS/etc/solar/mtk-kpd.y1.stock.kl"
+fi
 for _kl in Stock.kl Rockbox.kl Generic.kl "$CANONICAL_KL_NAME"; do
     sudo cp "$CANONICAL_KL" "$MOUNT_SYS/usr/keylayout/$_kl"
 done
@@ -1158,6 +1219,8 @@ fi
 echo "==> Install Xposed framework (API $XPOSED_API) — required for a, b, and y2 ROM zips"
 chmod +x "$SCRIPT_DIR/install-xposed-system.sh"
 sudo "$SCRIPT_DIR/install-xposed-system.sh" "$MOUNT_SYS" "$XPOSED_API"
+install_notpipe_system "$MOUNT_SYS"
+install_launcher_helper_system "$MOUNT_SYS"
 
 echo "==> Patching userdata partition"
 while IFS= read -r apk; do

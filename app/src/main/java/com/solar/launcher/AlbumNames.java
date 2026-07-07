@@ -8,7 +8,23 @@ import java.util.Map;
 
 /** Canonical album titles when ID3 tags disagree only by letter case. */
 public final class AlbumNames {
+    /** 2026-07-05: iPod/Classipod placeholder when a track has no album tag. */
+    public static final String UNKNOWN_ALBUM = "Unknown Album";
+
     private AlbumNames() {}
+
+    /** True when the tag is empty or the standard unknown-album placeholder (layman: no real album name). */
+    public static boolean isUnknownAlbum(String name) {
+        if (name == null || name.trim().isEmpty()) return true;
+        return isUnknown(name.trim());
+    }
+
+    /** Rack/Flow key for one artist's unknown-album bucket — mirrors Classipod albumName+albumArtist. */
+    public static String unknownAlbumRackKey(String artist) {
+        String a = artist != null ? artist.trim() : "";
+        if (a.isEmpty() || AudioTags.isUnknownArtist(a)) a = "Unknown Artist";
+        return matchKey(UNKNOWN_ALBUM) + "|" + ArtistNames.matchKey(a);
+    }
 
     public static String matchKey(String raw) {
         if (raw == null) return "";
@@ -56,7 +72,7 @@ public final class AlbumNames {
             for (String raw : albumTitles) {
                 if (raw == null) continue;
                 String trimmed = raw.trim();
-                if (trimmed.isEmpty() || isUnknown(trimmed)) continue;
+                if (isUnknownAlbum(trimmed)) continue;
                 String key = matchKey(trimmed);
                 Map<String, Integer> variants = groups.get(key);
                 if (variants == null) {
@@ -80,7 +96,7 @@ public final class AlbumNames {
     public static String normalizeDisplay(String raw, Map<String, String> canonicalByKey) {
         if (raw == null) return "";
         String trimmed = raw.trim();
-        if (trimmed.isEmpty() || isUnknown(trimmed)) return trimmed;
+        if (isUnknownAlbum(trimmed)) return trimmed;
         if (canonicalByKey == null) return trimmed;
         String canon = canonicalByKey.get(matchKey(trimmed));
         return canon != null ? canon : trimmed;
@@ -122,6 +138,6 @@ public final class AlbumNames {
     }
 
     private static boolean isUnknown(String name) {
-        return "Unknown Album".equalsIgnoreCase(name);
+        return UNKNOWN_ALBUM.equalsIgnoreCase(name);
     }
 }

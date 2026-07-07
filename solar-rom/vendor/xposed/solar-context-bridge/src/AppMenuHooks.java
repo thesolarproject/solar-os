@@ -5,12 +5,16 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
-import de.robv.android.xposed.XC_MethodReplacement;
+import com.solar.launcher.xposed.bridge.extract.MenuExtract;
+
+import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
@@ -18,6 +22,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
  * App-process hooks: replace stock text context menus with Solar overlay rows.
  * Selection returns via {@link #ACTION_APP_MENU_RESULT} — never parcel a ResultReceiver
  * (Solar cannot unmarshal anonymous bridge classes from other APK class loaders).
+ * Fail-open: when Solar is missing or overlay cannot start, stock Holo menus run unchanged.
  */
 final class AppMenuHooks {
 
@@ -30,6 +35,8 @@ final class AppMenuHooks {
             "com.solar.launcher.action.APP_MENU_RESULT";
     static final String EXTRA_MENU_SESSION_ID = "menu_session_id";
     static final String EXTRA_SELECTED_INDEX = "menu_selected_index";
+    /** Must match {@link com.solar.launcher.OverlayTriggers#EXTRA_MENU_HAS_SUBMENU}. */
+    static final String EXTRA_MENU_HAS_SUBMENU = "menu_has_submenu";
 
     private static final ConcurrentHashMap<String, PendingMenu> PENDING =
             new ConcurrentHashMap<String, PendingMenu>();
@@ -48,17 +55,10 @@ final class AppMenuHooks {
 
     private AppMenuHooks() {}
 
+    /** Hook menu dialog/popup show only — MenuBuilder.performShow must finish before we replace UI. */
     static void install(LoadPackageParam lpparam) {
         hookHelperShow(MENU_DIALOG, "show", lpparam);
-        hookHelperShow(MENU_POPUP, "tryShow", lpparam);
         hookHelperShow(MENU_POPUP, "show", lpparam);
-        try {
-            Class<?> builder = XposedHelpers.findClass(MENU_BUILDER, lpparam.classLoader);
-            XposedHookKit.hookAll(builder, "performShow", interceptFromMenuBuilder(lpparam.classLoader));
-            SolarContextBridge.log("hooked MenuBuilder.performShow in " + lpparam.packageName);
-        } catch (Throwable t) {
-            SolarContextBridge.log("MenuBuilder skip " + lpparam.packageName + ": " + t.getClass().getSimpleName());
-        }
     }
 
     private static void hookHelperShow(String className, String methodName, LoadPackageParam lpparam) {
@@ -72,7 +72,7 @@ final class AppMenuHooks {
         }
     }
 
-    /** One receiver per hooked app process — forwards primitive selection back to the stock Menu. */
+    /** One receiver per hooked app process — forwards selection or cancel back to the stock Menu. */
     private static void ensureResultReceiver(Context appCtx) {
         if (resultReceiverRegistered) return;
         synchronized (AppMenuHooks.class) {
@@ -84,11 +84,34 @@ final class AppMenuHooks {
                     String sessionId = intent.getStringExtra(EXTRA_MENU_SESSION_ID);
                     if (sessionId == null) return;
                     int index = intent.getIntExtra(EXTRA_SELECTED_INDEX, -1);
+                    SolarContextBridge.log("appMenu result idx=" + index + " session="
+                            + sessionId.substring(0, Math.min(8, sessionId.length())));
                     PendingMenu pending = PENDING.remove(sessionId);
-                    if (pending == null || index < 0 || index >= pending.items.size()) return;
+                    if (pending == null) {
+                        SolarContextBridge.log("appMenu result stale session");
+                        return;
+                    }
                     try {
-                        XposedHelpers.callMethod(pending.menuRef, "performItemAction",
-                                pending.items.get(index), 0);
+                        if (index < 0) {
+                            closeMenu(pending.menuRef);
+                            return;
+                        }
+                        if (index >= pending.items.size()) {
+                            SolarContextBridge.log("appMenu result index oob=" + index);
+                            return;
+                        }
+                        Object item = pending.items.get(index);
+                        // #region agent log
+                        try {
+                            JSONObject d = new JSONObject();
+                            d.put("idx", index);
+                            d.put("itemCount", pending.items.size());
+                            Debug32618Log.event("AppMenuHooks.onReceive", "deliver selection", "F", d);
+                        } catch (Throwable ignored) {}
+                        // #endregion
+                        if (!invokeMenuItemSelection(pending.menuRef, item)) {
+                            SolarContextBridge.log("appMenu invoke failed idx=" + index);
+                        }
                     } catch (Throwable t) {
                         SolarContextBridge.log("performItemAction failed: " + t);
                     }
@@ -98,45 +121,119 @@ final class AppMenuHooks {
         }
     }
 
-    private static XC_MethodReplacement interceptFromHelper(final ClassLoader cl) {
-        return new XC_MethodReplacement() {
+    /** Dismiss the stock menu builder when the user backs out of the Solar overlay. */
+    private static void closeMenu(Object menuRef) {
+        if (menuRef == null) return;
+        try {
+            XposedHelpers.callMethod(menuRef, "close");
+        } catch (Throwable t) {
+            try {
+                XposedHelpers.callMethod(menuRef, "cancel");
+            } catch (Throwable ignored) {
+                SolarContextBridge.log("menu close failed: " + t.getClass().getSimpleName());
+            }
+        }
+    }
+
+    private static XC_MethodHook interceptFromHelper(final ClassLoader cl) {
+        return new XC_MethodHook() {
             @Override
-            protected Object replaceHookedMethod(MethodHookParam param) {
+            protected void beforeHookedMethod(MethodHookParam param) {
                 Object menu = resolveMenuFromHelper(param.thisObject);
-                return interceptMenu(menu, cl) ? null : null;
+                if (interceptMenu(menu, cl)) {
+                    XposedHookKit.skipMethod(param);
+                }
             }
         };
     }
 
-    private static XC_MethodReplacement interceptFromMenuBuilder(final ClassLoader cl) {
-        return new XC_MethodReplacement() {
-            @Override
-            protected Object replaceHookedMethod(MethodHookParam param) {
-                return interceptMenu(param.thisObject, cl) ? null : null;
+    /**
+     * Deliver the user's overlay pick into the stock Menu — try performItemAction first, then
+     * item.invoke / OnMenuItemClickListener when the menu was torn down after overlay paint.
+     */
+    private static boolean invokeMenuItemSelection(Object menuRef, Object item) {
+        if (menuRef == null || item == null) return false;
+        try {
+            Object r = XposedHelpers.callMethod(menuRef, "performItemAction", item, 0);
+            if (Boolean.TRUE.equals(r)) {
+                // #region agent log
+                Debug32618Log.event("AppMenuHooks.invoke", "performItemAction ok", "G", null);
+                // #endregion
+                return true;
             }
-        };
+        } catch (Throwable t) {
+            SolarContextBridge.log("performItemAction: " + t.getClass().getSimpleName());
+        }
+        try {
+            Object r = XposedHelpers.callMethod(item, "invoke", menuRef, 0);
+            if (Boolean.TRUE.equals(r)) {
+                Debug32618Log.event("AppMenuHooks.invoke", "item.invoke ok", "G", null);
+                return true;
+            }
+        } catch (Throwable t) {
+            SolarContextBridge.log("item.invoke: " + t.getClass().getSimpleName());
+        }
+        try {
+            Object cb = XposedHelpers.getObjectField(menuRef, "mCallback");
+            if (cb != null) {
+                Object r = XposedHelpers.callMethod(cb, "onMenuItemSelected", menuRef, item);
+                if (Boolean.TRUE.equals(r)) {
+                    Debug32618Log.event("AppMenuHooks.invoke", "mCallback ok", "G", null);
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            SolarContextBridge.log("mCallback: " + t.getClass().getSimpleName());
+        }
+        try {
+            Object listener = XposedHelpers.getObjectField(item, "mClickListener");
+            if (listener != null) {
+                Object r = XposedHelpers.callMethod(listener, "onMenuItemClick", item);
+                if (Boolean.TRUE.equals(r)) {
+                    Debug32618Log.event("AppMenuHooks.invoke", "mClickListener ok", "G", null);
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            SolarContextBridge.log("mClickListener: " + t.getClass().getSimpleName());
+        }
+        return false;
     }
 
-    /** @return true when Solar overlay replaced the stock menu. */
+    /** @return true when Solar overlay replaced the stock menu and delivery succeeded. */
     private static boolean interceptMenu(Object menu, ClassLoader cl) {
         if (menu == null) return false;
         try {
+            MenuExtract.Snapshot snap = MenuExtract.fromMenu(new MenuBuilderReader(menu));
+            if (snap.size() == 0) return false;
             List<?> visible = (List<?>) XposedHelpers.callMethod(menu, "getVisibleItems");
-            if (visible == null || visible.isEmpty()) return false;
             final ArrayList<Object> items = new ArrayList<Object>(visible);
-            String[] titles = new String[items.size()];
-            for (int i = 0; i < items.size(); i++) {
-                Object item = items.get(i);
-                CharSequence t = (CharSequence) XposedHelpers.callMethod(item, "getTitle");
-                titles[i] = t != null ? t.toString() : "";
+            String[] titles = new String[snap.size()];
+            boolean[] hasSubmenu = new boolean[snap.size()];
+            for (int i = 0; i < snap.size(); i++) {
+                titles[i] = snap.rows[i].title;
+                hasSubmenu[i] = snap.rows[i].hasSubmenu;
             }
             Context ctx = (Context) XposedHelpers.callMethod(menu, "getContext");
             if (ctx == null) return false;
+            if (!SolarOverlayClient.canDeliverOverlay(ctx)) return false;
             String sessionId = UUID.randomUUID().toString();
             PENDING.put(sessionId, new PendingMenu(menu, items));
             ensureResultReceiver(ctx.getApplicationContext());
             String callerPackage = ctx.getPackageName();
-            SolarOverlayClient.showAppMenu(ctx, null, titles, sessionId, callerPackage);
+            if (!SolarOverlayClient.showAppMenu(ctx, null, titles, hasSubmenu, sessionId, callerPackage)) {
+                PENDING.remove(sessionId);
+                return false;
+            }
+            markMenuShowing(menu);
+            // #region agent log
+            try {
+                JSONObject d = new JSONObject();
+                d.put("items", titles.length);
+                d.put("pkg", callerPackage != null ? callerPackage : "");
+                Debug32618Log.event("AppMenuHooks.interceptMenu", "overlay replaced dialog", "H", d);
+            } catch (Throwable ignored) {}
+            // #endregion
             SolarContextBridge.log("menu overlay items=" + titles.length + " pkg="
                     + (callerPackage != null ? callerPackage : "?"));
             return true;
@@ -157,5 +254,15 @@ final class AppMenuHooks {
             } catch (Throwable ignored) {}
         }
         return null;
+    }
+
+    /** MenuBuilder.performShow sets this before MenuDialogHelper.show — keep state if we skip the dialog. */
+    private static void markMenuShowing(Object menu) {
+        if (menu == null) return;
+        try {
+            java.lang.reflect.Field f = menu.getClass().getDeclaredField("mIsShowing");
+            f.setAccessible(true);
+            f.setBoolean(menu, true);
+        } catch (Throwable ignored) {}
     }
 }

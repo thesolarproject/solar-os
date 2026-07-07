@@ -76,7 +76,7 @@ public final class ArtistBrowsePolicy {
         Set<String> seenAlbums = new HashSet<String>();
         for (Track song : library) {
             if (!ArtistParser.containsArtist(song.artist, normalized)) continue;
-            String albumKey = AlbumNames.matchKey(song.album);
+            String albumKey = albumRackKey(song, prefs);
             if (albumKey.isEmpty() || !seenAlbums.add(albumKey)) continue;
             if (albumOwnerForBrowse(song.album, normalized, library, prefs) == null) {
                 return true;
@@ -94,6 +94,11 @@ public final class ArtistBrowsePolicy {
         String browsedKey = ArtistNames.matchKey(displayArtist(browsedArtist, prefs));
         for (Track song : library) {
             if (!AlbumNames.equals(album, song.album)) continue;
+            // 2026-07-05: iPod/Classipod — each artist gets their own Unknown Album bucket.
+            if (AlbumNames.isUnknownAlbum(album)) {
+                String songOwner = trackOwner(song, prefs);
+                if (!ArtistNames.equals(songOwner, browsedArtist)) continue;
+            }
             String owner = trackOwner(song, prefs);
             if (owner.isEmpty() || isUnknownArtist(owner)) continue;
             String key = ArtistNames.matchKey(owner);
@@ -166,6 +171,15 @@ public final class ArtistBrowsePolicy {
             return displayArtist(song.albumArtist, prefs);
         }
         return displayArtist(ArtistParser.primaryArtist(song.artist), prefs);
+    }
+
+    /** Album rack key — artist-scoped for Unknown Album, title-only otherwise. */
+    private static String albumRackKey(Track song, LibraryBrowsePrefs prefs) {
+        if (song == null || song.album == null || song.album.trim().isEmpty()) return "";
+        if (AlbumNames.isUnknownAlbum(song.album)) {
+            return AlbumNames.unknownAlbumRackKey(trackOwner(song, prefs));
+        }
+        return AlbumNames.matchKey(song.album.trim());
     }
 
     private static boolean passesArtistFilter(String artist, List<Track> library,

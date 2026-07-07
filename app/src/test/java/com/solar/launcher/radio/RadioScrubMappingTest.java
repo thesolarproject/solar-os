@@ -46,4 +46,12 @@ public class RadioScrubMappingTest {
     assertEquals(30_000L, RadioScrubMapping.mapScrub(RadioScrubMode.REWIND_BUFFER, 0.5f, us, 60_000L));
     assertEquals(0L, RadioScrubMapping.mapScrub(RadioScrubMode.NONE, 0.5f, us, 60_000L));
   }
+
+  /** 2026-07-06 — FM NP center OK enters/exits MHz tune without long-press. */
+  @Test
+  public void fmTune_centerOkTogglesMode() {
+    assertEquals(RadioScrubMode.TUNE_FM, RadioScrubMode.NONE.toggleFmTuneOnCenterOk());
+    assertEquals(RadioScrubMode.NONE, RadioScrubMode.TUNE_FM.toggleFmTuneOnCenterOk());
+    assertEquals(RadioScrubMode.TUNE_FM, RadioScrubMode.REWIND_BUFFER.toggleFmTuneOnCenterOk());
+  }
 }

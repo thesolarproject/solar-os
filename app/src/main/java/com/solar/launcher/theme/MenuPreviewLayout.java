@@ -1,6 +1,7 @@
 package com.solar.launcher.theme;
 
 import android.content.Context;
+import android.util.DisplayMetrics;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -35,22 +36,33 @@ public final class MenuPreviewLayout {
         }
     }
 
+    /** Canonical Y1/Y2 viewport width in dp — both panels are 480×360 physical px. */
+    private static final float VIEWPORT_WIDTH_DP = 480f;
+
     private MenuPreviewLayout() {}
+
+    /** 2026-07-05: map layout dp to physical px on 480-wide panels (Y2 hdpi was upscaling preview art). */
+    private static int physicalDim(Context ctx, int resId) {
+        DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+        float dp = ctx.getResources().getDimension(resId) / dm.density;
+        int widthPx = dm.widthPixels > 0 ? dm.widthPixels : (int) VIEWPORT_WIDTH_DP;
+        return Math.max(1, (int) (dp * widthPx / VIEWPORT_WIDTH_DP));
+    }
 
     public static Spec homeSpec(Context ctx, boolean maskActive) {
         JSONObject menu = ThemeManager.getCurrentTheme().root.optJSONObject("menuConfig");
         if (!maskActive) {
-            int width = dim(ctx, R.dimen.y1_preview_width);
-            int artMax = dim(ctx, R.dimen.y1_preview_art_max);
-            int top = dim(ctx, R.dimen.y1_preview_margin_top);
-            int end = dim(ctx, R.dimen.y1_preview_margin_right);
+            int width = physicalDim(ctx, R.dimen.y1_preview_width);
+            int artMax = physicalDim(ctx, R.dimen.y1_preview_art_max);
+            int top = physicalDim(ctx, R.dimen.y1_preview_margin_top);
+            int end = physicalDim(ctx, R.dimen.y1_preview_margin_right);
             artMax = optDpOverride(ctx, menu, "menuPreviewArtMax", artMax);
             return new Spec(width, artMax, top, end, false);
         }
-        int width = dim(ctx, R.dimen.y1_preview_mask_width);
-        int artMax = dim(ctx, R.dimen.y1_preview_mask_art_max);
-        int top = dim(ctx, R.dimen.y1_preview_mask_margin_top);
-        int end = dim(ctx, R.dimen.y1_preview_mask_margin_right);
+        int width = physicalDim(ctx, R.dimen.y1_preview_mask_width);
+        int artMax = physicalDim(ctx, R.dimen.y1_preview_mask_art_max);
+        int top = physicalDim(ctx, R.dimen.y1_preview_mask_margin_top);
+        int end = physicalDim(ctx, R.dimen.y1_preview_mask_margin_right);
         artMax = optDpOverride(ctx, menu, "menuPreviewArtMax", artMax);
         top = optDpOverride(ctx, menu, "menuPreviewMarginTop", top);
         end = optDpOverride(ctx, menu, "menuPreviewMarginRight", end);
@@ -58,19 +70,54 @@ public final class MenuPreviewLayout {
         return new Spec(width, artMax, top, end, true);
     }
 
+    /** 2026-07-05 — Podcast/Apps dual-pane art cap; same 480px physical map as home preview (Y2 hdpi fix). */
+    public static Spec podcastPreviewSpec(Context ctx) {
+        int width = physicalDim(ctx, R.dimen.y1_podcast_preview_width);
+        int artMax = physicalDim(ctx, R.dimen.y1_podcast_preview_art_max);
+        int top = physicalDim(ctx, R.dimen.y1_settings_preview_title_top);
+        int end = physicalDim(ctx, R.dimen.y1_settings_preview_margin_right);
+        return new Spec(width, artMax, top, end, false);
+    }
+
+    /** Size podcast/Apps preview pane + art — rollback: remove calls and rely on XML dp only. */
+    public static void applyPodcastPreviewPane(LinearLayout pane, ImageView art, Spec spec) {
+        if (pane == null || spec == null) return;
+        ViewGroup.LayoutParams raw = pane.getLayoutParams();
+        if (raw instanceof FrameLayout.LayoutParams) {
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) raw;
+            lp.width = spec.paneWidthPx;
+            lp.topMargin = spec.marginTopPx;
+            lp.rightMargin = spec.marginEndPx;
+            pane.setLayoutParams(lp);
+        }
+        if (art != null) {
+            LinearLayout.LayoutParams ilp = (LinearLayout.LayoutParams) art.getLayoutParams();
+            if (ilp == null) {
+                ilp = new LinearLayout.LayoutParams(spec.paneWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT);
+            } else {
+                ilp.width = spec.paneWidthPx;
+            }
+            art.setLayoutParams(ilp);
+            art.setAdjustViewBounds(true);
+            art.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            art.setMaxWidth(spec.artMaxPx);
+            art.setMaxHeight(spec.artMaxPx);
+        }
+    }
+
     public static Spec settingsSpec(Context ctx, boolean maskActive) {
         JSONObject setting = ThemeManager.getCurrentTheme().root.optJSONObject("settingConfig");
         if (!maskActive) {
-            int width = dim(ctx, R.dimen.y1_preview_width);
-            int artMax = dim(ctx, R.dimen.y1_setting_icon_max);
-            int top = dim(ctx, R.dimen.y1_settings_preview_title_top);
-            int end = dim(ctx, R.dimen.y1_settings_preview_margin_right);
+            int width = physicalDim(ctx, R.dimen.y1_preview_width);
+            int artMax = physicalDim(ctx, R.dimen.y1_setting_icon_max);
+            int top = physicalDim(ctx, R.dimen.y1_settings_preview_title_top);
+            int end = physicalDim(ctx, R.dimen.y1_settings_preview_margin_right);
             return new Spec(width, artMax, top, end, false);
         }
-        int width = dim(ctx, R.dimen.y1_preview_mask_width);
-        int artMax = dim(ctx, R.dimen.y1_setting_mask_art_max);
-        int top = dim(ctx, R.dimen.y1_setting_mask_margin_top);
-        int end = dim(ctx, R.dimen.y1_settings_preview_margin_right);
+        int width = physicalDim(ctx, R.dimen.y1_preview_mask_width);
+        int artMax = physicalDim(ctx, R.dimen.y1_setting_mask_art_max);
+        int top = physicalDim(ctx, R.dimen.y1_setting_mask_margin_top);
+        int end = physicalDim(ctx, R.dimen.y1_settings_preview_margin_right);
         artMax = optDpOverride(ctx, setting, "settingPreviewArtMax", artMax);
         top = optDpOverride(ctx, setting, "settingPreviewMarginTop", top);
         width = optDpOverride(ctx, setting, "settingPreviewWidth", width);
@@ -164,10 +211,6 @@ public final class MenuPreviewLayout {
         }
     }
 
-    private static int dim(Context ctx, int resId) {
-        return (int) ctx.getResources().getDimension(resId);
-    }
-
     public static void applySettingsPreviewPane(View pane, ImageView icon, Spec spec, boolean maskActive, Context ctx) {
         if (pane == null || spec == null) return;
         ViewGroup.LayoutParams raw = pane.getLayoutParams();
@@ -195,6 +238,8 @@ public final class MenuPreviewLayout {
         if (block == null || key == null) return fallbackPx;
         double dp = block.optDouble(key, -1);
         if (dp <= 0) return fallbackPx;
-        return (int) (dp * ctx.getResources().getDisplayMetrics().density);
+        DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
+        int widthPx = dm.widthPixels > 0 ? dm.widthPixels : (int) VIEWPORT_WIDTH_DP;
+        return Math.max(1, (int) (dp * widthPx / VIEWPORT_WIDTH_DP));
     }
 }

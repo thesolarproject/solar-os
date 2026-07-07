@@ -24,7 +24,13 @@ Dalvik-era Xposed does **not** ship a separate `/system/lib/libxposed_dalvik.so`
 
 ### ADB only (rooted device, no ROM flash)
 
-When two devices share serial `0123456789ABCDEF`, target by transport id from `adb devices -l`:
+When two devices share serial `0123456789ABCDEF`, target by transport id from `adb devices -l` and **confirm model** before writes:
+
+```bash
+adb devices -l
+adb -t "$ANDROID_ADB_TRANSPORT" shell getprop ro.product.model   # Y1 or Y2
+export SOLAR_EXPECT_MODEL=y1   # optional — preflight aborts on mismatch
+```
 
 ```bash
 # Y1 (API 17) — transport id from adb devices -l (model:Y1)
@@ -161,6 +167,76 @@ adb reboot
 After reboot, apply or re-open Solar so the sidecar is written, then open stock Settings to confirm the theme font.
 
 Works on **Y1 (API 17)** and **Y2 (API 19)** — single APK (`minSdk 17`). Fail-open: if no sidecar exists, stock fonts are used.
+
+### Holo fail-open cosmetics (dialog / menu skin)
+
+When the context bridge **fail-opens** to stock Holo UI (progress dialogs, custom views, multi-choice lists), **`SolarThemeFont`** also registers **post-inflate** hooks at zygote init for:
+
+- `alert_dialog_holo`
+- `select_dialog_item_holo` / `select_dialog_singlechoice_holo`
+- `popup_menu_item_layout`
+
+Colors are read from `{primaryStorage}/.solar/theme-colors.json` (published by `ThemeColorBridge.publish()` when the user applies a theme). Fonts continue to use `system-font.ttf`. This is cosmetic only — wheel-friendly replacement remains the job of **`DialogHooks`** / **`AppMenuHooks`**.
+
+## Dialog / menu replacement (context bridge)
+
+Third-party app processes (not `com.solar.launcher*`) load **`DialogHooks`** and **`AppMenuHooks`** from the device bridge APK. Replacement UI is painted by **`SolarOverlayService`** using the same **`ThemedContextMenu`** stack as in-app Solar.
+
+| Stock surface | Hook | Solar overlay mode |
+|---------------|------|----------------------|
+| `AlertDialog.show()` | `DialogHooks` | Native dialog (message + buttons) |
+| `Dialog.show()` (non-AlertDialog with `mAlert`) | `DialogHooks` | Same when AlertController present |
+| Simple item / single-choice list (`mItems[]`) | `DialogHooks` | App-menu list overlay |
+| `MenuDialogHelper.show` / `MenuPopupHelper.show` | `AppMenuHooks` | App-menu list overlay |
+| `AppErrorDialog.show` (system_server) | `AppErrorHooks` | Native dialog |
+| `AppNotRespondingDialog.show` (system_server) | `AppAnrHooks` | Native dialog (Wait first); Solar pkg auto-WAIT; system/fail-open → stock Holo + `AnrDialogKeyForwarder` |
+| Rockbox `RockboxKeyboardInput` (`KbdInput` AlertDialog) | `RockboxKeyboardImeOkHooks` | Stock Holo dialog + Solar IME Enter → OK (Y1 + Y2); denylisted in `DialogHooks` |
+| `BluetoothPairingDialog.show()` (`com.android.settings` / `com.android.bluetooth`) | `BluetoothPairingHooks` | Global BT pairing overlay (PIN keyboard / passkey match / consent) |
+
+### AMS crash / ANR tier ladder (Y1 + Y2)
+
+| Tier | When | Behavior |
+|------|------|----------|
+| **1 — Xposed + overlay** | Bridge enabled; Solar or companion installed | `AppAnrHooks` / `AppErrorHooks` skip stock `show()`, `SolarOverlayClient.showNativeDialog()` → `OverlayModalHost.showNativeDialogMode()` (scrollable detail + action rows). User pick → `ACTION_DIALOG_RESULT` → AMS `mHandler` (same as Holo tap). |
+| **2 — Stock Holo + wheel remap** | System/android ANR, or overlay start misses while Xposed hooks | Stock Holo paints; `AnrDialogKeyForwarder` injects DPAD on wheel/side/center UP (no polling). |
+| **3 — Fail-open** | Xposed off, Solar missing, or `canDeliverOverlay()` false | Unmodified stock AMS dialogs. |
+
+Performance: event-driven hooks only (no AMS polling); `warmOverlayProcess()` before native-dialog IPC; launcher transition suppress via `LauncherTransitionGuard`.
+
+Sources: `AppAnrHooks.java`, `AppErrorHooks.java`, `AnrDialogKeyForwarder.java`, `extract/SystemErrorDialogRouting.java`.
+
+### Fail-open (stock Holo unchanged)
+
+| Shape | Reason |
+|-------|--------|
+| Multi-choice (`mIsMultiChoice`) | Checkbox state not yet replayed |
+| Adapter / cursor / spinner lists | Items not in `mItems[]` |
+| Progress / `ProgressDialog` | Blocking semantics + indeterminate UI |
+| Custom-view-only (no message) | Cannot extract wheel-friendly copy |
+| Rockbox `KbdInput` keyboard dialog | `RockboxKeyboardImeOkHooks` owns Enter→OK; overlay would break Solar IME |
+| Xposed Installer package | AlertDialog hooks break module manager UI |
+| Solar missing / overlay start fails | `SolarOverlayClient.canDeliverOverlay()` false |
+
+### Denylist
+
+- **`de.robv.android.xposed.installer`** — no `AlertDialog` / `Dialog.show` hooks
+- Global overlay policy excludes Rockbox BACK-long, Solar, Innioasis shells (separate from per-app dialog hooks)
+
+### Result delivery
+
+- Plain dialogs: `ACTION_DIALOG_RESULT` → `AlertController` `Message` handlers (same as Holo button tap)
+- List + menu picks: `ACTION_APP_MENU_RESULT` → `OnClickListener.onClick` or `Menu.performItemAction`
+- Sessions keyed by UUID; fail-open when overlay cannot start (pending map entry removed)
+
+Sources: `solar-rom/vendor/xposed/solar-context-bridge/src/DialogHooks.java`, `AppMenuHooks.java`, `BluetoothPairingHooks.java`, `extract/AlertDialogExtract.java`.
+
+### adb automated audit
+
+```bash
+./solar-rom/scripts/audit-dialog-replacement-adb.sh [serial]
+```
+
+Checks Xposed framework, bridge + theme-font modules enabled, Solar installed, font sidecar, and logcat hook lines after launching Settings. Prints the manual wheel matrix for overflow menus, list dialogs, and fail-open cases.
 
 ## Boot-loop / MTK notes
 

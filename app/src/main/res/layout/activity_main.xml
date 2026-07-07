@@ -563,6 +563,34 @@
                     <ImageView android:id="@+id/iv_player_shuffle_status" android:layout_width="24dp" android:layout_height="24dp" android:visibility="gone" android:layout_marginRight="10dp"/>
                     <ImageView android:id="@+id/iv_player_repeat_status" android:layout_width="24dp" android:layout_height="24dp" android:visibility="gone"/>
                 </LinearLayout>
+                <FrameLayout
+                    android:id="@+id/player_lyrics_panel"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:layout_marginTop="5dp"
+                    android:visibility="gone"
+                    android:background="#1affffff">
+                    <ListView
+                        android:id="@+id/player_lyrics_list"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:divider="@android:color/transparent"
+                        android:dividerHeight="4dp"
+                        android:paddingLeft="8dp"
+                        android:paddingRight="8dp"
+                        android:scrollbars="none" />
+                    <TextView
+                        android:id="@+id/player_lyrics_plain"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:paddingLeft="8dp"
+                        android:paddingRight="8dp"
+                        android:paddingTop="4dp"
+                        android:textColor="#FFFFFF"
+                        android:textSize="18sp"
+                        android:visibility="gone" />
+                </FrameLayout>
             </LinearLayout>
         </LinearLayout>
 
@@ -640,6 +668,24 @@
                 android:textSize="14sp" />
 
             <FrameLayout
+                android:id="@+id/player_lyrics_viz_panel"
+                android:layout_width="match_parent"
+                android:layout_height="72dp"
+                android:layout_marginTop="4dp"
+                android:visibility="gone"
+                android:background="#1affffff">
+                <ListView
+                    android:id="@+id/player_lyrics_viz_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:divider="@android:color/transparent"
+                    android:dividerHeight="2dp"
+                    android:paddingLeft="8dp"
+                    android:paddingRight="8dp"
+                    android:scrollbars="none" />
+            </FrameLayout>
+
+            <FrameLayout
                 android:id="@+id/player_visualizer_slot"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
@@ -695,20 +741,6 @@
             <TextView android:id="@+id/tv_status_battery" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="100%" android:textColor="#FFFFFF" android:textSize="16sp" android:textStyle="bold"/>
         </LinearLayout>
     </RelativeLayout>
-
-    <LinearLayout
-        android:id="@+id/layout_volume_overlay"
-        android:layout_width="220dp"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:background="#CC000000"
-        android:orientation="vertical"
-        android:padding="20dp"
-        android:gravity="center"
-        android:visibility="gone">
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/common_volume" android:textColor="#FFFFFF" android:textSize="16sp" android:layout_marginBottom="10dp"/>
-        <ProgressBar android:id="@+id/volume_progress" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="15dp" android:max="15" android:progress="10"/>
-    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/layout_brightness_mode"

@@ -5,5 +5,5 @@ logo.bin:0x5800000
 lk.bin:0x3120000
 boot.img:0x3180000
 recovery.img:0x4180000
-system.img:0x6580000
-userdata.img:0x41780000
+system.img:0x6500000
+userdata.img:0x41700000

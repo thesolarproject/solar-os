@@ -88,15 +88,12 @@ public final class SoulseekMessagingSession {
                 } catch (Exception ignored) {}
             }
         } catch (Exception e) {
-            // #region agent log
             try {
                 JSONObject d = new JSONObject();
-                d.put("user", username);
                 d.put("err", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
                 Debug843b96Log.log(appContext, "SoulseekMessagingSession.sendToRecipients",
                         "connect fail", "F-G", d);
             } catch (Exception ignored) {}
-            // #endregion
             if (!persistent) disconnect();
         }
         return result;
@@ -163,10 +160,8 @@ public final class SoulseekMessagingSession {
         out.flush();
         loggedIn = true;
         startReader();
-        // #region agent log
         try {
             JSONObject d = new JSONObject();
-            d.put("user", username);
             d.put("clientMajor", SoulseekWire.CLIENT_MAJOR_PM);
             d.put("listen", listenPort);
             d.put("reported", reported);
@@ -175,7 +170,6 @@ public final class SoulseekMessagingSession {
             Debug843b96Log.log(appContext, "SoulseekMessagingSession.connectLocked",
                     "login ok", "F-G", d);
         } catch (Exception ignored) {}
-        // #endregion
     }
 
     private void startListenSocket() throws IOException {

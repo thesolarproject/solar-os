@@ -23,10 +23,12 @@ import java.util.Set;
  */
 public class MusicLibraryStore extends SolarDbHelper {
     private static final String DB_NAME = "music_library.db";
-    private static final int DB_VERSION = 3;
+    private static final int DB_VERSION = 4;
 
     private static MusicLibraryStore instance;
     private boolean legacyTrackNumbersMigrated;
+    /** 2026-07-06: DB sentinel — year read, tag has no release year (distinct from legacy 0). */
+    static final int YEAR_UNKNOWN_SCANNED = -1;
 
     /** Batch upsert input — avoids per-row method-call overhead during scans. */
     public static final class Upsert {
@@ -38,9 +40,15 @@ public class MusicLibraryStore extends SolarDbHelper {
         public final String albumArtist;
         public final String durationMs;
         public final int trackNumber;
+        public final int year;
 
         public Upsert(File file, String title, String artist, String album,
                 String genre, String albumArtist, String durationMs, int trackNumber) {
+            this(file, title, artist, album, genre, albumArtist, durationMs, trackNumber, 0);
+        }
+
+        public Upsert(File file, String title, String artist, String album,
+                String genre, String albumArtist, String durationMs, int trackNumber, int year) {
             this.file = file;
             this.title = title != null ? title : "";
             this.artist = artist != null ? artist : "";
@@ -49,6 +57,7 @@ public class MusicLibraryStore extends SolarDbHelper {
             this.albumArtist = albumArtist != null ? albumArtist : "";
             this.durationMs = durationMs != null ? durationMs : "";
             this.trackNumber = trackNumber;
+            this.year = year;
         }
     }
 
@@ -64,9 +73,15 @@ public class MusicLibraryStore extends SolarDbHelper {
         public final String albumArtist;
         public final String durationMs;
         public final int trackNumber;
+        public final int year;
 
         Track(String path, long mtime, long size, String title, String artist, String album,
                 String genre, String albumArtist, String durationMs, int trackNumber) {
+            this(path, mtime, size, title, artist, album, genre, albumArtist, durationMs, trackNumber, 0);
+        }
+
+        Track(String path, long mtime, long size, String title, String artist, String album,
+                String genre, String albumArtist, String durationMs, int trackNumber, int year) {
             this.path = path;
             this.mtime = mtime;
             this.size = size;
@@ -77,6 +92,7 @@ public class MusicLibraryStore extends SolarDbHelper {
             this.albumArtist = albumArtist != null ? albumArtist : "";
             this.durationMs = durationMs != null ? durationMs : "";
             this.trackNumber = trackNumber;
+            this.year = year;
         }
 
         /** Duration in whole seconds for Soulseek share attributes; 0 when unknown. */
@@ -147,8 +163,15 @@ public class MusicLibraryStore extends SolarDbHelper {
                 + "genre TEXT NOT NULL DEFAULT '',"
                 + "album_artist TEXT NOT NULL DEFAULT '',"
                 + "duration_ms TEXT NOT NULL DEFAULT '',"
-                + "track_number INTEGER NOT NULL DEFAULT 0)");
+                + "track_number INTEGER NOT NULL DEFAULT 0,"
+                + "year INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX idx_tracks_mtime ON tracks(mtime)");
+        db.execSQL("CREATE TABLE favorite_paths (path TEXT PRIMARY KEY)");
+        db.execSQL("CREATE TABLE audiobook_bookmarks ("
+                + "path TEXT PRIMARY KEY,"
+                + "position_ms INTEGER NOT NULL DEFAULT 0,"
+                + "chapter_index INTEGER NOT NULL DEFAULT 0,"
+                + "updated_at INTEGER NOT NULL DEFAULT 0)");
     }
 
     @Override
@@ -159,6 +182,17 @@ public class MusicLibraryStore extends SolarDbHelper {
         if (oldVersion < 3) {
             db.execSQL("DROP TABLE IF EXISTS tracks");
             onCreate(db);
+        }
+        if (oldVersion < 4) {
+            try {
+                db.execSQL("ALTER TABLE tracks ADD COLUMN year INTEGER NOT NULL DEFAULT 0");
+            } catch (Exception ignored) {}
+            db.execSQL("CREATE TABLE IF NOT EXISTS favorite_paths (path TEXT PRIMARY KEY)");
+            db.execSQL("CREATE TABLE IF NOT EXISTS audiobook_bookmarks ("
+                    + "path TEXT PRIMARY KEY,"
+                    + "position_ms INTEGER NOT NULL DEFAULT 0,"
+                    + "chapter_index INTEGER NOT NULL DEFAULT 0,"
+                    + "updated_at INTEGER NOT NULL DEFAULT 0)");
         }
     }
 
@@ -200,7 +234,56 @@ public class MusicLibraryStore extends SolarDbHelper {
         if (file == null || !file.isFile()) return null;
         Track t = get(file.getAbsolutePath());
         if (t == null) return null;
+        // 2026-07-06: year=0 means pre-v4 row — force one ID3 re-read to backfill year.
+        if (t.year == 0) return null;
         return t.mtime == file.lastModified() && t.size == file.length() ? t : null;
+    }
+
+    /**
+     * 2026-07-05 — Batch freshness lookup for library scan partition (one query per chunk).
+     * Returns map path → fresh Track; missing or stale paths omitted.
+     */
+    public java.util.HashMap<String, Track> getFreshBatch(java.util.List<File> files) {
+        java.util.HashMap<String, Track> out = new java.util.HashMap<String, Track>();
+        if (files == null || files.isEmpty()) return out;
+        migrateLegacyZeroTrackNumbers();
+        final int chunk = 400;
+        for (int start = 0; start < files.size(); start += chunk) {
+            int end = Math.min(files.size(), start + chunk);
+            java.util.ArrayList<String> paths = new java.util.ArrayList<String>(end - start);
+            java.util.ArrayList<File> chunkFiles = new java.util.ArrayList<File>(end - start);
+            for (int i = start; i < end; i++) {
+                File f = files.get(i);
+                if (f == null || !f.isFile()) continue;
+                paths.add(f.getAbsolutePath());
+                chunkFiles.add(f);
+            }
+            if (paths.isEmpty()) continue;
+            StringBuilder sql = new StringBuilder("path IN (");
+            for (int i = 0; i < paths.size(); i++) {
+                if (i > 0) sql.append(',');
+                sql.append('?');
+            }
+            sql.append(')');
+            SQLiteDatabase db = getReadableDatabase();
+            Cursor c = null;
+            try {
+                c = db.query("tracks", null, sql.toString(),
+                        paths.toArray(new String[paths.size()]), null, null, null);
+                while (c.moveToNext()) {
+                    Track t = rowToTrack(c);
+                    File f = new File(t.path);
+                    // 2026-07-06: year=0 = legacy cache before year column — re-tag once.
+                    if (f.isFile() && t.year != 0
+                            && t.mtime == f.lastModified() && t.size == f.length()) {
+                        out.put(t.path, t);
+                    }
+                }
+            } finally {
+                if (c != null) c.close();
+            }
+        }
+        return out;
     }
 
     /** True when cached row matches current file stat — skip MediaMetadataRetriever. */
@@ -209,6 +292,8 @@ public class MusicLibraryStore extends SolarDbHelper {
         if (file == null || !file.isFile()) return false;
         Track t = get(file.getAbsolutePath());
         if (t == null) return false;
+        // 2026-07-06: year=0 rows need one metadata pass after DB v4 upgrade.
+        if (t.year == 0) return false;
         return t.mtime == file.lastModified() && t.size == file.length();
     }
 
@@ -222,15 +307,20 @@ public class MusicLibraryStore extends SolarDbHelper {
 
     public void upsert(File file, String title, String artist, String album,
             String genre, String albumArtist, String durationMs, int trackNumber) {
+        upsert(file, title, artist, album, genre, albumArtist, durationMs, trackNumber, 0);
+    }
+
+    public void upsert(File file, String title, String artist, String album,
+            String genre, String albumArtist, String durationMs, int trackNumber, int year) {
         if (file == null || !file.isFile()) return;
         if (trackNumber == 0) trackNumber = -1;
         SQLiteDatabase db = getWritableDatabase();
         SQLiteStatement st = db.compileStatement(
                 "INSERT OR REPLACE INTO tracks"
-                        + " (path,mtime,size,title,artist,album,genre,album_artist,duration_ms,track_number)"
-                        + " VALUES (?,?,?,?,?,?,?,?,?,?)");
+                        + " (path,mtime,size,title,artist,album,genre,album_artist,duration_ms,track_number,year)"
+                        + " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
         try {
-            bindUpsert(st, file, title, artist, album, genre, albumArtist, durationMs, trackNumber);
+            bindUpsert(st, file, title, artist, album, genre, albumArtist, durationMs, trackNumber, year);
             st.executeInsert();
         } finally {
             st.close();
@@ -247,12 +337,12 @@ public class MusicLibraryStore extends SolarDbHelper {
         db.beginTransaction();
         SQLiteStatement st = db.compileStatement(
                 "INSERT OR REPLACE INTO tracks"
-                        + " (path,mtime,size,title,artist,album,genre,album_artist,duration_ms,track_number)"
-                        + " VALUES (?,?,?,?,?,?,?,?,?,?)");
+                        + " (path,mtime,size,title,artist,album,genre,album_artist,duration_ms,track_number,year)"
+                        + " VALUES (?,?,?,?,?,?,?,?,?,?,?)");
         try {
             for (Upsert t : tracks) {
                 bindUpsert(st, t.file, t.title, t.artist, t.album, t.genre,
-                        t.albumArtist, t.durationMs, t.trackNumber);
+                        t.albumArtist, t.durationMs, t.trackNumber, t.year);
                 st.executeInsert();
                 st.clearBindings();
             }
@@ -264,7 +354,7 @@ public class MusicLibraryStore extends SolarDbHelper {
     }
 
     private static void bindUpsert(SQLiteStatement st, File file, String title, String artist,
-            String album, String genre, String albumArtist, String durationMs, int trackNumber) {
+            String album, String genre, String albumArtist, String durationMs, int trackNumber, int year) {
         if (trackNumber == 0) trackNumber = -1;
         st.bindString(1, file.getAbsolutePath());
         st.bindLong(2, file.lastModified());
@@ -276,6 +366,8 @@ public class MusicLibraryStore extends SolarDbHelper {
         st.bindString(8, albumArtist != null ? albumArtist : "");
         st.bindString(9, durationMs != null ? durationMs : "");
         st.bindLong(10, trackNumber);
+        // 2026-07-06: -1 = year read but absent; 0 reserved for legacy not-yet-backfilled rows.
+        st.bindLong(11, year > 0 ? year : YEAR_UNKNOWN_SCANNED);
     }
 
     /** Wipe all cached track rows — Settings reset / cache clear. */
@@ -374,6 +466,9 @@ public class MusicLibraryStore extends SolarDbHelper {
         if (trackNumberIndex != -1) {
             trackNumber = c.getInt(trackNumberIndex);
         }
+        int year = 0;
+        int yearIndex = c.getColumnIndex("year");
+        if (yearIndex != -1) year = c.getInt(yearIndex);
         return new Track(
                 c.getString(c.getColumnIndex("path")),
                 c.getLong(c.getColumnIndex("mtime")),
@@ -384,6 +479,117 @@ public class MusicLibraryStore extends SolarDbHelper {
                 c.getString(c.getColumnIndex("genre")),
                 c.getString(c.getColumnIndex("album_artist")),
                 c.getString(c.getColumnIndex("duration_ms")),
-                trackNumber);
+                trackNumber,
+                year);
+    }
+
+    // --- Favorites (JJ parity) ---
+
+    /** All favorited track paths. */
+    public Set<String> loadFavoritePaths() {
+        Set<String> out = new HashSet<String>();
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = null;
+        try {
+            c = db.query("favorite_paths", new String[] { "path" }, null, null, null, null, null);
+            while (c.moveToNext()) out.add(c.getString(0));
+        } finally {
+            if (c != null) c.close();
+        }
+        return out;
+    }
+
+    public boolean isFavorite(String path) {
+        if (path == null) return false;
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = null;
+        try {
+            c = db.query("favorite_paths", new String[] { "path" }, "path=?",
+                    new String[] { path }, null, null, null);
+            return c.moveToFirst();
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    public void setFavorite(String path, boolean on) {
+        if (path == null) return;
+        SQLiteDatabase db = getWritableDatabase();
+        if (on) {
+            db.execSQL("INSERT OR REPLACE INTO favorite_paths (path) VALUES (?)",
+                    new Object[] { path });
+        } else {
+            db.delete("favorite_paths", "path=?", new String[] { path });
+        }
+    }
+
+    /** Remove favorites whose files no longer exist. */
+    public void pruneFavorites(Set<String> existingPaths) {
+        Set<String> favs = loadFavoritePaths();
+        if (favs.isEmpty()) return;
+        SQLiteDatabase db = getWritableDatabase();
+        for (String p : favs) {
+            if (existingPaths == null || !existingPaths.contains(p)) {
+                db.delete("favorite_paths", "path=?", new String[] { p });
+            }
+        }
+    }
+
+    // --- Audiobook bookmarks ---
+
+    public static final class AudiobookBookmark {
+        public final String path;
+        public final int positionMs;
+        public final int chapterIndex;
+
+        public AudiobookBookmark(String path, int positionMs, int chapterIndex) {
+            this.path = path;
+            this.positionMs = positionMs;
+            this.chapterIndex = chapterIndex;
+        }
+    }
+
+    public void saveAudiobookBookmark(String path, int positionMs, int chapterIndex) {
+        if (path == null) return;
+        SQLiteDatabase db = getWritableDatabase();
+        db.execSQL("INSERT OR REPLACE INTO audiobook_bookmarks"
+                        + " (path,position_ms,chapter_index,updated_at) VALUES (?,?,?,?)",
+                new Object[] { path, positionMs, chapterIndex, System.currentTimeMillis() });
+    }
+
+    public AudiobookBookmark loadAudiobookBookmark(String path) {
+        if (path == null) return null;
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = null;
+        try {
+            c = db.query("audiobook_bookmarks", null, "path=?", new String[] { path },
+                    null, null, null);
+            if (c.moveToFirst()) {
+                return new AudiobookBookmark(path,
+                        c.getInt(c.getColumnIndex("position_ms")),
+                        c.getInt(c.getColumnIndex("chapter_index")));
+            }
+        } finally {
+            if (c != null) c.close();
+        }
+        return null;
+    }
+
+    public Map<String, AudiobookBookmark> loadAllAudiobookBookmarks() {
+        Map<String, AudiobookBookmark> out = new HashMap<String, AudiobookBookmark>();
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = null;
+        try {
+            c = db.query("audiobook_bookmarks", null, null, null, null, null, null);
+            while (c.moveToNext()) {
+                String path = c.getString(c.getColumnIndex("path"));
+                out.put(path, new AudiobookBookmark(path,
+                        c.getInt(c.getColumnIndex("position_ms")),
+                        c.getInt(c.getColumnIndex("chapter_index"))));
+            }
+        } finally {
+            if (c != null) c.close();
+        }
+        return out;
     }
 }

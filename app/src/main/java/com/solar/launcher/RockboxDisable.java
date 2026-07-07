@@ -8,9 +8,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 
 /**
- * Disable org.rockbox while Solar is the active launcher.
- * Marker {@code /data/data/.solar_rom_home_ready} skips the shell script only when Rockbox
- * is already disabled — if Rockbox was re-enabled, recovery runs again on every launch.
+ * First-boot setup: set Solar as preferred HOME while keeping Rockbox enabled.
  */
 public final class RockboxDisable {
     private static final String TAG = "RockboxDisable";
@@ -20,27 +18,27 @@ public final class RockboxDisable {
 
     private RockboxDisable() {}
 
-    /** Run when Rockbox is co-installed — re-disable whenever both launchers are enabled. */
+    /** Run when Rockbox is co-installed — ensure Solar owns HOME without disabling Rockbox. */
     public static void ensureOnce(Context context) {
         if (context == null) return;
         if (!LauncherSwitch.isRockboxAvailable(context)) return;
         if (!isSolarEnabled(context)) return;
-        final boolean rockboxEnabled = LauncherSwitch.isRockboxEnabled(context);
-        if (!rockboxEnabled && new File(MARKER_PATH).exists()) return;
+        if (new File(MARKER_PATH).exists()) {
+            LauncherDefault.ensureBothLaunchersEnabled(context);
+            LauncherDefault.ensureHomeTarget(context, LauncherPreference.getHomeTarget(context));
+            return;
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    if (!rockboxEnabled && new File(MARKER_PATH).exists()) return;
-                    boolean scriptOk = runDisableScript(context);
-                    if (!scriptOk || LauncherSwitch.isRockboxEnabled(context)) {
-                        LauncherSwitch.assertRockboxDisabledWhileSolarHome(context);
-                    } else {
-                        Log.i(TAG, "Rockbox disabled for Solar");
-                    }
+                    runSetupScript(context);
+                    LauncherDefault.ensureBothLaunchersEnabled(context);
+                    LauncherDefault.ensureHomeTarget(context, LauncherPreference.getHomeTarget(context));
+                    Log.i(TAG, "HOME preference synced");
                 } catch (Exception e) {
                     Log.w(TAG, "ensureOnce failed: " + e.getMessage());
-                    LauncherSwitch.assertRockboxDisabledWhileSolarHome(context);
+                    LauncherSwitch.ensurePreferredHome(context);
                 }
             }
         }, "RockboxDisable").start();
@@ -55,14 +53,15 @@ public final class RockboxDisable {
         }
     }
 
-    private static boolean runDisableScript(Context context) {
+    private static void runSetupScript(Context context) {
         File system = new File(SYSTEM_SCRIPT);
         if (system.isFile()) {
-            return runSu("sh " + shellQuote(SYSTEM_SCRIPT));
+            runSu("sh " + shellQuote(SYSTEM_SCRIPT));
+            return;
         }
         File cached = new File(context.getCacheDir(), "disable-rockbox-for-solar.sh");
-        if (!extractAsset(context, cached)) return false;
-        return runSu("sh " + shellQuote(cached.getAbsolutePath()));
+        if (!extractAsset(context, cached)) return;
+        runSu("sh " + shellQuote(cached.getAbsolutePath()));
     }
 
     private static boolean extractAsset(Context context, File out) {

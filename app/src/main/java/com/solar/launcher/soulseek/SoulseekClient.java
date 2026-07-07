@@ -2064,18 +2064,14 @@ public final class SoulseekClient extends Thread {
 
   /** Blocking PM send for multi-recipient batches — call from a worker thread only. */
   void sendPrivateMessageSync(String peerUser, String text) throws Exception {
-    // #region agent log
     try {
       org.json.JSONObject d = new org.json.JSONObject();
-      d.put("peer", peerUser);
       d.put("textLen", text != null ? text.length() : 0);
       d.put("loggedIn", loggedIn);
       d.put("running", running.get());
-      d.put("sender", username);
       agentLog("SoulseekClient.sendPrivateMessageSync", "enter", "C", d);
       Debug843b96Log.log(appContext, "SoulseekClient.sendPrivateMessageSync", "enter", "C-F", d);
     } catch (Exception ignored) {}
-    // #endregion
     sendPrivateMessageInternal(peerUser, text);
   }
 
@@ -3095,7 +3091,7 @@ public final class SoulseekClient extends Thread {
   }
 
   private static void debugLog(String msg) {
-    // ponytail: sync append per call; keep off hot paths (distrib/search frames)
+    msg = com.solar.launcher.SolarLog.scrub(msg);
     try {
       PrintWriter pw = new PrintWriter(new FileOutputStream(DEBUG_LOG, true));
       pw.println(new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date()) + " " + msg);

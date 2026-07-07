@@ -8,13 +8,11 @@ import org.json.JSONObject;
 import java.io.File;
 import java.io.FileWriter;
 
-/** Debug-mode NDJSON logger — session ae04aa; pull via adb from /storage/sdcard0/. */
+/** Debug-mode NDJSON logger — session 5c5611; pull via adb from SD .solar/ or app files. */
 public final class DebugAgentLog {
-    private static final String TAG = "SolarNetDbg";
-    private static final String FILE = "debug-ae04aa.log";
-    private static final String SESSION = "ae04aa";
-    private static final String WORKSPACE_LOG =
-            "/home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/.cursor/debug-ae04aa.log";
+    private static final String TAG = "SolarDbg5c5611";
+    private static final String FILE = "debug-5c5611.log";
+    private static final String SESSION = "5c5611";
     /** ponytail: hot-path sync file I/O was freezing UI — flip true only for short debug sessions. */
     public static volatile boolean ENABLED = false;
 
@@ -33,26 +31,26 @@ public final class DebugAgentLog {
             if (data != null) o.put("data", data);
             String line = o.toString();
             Log.i(TAG, line);
-            try {
-                File sdcard = new File("/storage/sdcard0", FILE);
-                FileWriter w = new FileWriter(sdcard, true);
-                w.write(line);
-                w.write('\n');
-                w.close();
-            } catch (Exception ignored2) {}
-            if (ctx != null) {
-                File f = new File(ctx.getFilesDir(), FILE);
-                FileWriter w = new FileWriter(f, true);
-                w.write(line);
-                w.write('\n');
-                w.close();
+            File sdRoot = DeviceFeatures.getPrimaryStorageRoot();
+            if (sdRoot != null) {
+                try {
+                    File dir = new File(sdRoot, ".solar");
+                    if (!dir.exists()) dir.mkdirs();
+                    FileWriter w = new FileWriter(new File(dir, FILE), true);
+                    w.write(line);
+                    w.write('\n');
+                    w.close();
+                } catch (Exception ignored2) {}
             }
-            try {
-                FileWriter w = new FileWriter(WORKSPACE_LOG, true);
-                w.write(line);
-                w.write('\n');
-                w.close();
-            } catch (Exception ignored3) {}
+            if (ctx != null) {
+                try {
+                    File f = new File(ctx.getFilesDir(), FILE);
+                    FileWriter w = new FileWriter(f, true);
+                    w.write(line);
+                    w.write('\n');
+                    w.close();
+                } catch (Exception ignored3) {}
+            }
         } catch (Exception ignored) {}
     }
 }

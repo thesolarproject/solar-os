@@ -36,4 +36,18 @@ public class MusicLibraryStoreTest {
         if (!"".equals(MusicLibraryStore.normPath(null))) throw new AssertionError("null norm");
         if (!Locale.US.equals(Locale.US)) { /* keep javac happy */ }
     }
+
+    /** 2026-07-06: Mirrors getFreshBatch year gate — 0 stale, -1/positive fresh. */
+    @Test
+    public void yearFreshnessRule() {
+        if (yearCountsAsFresh(0)) throw new AssertionError("legacy 0 stale");
+        if (!yearCountsAsFresh(MusicLibraryStore.YEAR_UNKNOWN_SCANNED)) {
+            throw new AssertionError("scanned unknown fresh");
+        }
+        if (!yearCountsAsFresh(1999)) throw new AssertionError("tagged year fresh");
+    }
+
+    private static boolean yearCountsAsFresh(int year) {
+        return year != 0;
+    }
 }

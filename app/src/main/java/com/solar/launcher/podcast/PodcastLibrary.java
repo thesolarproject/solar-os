@@ -11,14 +11,24 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
 
-/** Saved podcast episodes on MicroSD: /storage/sdcard0/Podcasts/{show}/{episode}.ext */
+/** Saved podcast episodes under Podcasts/ on each user volume (see {@link com.solar.launcher.DeviceFeatures#getPodcastRoots()}). */
 public final class PodcastLibrary {
+    /** Default save root when no Context — primary MicroSD. */
     public static final File ROOT = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Podcasts");
 
     private PodcastLibrary() {}
 
     public static File destFile(String showTitle, String episodeTitle, String audioUrl) {
-        File showDir = new File(ROOT, sanitize(showTitle, 60));
+        return destFile(null, showTitle, episodeTitle, audioUrl);
+    }
+
+    /** Honor Y2 internal-media pref for new downloads; scans still use all {@link #getPodcastRoots()}. */
+    public static File destFile(android.content.Context ctx, String showTitle, String episodeTitle,
+            String audioUrl) {
+        File root = ctx != null
+                ? new File(com.solar.launcher.DeviceFeatures.getNewMediaRoot(ctx), "Podcasts")
+                : ROOT;
+        File showDir = new File(root, sanitize(showTitle, 60));
         String ext = extensionFromUrl(audioUrl);
         String base = sanitize(episodeTitle, 80);
         if (base.isEmpty()) base = "episode_" + Integer.toHexString(audioUrl.hashCode());

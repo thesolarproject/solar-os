@@ -15,8 +15,11 @@ import com.solar.launcher.DebugSessionLog;
 import org.json.JSONObject;
 
 /**
- * Animates Flow center cover into Now Playing album slot (iPod Classic drop).
- * Forward (Flow→NP) and reverse (NP→Flow) share pose interpolation and Camera draw.
+ * 2026-07-05 — Flow↔Now Playing 3D album art handoff animation coordinator.
+ * NP→Flow must use runReverse (never runReverse2d); all NP→Flow via enterFlowFromNowPlaying.
+ * 2D/LCD art uses FlowScreenTransition crossfade only — do not mix animation tiers.
+ * When changing: syncCarouselToNowPlayingIfActive guards (flip/guided scroll exceptions).
+ * Reversal: delete handoff; Flow and NP use instant crossfade only.
  */
 public final class FlowPlayerHandoff {
 

@@ -6,6 +6,7 @@ public class AudioTagsTest {
         albumArtistFallback();
         filenameParse();
         validTags();
+        parseYearString();
         System.out.println("AudioTagsTest OK");
     }
 
@@ -43,5 +44,12 @@ public class AudioTagsTest {
         bad.title = "Dazed and Confused";
         bad.artist = "Unknown Artist";
         if (AudioTags.hasValidTags(bad)) throw new AssertionError("expected invalid");
+    }
+
+    static void parseYearString() {
+        if (AudioTags.parseYearString("1999") != 1999) throw new AssertionError("year 1999");
+        if (AudioTags.parseYearString("1999-01-01") != 1999) throw new AssertionError("date prefix");
+        if (AudioTags.parseYearString("99") != 0) throw new AssertionError("short year");
+        if (AudioTags.parseYearString("") != 0) throw new AssertionError("empty year");
     }
 }

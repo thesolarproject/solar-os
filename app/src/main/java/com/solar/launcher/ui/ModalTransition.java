@@ -30,4 +30,13 @@ public final class ModalTransition {
     public static void animateDismiss(View scrim, View panel, Runnable onComplete) {
         ScreenTransition.animateModalDismiss(scrim, panel, onComplete);
     }
+
+    /** WM overlay — panel scale/alpha only; no scrim fade. */
+    public static void animatePresentPanelOnly(View panel, Runnable onComplete) {
+        ScreenTransition.animateModalPresentPanelOnly(panel, onComplete);
+    }
+
+    public static void animateDismissPanelOnly(View panel, Runnable onComplete) {
+        ScreenTransition.animateModalDismissPanelOnly(panel, onComplete);
+    }
 }

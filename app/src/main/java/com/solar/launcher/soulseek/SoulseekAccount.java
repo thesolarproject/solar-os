@@ -124,11 +124,11 @@ public final class SoulseekAccount {
         return resetToAuto(prefs, null);
     }
 
-    static String generateUsername(Context context) {
+    public static String generateUsername(Context context) {
         return generateUsername(context, false);
     }
 
-    static String generateUsername(Context context, boolean fresh) {
+    public static String generateUsername(Context context, boolean fresh) {
         String prefix = DeviceFeatures.isY2() ? "Y2" : "Y1";
         String deviceId = deviceId(context);
         String seed = prefix + ":" + deviceId;

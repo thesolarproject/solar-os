@@ -24,6 +24,16 @@ import sys
 import zlib
 from pathlib import Path
 
+# Primary reference is Koensayr/innioasis 3.x odex; rockbox-y1 bases share patch sites
+# but differ in odex wrapper bytes so the patched output MD5 differs too.
+KNOWN_STOCK_MD5S = {
+    "11566bc23001e78de64b5db355238175": "innioasis 3.x (Koensayr reference)",
+    "aa54320cef3422a699e17129abc25998": "rockbox-y1 type-A/B base",
+}
+KNOWN_OUTPUT_MD5S = {
+    "00cc642742044286966cbb7b01135ca7": "from innioasis 3.x stock",
+    "607edc5d259b578141342ceba644f1dc": "from rockbox-y1 type-A/B base",
+}
 STOCK_MD5         = "11566bc23001e78de64b5db355238175"
 OUTPUT_MD5        = "00cc642742044286966cbb7b01135ca7"
 
@@ -149,31 +159,35 @@ def main() -> None:
     data = bytearray(input_path.read_bytes())
     input_md5 = md5(data)
 
-    # Already-at-expected-output fast path. MD5 over the whole file is
-    # strictly stronger evidence than verifying a handful of patch sites,
-    # so when the input already hashes to the expected output for the
-    # current build mode (release or debug) there's nothing to do.
-    if EXPECTED_OUTPUT_MD5 is not None and input_md5 == EXPECTED_OUTPUT_MD5:
+    is_known_stock = input_md5 in KNOWN_STOCK_MD5S
+    is_known_output = input_md5 in KNOWN_OUTPUT_MD5S
+    is_primary_stock = input_md5 == STOCK_MD5
+
+    # Already-patched fast path — any known output hash (primary or rockbox-derived).
+    if is_known_output or (
+        EXPECTED_OUTPUT_MD5 is not None and input_md5 == EXPECTED_OUTPUT_MD5
+    ):
+        label = KNOWN_OUTPUT_MD5S.get(input_md5, "expected output")
         print(f"Input:  {input_path}  ({len(data):,} bytes)")
-        print(f"MD5:    {input_md5}  [OK — already at expected output]")
+        print(f"MD5:    {input_md5}  [OK — already patched ({label})]")
         print("Nothing to do.")
         sys.exit(0)
 
     if args.skip_md5:
         md5_tag = "(stock check skipped)"
-    elif input_md5 == STOCK_MD5:
-        md5_tag = "[OK — matches stock]"
+    elif is_known_stock:
+        md5_tag = f"[OK — matches stock ({KNOWN_STOCK_MD5S[input_md5]})]"
     else:
-        md5_tag = f"[MISMATCH — expected {STOCK_MD5}]"
+        md5_tag = f"[MISMATCH — expected one of {', '.join(KNOWN_STOCK_MD5S)}]"
 
     print(f"Input:  {input_path}  ({len(data):,} bytes)")
     print(f"MD5:    {input_md5}  {md5_tag}")
 
-    if not args.skip_md5 and input_md5 != STOCK_MD5:
-        print("ERROR: input is not the expected stock build.")
-        if EXPECTED_OUTPUT_MD5 is not None:
-            print(f"       Expected stock ({STOCK_MD5}) or already-patched ({EXPECTED_OUTPUT_MD5}).")
-        print("       Use --skip-md5 for alternate stock builds.")
+    if not args.skip_md5 and not is_known_stock:
+        known_out = ", ".join(KNOWN_OUTPUT_MD5S)
+        print("ERROR: input is not a known stock MtkBt.odex.")
+        print(f"       Expected stock ({', '.join(KNOWN_STOCK_MD5S)}) or patched ({known_out}).")
+        print("       Use --skip-md5 for unknown stock builds.")
         sys.exit(1)
 
     if data[:4] != b"dey\n":
@@ -184,7 +198,8 @@ def main() -> None:
     # sufficient: alternate stock build (--skip-md5) or development mode
     # where the expected output MD5 isn't pinned yet. On the normal happy
     # path the input-MD5 and output-MD5 checks cover every byte in the file.
-    show_sites = args.skip_md5 or EXPECTED_OUTPUT_MD5 is None
+    # Site checks when stock MD5 is unknown or a non-primary (rockbox) base.
+    show_sites = args.skip_md5 or not is_primary_stock or EXPECTED_OUTPUT_MD5 is None
 
     if show_sites:
         pre_ok, pre_results = verify(data, "before")
@@ -223,7 +238,7 @@ def main() -> None:
     struct.pack_into("<I", data, ADLER_FILE_OFF, new_adler)
 
     output_md5 = md5(data)
-    output_md5_mismatch = EXPECTED_OUTPUT_MD5 is not None and output_md5 != EXPECTED_OUTPUT_MD5
+    output_md5_mismatch = output_md5 not in KNOWN_OUTPUT_MD5S
 
     # Post-patch site verification fires either when we're already in a
     # site-aware mode (developer / alternate stock) or as a diagnostic when
@@ -255,10 +270,10 @@ def main() -> None:
     md5_var = "OUTPUT_DEBUG_MD5" if DEBUG_LOGGING else "OUTPUT_MD5"
     if EXPECTED_OUTPUT_MD5 is None:
         out_tag = f"[set {md5_var} = \"{output_md5}\"]"
-    elif output_md5 == EXPECTED_OUTPUT_MD5:
-        out_tag = "[OK — matches expected]"
+    elif output_md5 in KNOWN_OUTPUT_MD5S:
+        out_tag = f"[OK — {KNOWN_OUTPUT_MD5S[output_md5]}]"
     else:
-        out_tag = f"[MISMATCH — expected {EXPECTED_OUTPUT_MD5}]"
+        out_tag = f"[MISMATCH — expected one of {', '.join(KNOWN_OUTPUT_MD5S)}]"
 
     print(f"\nOutput: {output_path}  ({len(data):,} bytes)")
     print(f"MD5:    {output_md5}  {out_tag}")
@@ -267,10 +282,11 @@ def main() -> None:
     print(f"  adb shell chmod 644 /system/app/MtkBt.odex")
     print(f"  adb reboot")
 
-    if output_md5_mismatch and not args.skip_md5:
-        print("\nERROR: output MD5 doesn't match expected. Output was written but"
-              " the patcher's expected hash is stale or the patch logic diverged."
-              " Pass --skip-md5 to suppress.", file=sys.stderr)
+    # Hard-fail only when patching from primary stock to an unrecognised output.
+    if output_md5_mismatch and not args.skip_md5 and is_primary_stock:
+        print("\nERROR: output MD5 doesn't match any known patched hash. Output was"
+              " written but patch logic may have diverged. Pass --skip-md5 to suppress.",
+              file=sys.stderr)
         sys.exit(1)
 
 

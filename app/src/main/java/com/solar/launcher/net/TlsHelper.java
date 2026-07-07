@@ -10,6 +10,7 @@ import java.security.Provider;
 import java.security.Security;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.concurrent.TimeUnit;
@@ -173,7 +174,8 @@ public final class TlsHelper {
 
     private static OkHttpClient bareOkHttpClient() {
         return new OkHttpClient.Builder()
-                .connectionSpecs(Collections.singletonList(ConnectionSpec.RESTRICTED_TLS))
+                // 2026-07-06: RESTRICTED_TLS alone blocks http:// LAN Navidrome; cleartext for legacy/http feeds.
+                .connectionSpecs(Arrays.asList(ConnectionSpec.RESTRICTED_TLS, ConnectionSpec.CLEARTEXT))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .followRedirects(true)
@@ -182,7 +184,8 @@ public final class TlsHelper {
 
     private static OkHttpClient buildOkHttpClient() throws Exception {
         OkHttpClient.Builder b = new OkHttpClient.Builder()
-                .connectionSpecs(Collections.singletonList(ConnectionSpec.RESTRICTED_TLS))
+                // 2026-07-06: HTTPS via RESTRICTED_TLS; allow http:// for Navidrome LAN + podcast http fallback.
+                .connectionSpecs(Arrays.asList(ConnectionSpec.RESTRICTED_TLS, ConnectionSpec.CLEARTEXT))
                 .connectTimeout(20, TimeUnit.SECONDS)
                 .readTimeout(60, TimeUnit.SECONDS)
                 .followRedirects(true);

@@ -22,6 +22,16 @@ The ladder runs after you understand the problem, not instead of it: read the ta
 
 Bug fix = root cause, not symptom: a report names a symptom. Grep every caller of the function you touch and fix the shared function once — one guard there is a smaller diff than one per caller, and patching only the path the ticket names leaves a sibling caller still broken.
 
+We have Y1 and Y2 test hardware connected over USB adb. Use `adb devices` for serials and run rapid iterative install/test loops on device — no Wi‑Fi adb.
+
+There are Y1 and Y2 specific featuresets that must always without question be accounted for. **ROM parity contract:** `.cursor/rules/y1-y2-rom-parity.mdc` — all three ROM zips (`rom.zip`, `rom_type_b.zip`, `rom_y2.zip`) ship Xposed Dalvik framework + production modules (context bridge + theme font). Y2 root parity with Y1 is done (Phase 1: permissive `su` via `install-y1-su-system.sh`). Intentional divergences (AVRCP Y1-only, power-hold overlay Y2-only, quick-menu volume chip) are documented in that rule.
+
+After ROM or Xposed changes, run `./solar-rom/scripts/audit-device-parity.sh` on **both** Y1 and Y2 hardware. See `solar-rom/patches/xposed/README.md` for framework paths.
+
+**Y2 roadmap (see `solar-rom/README.md`):** Phase 1 root (done); Phase 2 Java-side DPAD→track-prev/next parity (done); Phase 3 `Y2-Rockbox.kl` in ROM build (done).
+
+Design everything with modularity and error recovery in mind.
+
 Rules:
 
 - No abstractions that weren't explicitly requested.

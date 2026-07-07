@@ -21,3 +21,8 @@ dependencyResolutionManagement {
 
 rootProject.name = "Solar"
 include ':app'
+include ':launcher-helper'
+include ':global-context-modal'
+include ':solar-overlay-ui'
+include ':solar-ota-lib'
+include ':solar-updater'

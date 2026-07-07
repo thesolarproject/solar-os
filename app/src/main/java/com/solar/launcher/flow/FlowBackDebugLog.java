@@ -15,7 +15,7 @@ public final class FlowBackDebugLog {
     private static final String TAG = "SolarDbgC472d1";
     private static final String SESSION = "c472d1";
     private static final String FILE = "debug-c472d1.log";
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false;
 
     private FlowBackDebugLog() {}
 

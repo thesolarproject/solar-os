@@ -7,10 +7,10 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Unified playback queue — music files, podcast episodes, Reach streams in one order. */
+/** 2026-07-06: Unified queue — local files, streams, Navidrome, podcasts, radio in one order. */
 public final class PlayQueue {
     public enum ItemKind {
-        MUSIC_FILE, PODCAST_EPISODE, REACH_STREAM, DEEZER_STREAM,
+        MUSIC_FILE, PODCAST_EPISODE, REACH_STREAM, DEEZER_STREAM, NAVIDROME_STREAM,
         FM_STATION, INTERNET_RADIO_STATION
     }
 
@@ -33,13 +33,21 @@ public final class PlayQueue {
         public final String radioUrl;
         public final String radioSubtitle;
         public final String radioFavicon;
+        /** Navidrome Subsonic song id — HTTP stream, no local file. */
+        public final String navidromeSongId;
+        public final String navidromeTitle;
+        public final String navidromeArtist;
+        public final String navidromeAlbum;
+        public final String navidromeCoverArtId;
 
         private QueueItem(ItemKind kind, File file, OpenRssClient.Episode episode,
                 String podcastShowTitle, boolean podcastFromSaved, String reachMeta,
                 String reachPeerUsername, String deezerMeta, long deezerTrackId,
                 int fmFreqKhz, String fmLabel,
                 String radioStationUuid, String radioName, String radioUrl,
-                String radioSubtitle, String radioFavicon) {
+                String radioSubtitle, String radioFavicon,
+                String navidromeSongId, String navidromeTitle, String navidromeArtist,
+                String navidromeAlbum, String navidromeCoverArtId) {
             this.kind = kind;
             this.file = file;
             this.episode = episode;
@@ -56,11 +64,16 @@ public final class PlayQueue {
             this.radioUrl = radioUrl != null ? radioUrl : "";
             this.radioSubtitle = radioSubtitle != null ? radioSubtitle : "";
             this.radioFavicon = radioFavicon != null ? radioFavicon : "";
+            this.navidromeSongId = navidromeSongId != null ? navidromeSongId : "";
+            this.navidromeTitle = navidromeTitle != null ? navidromeTitle : "";
+            this.navidromeArtist = navidromeArtist != null ? navidromeArtist : "";
+            this.navidromeAlbum = navidromeAlbum != null ? navidromeAlbum : "";
+            this.navidromeCoverArtId = navidromeCoverArtId != null ? navidromeCoverArtId : "";
         }
 
         public static QueueItem music(File f) {
             return new QueueItem(ItemKind.MUSIC_FILE, f, null, "", false, null, null, null, 0,
-                    0, "", "", "", "", "", "");
+                    0, "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem reach(File temp, String meta) {
@@ -69,32 +82,43 @@ public final class PlayQueue {
 
         public static QueueItem reach(File temp, String meta, String peerUsername) {
             return new QueueItem(ItemKind.REACH_STREAM, temp, null, "", false, meta, peerUsername,
-                    null, 0, 0, "", "", "", "", "", "");
+                    null, 0, 0, "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem deezer(File temp, String meta, long trackId) {
             return new QueueItem(ItemKind.DEEZER_STREAM, temp, null, "", false, null, null, meta,
-                    trackId, 0, "", "", "", "", "", "");
+                    trackId, 0, "", "", "", "", "", "", "", "", "", "", "");
+        }
+
+        /** 2026-07-06: Navidrome HTTP stream row — metadata for Now Playing + AVRCP. */
+        public static QueueItem navidrome(String songId, String title, String artist, String album,
+                String coverArtId) {
+            return new QueueItem(ItemKind.NAVIDROME_STREAM, null, null, "", false, null, null, null,
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
         }
 
         public static QueueItem podcast(OpenRssClient.Episode ep, String showTitle, boolean fromSaved) {
             return new QueueItem(ItemKind.PODCAST_EPISODE, null, ep, showTitle, fromSaved, null,
-                    null, null, 0, 0, "", "", "", "", "", "");
+                    null, null, 0, 0, "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem fmStation(int freqKhz, String label) {
             return new QueueItem(ItemKind.FM_STATION, null, null, "", false, null, null, null, 0,
-                    freqKhz, label, "", "", "", "", "");
+                    freqKhz, label, "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem internetRadio(String uuid, String name, String url,
                 String subtitle, String favicon) {
             return new QueueItem(ItemKind.INTERNET_RADIO_STATION, null, null, "", false, null,
-                    null, null, 0, 0, "", uuid, name, url, subtitle, favicon);
+                    null, null, 0, 0, "", uuid, name, url, subtitle, favicon,
+                    "", "", "", "", "");
         }
 
         /** Display title for stream / radio items. */
         public String streamMeta() {
+            if (kind == ItemKind.NAVIDROME_STREAM) {
+                return navidromeTitle != null && !navidromeTitle.isEmpty() ? navidromeTitle : navidromeSongId;
+            }
             if (kind == ItemKind.DEEZER_STREAM && deezerMeta != null) return deezerMeta;
             if (kind == ItemKind.REACH_STREAM && reachMeta != null) return reachMeta;
             if (kind == ItemKind.FM_STATION) {
@@ -223,6 +247,14 @@ public final class PlayQueue {
         }
     }
 
+    /** 2026-07-06 — Replace FM row label/freq when RDS PS or tune scrub commits. */
+    public void replaceFmAt(int i, int freqKhz, String label) {
+        if (i < 0 || i >= items.size()) return;
+        QueueItem q = items.get(i);
+        if (q.kind != ItemKind.FM_STATION) return;
+        items.set(i, QueueItem.fmStation(freqKhz, label));
+    }
+
     public void removeAt(int i) {
         if (i < 0 || i >= items.size()) return;
         items.remove(i);
@@ -267,7 +299,7 @@ public final class PlayQueue {
         return prev;
     }
 
-    /** ponytail: O(n) filter — fine for Y1 queue sizes */
+    /** ponytail: O(n) filter — fine for Y1 queue sizes; Navidrome rows have no File. */
     public List<File> musicFiles() {
         List<File> out = new ArrayList<File>();
         for (QueueItem q : items) {
@@ -277,6 +309,18 @@ public final class PlayQueue {
             }
         }
         return out;
+    }
+
+    /** 2026-07-06: Music-like slots incl. Navidrome — for track N/M UI and index mapping. */
+    public int musicLikeCount() {
+        int n = 0;
+        for (QueueItem q : items) {
+            if (q.kind == ItemKind.MUSIC_FILE || q.kind == ItemKind.REACH_STREAM
+                    || q.kind == ItemKind.DEEZER_STREAM || q.kind == ItemKind.NAVIDROME_STREAM) {
+                n++;
+            }
+        }
+        return n;
     }
 
     public List<OpenRssClient.Episode> podcastEpisodes() {

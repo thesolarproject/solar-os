@@ -3,9 +3,9 @@ package com.solar.launcher;
 import android.view.KeyEvent;
 
 /**
- * Y1 hardware keys — InputReader uses Generic.kl for mtk-kpd/mtk-tpd-kpd on Y1 firmware.
- * Wheel: scancode 114/115 → DPAD_UP/DOWN (19/20); 105/106 → MEDIA_PLAY/PAUSE (126/127).
- * Accept both — firmware paths differ; side 165/163 → MEDIA_PREVIOUS/NEXT (88/87).
+ * Y1/Y2 hardware keys — unified Y1-Rockbox / Y2-Rockbox keylayout on both devices.
+ * Wheel: 105/106 → MEDIA_PLAY/PAUSE (126/127); legacy path 114/115 → DPAD_UP/DOWN (19/20).
+ * Side: mtk-kpd 165/163 → MEDIA_PREVIOUS/NEXT (88/87).
  */
 public final class Y1InputKeys {
 
@@ -26,6 +26,11 @@ public final class Y1InputKeys {
     public static boolean isCenterKey(int keyCode) {
         return keyCode == KEY_CENTER || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                 || keyCode == 66 || keyCode == 23;
+    }
+
+    /** Y2 sleep/lock GPIO (scancode 116) — must reach PhoneWindowManager for GlobalActions. */
+    public static boolean isPowerKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_POWER;
     }
 
     public static boolean isPlayPauseKey(int keyCode) {
@@ -53,6 +58,15 @@ public final class Y1InputKeys {
     /** Side next — mtk-kpd scancode 163 → MEDIA_NEXT (87). */
     public static boolean isTrackNextKey(int keyCode) {
         return keyCode == KEY_TRACK_NEXT || keyCode == 87;
+    }
+
+    /** Y2 wheel-as-track keys — scancode 105/106 map to MEDIA_PREVIOUS/NEXT on Y2-Rockbox.kl. */
+    public static boolean isY2TrackPreviousKey(int keyCode) {
+        return keyCode == 105;
+    }
+
+    public static boolean isY2TrackNextKey(int keyCode) {
+        return keyCode == 106;
     }
 
     public static boolean isWheelKey(int keyCode) {
@@ -108,12 +122,12 @@ public final class Y1InputKeys {
 
     public static boolean isVolumeDownKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
-                || keyCode == 25 || keyCode == 114 || keyCode == 160;
+                || keyCode == 25 || keyCode == 160;
     }
 
     public static boolean isVolumeUpKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_VOLUME_UP
-                || keyCode == 24 || keyCode == 115 || keyCode == 161;
+                || keyCode == 24 || keyCode == 161;
     }
 
     static void selfCheckWheelMapping() {

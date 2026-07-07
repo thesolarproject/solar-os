@@ -33,6 +33,12 @@ public final class FlowCatalog {
         public final String albumArtist;
         public final long lastModified;
         public final int trackNumber;
+        /** ID3 genre — used by library search and category index. */
+        public final String genre;
+        /** Release year when known; 0 = unknown. */
+        public final int year;
+        /** Display year label (usually same as year string). */
+        public final String yearLabel;
 
         public SongRow(File file, String title, String artist, String album,
                 String albumArtist, long lastModified) {
@@ -41,6 +47,19 @@ public final class FlowCatalog {
 
         public SongRow(File file, String title, String artist, String album,
                 String albumArtist, long lastModified, int trackNumber) {
+            this(file, title, artist, album, albumArtist, lastModified, trackNumber, "", 0, "");
+        }
+
+        public SongRow(File file, String title, String artist, String album,
+                String albumArtist, long lastModified, int trackNumber,
+                String genre, int year) {
+            this(file, title, artist, album, albumArtist, lastModified, trackNumber,
+                    genre, year, year > 0 ? String.valueOf(year) : "");
+        }
+
+        public SongRow(File file, String title, String artist, String album,
+                String albumArtist, long lastModified, int trackNumber,
+                String genre, int year, String yearLabel) {
             this.file = file;
             this.title = title != null ? title : "";
             this.artist = artist != null ? artist : "";
@@ -48,6 +67,9 @@ public final class FlowCatalog {
             this.albumArtist = albumArtist != null ? albumArtist : "";
             this.lastModified = lastModified;
             this.trackNumber = trackNumber;
+            this.genre = genre != null ? genre : "";
+            this.year = year;
+            this.yearLabel = yearLabel != null ? yearLabel : (year > 0 ? String.valueOf(year) : "");
         }
     }
 
@@ -220,7 +242,20 @@ public final class FlowCatalog {
             }
             if (song.file != null && song.file.isFile()) out.add(song.file);
         }
-        return sortTracks(out, prefs, library);
+        return sortTracks(out, prefs, library,
+                item.kind == FlowItem.Kind.ALBUM ? albumTrackSort(prefs) : -1);
+    }
+
+    /**
+     * 2026-07-06: Track paths for cover decode — rack items omit embedded lists to save heap.
+     * Layman: look up which files belong to this album when we need to read embedded art.
+     */
+    public static List<File> tracksForCover(FlowItem item, List<SongRow> library,
+            LibraryBrowsePrefs prefs) {
+        if (item == null) return Collections.emptyList();
+        if (item.tracks != null && !item.tracks.isEmpty()) return item.tracks;
+        if (item.kind == FlowItem.Kind.ALBUM) return tracksForAlbum(item, library, prefs);
+        return Collections.emptyList();
     }
 
     /** Tracks for artist — respects guest browse policy. */
@@ -270,8 +305,8 @@ public final class FlowCatalog {
             String album = display.get(key);
             String sub = ArtistBrowsePolicy.albumBrowseSubtitle(album, artist, policyTracks, prefs);
             String match = FlowCoverResolver.albumMatchKey(album, artist);
-            out.add(FlowItem.album(album, sub, match, sortTracks(byAlbum.get(key), prefs, library,
-                    albumTrackSort(prefs)), artist));
+            out.add(FlowItem.album(album, sub, match,
+                    Collections.<File>emptyList(), artist));
         }
         return out;
     }

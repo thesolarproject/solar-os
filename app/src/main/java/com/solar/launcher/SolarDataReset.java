@@ -21,9 +21,10 @@ import java.util.List;
  */
 public final class SolarDataReset {
 
-    /** Y1 primary volume — user-facing "Internal Storage" / MicroSD mount. */
-    public static final File STORAGE_ROOT = com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot();
-    public static final File ROCKBOX_DIR = new File(STORAGE_ROOT, ".rockbox");
+    /** Primary user volume — MicroSD on both Y1 and Y2. */
+    public static final File STORAGE_ROOT = com.solar.launcher.DeviceFeatures.getMicroSdWipeRoot();
+    /** Rockbox config — internal (sdcard0) on Y2, user SD on Y1. */
+    public static final File ROCKBOX_DIR = new File(com.solar.launcher.DeviceFeatures.getRockboxRoot(), ".rockbox");
 
     public static final class Selection {
         public boolean rockboxConfig;
@@ -69,6 +70,7 @@ public final class SolarDataReset {
             if (sel.solarPrefs) {
                 clearLibraryDatabase(app);
                 clearAllSharedPreferences(app);
+                clearRecoveryState(app);
                 out.solarPrefsCleared = true;
             }
         } catch (Exception e) {
@@ -102,7 +104,9 @@ public final class SolarDataReset {
 
     static void clearCaches(Context app) {
         ThemeManager.releaseSdcardFileHandles();
-        clearDirectoryContents(new File(STORAGE_ROOT, "Solar_Covers"), false);
+        for (File root : com.solar.launcher.DeviceFeatures.getStorageRoots()) {
+            clearDirectoryContents(new File(root, "Solar_Covers"), false);
+        }
         clearDirectoryContents(AlbumArtCache.cacheDir(app), false);
         clearDirectoryContents(FlowThumbCache.cacheDir(app), false);
         File streamRoot = StreamCacheRoot.resolve(app);
@@ -123,6 +127,13 @@ public final class SolarDataReset {
         for (File f : files) {
             if (f.isFile()) f.delete();
         }
+    }
+
+    /** 2026-07-05 — Clear crash streak / emergency / degraded recovery flags on full prefs wipe. */
+    static void clearRecoveryState(Context app) {
+        if (app == null) return;
+        SolarRecoveryCoordinator.clearEmergencyState(app);
+        SolarRecoveryCoordinator.setPlatformDegraded(app, false);
     }
 
     static void clearDirectoryContents(File dir, boolean overwriteFiles) {

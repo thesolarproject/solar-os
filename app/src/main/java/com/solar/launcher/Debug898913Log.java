@@ -21,9 +21,10 @@ public final class Debug898913Log {
 
     private Debug898913Log() {}
 
-    /** Always emits — uncaught crashes and critical path (debug session 898913). */
+    /** Critical path — respects ENABLED so release/nightly skip file I/O (2026-07-05). */
     public static void logAlways(String location, String message, String hypothesisId,
             JSONObject data) {
+        if (!ENABLED) return;
         emit(location, message, hypothesisId, data, true);
     }
 

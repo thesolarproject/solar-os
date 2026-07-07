@@ -11,6 +11,7 @@ import com.solar.launcher.AlbumCoverPipeline;
 import com.solar.launcher.AlbumNames;
 import com.solar.launcher.ArtistNames;
 import com.solar.launcher.AudioTags;
+import com.solar.launcher.Debug3b26caLog;
 import com.solar.launcher.deezer.DeezerMetadata;
 
 import java.io.File;
@@ -29,6 +30,8 @@ public final class FlowCoverResolver {
         File getFlowThumbCacheDir();
         android.content.SharedPreferences prefs();
         Typeface labelFont();
+        /** 2026-07-06: Lazy album track list for embedded-art reads. */
+        List<File> tracksForCover(FlowItem item);
     }
 
     private FlowCoverResolver() {}
@@ -89,7 +92,8 @@ public final class FlowCoverResolver {
                 if (diskHit != null) return diskHit;
                 File artDir = host.getAlbumArtCacheDir();
                 File flowDir = host.getFlowThumbCacheDir();
-                return resolveFromTracks(item.tracks, host, thumbPx, item.coverKey, artDir, flowDir);
+                List<File> tracks = host.tracksForCover(item);
+                return resolveFromTracks(tracks, host, thumbPx, item.coverKey, artDir, flowDir);
             case ARTIST:
                 Bitmap cached = ArtistImageCache.get(host.getCoversFolder(), item.coverKey);
                 if (cached != null) return scale(cached, thumbPx);
@@ -129,6 +133,15 @@ public final class FlowCoverResolver {
             if (sidecar != null && sidecar.isFile()) {
                 Bitmap b = decodeFile(sidecar, thumbPx);
                 if (b != null) {
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("source", "sidecar");
+                        d.put("track", track.getName());
+                        Debug3b26caLog.log("FlowCoverResolver.resolveFromTracks",
+                                "art found", "H7", d);
+                    } catch (Exception ignored) {}
+                    // #endregion
                     maybeCacheAlbumArt(artDir, albumKey, b);
                     maybeCacheFlowThumb(flowThumbDir, albumKey, b, thumbPx);
                     return b;
@@ -136,6 +149,15 @@ public final class FlowCoverResolver {
             }
             Bitmap embedded = readEmbeddedArt(track);
             if (embedded != null) {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("source", "embedded");
+                    d.put("track", track.getName());
+                    Debug3b26caLog.log("FlowCoverResolver.resolveFromTracks",
+                            "art found", "H7", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 Bitmap out = AlbumCoverPipeline.scaleForFlow(embedded, thumbPx, thumbPx);
                 if (embedded != out && !embedded.isRecycled()) embedded.recycle();
                 maybeCacheAlbumArt(artDir, albumKey, out);
@@ -148,6 +170,15 @@ public final class FlowCoverResolver {
                 if (url != null && !url.isEmpty()) {
                     Bitmap net = downloadBitmap(url, thumbPx);
                     if (net != null) {
+                        // #region agent log
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("source", "deezer");
+                            d.put("track", track.getName());
+                            Debug3b26caLog.log("FlowCoverResolver.resolveFromTracks",
+                                    "art found", "H7", d);
+                        } catch (Exception ignored) {}
+                        // #endregion
                         maybeCacheAlbumArt(artDir, albumKey, net);
                         maybeCacheFlowThumb(flowThumbDir, albumKey, net, thumbPx);
                         return net;
@@ -155,6 +186,16 @@ public final class FlowCoverResolver {
                 }
             }
         }
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("source", "none");
+            d.put("trackCount", tracks.size());
+            d.put("albumKey", albumKey != null ? albumKey : "");
+            Debug3b26caLog.log("FlowCoverResolver.resolveFromTracks",
+                    "no art", "H7", d);
+        } catch (Exception ignored) {}
+        // #endregion
         return cachePlaceholder(thumbPx, albumKey, artDir, flowThumbDir);
     }
 

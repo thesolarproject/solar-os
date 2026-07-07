@@ -8,53 +8,88 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 
 /**
- * Re-extract org.rockbox JNI codec libs from /system/app/org.rockbox.apk when stale.
- * ponytail: must stay aligned with rockbox-y1 APK layout — see .cursor/rules/rockbox-y1-coexistence.mdc
+ * 2026-07-06 — Syncs org.rockbox native libs from APK to /data/data/org.rockbox/lib/.
+ * Stale .so after APK update causes silent Rockbox playback (Solar MediaPlayer unaffected).
+ * Triggers: boot (99SolarInit.sh), switch-to-rockbox, RockboxCoexistence.ensureOnSolarStart.
+ * When changing: platform/rockbox/sync-rockbox-*.sh primary; y1/ legacy fallback.
+ * Reversal: skip sync; Rockbox may play silence until manual lib refresh.
  */
 public final class RockboxLibSync {
     private static final String TAG = "RockboxLibSync";
-    private static final String ASSET = "y1/sync-rockbox-libs.sh";
-    private static final String SYSTEM_SCRIPT = "/system/etc/solar/sync-rockbox-libs.sh";
+    private static final String ASSET_LIBS_PLATFORM = "platform/rockbox/sync-rockbox-libs.sh";
+    private static final String ASSET_ASSETS_PLATFORM = "platform/rockbox/sync-rockbox-assets.sh";
+    private static final String ASSET_LIBS_LEGACY = "y1/sync-rockbox-libs.sh";
+    private static final String ASSET_ASSETS_LEGACY = "y1/sync-rockbox-assets.sh";
+    private static final String SYSTEM_LIBS = "/system/etc/solar/sync-rockbox-libs.sh";
+    private static final String SYSTEM_ASSETS = "/system/etc/solar/sync-rockbox-assets.sh";
 
     private RockboxLibSync() {}
 
-    /** Install bundled sync script to /system/etc/solar (root) and run it. */
+    /** Install bundled sync scripts and run lib + asset bootstrap before Rockbox. */
     public static boolean syncBeforeRockboxSwitch(Context context) {
-        if (!new File("/system/app/org.rockbox.apk").exists()) return true;
-        File runnable = ensureRunnableScript(context);
-        if (runnable == null) {
-            Log.w(TAG, "sync script unavailable");
+        if (!LauncherSwitch.isRockboxAvailable(context)) return true;
+        File libs = ensureRunnableScript(context, resolveLibsAsset(context), SYSTEM_LIBS, "sync-rockbox-libs.sh");
+        File assets = ensureRunnableScript(context, resolveAssetsAsset(context), SYSTEM_ASSETS,
+                "sync-rockbox-assets.sh");
+        if (libs == null) {
+            Log.w(TAG, "lib sync script unavailable");
             return false;
         }
-        boolean ok = runSu("sh " + shellQuote(runnable.getAbsolutePath()));
-        if (ok) Log.i(TAG, "native libs synced before Rockbox switch");
+        boolean ok = runSu("sh " + shellQuote(libs.getAbsolutePath()));
+        if (assets != null) {
+            ok = runSu("sh " + shellQuote(assets.getAbsolutePath())) && ok;
+        }
+        if (ok) Log.i(TAG, "Rockbox libs + assets synced before switch");
         return ok;
     }
 
-    /** Boot-time: seed script to system, sync if APK changed. */
+    /** Boot-time: seed scripts to system and sync if Rockbox APK is present. */
     static void ensureOnSolarStart(Context context) {
-        if (!new File("/system/app/org.rockbox.apk").exists()) return;
-        ensureRunnableScript(context);
-        runSu("[ -f " + shellQuote(SYSTEM_SCRIPT) + " ] && sh " + shellQuote(SYSTEM_SCRIPT));
+        if (!LauncherSwitch.isRockboxAvailable(context)) return;
+        File libs = ensureRunnableScript(context, resolveLibsAsset(context), SYSTEM_LIBS, "sync-rockbox-libs.sh");
+        ensureRunnableScript(context, resolveAssetsAsset(context), SYSTEM_ASSETS, "sync-rockbox-assets.sh");
+        if (libs == null) return;
+        runSu("[ -f " + shellQuote(SYSTEM_LIBS) + " ] && sh " + shellQuote(SYSTEM_LIBS));
+        runSu("[ -f " + shellQuote(SYSTEM_ASSETS) + " ] && sh " + shellQuote(SYSTEM_ASSETS));
     }
 
-    /** Prefer /system/etc/solar copy; fall back to cache after seeding. */
-    private static File ensureRunnableScript(Context context) {
+    private static String resolveLibsAsset(Context context) {
+        if (assetExists(context, ASSET_LIBS_PLATFORM)) return ASSET_LIBS_PLATFORM;
+        return ASSET_LIBS_LEGACY;
+    }
+
+    private static String resolveAssetsAsset(Context context) {
+        if (assetExists(context, ASSET_ASSETS_PLATFORM)) return ASSET_ASSETS_PLATFORM;
+        return ASSET_ASSETS_LEGACY;
+    }
+
+    private static boolean assetExists(Context context, String path) {
+        try {
+            InputStream in = context.getAssets().open(path);
+            in.close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static File ensureRunnableScript(Context context, String assetPath, String systemPath,
+            String cacheName) {
         runSu("mkdir -p /system/etc/solar");
-        File cached = new File(context.getCacheDir(), "sync-rockbox-libs.sh");
-        if (!extractAsset(context, cached)) return null;
-        runSu("cp " + shellQuote(cached.getAbsolutePath()) + " " + shellQuote(SYSTEM_SCRIPT)
-                + " && chmod 755 " + shellQuote(SYSTEM_SCRIPT));
-        if (new File(SYSTEM_SCRIPT).exists()) return new File(SYSTEM_SCRIPT);
+        File cached = new File(context.getCacheDir(), cacheName);
+        if (!extractAsset(context, assetPath, cached)) return null;
+        runSu("cp " + shellQuote(cached.getAbsolutePath()) + " " + shellQuote(systemPath)
+                + " && chmod 755 " + shellQuote(systemPath));
+        if (new File(systemPath).exists()) return new File(systemPath);
         runSu("chmod 755 " + shellQuote(cached.getAbsolutePath()));
         return cached;
     }
 
-    private static boolean extractAsset(Context context, File out) {
+    private static boolean extractAsset(Context context, String assetPath, File out) {
         InputStream in = null;
         FileOutputStream fos = null;
         try {
-            in = context.getAssets().open(ASSET);
+            in = context.getAssets().open(assetPath);
             fos = new FileOutputStream(out);
             byte[] buf = new byte[4096];
             int n;

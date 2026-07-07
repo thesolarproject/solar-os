@@ -148,6 +148,7 @@ public class SolarWebServer extends Thread {
                             "</style></head><body>" +
                             "<h2>🎧 Solar Wireless Upload</h2>" +
                             "<p><a href='/deezer' style='color:#0ff'>Deezer account setup →</a></p>" +
+                            "<p><a href='/navidrome' style='color:#0ff'>Navidrome server setup →</a></p>" +
                             "<p><a href='/scan_stats' style='color:#0ff'>Last library scan stats →</a></p>" +
                             "<div class='box'><h3>1. Create Folder</h3>" +
                             "<input type='text' id='fName' placeholder='e.g., Pop, Jazz'>" +
@@ -227,15 +228,12 @@ public class SolarWebServer extends Thread {
                             boolean ok = false;
                             try {
                                 ok = client.initSession();
-                                // #region agent log
                                 try {
                                     org.json.JSONObject d2 = new org.json.JSONObject();
                                     d2.put("initOk", ok);
-                                    d2.put("user", client.userName());
                                     com.solar.launcher.deezer.DeezerDebugLog.log(context,
                                             "SolarWebServer.deezer", "initSession", "B", d2);
                                 } catch (Exception ignored) {}
-                                // #endregion
                             } catch (java.io.IOException e) {
                                 // #region agent log
                                 try {
@@ -275,6 +273,45 @@ public class SolarWebServer extends Thread {
                         }
                     } catch (Exception ignored) {}
                     String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + d.toString();
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (path.equals("/navidrome") || path.startsWith("/navidrome?")) {
+                    if (method.equals("GET")) {
+                        writeNavidromeSetupPage(os, null);
+                    } else if (method.equals("POST")) {
+                        byte[] body = readBody(is, contentLength);
+                        String bodyStr = new String(body, "UTF-8");
+                        String navUrl = formValue(bodyStr, "url");
+                        String navUser = formValue(bodyStr, "user");
+                        String navPass = formValue(bodyStr, "pass");
+                        SharedPreferences prefs = context.getSharedPreferences(
+                                "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                        com.solar.launcher.navidrome.NavidromePrefs.save(context, prefs, navUrl, navUser, navPass);
+                        String msg = com.solar.launcher.navidrome.NavidromePrefs.isConfigured(prefs)
+                                ? "✅ Navidrome settings saved." : "Saved — enter URL and username.";
+                        writeNavidromeSetupPage(os, msg);
+                    }
+                }
+                else if (method.equals("GET") && path.equals("/api/navidrome-settings")) {
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    try {
+                        d.put("url", prefs.getString("navidrome_url", ""));
+                        d.put("user", prefs.getString("navidrome_user", ""));
+                        d.put("pass", prefs.getString("navidrome_pass", ""));
+                    } catch (Exception ignored) {}
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + d.toString();
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (method.equals("POST") && path.equals("/api/navidrome-settings")) {
+                    byte[] body = readBody(is, contentLength);
+                    String bodyStr = new String(body, "UTF-8");
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    com.solar.launcher.navidrome.NavidromePrefs.save(context, prefs,
+                            formValue(bodyStr, "url"), formValue(bodyStr, "user"), formValue(bodyStr, "pass"));
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
                     os.write(response.getBytes("UTF-8"));
                 }
                 else if (method.equals("POST") && path.startsWith("/upload")) {
@@ -423,6 +460,30 @@ public class SolarWebServer extends Thread {
                     "<select name='quality'><option value='mp3'" + ("mp3".equals(quality) ? " selected" : "") + ">MP3</option>" +
                     "<option value='flac'" + ("flac".equals(quality) ? " selected" : "") + ">FLAC (Premium)</option></select>" +
                     "<button type='submit'>Save &amp; Test</button></form></div>" +
+                    "<p><a href='/'>← Back to upload</a></p></body></html>";
+            String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
+            os.write(response.getBytes("UTF-8"));
+        }
+
+        private void writeNavidromeSetupPage(OutputStream os, String message) throws java.io.IOException {
+            SharedPreferences prefs = context.getSharedPreferences(
+                    "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+            String url = prefs.getString("navidrome_url", "");
+            String user = prefs.getString("navidrome_user", "");
+            String pass = prefs.getString("navidrome_pass", "");
+            String msgHtml = message != null
+                    ? "<p style='color:" + (message.startsWith("✅") ? "#0f0" : "#f66") + "'>"
+                    + htmlEscape(message) + "</p>" : "";
+            String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>" +
+                    "<title>Navidrome setup</title><style>body{font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:center;}" +
+                    "input,button{font-size:16px;padding:10px;margin:5px 0;width:100%;max-width:400px;box-sizing:border-box;}" +
+                    "button{background:#00ffff;color:#000;border:none;font-weight:bold;}</style></head><body>" +
+                    "<h2>Navidrome / Subsonic</h2>" + msgHtml +
+                    "<form method='POST' action='/navidrome'>" +
+                    "<input name='url' placeholder='https://music.example.com' value='" + htmlEscape(url) + "'>" +
+                    "<input name='user' placeholder='Username' value='" + htmlEscape(user) + "'>" +
+                    "<input name='pass' type='password' placeholder='Password' value='" + htmlEscape(pass) + "'>" +
+                    "<button type='submit'>Save</button></form>" +
                     "<p><a href='/'>← Back to upload</a></p></body></html>";
             String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
             os.write(response.getBytes("UTF-8"));

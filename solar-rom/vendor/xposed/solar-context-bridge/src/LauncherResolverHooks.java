@@ -1,8 +1,10 @@
 package com.solar.launcher.xposed.bridge;
 
 import android.app.Activity;
-import android.content.Context;
 import android.content.Intent;
+import android.os.Bundle;
+
+import org.json.JSONObject;
 
 import java.util.Collections;
 import java.util.Set;
@@ -20,6 +22,10 @@ final class LauncherResolverHooks {
 
     private static final String RESOLVER = "com.android.internal.app.ResolverActivity";
     private static final String CHOOSER = "com.android.internal.app.ChooserActivity";
+
+    /** 2026-07-06 — debounce rapid HOME re-resolve while resolver stack unwinds. */
+    private static final long SILENCE_COOLDOWN_MS = 800L;
+    private static volatile long lastSilenceAtMs;
 
     /** One hook attach per class loader — ResolverActivity is framework-wide. */
     private static final Set<ClassLoader> HOOKED =
@@ -47,12 +53,27 @@ final class LauncherResolverHooks {
     private static int hookResolverClass(LoadPackageParam lpparam, String className) {
         try {
             Class<?> cls = XposedHelpers.findClass(className, lpparam.classLoader);
-            return XposedHookKit.hookAll(cls, "onCreate", new XC_MethodHook() {
+            // Hook onCreate(Bundle) only — after super runs so AlertActivity requestFeature() is safe.
+            // beforeHook + finish() caused requestFeature crash loop in system:ui (session 32618e).
+            return XposedHookKit.hookExact(cls, "onCreate", new XC_MethodHook() {
                 @Override
-                protected void beforeHookedMethod(MethodHookParam param) {
+                protected void afterHookedMethod(MethodHookParam param) {
                     if (!(param.thisObject instanceof Activity)) return;
                     Activity activity = (Activity) param.thisObject;
                     if (!isHomeResolverIntent(activity.getIntent())) return;
+                    long now = System.currentTimeMillis();
+                    long sinceLast = now - lastSilenceAtMs;
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("class", className);
+                        d.put("pkg", lpparam.packageName);
+                        d.put("homeApplying", isHomeApplyInProgress());
+                        d.put("sinceLastMs", sinceLast);
+                        Debug5d4216Log.event("LauncherResolverHooks.onCreate",
+                                "HOME resolver after onCreate", "C", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
                     if (isHomeApplyInProgress()) {
                         try {
                             activity.finish();
@@ -60,19 +81,40 @@ final class LauncherResolverHooks {
                         SolarContextBridge.log("resolver skipped — home apply in progress");
                         return;
                     }
-                    final Context ctx = activity.getApplicationContext();
+                    if (sinceLast < SILENCE_COOLDOWN_MS) {
+                        // #region agent log
+                        try {
+                            JSONObject d = new JSONObject();
+                            d.put("sinceLastMs", sinceLast);
+                            Debug5d4216Log.event("LauncherResolverHooks.onCreate",
+                                    "cooldown — launch then finish", "D", d);
+                        } catch (Throwable ignored) {}
+                        // #endregion
+                        // 2026-07-06 — finish-only re-triggers ResolverActivity storm (e93bdb).
+                        SolarLauncherSilencer.launchSavedHome(activity);
+                        try {
+                            activity.finish();
+                        } catch (Throwable ignored) {}
+                        return;
+                    }
+                    lastSilenceAtMs = now;
+                    // 2026-07-06 — launch saved HOME before finish; post+finish loop froze Y1 (5d4216).
+                    boolean launched = SolarLauncherSilencer.launchSavedHome(activity);
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("launched", launched);
+                        d.put("target", SolarLauncherSilencer.readHomeTarget());
+                        Debug5d4216Log.event("LauncherResolverHooks.onCreate",
+                                "launch before finish", "A", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
                     try {
                         activity.finish();
                     } catch (Throwable ignored) {}
-                    activity.getWindow().getDecorView().post(new Runnable() {
-                        @Override
-                        public void run() {
-                            SolarLauncherSilencer.launchSavedHome(ctx);
-                        }
-                    });
                     SolarContextBridge.log("silenced HOME resolver in " + lpparam.packageName);
                 }
-            });
+            }, Bundle.class);
         } catch (Throwable t) {
             return 0;
         }

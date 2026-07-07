@@ -1,5 +1,6 @@
 package com.solar.launcher;
 
+import com.solar.launcher.navidrome.NavidromeSong;
 import com.solar.launcher.podcast.OpenRssClient;
 
 import java.io.File;
@@ -36,7 +37,8 @@ public final class PlaybackCoordinator {
         return activeMode == Mode.MUSIC
                 || (c != null && (c.kind == PlayQueue.ItemKind.MUSIC_FILE
                 || c.kind == PlayQueue.ItemKind.REACH_STREAM
-                || c.kind == PlayQueue.ItemKind.DEEZER_STREAM));
+                || c.kind == PlayQueue.ItemKind.DEEZER_STREAM
+                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM));
     }
 
     public boolean isFmActive() {
@@ -69,6 +71,52 @@ public final class PlaybackCoordinator {
         activeMode = Mode.RADIO;
     }
 
+    /**
+     * 2026-07-06 — FM station queue from saved presets; immune to shuffle/repeat prefs.
+     * Layman: every saved station is a row in Now Playing queue order.
+     */
+    public void syncFmQueue(List<PlayQueue.QueueItem> stations, int playIndex) {
+        if (stations == null || stations.isEmpty()) return;
+        musicOriginal.clear();
+        musicInitiator = null;
+        musicActivePlaylistName = null;
+        podcastShowTitle = "";
+        podcastFromSavedLibrary = false;
+        int idx = Math.max(0, Math.min(playIndex, stations.size() - 1));
+        queue.setAll(stations, idx);
+        activeMode = Mode.RADIO;
+    }
+
+    /** 2026-07-06 — RDS PS or tune commit updates Now Playing queue title. */
+    public void updateCurrentFmMeta(int freqKhz, String label) {
+        if (!isFmActive()) return;
+        queue.replaceFmAt(queue.index(), freqKhz, label != null ? label : "");
+    }
+
+    /** FM prev/next — wrap at ends; ignores music shuffle/repeat. */
+    public int fmWrappedIndex(int delta) {
+        if (!isFmActive() || queue.size() <= 1) return -1;
+        int next = queue.index() + delta;
+        if (next < 0) next = queue.size() - 1;
+        if (next >= queue.size()) next = 0;
+        return next;
+    }
+
+    public PlayQueue.QueueItem fmItemAtWrappedIndex(int delta) {
+        int idx = fmWrappedIndex(delta);
+        if (idx < 0) return null;
+        queue.setIndex(idx);
+        return queue.current();
+    }
+
+    /** 2026-07-06 — FM power down clears radio queue head (JJ music/radio mutex). */
+    public void stopRadio() {
+        if (!isRadioActive()) return;
+        queue.clear();
+        activeMode = Mode.NONE;
+        musicInitiator = null;
+    }
+
     public boolean hasAnyQueue() {
         return queue.size() > 0;
     }
@@ -83,13 +131,12 @@ public final class PlaybackCoordinator {
 
     public int musicIndex() {
         syncLegacyMusicIndex();
-        int idx = 0;
         PlayQueue.QueueItem cur = queue.current();
-        if (cur == null || cur.file == null) return 0;
+        if (cur == null) return 0;
+        int idx = 0;
         for (PlayQueue.QueueItem q : queue.items()) {
-            if (q.kind == PlayQueue.ItemKind.MUSIC_FILE || q.kind == PlayQueue.ItemKind.REACH_STREAM
-                    || q.kind == PlayQueue.ItemKind.DEEZER_STREAM) {
-                if (q.file.equals(cur.file)) return idx;
+            if (isMusicLike(q)) {
+                if (musicLikeSame(q, cur)) return idx;
                 idx++;
             }
         }
@@ -100,8 +147,7 @@ public final class PlaybackCoordinator {
         int idx = 0;
         for (int i = 0; i < queue.items().size(); i++) {
             PlayQueue.QueueItem q = queue.items().get(i);
-            if (q.kind == PlayQueue.ItemKind.MUSIC_FILE || q.kind == PlayQueue.ItemKind.REACH_STREAM
-                    || q.kind == PlayQueue.ItemKind.DEEZER_STREAM) {
+            if (isMusicLike(q)) {
                 if (idx == index) {
                     queue.setIndex(i);
                     return;
@@ -110,6 +156,11 @@ public final class PlaybackCoordinator {
             }
         }
         queue.clampIndex();
+    }
+
+    /** 2026-07-06: Track position denominator — includes Navidrome rows without Files. */
+    public int musicSlotCount() {
+        return queue.musicLikeCount();
     }
 
     void clampMusicIndex() {
@@ -221,6 +272,39 @@ public final class PlaybackCoordinator {
         queue.setAll(items, qStart);
     }
 
+    /**
+     * 2026-07-06: Replace queue with Navidrome album/playlist/all-songs — mirrors activateMusic.
+     * Reversal: prior parallel navidromePlaybackQueue in MainActivity (removed).
+     */
+    public void activateNavidrome(List<NavidromeSong> songs, int startIndex, boolean shuffle,
+            String playlistLabel) {
+        musicOriginal.clear();
+        musicInitiator = null;
+        if (songs == null || songs.isEmpty()) {
+            queue.clear();
+            activeMode = Mode.NONE;
+            musicActivePlaylistName = null;
+            return;
+        }
+        activeMode = Mode.MUSIC;
+        musicActivePlaylistName = (playlistLabel != null && !playlistLabel.isEmpty()) ? playlistLabel : null;
+        List<PlayQueue.QueueItem> items = new ArrayList<PlayQueue.QueueItem>();
+        List<NavidromeSong> order = new ArrayList<NavidromeSong>(songs);
+        int clamped = Math.max(0, Math.min(startIndex, songs.size() - 1));
+        NavidromeSong currentSong = songs.get(clamped);
+        if (shuffle) {
+            java.util.Collections.shuffle(order);
+        }
+        int qStart = 0;
+        for (int i = 0; i < order.size(); i++) {
+            NavidromeSong s = order.get(i);
+            items.add(PlayQueue.QueueItem.navidrome(
+                    s.id, s.title, s.artist, s.album, s.coverArtId));
+            if (s.id != null && s.id.equals(currentSong.id)) qStart = i;
+        }
+        queue.setAll(items, qStart);
+    }
+
     /** Shuffle or restore music/stream slots in the unified queue; preserves Reach/Deezer item kinds. */
     public void reshuffleMusic(boolean shuffle) {
         java.util.List<PlayQueue.QueueItem> all = new java.util.ArrayList<PlayQueue.QueueItem>(queue.items());
@@ -252,7 +336,17 @@ public final class PlaybackCoordinator {
     private static boolean isMusicLike(PlayQueue.QueueItem q) {
         return q != null && (q.kind == PlayQueue.ItemKind.MUSIC_FILE
                 || q.kind == PlayQueue.ItemKind.REACH_STREAM
-                || q.kind == PlayQueue.ItemKind.DEEZER_STREAM);
+                || q.kind == PlayQueue.ItemKind.DEEZER_STREAM
+                || q.kind == PlayQueue.ItemKind.NAVIDROME_STREAM);
+    }
+
+    private static boolean musicLikeSame(PlayQueue.QueueItem a, PlayQueue.QueueItem b) {
+        if (a == null || b == null || a.kind != b.kind) return false;
+        if (a.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+            return a.navidromeSongId != null && a.navidromeSongId.equals(b.navidromeSongId);
+        }
+        if (a.file != null && b.file != null) return a.file.equals(b.file);
+        return a == b;
     }
 
     private java.util.List<PlayQueue.QueueItem> restoreMusicQueueOrder(
@@ -283,6 +377,8 @@ public final class PlaybackCoordinator {
             PlayQueue.QueueItem q = items.get(i);
             if (current.kind == PlayQueue.ItemKind.PODCAST_EPISODE) {
                 if (q.kind == current.kind && q.episode == current.episode) return i;
+            } else if (current.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+                if (q.kind == current.kind && musicLikeSame(q, current)) return i;
             } else if (current.file != null && q.file != null
                     && current.file.equals(q.file) && q.kind == current.kind) {
                 return i;
@@ -435,12 +531,11 @@ public final class PlaybackCoordinator {
         int idx = 0;
         for (int i = 0; i < queue.items().size(); i++) {
             PlayQueue.QueueItem q = queue.items().get(i);
-            if (q.kind == PlayQueue.ItemKind.MUSIC_FILE || q.kind == PlayQueue.ItemKind.REACH_STREAM
-                    || q.kind == PlayQueue.ItemKind.DEEZER_STREAM) {
+            if (isMusicLike(q)) {
                 if (idx == index) {
                     File removed = q.file;
                     queue.removeAt(i);
-                    musicOriginal.remove(removed);
+                    if (removed != null) musicOriginal.remove(removed);
                     return;
                 }
                 idx++;
@@ -461,8 +556,7 @@ public final class PlaybackCoordinator {
         int idx = 0;
         for (int i = 0; i < queue.items().size(); i++) {
             PlayQueue.QueueItem q = queue.items().get(i);
-            if (q.kind == PlayQueue.ItemKind.MUSIC_FILE || q.kind == PlayQueue.ItemKind.REACH_STREAM
-                    || q.kind == PlayQueue.ItemKind.DEEZER_STREAM) {
+            if (isMusicLike(q)) {
                 if (idx == slot) return i;
                 idx++;
             }
@@ -524,7 +618,8 @@ public final class PlaybackCoordinator {
             podcastFromSavedLibrary = c.podcastFromSaved;
             musicInitiator = null;
         } else if (c.kind == PlayQueue.ItemKind.MUSIC_FILE || c.kind == PlayQueue.ItemKind.REACH_STREAM
-                || c.kind == PlayQueue.ItemKind.DEEZER_STREAM) {
+                || c.kind == PlayQueue.ItemKind.DEEZER_STREAM
+                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
             activeMode = Mode.MUSIC;
             musicInitiator = c.file;
             podcastShowTitle = "";

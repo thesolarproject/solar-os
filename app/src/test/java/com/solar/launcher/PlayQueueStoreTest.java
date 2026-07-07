@@ -37,4 +37,25 @@ public class PlayQueueStoreTest {
             throw new AssertionError("file should not exist yet");
         }
     }
+
+    @Test
+    public void roundTrip_navidromeStream_keepsMetadataWithoutFile() throws Exception {
+        File dir = File.createTempFile("playqueue", "");
+        if (!dir.delete() || !dir.mkdir()) throw new AssertionError("tmpdir");
+        PlayQueue q = new PlayQueue();
+        q.append(PlayQueue.QueueItem.navidrome("song-1", "Track", "Artist", "Album", "cover-1"));
+        q.setIndex(0);
+        PlayQueueStore.saveToDir(dir, q);
+
+        PlayQueue restored = new PlayQueue();
+        if (!PlayQueueStore.restoreFromDir(dir, restored)) {
+            throw new AssertionError("restore failed");
+        }
+        PlayQueue.QueueItem item = restored.current();
+        if (item == null || item.kind != PlayQueue.ItemKind.NAVIDROME_STREAM) {
+            throw new AssertionError("kind");
+        }
+        if (!"song-1".equals(item.navidromeSongId)) throw new AssertionError("id");
+        if (!"Track".equals(item.navidromeTitle)) throw new AssertionError("title");
+    }
 }

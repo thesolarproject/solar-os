@@ -68,6 +68,15 @@ public class ScreenTransitionTest {
         assertEquals(ScreenTransitionMap.Kind.NONE,
                 ScreenTransitionMap.resolve(MediaSuiteHost.STATE_RADIO,
                         MediaSuiteHost.STATE_VIDEOS, false));
+        assertEquals(ScreenTransitionMap.Kind.NONE,
+                ScreenTransitionMap.resolve(MediaSuiteHost.STATE_VIDEO_HUB,
+                        MediaSuiteHost.STATE_YOUTUBE_BROWSE, false));
+    }
+
+    @Test
+    public void videoHubDepthIsOne() {
+        assertEquals(1, ScreenTransitionMap.depth(MediaSuiteHost.STATE_VIDEO_HUB));
+        assertEquals(1, ScreenTransitionMap.depth(MediaSuiteHost.STATE_YOUTUBE_BROWSE));
     }
 
     @Test

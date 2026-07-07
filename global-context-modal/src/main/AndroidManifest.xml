@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2026-07-05 — Companion global context modal + input coordinator (fail-open SPOF relief). -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.GET_TASKS" />
+    <uses-permission android:name="com.solar.launcher.permission.OVERLAY_TRIGGER" />
+
+    <permission
+        android:name="com.solar.launcher.permission.OVERLAY_TRIGGER"
+        android:protectionLevel="signatureOrSystem" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_info_details"
+        android:label="@string/companion_app_name"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <service
+            android:name=".GlobalContextOverlayService"
+            android:exported="true"
+            android:process=":overlay" />
+
+        <service
+            android:name=".RescueHoldService"
+            android:exported="true"
+            android:process=":hold" />
+
+        <service
+            android:name=".GlobalInputCoordinatorService"
+            android:exported="true" />
+
+        <service
+            android:name=".CompanionImeOverlayService"
+            android:exported="false"
+            android:process=":overlay" />
+
+        <service
+            android:name=".SolarCrashWatchdog"
+            android:exported="false"
+            android:process=":watchdog" />
+
+        <receiver
+            android:name=".CompanionBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <activity
+            android:name=".EmergencyRecoveryActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

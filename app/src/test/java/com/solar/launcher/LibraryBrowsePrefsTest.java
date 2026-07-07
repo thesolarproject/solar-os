@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class LibraryBrowsePrefsTest {
@@ -33,6 +34,14 @@ public class LibraryBrowsePrefsTest {
         assertEquals(LibraryBrowsePrefs.SONG_SORT_ALBUM, prefs.albumSongSort());
         assertTrue(prefs.albumOwnerSubtitles());
         assertTrue(prefs.guestSongSubtitles());
+        assertFalse(prefs.includeReachInLibrarySearch());
+    }
+
+    @Test
+    public void reachSearchPrefToggles() {
+        assertFalse(prefs.includeReachInLibrarySearch());
+        prefs.setIncludeReachInLibrarySearch(true);
+        assertTrue(prefs.includeReachInLibrarySearch());
     }
 
     @Test

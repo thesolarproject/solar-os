@@ -16,14 +16,17 @@ fi
 "${ADB[@]}" push "$SCR/switch-to-rockbox.sh" /data/local/tmp/switch-to-rockbox.sh
 "${ADB[@]}" push "$SCR/sync-rockbox-libs.sh" /data/local/tmp/sync-rockbox-libs.sh
 "${ADB[@]}" push "$SCR/sync-y1-keymap.sh" /data/local/tmp/sync-y1-keymap.sh
+"${ADB[@]}" push "$SCR/mtk-kpd.y1.stock.kl" /data/local/tmp/mtk-kpd.y1.stock.kl
 "${ADB[@]}" shell "su -c 'mount -o remount,rw /system
 mkdir -p /system/etc/solar /data/data
 cp /data/local/tmp/Y1-Rockbox.kl /system/etc/solar/Y1-Rockbox.kl
+cp /data/local/tmp/mtk-kpd.y1.stock.kl /system/etc/solar/mtk-kpd.y1.stock.kl
 cp /data/local/tmp/switch-to-stock.sh /system/etc/solar/switch-to-stock.sh
 cp /data/local/tmp/switch-to-rockbox.sh /system/etc/solar/switch-to-rockbox.sh
 cp /data/local/tmp/sync-rockbox-libs.sh /system/etc/solar/sync-rockbox-libs.sh
 cp /data/local/tmp/sync-y1-keymap.sh /system/etc/solar/sync-y1-keymap.sh
 chmod 644 /system/etc/solar/Y1-Rockbox.kl
+chmod 644 /system/etc/solar/mtk-kpd.y1.stock.kl
 chmod 755 /system/etc/solar/switch-to-stock.sh /system/etc/solar/switch-to-rockbox.sh
 chmod 755 /system/etc/solar/sync-rockbox-libs.sh /system/etc/solar/sync-y1-keymap.sh
 cp /data/local/tmp/switch-to-stock.sh /data/data/switch-to-stock.sh

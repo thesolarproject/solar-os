@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Publish Solar APKs + updates.xml to thesolarproject/solar-update (GitHub Pages OTA).
+# 2026-07-05 — Publishes APK + updates.xml to solar-update; GitHub release tag = versionName only.
+# ROM-only OTA: platform layers (IME, Xposed, init.d) need rom-only-entries.json — no APK skip-ahead.
+# When changing: tag must match BuildConfig.VERSION_NAME; ROM zips stay rom.zip / rom_type_b.zip / rom_y2.zip.
+# Reversal: stop publish step; OTA feed stops updating while APK builds continue.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
@@ -28,7 +31,7 @@ apk_name_for_tag() {
 write_updates_xml() {
   local dir="$1"
   python3 - "$dir" "$PAGES_BASE" <<'PY'
-import glob, os, re, sys
+import glob, json, os, re, sys
 
 out_dir, base = sys.argv[1], sys.argv[2]
 if not base.endswith("/"):
@@ -116,15 +119,40 @@ if len(nightly) > max_nightlies:
 entries = nightly + stable
 entries.sort(key=sort_key, reverse=True)
 
+# ROM-only rows (full flash required) — emitted by sync-from-releases without an APK asset.
+rom_only_path = os.path.join(out_dir, "rom-only-entries.json")
+if os.path.isfile(rom_only_path):
+    with open(rom_only_path, encoding="utf-8") as handle:
+        rom_only = json.load(handle)
+    if isinstance(rom_only, list):
+        for row in rom_only:
+            tag = row.get("tag", "")
+            if not tag:
+                continue
+            version_name = row.get("versionName", tag)
+            version_code = int(row.get("versionCode", 0))
+            nightly = bool(row.get("nightly", tag.startswith("nightly-")))
+            variant = row.get("variant", "universal")
+            entries.append((tag, version_name, version_code, nightly, None, variant))
+
+entries.sort(key=sort_key, reverse=True)
+
 lines = [
     '<?xml version="1.0" encoding="utf-8"?>',
     f'<solar-updates base="{base}">',
 ]
 for tag, version_name, version_code, nightly, apk, variant in entries:
-    lines.append(
-        f'  <release tag="{tag}" versionName="{version_name}" versionCode="{version_code}" '
-        f'nightly="{"true" if nightly else "false"}" apk="{apk}" variant="{variant}"/>'
-    )
+    rom_only = apk is None
+    if rom_only:
+        lines.append(
+            f'  <release tag="{tag}" versionName="{version_name}" versionCode="{version_code}" '
+            f'nightly="{"true" if nightly else "false"}" romOnly="true" variant="{variant}"/>'
+        )
+    else:
+        lines.append(
+            f'  <release tag="{tag}" versionName="{version_name}" versionCode="{version_code}" '
+            f'nightly="{"true" if nightly else "false"}" apk="{apk}" variant="{variant}"/>'
+        )
 lines.append("</solar-updates>")
 lines.append("")
 with open(os.path.join(out_dir, "updates.xml"), "w", encoding="utf-8") as handle:
@@ -233,7 +261,7 @@ sync_from_releases() {
   auth_curl "https://api.github.com/repos/${SOURCE_REPO}/releases?per_page=100" \
     > "$WORK/releases.json"
   python3 - "$WORK/repo" "$WORK/releases.json" <<'PY'
-import json, os, subprocess, sys
+import json, os, re, subprocess, sys
 
 dest, json_path = sys.argv[1], sys.argv[2]
 with open(json_path, encoding="utf-8") as handle:
@@ -241,28 +269,70 @@ with open(json_path, encoding="utf-8") as handle:
 if isinstance(data, dict):
     raise SystemExit(data.get("message", "releases API error"))
 
+ROM_NAMES = {"rom.zip", "rom_y2.zip", "rom_type_b.zip"}
+ts_re = re.compile(r"^(?:nightly-)?(\d{8}-\d{4})$")
+stable_ts_re = re.compile(r"^(\d{8}-\d{4})$")
+
+def version_code_from_ts_body(body):
+    parts = body.split("-", 1)
+    if len(parts) != 2 or len(parts[0]) != 8 or len(parts[1]) < 4:
+        return 0
+    date_part, time_part = parts[0], parts[1]
+    y, mo, d = int(date_part[:4]), int(date_part[4:6]), int(date_part[6:8])
+    hh, mm = int(time_part[:2]), int(time_part[2:4])
+    from datetime import datetime, timezone
+    dt = datetime(y, mo, d, hh, mm, tzinfo=timezone.utc)
+    epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    return int((dt - epoch).total_seconds() // 60)
+
+def version_fields(tag):
+    nightly = tag.startswith("nightly-")
+    if nightly and not ts_re.match(tag):
+        return None
+    if nightly:
+        version_name = tag
+        m = ts_re.match(tag)
+        version_code = version_code_from_ts_body(m.group(1)) if m else 0
+    else:
+        version_name = tag[1:] if tag.startswith("v") else tag
+        m = stable_ts_re.match(version_name)
+        version_code = version_code_from_ts_body(m.group(1)) if m else 0
+    return version_name, version_code, nightly
+
 seen = set()
+rom_only = []
 for rel in data:
     tag = rel.get("tag_name", "").strip()
     if not tag or tag in seen:
         continue
-    apk_asset = None
-    for asset in rel.get("assets", []):
-        if asset.get("name") == "app-release.apk":
-            apk_asset = asset
-            break
-    if not apk_asset:
+    assets = rel.get("assets", [])
+    apk_asset = next((a for a in assets if a.get("name") == "app-release.apk"), None)
+    has_rom = any(a.get("name") in ROM_NAMES for a in assets)
+    fields = version_fields(tag)
+    if not fields:
         continue
-    import re
-    if tag.startswith("nightly-") and not re.match(r"^nightly-\d{8}-\d{4}$", tag):
-        continue
+    version_name, version_code, nightly = fields
     seen.add(tag)
-    out = os.path.join(dest, f"solar-{tag}.apk")
-    url = apk_asset["browser_download_url"]
-    print(f"download {tag} -> {os.path.basename(out)}")
-    subprocess.check_call(["curl", "-fsSL", "-L", "-o", out, url])
+    if apk_asset:
+        out = os.path.join(dest, f"solar-{tag}.apk")
+        url = apk_asset["browser_download_url"]
+        print(f"download {tag} -> {os.path.basename(out)}")
+        subprocess.check_call(["curl", "-fsSL", "-L", "-o", out, url])
+    elif has_rom:
+        rom_only.append({
+            "tag": tag,
+            "versionName": version_name,
+            "versionCode": version_code,
+            "nightly": nightly,
+            "variant": "universal",
+        })
+        print(f"rom-only catalog row {tag}")
 
-print(f"synced {len(seen)} apk(s)")
+with open(os.path.join(dest, "rom-only-entries.json"), "w", encoding="utf-8") as handle:
+    json.dump(rom_only, handle, indent=2)
+    handle.write("\n")
+
+print(f"synced {len(seen)} release(s), {len(rom_only)} rom-only row(s)")
 PY
   write_updates_xml "$WORK/repo"
   push_update_repo "$WORK/repo" "Sync OTA catalog from ${SOURCE_REPO} releases."
@@ -273,6 +343,14 @@ add_release() {
   [[ -f "$apk" ]] || { echo "Missing APK: $apk" >&2; exit 1; }
   clone_update_repo "$WORK/repo"
   cp "$apk" "$WORK/repo/$(apk_name_for_tag "$tag")"
+  # 2026-07-06 — Optional JJ + Rockbox companion artifacts from build-ota-staging/.
+  local staging="$ROOT/build-ota-staging"
+  for companion in jj_latest.apk rb_y1_latest.apk rockbox.apk update.zip; do
+    if [[ -f "$staging/$companion" ]]; then
+      cp "$staging/$companion" "$WORK/repo/$companion"
+      echo "==> Staged companion $companion"
+    fi
+  done
   copy_artist_separator_catalog "$WORK/repo"
   write_updates_xml "$WORK/repo"
   push_update_repo "$WORK/repo" "OTA: ${tag} (${version_name})."

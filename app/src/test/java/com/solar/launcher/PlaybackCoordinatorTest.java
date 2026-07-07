@@ -1,5 +1,7 @@
 package com.solar.launcher;
 
+import com.solar.launcher.navidrome.NavidromeSong;
+
 import org.junit.Test;
 
 import java.io.File;
@@ -66,5 +68,61 @@ public class PlaybackCoordinatorTest {
         pc.activateMusic(files("a"), 0, false);
         pc.activateMusic(new ArrayList<File>(), 0, false);
         if (pc.isMusicActive()) throw new AssertionError("empty should clear music mode");
+    }
+
+    /** 2026-07-06: Navidrome album play replaces queue — mirrors activateMusic contract. */
+    @Test
+    public void activateNavidrome_replacesQueueAndStartIndex() {
+        PlaybackCoordinator pc = new PlaybackCoordinator();
+        List<NavidromeSong> songs = new ArrayList<NavidromeSong>();
+        NavidromeSong a = new NavidromeSong();
+        a.id = "1";
+        a.title = "One";
+        NavidromeSong b = new NavidromeSong();
+        b.id = "2";
+        b.title = "Two";
+        NavidromeSong c = new NavidromeSong();
+        c.id = "3";
+        c.title = "Three";
+        songs.add(a);
+        songs.add(b);
+        songs.add(c);
+        pc.activateNavidrome(songs, 1, false, "Album");
+        assertEquals(3, pc.unifiedQueue().size());
+        assertEquals(1, pc.musicIndex());
+        assertEquals(3, pc.musicSlotCount());
+        assertEquals("Album", pc.musicActivePlaylistName());
+        PlayQueue.QueueItem cur = pc.currentItem();
+        if (cur == null || cur.kind != PlayQueue.ItemKind.NAVIDROME_STREAM) {
+            throw new AssertionError("expected navidrome stream head");
+        }
+        assertEquals("2", cur.navidromeSongId);
+    }
+
+    /** 2026-07-06 — FM replaces queue with saved-station mirror when presets exist. */
+    @Test
+    public void syncFmQueue_multiStationRadioQueue() {
+        PlaybackCoordinator pc = new PlaybackCoordinator();
+        List<PlayQueue.QueueItem> stations = new ArrayList<PlayQueue.QueueItem>();
+        stations.add(PlayQueue.QueueItem.fmStation(101100, "101.1"));
+        stations.add(PlayQueue.QueueItem.fmStation(102300, "102.3"));
+        pc.syncFmQueue(stations, 1);
+        if (!pc.isFmActive()) throw new AssertionError("expected FM active");
+        if (pc.unifiedQueue().size() != 2) throw new AssertionError("two stations");
+        if (pc.unifiedQueue().index() != 1) throw new AssertionError("play index");
+        PlayQueue.QueueItem prev = pc.fmItemAtWrappedIndex(-1);
+        if (prev == null || prev.fmFreqKhz != 101100) throw new AssertionError("wrap prev");
+        PlayQueue.QueueItem next = pc.fmItemAtWrappedIndex(1);
+        if (next == null || next.fmFreqKhz != 102300) throw new AssertionError("wrap next");
+    }
+
+    /** 2026-07-06 — FM replaces queue with a single station row for NP / context chip. */
+    @Test
+    public void startFmStation_singleItemRadioQueue() {
+        PlaybackCoordinator pc = new PlaybackCoordinator();
+        pc.startRadioStation(PlayQueue.QueueItem.fmStation(101100, "101.1"));
+        if (!pc.isFmActive()) throw new AssertionError("expected FM active");
+        if (pc.unifiedQueue().size() != 1) throw new AssertionError("FM is one station");
+        if (!pc.hasAnyQueue()) throw new AssertionError("NP chip should see a queue");
     }
 }

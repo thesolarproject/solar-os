@@ -26,6 +26,7 @@ public final class MediaTransportBar {
     private final LinearLayout scrubRow;
     private final TextView timeCurrent;
     private final TextView timeTotal;
+    private final TextView scrubFreq;
     private final ImageView volumeIcon;
     private final FrameLayout progressTrack;
     private final ProgressBar progressBar;
@@ -41,6 +42,9 @@ public final class MediaTransportBar {
     private boolean videoOverlayMode;
     private boolean volumeModeActive;
     private boolean volumeHintVisible;
+    private boolean fmNormalModeActive = false;
+    private int lastVolCurrent = 0;
+    private int lastVolMax = 1;
     /** When false, never fade in the hold-Back-for-Options line (user opened context menu once). */
     private boolean holdBackHintEnabled = true;
 
@@ -50,6 +54,7 @@ public final class MediaTransportBar {
         scrubRow = transportRoot.findViewById(R.id.transport_scrub_row);
         timeCurrent = transportRoot.findViewById(R.id.transport_time_current);
         timeTotal = transportRoot.findViewById(R.id.transport_time_total);
+        scrubFreq = transportRoot.findViewById(R.id.transport_scrub_freq);
         volumeIcon = transportRoot.findViewById(R.id.transport_volume_icon);
         progressTrack = transportRoot.findViewById(R.id.transport_progress_track);
         progressBar = transportRoot.findViewById(R.id.transport_progress);
@@ -168,6 +173,10 @@ public final class MediaTransportBar {
             ThemeManager.applyThemedTextStyle(timeTotal, textColor);
             if (font != null) timeTotal.setTypeface(font, android.graphics.Typeface.BOLD);
         }
+        if (scrubFreq != null) {
+            ThemeManager.applyThemedTextStyle(scrubFreq, textColor);
+            if (font != null) scrubFreq.setTypeface(font, android.graphics.Typeface.BOLD);
+        }
         if (volumeIcon != null) {
             volumeIcon.setColorFilter(textColor, android.graphics.PorterDuff.Mode.SRC_IN);
         }
@@ -225,6 +234,8 @@ public final class MediaTransportBar {
     }
 
     private void showVolumeInTrack(int current, int max, boolean pulseOverlay) {
+        lastVolCurrent = current;
+        lastVolMax = max;
         if (volumeProgress == null) return;
         if (max < 1) max = 1;
         volumeProgress.setMax(max);
@@ -250,13 +261,70 @@ public final class MediaTransportBar {
         }
     }
 
+    public void setFmNormalModeActive(boolean active) {
+        fmNormalModeActive = active;
+    }
+
+    /**
+     * 2026-07-06 — FM manual tune: MHz above knob, band min/max on bar ends, scrub circle on track.
+     * Layman: shows where you are on the dial while wheel-stepping frequency.
+     */
+    public void showFmTuneScrub(String centerFreq, String bandMin, String bandMax, float fraction) {
+        fmNormalModeActive = false;
+        showScrubTrack();
+        if (volumeIcon != null) volumeIcon.setVisibility(View.GONE);
+        if (scrubFreq != null) {
+            scrubFreq.setText(centerFreq);
+            scrubFreq.setVisibility(View.VISIBLE);
+        }
+        if (timeCurrent != null) {
+            timeCurrent.setText(bandMin);
+            timeCurrent.setVisibility(View.VISIBLE);
+        }
+        if (timeTotal != null) {
+            timeTotal.setText(bandMax);
+            timeTotal.setVisibility(View.VISIBLE);
+        }
+        if (progressBar != null) {
+            progressBar.setProgress(Math.round(fraction * 100f));
+        }
+        updateScrubMarkerFraction(fraction, true);
+    }
+
+    /** Hide FM tune MHz header; caller restores time labels when leaving tune mode. 2026-07-06 */
+    public void clearFmTuneScrubHeader() {
+        fmNormalModeActive = false;
+        if (scrubFreq != null) scrubFreq.setVisibility(View.GONE);
+        updateScrubMarkerFraction(0f, false);
+    }
+
+    /** 2026-07-07 — When tuning is not happening, show volume symbol and current percentage besides bar. */
+    public void showFmNormalBar(int current, int max) {
+        fmNormalModeActive = true;
+        lastVolCurrent = current;
+        lastVolMax = max;
+        showScrubTrack();
+        if (scrubFreq != null) scrubFreq.setVisibility(View.GONE);
+        updateScrubMarkerFraction(0f, false);
+        if (timeCurrent != null) timeCurrent.setVisibility(View.GONE);
+        if (timeTotal != null) {
+            int pct = formatVolumePercent(current, max);
+            timeTotal.setText(pct + "%");
+            timeTotal.setVisibility(View.VISIBLE);
+        }
+        if (volumeIcon != null) {
+            volumeIcon.setImageResource(volumeIconRes(current, max));
+            volumeIcon.setVisibility(View.VISIBLE);
+        }
+    }
+
     /** Left slot = volume icon; right slot = % — same 77dp gutters as scrub timestamps. */
     private void setVolumeLabelsVisible(boolean volumeMode, int current, int max) {
         volumeModeActive = volumeMode;
         if (volumeMode) {
             if (timeCurrent != null) timeCurrent.setVisibility(View.GONE);
             if (timeTotal != null) {
-                int pct = max > 0 ? Math.round(100f * current / (float) max) : 0;
+                int pct = formatVolumePercent(current, max);
                 timeTotal.setText(pct + "%");
                 timeTotal.setVisibility(View.VISIBLE);
             }
@@ -264,11 +332,39 @@ public final class MediaTransportBar {
                 volumeIcon.setImageResource(volumeIconRes(current, max));
                 volumeIcon.setVisibility(View.VISIBLE);
             }
+        } else if (fmNormalModeActive) {
+            if (timeCurrent != null) timeCurrent.setVisibility(View.GONE);
+            if (timeTotal != null) {
+                int pct = formatVolumePercent(lastVolCurrent, lastVolMax);
+                timeTotal.setText(pct + "%");
+                timeTotal.setVisibility(View.VISIBLE);
+            }
+            if (volumeIcon != null) {
+                volumeIcon.setImageResource(volumeIconRes(lastVolCurrent, lastVolMax));
+                volumeIcon.setVisibility(View.VISIBLE);
+            }
         } else {
             if (volumeIcon != null) volumeIcon.setVisibility(View.GONE);
             if (timeCurrent != null) timeCurrent.setVisibility(View.VISIBLE);
             if (timeTotal != null) timeTotal.setVisibility(View.VISIBLE);
         }
+    }
+
+    public static int formatVolumePercent(int current, int max) {
+        if (max <= 0) return 0;
+        int pct = Math.round(100f * current / (float) max);
+        if (pct <= 0) return 0;
+        if (pct >= 100) return 100;
+        int rem = pct % 10;
+        if (rem == 0 || rem == 2 || rem == 5) return pct;
+        if (rem == 1) return (pct == 1) ? 2 : pct - 1;
+        if (rem == 3) return pct - 1;
+        if (rem == 4) return pct + 1;
+        if (rem == 6) return pct - 1;
+        if (rem == 7) return pct - 2;
+        if (rem == 8) return pct + 2;
+        if (rem == 9) return pct + 1;
+        return pct;
     }
 
     private static int volumeIconRes(int current, int max) {
@@ -405,6 +501,45 @@ public final class MediaTransportBar {
             return;
         }
         float frac = (float) positionMs / (float) durationMs;
+        float density = ctx.getResources().getDisplayMetrics().density;
+        int markerW = scrubMarker.getWidth() > 0 ? scrubMarker.getWidth() : (int) (10 * density);
+        int x = (int) (frac * trackW) - markerW / 2;
+        x = Math.max(0, Math.min(x, trackW - markerW));
+        FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) scrubMarker.getLayoutParams();
+        if (lp == null) {
+            lp = new FrameLayout.LayoutParams(markerW, markerW);
+        }
+        lp.width = markerW;
+        lp.height = markerW;
+        lp.leftMargin = x;
+        scrubMarker.setLayoutParams(lp);
+        scrubMarker.setVisibility(View.VISIBLE);
+    }
+
+    /**
+     * 2026-07-06 — FM MHz scrub uses band fraction 0..1 instead of track ms.
+     * Layman: moves the dot along the bar for radio tuning.
+     */
+    public void updateScrubMarkerFraction(float fraction, boolean scrubActive) {
+        if (scrubMarker == null || progressBar == null) return;
+        if (!scrubActive) {
+            scrubMarker.setVisibility(View.GONE);
+            return;
+        }
+        showScrubTrack();
+        int trackW = progressBar.getWidth();
+        if (trackW <= 0) {
+            final float frac = fraction;
+            progressBar.post(
+                    new Runnable() {
+                        @Override
+                        public void run() {
+                            updateScrubMarkerFraction(frac, true);
+                        }
+                    });
+            return;
+        }
+        float frac = fraction < 0f ? 0f : (fraction > 1f ? 1f : fraction);
         float density = ctx.getResources().getDisplayMetrics().density;
         int markerW = scrubMarker.getWidth() > 0 ? scrubMarker.getWidth() : (int) (10 * density);
         int x = (int) (frac * trackW) - markerW / 2;

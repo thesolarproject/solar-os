@@ -1,0 +1,26 @@
+{
+    "logs": [
+        {
+            "outputFile": "com.solar.launcher.globalcontext.global-context-modal-mergeDebugResources-2:/values/values.xml",
+            "map": [
+                {
+                    "source": "/home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/global-context-modal/src/main/res/values/strings.xml",
+                    "from": {
+                        "startLines": "2,8,11,10,9,12,7,6,5,3,4",
+                        "startColumns": "4,4,4,4,4,4,4,4,4,4,4",
+                        "startOffsets": "55,461,729,657,587,801,386,323,264,123,202",
+                        "endColumns": "67,125,71,71,69,64,74,62,58,78,61",
+                        "endOffsets": "118,582,796,724,652,861,456,381,318,197,259"
+                    },
+                    "to": {
+                        "startLines": "2,3,4,5,6,7,8,9,10,11,12",
+                        "startColumns": "4,4,4,4,4,4,4,4,4,4,4",
+                        "startOffsets": "55,123,249,321,393,463,528,603,666,725,804",
+                        "endColumns": "67,125,71,71,69,64,74,62,58,78,61",
+                        "endOffsets": "118,244,316,388,458,523,598,661,720,799,861"
+                    }
+                }
+            ]
+        }
+    ]
+}
