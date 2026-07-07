@@ -1,20 +1,17 @@
+# IDEs & Build Environments
 *.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+.gradle/
+/.idea/
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+/.cursor/
 local.properties
-/reference/
-/.cursor
+
+# Android / Native Build Outputs
+/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+
 # Local dev / adb / emulator scripts (not used by CI — see .github/workflows/build-release.yml)
 /scripts/audit_strings.sh
 /scripts/clean_install_system.sh
@@ -32,7 +29,7 @@ local.properties
 # Local Soulseek share-browse harness (generated fixtures, nicotine iteration)
 .soulseek-browse-test/
 
-# Stray docs / screenshots at repo root
+# Docs & Artifacts
 /docs/
 /*.md
 !README.md
@@ -41,20 +38,19 @@ local.properties
 Screenshot_*.png
 /ci-keys/
 __pycache__/
+/reference/
 
 # ROM build outputs (local)
-/rom.zip
-/rom_type_b.zip
-/rom_y2.zip
+*.img
+*.zip
+!update.zip # Assuming you might want standard OTA zips, remove if not
 /dist/
 /release.json
-/.rom_y2_extracted/
-/reference
 TestSort*
-rom.zip
-rom_type_b.zip
-rom_y2.zip
-/rom_y2_extracted
-/rom_y2_extracted
-/rom_y2_extracted
-rom_y2
+
+# Extracted ROMs and Staging Directories
+/rom_y2_extracted/
+/.rom_y2_extracted/
+/.rom_extracted/
+/build-ota-staging/
+.y2_mtk_recovery/
