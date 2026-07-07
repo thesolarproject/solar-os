@@ -29,9 +29,15 @@ public final class CompanionContextMenuLauncher {
         }
     }
 
-    /** Y2 power-hold / unified global quick menu — companion owns WM paint (Phase 5). */
+    /** Y2 power-hold / unified global quick menu — prefer premium SolarOverlayService first, fallback to companion. */
     public static boolean openPowerQuickMenu(Context ctx) {
         if (ctx == null) return false;
+        Intent solar = new Intent(OverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
+        solar.setComponent(new ComponentName(ctx.getPackageName(), "com.solar.launcher.SolarOverlayService"));
+        try {
+            ctx.startService(solar);
+            return true;
+        } catch (Exception ignored) {}
         if (isCompanionInstalled(ctx)) {
             Intent svc = new Intent(OverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
             svc.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
@@ -40,12 +46,6 @@ public final class CompanionContextMenuLauncher {
                 return true;
             } catch (Exception ignored) {}
         }
-        Intent solar = new Intent(OverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
-        solar.setComponent(new ComponentName(ctx, SolarOverlayService.class));
-        try {
-            ctx.startService(solar);
-            return true;
-        } catch (Exception ignored) {}
         return false;
     }
 }
