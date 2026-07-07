@@ -17,7 +17,7 @@ public class SolarLauncherExecScriptTest {
         assertTrue(text.contains("restart-active"));
         assertTrue(text.contains("disable-competitors"));
         assertTrue(text.contains("PROP_TRANSITION_UNTIL")
-                || text.contains("sys.solar.launcher.transition_until"));
+                || text.contains("sys.solar.launcher.trans_until"));
         assertTrue(text.contains("force-stop"));
     }
 

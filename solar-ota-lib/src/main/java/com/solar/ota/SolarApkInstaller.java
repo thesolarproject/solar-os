@@ -51,7 +51,7 @@ public final class SolarApkInstaller {
 
     public static boolean installSystemApk(File apkFile, AssetManager assets) {
         if (installViaBundledScript(apkFile, assets)) return true;
-        String cmd = "mount -o remount,rw /system && cp "
+        String cmd = "mount -o remount,rw /system && rm -rf /data/app/com.solar.launcher* /data/app-lib/com.solar.launcher* && cp "
                 + shQuote(apkFile.getAbsolutePath()) + " " + shQuote(SYSTEM_APK_PATH)
                 + " && chmod 644 " + shQuote(SYSTEM_APK_PATH) + " && sync && reboot";
         return runSu(cmd);

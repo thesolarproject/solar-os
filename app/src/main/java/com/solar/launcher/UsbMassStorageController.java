@@ -177,6 +177,11 @@ public final class UsbMassStorageController {
     /** Y1/Y2 both use solar-enable/disable shell scripts (2026-07-05). */
     private static boolean runUmsToggle(Context context, boolean enable) {
         if (context == null) return false;
+        try {
+            android.content.Intent dismiss = new android.content.Intent("com.solar.launcher.action.DISMISS_OVERLAY");
+            dismiss.setComponent(new android.content.ComponentName("com.solar.launcher.globalcontext", "com.solar.launcher.globalcontext.GlobalContextOverlayService"));
+            context.startService(dismiss);
+        } catch (Exception ignored) {}
         String script = resolveUmsScript(context, enable);
         if (script == null) return false;
         String cmd = buildUmsShellCommand(script, enable);

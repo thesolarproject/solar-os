@@ -17,12 +17,12 @@ APPLY_HOME_ACTION="com.solar.launcher.homehelper.action.APPLY_HOME_TARGET"
 HELPER_ENFORCER="com.solar.launcher.homehelper/.LauncherEnforcerService"
 PROP_HOME_TARGET="persist.solar.home.target"
 PROP_HOME_COMPONENT="persist.solar.home.component"
-PROP_HOME_LAUNCHER_PKGS="persist.solar.home.launcher_pkgs"
+PROP_HOME_LAUNCHER_PKGS="persist.solar.home.launch_pkgs"
 PROP_HOME_APPLYING="persist.solar.home.applying"
-PROP_TRANSITION_UNTIL="sys.solar.launcher.transition_until"
+PROP_TRANSITION_UNTIL="sys.solar.launcher.trans_until"
 PROP_PENDING_KILL="sys.solar.launcher.pending_kill"
 PROP_KILL_REASON="sys.solar.launcher.kill_reason"
-PROP_PENDING_KILL_UNTIL="sys.solar.launcher.pending_kill_until"
+PROP_PENDING_KILL_UNTIL="sys.solar.launcher.kill_until"
 PENDING_KILL_TTL_MS=12000
 TRANSITION_MS=8000
 OVERLAY_KEEPALIVE="com.solar.launcher.action.OVERLAY_KEEPALIVE"
@@ -133,6 +133,11 @@ disable_competitors_for() {
     pm_enable_pkg "$SOLAR_PKG"
     pm_enable_pkg "$HELPER_PKG"
     pm_enable_pkg "$_active"
+    
+    # Always explicitly disable inactive alternate launchers
+    [ "$_active" != "$ROCKBOX_PKG" ] && pm_disable_pkg "$ROCKBOX_PKG" && force_stop_pkg "$ROCKBOX_PKG" "switch"
+    [ "$_active" != "$JJ_PKG" ] && pm_disable_pkg "$JJ_PKG" && force_stop_pkg "$JJ_PKG" "switch"
+
     _list=$(getprop "$PROP_HOME_LAUNCHER_PKGS")
     if [ -n "$_list" ]; then
         OLDIFS="$IFS"

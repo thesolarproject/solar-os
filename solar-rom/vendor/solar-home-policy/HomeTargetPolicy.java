@@ -12,7 +12,7 @@ public final class HomeTargetPolicy {
     public static final String PROP_HOME_COMPONENT = "persist.solar.home.component";
     public static final String PROP_HOME_APPLYING = "persist.solar.home.applying";
     /** 2026-07-06 — Uptime-ms deadline while switch/restart suppresses crash/ANR dialogs. */
-    public static final String PROP_LAUNCHER_TRANSITION_UNTIL = "sys.solar.launcher.transition_until";
+    public static final String PROP_LAUNCHER_TRANSITION_UNTIL = "sys.solar.launcher.trans_until";
 
     /** Helper broadcast — commit HOME target (Settings, Apps, overlay). */
     public static final String ACTION_APPLY_HOME_TARGET =
@@ -45,7 +45,7 @@ public final class HomeTargetPolicy {
 
     public static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
     /** 2026-07-07 — Cached HOME launcher packages (comma-separated) — shell disable loop reads this. */
-    public static final String PROP_HOME_LAUNCHER_PKGS = "persist.solar.home.launcher_pkgs";
+    public static final String PROP_HOME_LAUNCHER_PKGS = "persist.solar.home.launch_pkgs";
     public static final String COMPANION_OVERLAY_KEEPALIVE =
             "com.solar.launcher.globalcontext.action.OVERLAY_KEEPALIVE";
 

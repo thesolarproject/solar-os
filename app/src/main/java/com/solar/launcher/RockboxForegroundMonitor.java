@@ -58,9 +58,8 @@ public final class RockboxForegroundMonitor implements Runnable {
             handler.postDelayed(this, POLL_MS_SOLAR_FOREGROUND);
             return;
         }
-        // 2026-07-06 — USB host session dismissed or concierge active — skip fg probes (86bbe0).
-        if (UsbHostSessionPolicy.isPcHostConnected(appContext)
-                && UsbHostSessionPolicy.isAggressiveUsbWorkSuppressed(appContext)) {
+        // Skip fg probes only when USB Mass Storage is actively running (kernel mode).
+        if (UsbMassStorageController.isKernelMassStorageMode()) {
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();

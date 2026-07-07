@@ -24,7 +24,7 @@ public final class OverlayKeyGate {
     /** Elapsed-realtime ms when active=1 without ui=1 — stale after 2s (watchdog ceiling). */
     public static final String ACTIVE_AT_PROPERTY = "sys.solar.overlay.active_at";
     /** Uptime millis until handoff inject must stay off after overlay dismiss (Xposed reads too). */
-    public static final String COOLDOWN_UNTIL_PROPERTY = "sys.solar.overlay.cooldown_until";
+    public static final String COOLDOWN_UNTIL_PROPERTY = "sys.solar.overlay.cooldown";
     /** Monotonic pulse written on disarm — Xposed clears stale BACK/center long-press state. */
     public static final String DISARM_PULSE_PROPERTY = "sys.solar.overlay.disarm_pulse";
     /** Legacy persist prop — stuck=1 breaks Rockbox/Solar back/OK; cleared on disarm/boot. */

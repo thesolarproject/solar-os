@@ -213,7 +213,7 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     }
 
     /** PM scan cache — comma-separated HOME packages (see LauncherDiscovery.sync). */
-    public static final String PROP_HOME_LAUNCHER_PKGS = "persist.solar.home.launcher_pkgs";
+    public static final String PROP_HOME_LAUNCHER_PKGS = "persist.solar.home.launch_pkgs";
 
     /** JJ only — not generic PM-discovered HOME launchers. */
     public static boolean isSpecialInputHoldLauncher(String pkg) {

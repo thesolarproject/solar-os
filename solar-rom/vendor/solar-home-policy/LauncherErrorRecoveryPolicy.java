@@ -13,9 +13,9 @@ public final class LauncherErrorRecoveryPolicy {
     /** switch | restart | recover — why pending_kill was armed. */
     public static final String PROP_KILL_REASON = "sys.solar.launcher.kill_reason";
     /** Comma-separated epoch-ms crash timestamps for active HOME launcher. */
-    public static final String PROP_CRASH_TIMES = "persist.solar.launcher.crash_times";
+    public static final String PROP_CRASH_TIMES = "persist.solar.crash_times";
     /** Last process that hit recovery threshold — overlay titles. */
-    public static final String PROP_RECOVERY_PROCESS = "persist.solar.launcher.recovery_process";
+    public static final String PROP_RECOVERY_PROCESS = "persist.solar.recovery_proc";
 
     public static final String REASON_SWITCH = "switch";
     public static final String REASON_RESTART = "restart";
@@ -111,13 +111,13 @@ public final class LauncherErrorRecoveryPolicy {
         syncProp(PROP_PENDING_KILL, basePackage(pkg));
         syncProp(PROP_KILL_REASON, reason != null ? reason : REASON_SWITCH);
         long until = LauncherTransitionGuard.SystemClockCompat.uptimeMillis() + PENDING_KILL_TTL_MS;
-        syncProp("sys.solar.launcher.pending_kill_until", String.valueOf(until));
+        syncProp("sys.solar.launcher.kill_until", String.valueOf(until));
     }
 
     public static void clearPendingKill() {
         syncProp(PROP_PENDING_KILL, "");
         syncProp(PROP_KILL_REASON, "");
-        syncProp("sys.solar.launcher.pending_kill_until", "0");
+        syncProp("sys.solar.launcher.kill_until", "0");
     }
 
     static int countInWindow(String csv, long now) {
@@ -156,7 +156,7 @@ public final class LauncherErrorRecoveryPolicy {
         if (testPendingKillOverride != null) return testPendingKillOverride;
         String pending = readStringProp(PROP_PENDING_KILL, "");
         if (pending.length() == 0) return "";
-        long until = readLongProp("sys.solar.launcher.pending_kill_until", 0L);
+        long until = readLongProp("sys.solar.launcher.kill_until", 0L);
         if (until > 0L && LauncherTransitionGuard.SystemClockCompat.uptimeMillis() > until) {
             return "";
         }

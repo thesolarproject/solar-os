@@ -33,7 +33,7 @@ public final class LauncherDiscovery {
         if (pm == null) return out;
         Intent probe = new Intent(Intent.ACTION_MAIN);
         probe.addCategory(Intent.CATEGORY_HOME);
-        List<ResolveInfo> matches = pm.queryIntentActivities(probe, 0);
+        List<ResolveInfo> matches = pm.queryIntentActivities(probe, PackageManager.GET_DISABLED_COMPONENTS);
         if (matches == null) return out;
         for (ResolveInfo info : matches) {
             if (info == null || info.activityInfo == null) continue;

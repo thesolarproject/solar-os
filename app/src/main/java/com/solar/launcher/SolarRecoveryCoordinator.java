@@ -18,7 +18,7 @@ public final class SolarRecoveryCoordinator {
 
     static final String PROP_CRASH_STREAK = "persist.solar.crash_streak";
     static final String PROP_EMERGENCY_MODE = "persist.solar.emergency_mode";
-    static final String PROP_RECOVERY_LAST = "persist.solar.recovery_last_action";
+    static final String PROP_RECOVERY_LAST = "persist.solar.recovery_action";
     static final String PROP_PLATFORM_DEGRADED = "persist.solar.platform.degraded";
 
     private static final String PREFS = "solar_recovery";

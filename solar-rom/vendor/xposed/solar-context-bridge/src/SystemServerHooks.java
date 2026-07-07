@@ -37,7 +37,7 @@ final class SystemServerHooks {
     /** Must match {@link com.solar.launcher.OverlayKeyGate#DISARM_PULSE_PROPERTY}. */
     private static final String DISARM_PULSE_PROPERTY = "sys.solar.overlay.disarm_pulse";
     /** Must match {@link com.solar.launcher.OverlayKeyGate#COOLDOWN_UNTIL_PROPERTY}. */
-    private static final String COOLDOWN_UNTIL_PROPERTY = "sys.solar.overlay.cooldown_until";
+    private static final String COOLDOWN_UNTIL_PROPERTY = "sys.solar.overlay.cooldown";
     /** Must match {@link com.solar.launcher.ExternalInputHandoff#HANDOFF_ACTIVE_PROPERTY}. */
     private static final String HANDOFF_ACTIVE_PROPERTY = "sys.solar.handoff.active";
 

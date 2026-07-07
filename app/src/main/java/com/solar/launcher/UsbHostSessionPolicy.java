@@ -192,10 +192,7 @@ public final class UsbHostSessionPolicy {
      */
     public static boolean shouldEvaluatePromptThisSession(Context context) {
         if (context == null) return false;
-        if (!isPcHostConnected(context)) return false;
-        if (hasUserDismissedThisSession(context)) return false;
-        if (hasPromptEvaluatedThisSession(context)) return false;
-        return isPromptAllowedAfterBootSettle(context);
+        return isPcHostConnected(context) && isPromptAllowedAfterBootSettle(context);
     }
 
     /** Poll/HOME/recovery agent must stay off after dismiss or when Xposed owns USB (2026-07-06). */
@@ -376,10 +373,7 @@ public final class UsbHostSessionPolicy {
             Intent sticky = context.registerReceiver(null,
                     new IntentFilter(UsbHostWakeReceiver.ACTION_USB_STATE));
             if (sticky == null) return false;
-            if (!sticky.getBooleanExtra("connected", false)) return false;
-            return sticky.getBooleanExtra("host_connected", false)
-                    || sticky.getBooleanExtra("mass_storage", false)
-                    || sticky.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
+            return sticky.getBooleanExtra("connected", false);
         } catch (Exception ignored) {
             return false;
         }

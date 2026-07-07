@@ -9721,6 +9721,9 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
+            return true;
+        }
         resetInactivityTimer();
         // #region agent log
         if (DebugB85099Log.ENABLED && event != null && event.getAction() == KeyEvent.ACTION_DOWN
@@ -20581,6 +20584,9 @@ public class MainActivity extends Activity {
     }
 
     private void showThemedContextMenu() {
+        if (CompanionContextMenuLauncher.openPowerQuickMenu(this)) {
+            return;
+        }
         if (themedContextMenu == null) return;
         if (layoutLoadingOverlay != null && layoutLoadingOverlay.getVisibility() == View.VISIBLE) return;
         volumeHandler.removeCallbacks(hideVolumeContextTask);

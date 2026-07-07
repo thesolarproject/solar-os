@@ -15,10 +15,7 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
 
     static boolean isUsbHostIntent(Intent intent) {
         if (intent == null || !ACTION_USB_STATE.equals(intent.getAction())) return false;
-        if (!intent.getBooleanExtra("connected", false)) return false;
-        return intent.getBooleanExtra("host_connected", false)
-                || intent.getBooleanExtra("mass_storage", false)
-                || intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
+        return intent.getBooleanExtra("connected", false);
     }
 
     /** Cable unplug — dismiss global USB overlay without launching Solar. */
