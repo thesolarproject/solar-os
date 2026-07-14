@@ -21,6 +21,21 @@ public class SolarLauncherExecScriptTest {
         assertTrue(text.contains("force-stop"));
     }
 
+    /**
+     * 2026-07-14 — pending_kill TTL must write kill_until (≤31 chars). The old
+     * 37-char name is rejected by setprop, so Java never TTL-expires the arm.
+     */
+    @Test
+    public void pendingKillTtlUsesShortKillUntilProp() throws Exception {
+        String asset = readRepoFile("app/src/main/assets/y1/solar-launcher-exec.sh");
+        String rom = readRepoFile("solar-rom/scripts/solar-launcher-exec.sh");
+        for (String text : new String[] { asset, rom }) {
+            assertTrue(text.contains("PROP_PENDING_KILL_UNTIL=\"sys.solar.launcher.kill_until\""));
+            assertTrue(text.contains("setprop \"$PROP_PENDING_KILL_UNTIL\""));
+            assertTrue(!text.matches("(?s).*setprop\\s+sys\\.solar\\.launcher\\.pending_kill_until.*"));
+        }
+    }
+
     @Test
     public void enforceForegroundSkipsWhileOverlayActive() throws Exception {
         String text = readRepoFile("app/src/main/assets/y1/solar-launcher-exec.sh");

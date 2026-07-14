@@ -55,21 +55,25 @@ clear_transition() {
     clear_pending_kill
 }
 
+# 2026-07-14 — Arm pending_kill + kill_until (≤31-char props). Hardcoded pending_kill_until
+# was 37 chars → setprop rejects → TTL never armed → crash UI can stay suppressed after a switch.
+# Reversal: literal pending_kill_until writes (fails Android prop name limit).
 announce_pending_kill() {
     _p="$1"
     _reason="$2"
     [ -n "$_p" ] || return
-    setprop sys.solar.launcher.pending_kill "$_p"
-    setprop sys.solar.launcher.kill_reason "${_reason:-switch}"
+    setprop "$PROP_PENDING_KILL" "$_p"
+    setprop "$PROP_KILL_REASON" "${_reason:-switch}"
     _now=$(cat /proc/uptime 2>/dev/null | awk '{print int($1*1000)}')
     [ -z "$_now" ] && _now=0
-    setprop sys.solar.launcher.pending_kill_until "$((_now + 12000))"
+    setprop "$PROP_PENDING_KILL_UNTIL" "$((_now + PENDING_KILL_TTL_MS))"
 }
 
+# 2026-07-14 — Clear the same short props LauncherErrorRecoveryPolicy reads.
 clear_pending_kill() {
-    setprop sys.solar.launcher.pending_kill ""
-    setprop sys.solar.launcher.kill_reason ""
-    setprop sys.solar.launcher.pending_kill_until 0
+    setprop "$PROP_PENDING_KILL" ""
+    setprop "$PROP_KILL_REASON" ""
+    setprop "$PROP_PENDING_KILL_UNTIL" 0
 }
 
 force_stop_pkg() {
