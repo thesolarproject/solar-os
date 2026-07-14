@@ -77,8 +77,39 @@ public class UsbMassStorageControllerTest {
 
     @Test
     public void isMassStorageExportedFalseOnHostWithoutSysfs() {
+        UsbMassStorageController.invalidateProbeCache();
         if (UsbMassStorageController.isMassStorageExported()) {
             throw new AssertionError("host CI should not have bound mass-storage LUN");
+        }
+    }
+
+    @Test
+    public void probeCacheTtlRejectsStaleOrZero() {
+        long ttl = UsbMassStorageController.probeTtlMsForTest();
+        if (ttl <= 0L) {
+            throw new AssertionError("production probe TTL should be positive");
+        }
+        if (UsbMassStorageController.isProbeCacheFreshForTest(0L, 1000L, ttl)) {
+            throw new AssertionError("zero cacheAt must be stale");
+        }
+        if (UsbMassStorageController.isProbeCacheFreshForTest(100L, 100L + ttl, ttl)) {
+            throw new AssertionError("age == TTL must be stale");
+        }
+        if (!UsbMassStorageController.isProbeCacheFreshForTest(100L, 100L + ttl - 1L, ttl)) {
+            throw new AssertionError("age < TTL must be fresh");
+        }
+    }
+
+    @Test
+    public void invalidateProbeCacheForcesResample() {
+        // Warm cache (host has no UMS), then invalidate — next call still false but path is live.
+        UsbMassStorageController.isMassStorageExported();
+        UsbMassStorageController.invalidateProbeCache();
+        if (UsbMassStorageController.isMassStorageExported()) {
+            throw new AssertionError("host CI should stay non-exported after invalidate");
+        }
+        if (UsbMassStorageController.isKernelMassStorageMode()) {
+            throw new AssertionError("host CI should not report kernel UMS mode");
         }
     }
 }
