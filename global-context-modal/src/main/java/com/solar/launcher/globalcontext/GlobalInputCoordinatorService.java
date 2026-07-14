@@ -75,14 +75,10 @@ public final class GlobalInputCoordinatorService extends Service {
         foregroundPkg = intent.getStringExtra(CompanionOverlayTriggers.EXTRA_FOREGROUND_PKG);
         boolean y2 = intent.getBooleanExtra(CompanionOverlayTriggers.EXTRA_Y2_DEVICE,
                 CompanionDeviceFeatures.isY2());
-        long holdMs = intent.getLongExtra(CompanionOverlayTriggers.EXTRA_HOLD_MS, 0L);
-
-        if (activeKeyCode == GlobalInputPolicy.KEYCODE_POWER && y2) {
-            if (GlobalInputPolicy.shouldPassthroughPowerTap(holdMs > 0 ? holdMs :
-                    (holdDownAt > 0 ? SystemClock.uptimeMillis() - holdDownAt : 0L))) {
-                return;
-            }
-        }
+        // 2026-07-10 — HOLD_DOWN is always finger-down arming; passthrough is UP-only in PWM.
+        // Was: shouldPassthroughPowerTap(0) on first DOWN → early return → no modal/rescue ever
+        // when companion owned Y2 POWER (SystemServerHooks skipped PWM runnable).
+        // Reversal: restore passthrough-on-DOWN only if duplicate DOWN storms need filtering.
 
         if (holdDownAt == 0L) {
             holdDownAt = SystemClock.uptimeMillis();
@@ -119,20 +115,29 @@ public final class GlobalInputCoordinatorService extends Service {
                 long thresholdMs = activeKeyCode == GlobalInputPolicy.KEYCODE_POWER
                         ? GlobalInputPolicy.powerModalHoldMsForPackage(foregroundPkg)
                         : GlobalInputPolicy.backModalHoldMsForPackage(foregroundPkg);
+                if (held < thresholdMs) return;
+                modalFired = true;
+                String fgAtFire = resolveForegroundAtFire(foregroundPkg);
                 if (activeKeyCode == GlobalInputPolicy.KEYCODE_POWER) {
-                    if (!GlobalInputPolicy.shouldOfferPowerLongModal(foregroundPkg, y2)) return;
+                    if (!GlobalInputPolicy.shouldOfferPowerLongModal(fgAtFire, y2)) return;
                 } else {
                     boolean emergency = EmergencyRockboxMode.isEmergencyMode();
                     boolean ime = SysPropHelper.isTrue("sys.solar.ime.active");
                     if (!GlobalInputPolicy.shouldOfferBackLongModal(
-                            foregroundPkg, y2, ime, emergency)) {
+                            fgAtFire, y2, ime, emergency)) {
                         return;
                     }
                 }
-                if (held >= thresholdMs) {
-                    modalFired = true;
-                    openPowerOverlay();
-                }
+                // #region agent log
+                AgentDebugLog.log("H-C", "GlobalInputCoordinator.modalRunnable",
+                        "hold_threshold_met", "{\"heldMs\":" + held
+                                + ",\"thresholdMs\":" + thresholdMs
+                                + ",\"keyCode\":" + activeKeyCode
+                                + ",\"fg\":\"" + (fgAtFire != null
+                                        ? fgAtFire.replace("\"", "'") : "")
+                                + "\"}");
+                // #endregion
+                openPowerOverlay();
             }
         };
         worker.postDelayed(modalRunnable, holdDelayMs);
@@ -169,7 +174,38 @@ public final class GlobalInputCoordinatorService extends Service {
         worker.postDelayed(rescueTickRunnable, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
     }
 
+    /**
+     * 2026-07-10 — Re-resolve fg at fire; DOWN-time probe may lie (systemui over app).
+     * Layman: when the menu is about to open, check who is really on screen.
+     */
+    private static String resolveForegroundAtFire(String cached) {
+        String live = ForegroundProbe.topPackage();
+        if (live != null && live.length() > 0
+                && !GlobalInputPolicy.isSystemShellPackage(live)) {
+            return live;
+        }
+        if (GlobalInputPolicy.shouldFailOpenPowerFg(live)) {
+            return live != null ? live : cached;
+        }
+        if (cached != null && cached.length() > 0
+                && !GlobalInputPolicy.isSystemShellPackage(cached)) {
+            return cached;
+        }
+        return live != null ? live : cached;
+    }
+
     private void openPowerOverlay() {
+        StaleOverlayGate.clearIfNeeded();
+        if (StaleOverlayGate.isActiveOrOpening()) {
+            return;
+        }
+        CompanionOverlayKeyGate.setOverlayOpening(true);
+        // #region agent log
+        AgentDebugLog.log("H-C", "GlobalInputCoordinator.openPowerOverlay",
+                "start_route", "{\"fg\":\""
+                        + (foregroundPkg != null ? foregroundPkg.replace("\"", "'") : "")
+                        + "\"}");
+        // #endregion
         if (CompanionOverlayRouter.startSolarOverlayPower(this)) {
             return;
         }

@@ -31,6 +31,9 @@ public final class SolarOverlayClient {
             "com.solar.launcher.action.SHOW_OVERLAY_NATIVE_DIALOG";
     public static final String ACTION_SHOW_OVERLAY_USB_STORAGE =
             "com.solar.launcher.action.SHOW_OVERLAY_USB_STORAGE";
+    /** 2026-07-08 — UMS exported lock — companion shell, not MainActivity. */
+    public static final String ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK =
+            "com.solar.launcher.action.SHOW_OVERLAY_USB_STORAGE_LOCK";
     public static final String ACTION_SHOW_OVERLAY_BT_PAIRING =
             "com.solar.launcher.action.SHOW_OVERLAY_BT_PAIRING";
     public static final String EXTRA_BT_PAIRING_MODE = "bt_pairing_mode";
@@ -58,10 +61,12 @@ public final class SolarOverlayClient {
     public static final String EXTRA_DIALOG_BUTTONS = "dialog_buttons";
 
     private static final String SOLAR_PKG = "com.solar.launcher";
-    /** 2026-07-05 — Companion owns power/rescue overlay when installed (Phase 2a). */
+    /** 2026-07-08 — Companion is the one overlay shell; Solar supplies IPC rows. */
     private static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
     private static final String COMPANION_OVERLAY = COMPANION_PKG + ".GlobalContextOverlayService";
     private static final String OVERLAY_SERVICE = SOLAR_PKG + ".SolarOverlayService";
+    /** Rollback: persist.solar.overlay.legacy_shell=1 paints Solar :overlay again. */
+    private static final String LEGACY_SHELL_PROP = "persist.solar.overlay.legacy_shell";
     private static final String OPEN_RECEIVER = SOLAR_PKG + ".PowerOverlayOpenReceiver";
     private static final String TRIGGER_RECEIVER = SOLAR_PKG + ".OverlayTriggerReceiver";
     private static final String APP_MENU_RECEIVER = SOLAR_PKG + ".AppMenuOverlayReceiver";
@@ -73,6 +78,32 @@ public final class SolarOverlayClient {
     private static final String LAUNCHER_RECOVERY_RECEIVER = SOLAR_PKG + ".LauncherRecoveryOverlayReceiver";
 
     private SolarOverlayClient() {}
+
+    /**
+     * 2026-07-08 — Primary paint package: companion unless legacy_shell rollback.
+     * Layman: helper APK draws the menu; old Solar window only if we flip the escape hatch.
+     * 2026-07-10 — Defaults MUST match OverlayShellRouter + OverlayKeyForwarder (legacy default "0").
+     * Was: companion_shell default "0" + legacy default "1" + Solar installed → always Solar paint
+     * while keys went to companion → dead wheel/OK on global menu.
+     * Reversal: set persist.solar.overlay.legacy_shell=1 for Solar :overlay again.
+     */
+    private static boolean useCompanionShell(Context ctx) {
+        // Explicit rollback escape hatch (default off — companion is sole shell).
+        if ("1".equals(readSysProp(LEGACY_SHELL_PROP, "0"))) return false;
+        // Optional hard-off for companion (default on).
+        if ("0".equals(readSysProp("persist.solar.overlay.companion_shell", "1"))) return false;
+        // Prefer companion when installed; Solar paints only if companion missing.
+        if (isCompanionInstalled(ctx)) return true;
+        return false;
+    }
+
+    private static String shellPkg(Context ctx) {
+        return useCompanionShell(ctx) ? COMPANION_PKG : SOLAR_PKG;
+    }
+
+    private static String shellService(Context ctx) {
+        return useCompanionShell(ctx) ? COMPANION_OVERLAY : OVERLAY_SERVICE;
+    }
 
     /** True when Solar or companion can paint global overlays — fail-open to stock when false. */
     public static boolean canDeliverOverlay(Context ctx) {
@@ -104,9 +135,27 @@ public final class SolarOverlayClient {
             "com.solar.launcher.action.OPEN_CONTEXT_MENU";
     public static final String EXTRA_CONTEXT_POWER_HOLD = "context_power_hold";
 
-    /** @deprecated Phase 5 — Solar fg uses companion/Solar overlay like third-party. */
+    /**
+     * 2026-07-14 — Solar Home POWER/BACK-hold opens in-app ThemedContextMenu (focused-row options).
+     * Layman: holding Back/Power inside Solar shows Home's own menu — not the system companion.
+     * Was: showPowerOverlay (companion) — dead wheel / hard to dismiss over MainActivity.
+     * Reversal: call showPowerOverlay(ctx) again.
+     */
     public static void showInAppPowerMenu(Context ctx) {
-        showPowerOverlay(ctx);
+        if (ctx == null) return;
+        try {
+            Intent i = new Intent(ACTION_OPEN_CONTEXT_MENU);
+            i.setClassName(SOLAR_PKG, MAIN_ACTIVITY);
+            i.putExtra(EXTRA_CONTEXT_POWER_HOLD, true);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            ctx.startActivity(i);
+            SolarContextBridge.log("showInAppPowerMenu → MainActivity OPEN_CONTEXT_MENU");
+        } catch (Throwable t) {
+            SolarContextBridge.log("showInAppPowerMenu failed — companion fallback");
+            showPowerOverlay(ctx);
+        }
     }
 
     /** Y1 BACK-long / Y2 power-hold or BACK-long — startService first (works when app is stopped). */
@@ -142,48 +191,48 @@ public final class SolarOverlayClient {
         }
     }
 
-    /** Spin up overlay host early — always warm Solar :overlay; companion secondary (2026-07-06). */
+    /**
+     * 2026-07-08 — Warm the one shell (companion primary).
+     * Was: always warm Solar :overlay + companion secondary.
+     */
     public static void warmOverlayProcess(Context ctx) {
         if (ctx == null) return;
-        if (isSolarInstalled(ctx)) {
-            Intent keep = new Intent("com.solar.launcher.action.OVERLAY_KEEPALIVE");
-            keep.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
-            try {
-                ctx.startService(keep);
-            } catch (Throwable ignored) {}
-        }
-        if (isCompanionInstalled(ctx)) {
-            Intent keep = new Intent("com.solar.launcher.action.OVERLAY_KEEPALIVE");
-            keep.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
-            try {
-                ctx.startService(keep);
-            } catch (Throwable ignored) {}
-        }
+        Intent keep = new Intent("com.solar.launcher.action.OVERLAY_KEEPALIVE");
+        keep.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
+        try {
+            ctx.startService(keep);
+        } catch (Throwable ignored) {}
     }
 
-    /** Solar :overlay paints full quick menu; companion only when Solar startService fails. */
+    /**
+     * 2026-07-08 — Companion paints power tier; Solar only when legacy_shell=1.
+     * Was: Solar :overlay first, companion only on startService miss.
+     */
     private static boolean startPowerOverlayService(Context ctx) {
         if (ctx == null) return false;
-        if (isSolarInstalled(ctx)) {
-            boolean ok = startOverlayService(ctx, ACTION_SHOW_OVERLAY_POWER);
-            if (ok) {
-                SolarContextBridge.log("Solar startService " + ACTION_SHOW_OVERLAY_POWER);
-                return true;
-            }
+        Intent svc = new Intent(ACTION_SHOW_OVERLAY_POWER);
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
+        try {
+            ctx.startService(svc);
+            SolarContextBridge.log("shell startService " + ACTION_SHOW_OVERLAY_POWER
+                    + " pkg=" + shellPkg(ctx));
+            return true;
+        } catch (Throwable t) {
+            SolarContextBridge.log("shell startService failed: " + t.getClass().getSimpleName());
         }
-        if (isCompanionInstalled(ctx)) {
-            Intent svc = new Intent(ACTION_SHOW_OVERLAY_POWER);
-            svc.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
+        // Fail-open: try the other host once.
+        if (useCompanionShell(ctx) && isSolarInstalled(ctx)) {
+            return startOverlayService(ctx, ACTION_SHOW_OVERLAY_POWER);
+        }
+        if (!useCompanionShell(ctx) && isCompanionInstalled(ctx)) {
+            Intent fallback = new Intent(ACTION_SHOW_OVERLAY_POWER);
+            fallback.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
             try {
-                ctx.startService(svc);
-                SolarContextBridge.log("companion startService " + ACTION_SHOW_OVERLAY_POWER);
+                ctx.startService(fallback);
                 return true;
-            } catch (Throwable t) {
-                SolarContextBridge.log("companion startService failed: "
-                        + t.getClass().getSimpleName());
-            }
+            } catch (Throwable ignored) {}
         }
-        return startOverlayService(ctx, ACTION_SHOW_OVERLAY_POWER);
+        return false;
     }
 
     public static void showVolumeOverlay(Context ctx) {
@@ -225,7 +274,7 @@ public final class SolarOverlayClient {
 
     private static boolean startToastOverlayService(Context ctx, String text, long durationMs) {
         Intent svc = new Intent(ACTION_SHOW_OVERLAY_TOAST);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         svc.putExtra(EXTRA_TOAST_TEXT, text);
         svc.putExtra(EXTRA_TOAST_DURATION_MS, durationMs);
         try {
@@ -256,7 +305,7 @@ public final class SolarOverlayClient {
         if (ctx == null) return;
         warmOverlayProcess(ctx);
         Intent svc = new Intent(ACTION_SHOW_OVERLAY_LAUNCHER_RECOVERY);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         if (processName != null) {
             svc.putExtra(EXTRA_RECOVERY_PROCESS, processName);
         }
@@ -322,11 +371,14 @@ public final class SolarOverlayClient {
         }
     }
 
-    /** Direct :overlay service start — sets prop via SolarOverlayService before menu paints. */
+    /**
+     * 2026-07-08 — App-menu start on companion shell (Solar Home + third-party menus).
+     * Was: always SolarOverlayService.
+     */
     private static boolean startAppMenuService(Context ctx, String title, String[] itemTitles,
             boolean[] hasSubmenu, String sessionId, String callerPackage) {
         Intent svc = new Intent(ACTION_SHOW_OVERLAY_APP_MENU);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         svc.putExtra(EXTRA_MENU_TITLES, itemTitles);
         svc.putExtra(EXTRA_MENU_SESSION_ID, sessionId);
         if (hasSubmenu != null) svc.putExtra(EXTRA_MENU_HAS_SUBMENU, hasSubmenu);
@@ -361,7 +413,10 @@ public final class SolarOverlayClient {
         return false;
     }
 
-    /** Replace SystemUI UsbStorageActivity enable prompt — wheel-friendly global overlay tier. */
+    /**
+     * Enable prompt → Solar MainActivity (July-2 monlith).
+     * 2026-07-10 — Companion no longer owns USB; broadcast + MainActivity handoff.
+     */
     public static void showUsbStoragePrompt(Context ctx) {
         if (ctx == null) return;
         if (shouldDeferUsbForNativeErrorTier()) {
@@ -369,15 +424,13 @@ public final class SolarOverlayClient {
             SolarContextBridge.log("usbStorage deferred — native_error tier active");
             return;
         }
-        if (startUsbStorageService(ctx, false)) return;
         deliverOpenBroadcast(ctx, ACTION_SHOW_OVERLAY_USB_STORAGE, USB_STORAGE_RECEIVER);
-        startOverlayFallback(ctx, ACTION_SHOW_OVERLAY_USB_STORAGE);
+        launchSolarUsbHandoff(ctx, true, false);
     }
 
     /**
-     * 2026-07-06 — SystemUI UsbStorageActivity concierge: one routing entry for enable prompt vs lock.
-     * Layman: finish stock USB dialog and open Solar overlay or in-app USB screen.
-     * Reversal: delete and restore per-caller showUsbStoragePrompt / bringSolarToUsbLockScreen split.
+     * SystemUI UsbStorageActivity concierge: enable prompt vs lock.
+     * 2026-07-10 — Restored July-2 monlith: Solar MainActivity owns all USB UI.
      */
     public static void routeUsbConcierge(Context ctx, boolean umsExported) {
         if (ctx == null) return;
@@ -398,10 +451,6 @@ public final class SolarOverlayClient {
         } catch (Throwable ignored) {}
         // #endregion
         if (umsExported) {
-            if (shouldUseGlobalOverlayUsbPrompt(fg)) {
-                SolarContextBridge.log("usbConcierge ums lock skip third-party fg=" + fg);
-                return;
-            }
             launchSolarUsbHandoff(ctx, false, true);
             return;
         }
@@ -412,38 +461,46 @@ public final class SolarOverlayClient {
             launchSolarUsbHandoff(ctx, true, true);
             return;
         }
-        if (shouldUseGlobalOverlayUsbPrompt(fg)) {
-            if (shouldDeferUsbForNativeErrorTier()) {
-                queuePendingUsbPromptEarly();
-                SolarContextBridge.log("usbConcierge deferred — native_error tier");
-                return;
-            }
-            showUsbStoragePrompt(ctx);
-        } else {
-            launchSolarUsbHandoff(ctx, false, false);
+        if (shouldDeferUsbForNativeErrorTier()) {
+            queuePendingUsbPromptEarly();
+            SolarContextBridge.log("usbConcierge deferred — native_error tier");
+            return;
         }
+        showUsbStoragePrompt(ctx);
     }
 
-    /** Solar fg → in-app USB tier; third-party / SystemUI shell → global overlay. */
-    private static boolean shouldUseGlobalOverlayUsbPrompt(String fg) {
-        return !"com.solar.launcher".equals(fg);
-    }
-
-    /** Bring Solar MainActivity for enable confirm or UMS lock — no third-party HOME steal on lock-only. */
+    /**
+     * Start Solar MainActivity with USB handoff extras (July-2 monlith).
+     * enable+lock → auto-connect; lock only → eject screen; enable only → enable prompt.
+     */
     public static void launchSolarUsbHandoff(Context ctx, boolean enableStorage, boolean lockOnly) {
         if (ctx == null) return;
-        if (enableStorage && !SolarUsbSessionPrefs.shouldShowUsbStoragePrompt()) return;
-        Intent launch = new Intent(Intent.ACTION_MAIN);
-        launch.setComponent(new ComponentName(SOLAR_PKG, MAIN_ACTIVITY));
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        if (enableStorage) launch.putExtra(EXTRA_USB_OVERLAY_ENABLE, true);
-        if (lockOnly) launch.putExtra(EXTRA_USB_OVERLAY_LOCK, true);
         try {
-            ctx.startActivity(launch);
-            SolarContextBridge.log("usbHandoff enable=" + enableStorage + " lock=" + lockOnly);
+            Intent home = new Intent();
+            home.setComponent(new ComponentName(SOLAR_PKG, MAIN_ACTIVITY));
+            home.setAction(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            if (lockOnly) {
+                home.putExtra(EXTRA_USB_OVERLAY_LOCK, true);
+            }
+            if (enableStorage) {
+                home.putExtra(EXTRA_USB_OVERLAY_ENABLE, true);
+            }
+            ctx.startActivity(home);
+            SolarContextBridge.log("usbHandoff MainActivity enable=" + enableStorage
+                    + " lock=" + lockOnly);
+            if (lockOnly) {
+                deliverOpenBroadcast(ctx, ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK, USB_STORAGE_RECEIVER);
+            } else {
+                deliverOpenBroadcast(ctx, ACTION_SHOW_OVERLAY_USB_STORAGE, USB_STORAGE_RECEIVER);
+            }
         } catch (Throwable t) {
             SolarContextBridge.log("usbHandoff failed: " + t.getClass().getSimpleName());
+            deliverOpenBroadcast(ctx,
+                    lockOnly ? ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK : ACTION_SHOW_OVERLAY_USB_STORAGE,
+                    USB_STORAGE_RECEIVER);
         }
     }
 
@@ -511,31 +568,31 @@ public final class SolarOverlayClient {
         }
     }
 
-    /** UMS already exported — Solar USB lock only when Solar is foreground. */
+    /** UMS already exported — Solar STATE_USB_STORAGE eject screen (July-2 monlith). */
     public static void bringSolarToUsbLockScreen(Context ctx) {
         routeUsbConcierge(ctx, true);
     }
 
-    /** Direct :overlay service for USB storage prompt or lock handoff. */
+    /**
+     * @deprecated USB no longer uses companion/overlay service paint.
+     * Kept so older call sites compile; routes to MainActivity handoff.
+     */
     private static boolean startUsbStorageService(Context ctx, boolean lockOnly) {
-        Intent svc = new Intent(ACTION_SHOW_OVERLAY_USB_STORAGE);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
-        svc.putExtra(EXTRA_USB_STORAGE_LOCK, lockOnly);
-        try {
-            ctx.startService(svc);
-            SolarContextBridge.log("usbStorage startService lock=" + lockOnly);
-            return true;
-        } catch (Throwable t) {
-            SolarContextBridge.log("usbStorage startService failed: " + t.getClass().getSimpleName());
-            return false;
-        }
+        launchSolarUsbHandoff(ctx, !lockOnly, lockOnly);
+        return true;
     }
 
-    /** Direct :overlay service for Bluetooth pairing PIN / passkey tiers. */
+    /** @deprecated use {@link #launchSolarUsbHandoff}(ctx, false, true). */
+    private static boolean startUsbStorageLockService(Context ctx) {
+        launchSolarUsbHandoff(ctx, false, true);
+        return true;
+    }
+
+    /** 2026-07-08 — BT pairing on the one shell. */
     private static boolean startBluetoothPairingService(Context ctx, int mode, String address,
             String name, int passkey, String pinPrefill) {
         Intent svc = new Intent(ACTION_SHOW_OVERLAY_BT_PAIRING);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         svc.putExtra(EXTRA_BT_PAIRING_MODE, mode);
         svc.putExtra(EXTRA_BT_PAIRING_ADDRESS, address);
         svc.putExtra(EXTRA_BT_PAIRING_NAME, name != null ? name : "");
@@ -551,11 +608,14 @@ public final class SolarOverlayClient {
         }
     }
 
-    /** Direct :overlay service for native dialog replacement. */
+    /**
+     * 2026-07-08 — ANR/crash dialog on the one shell (companion primary).
+     * Was: Solar first + wrong-package companion fallback. Now: shellPkg routing only.
+     */
     private static boolean startNativeDialogService(Context ctx, String title, String message,
             String[] buttons, String sessionId, String callerPackage) {
         Intent svc = new Intent(ACTION_SHOW_OVERLAY_NATIVE_DIALOG);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         svc.putExtra(EXTRA_DIALOG_MESSAGE, message != null ? message : "");
         svc.putExtra(EXTRA_DIALOG_BUTTONS, buttons);
         svc.putExtra(EXTRA_MENU_SESSION_ID, sessionId);
@@ -563,15 +623,40 @@ public final class SolarOverlayClient {
         if (title != null) svc.putExtra(EXTRA_MENU_TITLE, title);
         try {
             ctx.startService(svc);
-            SolarContextBridge.log("nativeDialog startService buttons=" + buttons.length);
+            SolarContextBridge.log("nativeDialog startService buttons=" + buttons.length
+                    + " → " + shellPkg(ctx));
             return true;
-        } catch (Throwable t) {
-            SolarContextBridge.log("nativeDialog startService failed: " + t.getClass().getSimpleName());
-            return false;
+        } catch (Throwable primary) {
+            SolarContextBridge.log("nativeDialog startService failed: "
+                    + primary.getClass().getSimpleName());
+            // One-shot alternate host if primary package missing.
+            String altPkg = useCompanionShell(ctx) ? SOLAR_PKG : COMPANION_PKG;
+            String altSvc = useCompanionShell(ctx) ? OVERLAY_SERVICE : COMPANION_OVERLAY;
+            Intent fallback = new Intent(ACTION_SHOW_OVERLAY_NATIVE_DIALOG);
+            fallback.setComponent(new ComponentName(altPkg, altSvc));
+            fallback.putExtra(EXTRA_DIALOG_MESSAGE, message != null ? message : "");
+            fallback.putExtra(EXTRA_DIALOG_BUTTONS, buttons);
+            fallback.putExtra(EXTRA_MENU_SESSION_ID, sessionId);
+            if (callerPackage != null) fallback.putExtra(EXTRA_MENU_CALLER_PACKAGE, callerPackage);
+            if (title != null) fallback.putExtra(EXTRA_MENU_TITLE, title);
+            try {
+                ctx.startService(fallback);
+                SolarContextBridge.log("nativeDialog alt shell ok → " + altPkg);
+                return true;
+            } catch (Throwable fallbackEx) {
+                SolarContextBridge.log("nativeDialog alt failed: "
+                        + fallbackEx.getClass().getSimpleName());
+                return false;
+            }
         }
     }
 
-    /** Set opening prop before startService so duplicate Xposed/daemon triggers coalesce. */
+    /**
+     * Set opening prop before startService so duplicate Xposed/daemon triggers coalesce.
+     * 2026-07-11 — Do NOT stamp shell_visible here. Early shell_visible=1 armed key capture
+     * with no WM window (frozen wheel) and defeated StaleOverlayGate heal.
+     * Companion arms shell_visible at real addView. Reversal: restore provisional shell_visible.
+     */
     private static void setOverlayOpeningEarly(boolean opening) {
         try {
             Class<?> sp = de.robv.android.xposed.XposedHelpers.findClass(
@@ -605,14 +690,17 @@ public final class SolarOverlayClient {
         }
     }
 
-    /** Direct startService — reliable from system_server even when Solar main process is stopped. */
+    /**
+     * 2026-07-08 — Direct startService to the one shell (companion unless legacy).
+     * Layman: wakes the system menu host even if Solar Home was force-stopped.
+     */
     private static boolean startOverlayService(Context ctx, String action) {
         if (ctx == null || action == null) return false;
         Intent svc = new Intent(action);
-        svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+        svc.setComponent(new ComponentName(shellPkg(ctx), shellService(ctx)));
         try {
             ctx.startService(svc);
-            SolarContextBridge.log("startService " + action);
+            SolarContextBridge.log("startService " + action + " → " + shellPkg(ctx));
             return true;
         } catch (Throwable t) {
             SolarContextBridge.log("startService failed: " + t.getClass().getSimpleName());

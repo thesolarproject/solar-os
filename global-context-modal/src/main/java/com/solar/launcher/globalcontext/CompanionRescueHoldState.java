@@ -14,7 +14,7 @@ public final class CompanionRescueHoldState {
     public static final String HOLD_KIND_PROPERTY = "sys.solar.rescue.hold_kind";
     public static final String HUD_SECOND_PROPERTY = "sys.solar.rescue.hud_second";
 
-    /** 2026-07-06 — Match GlobalInputPolicy rescue tier (−30% from 10s). */
+    /** 2026-07-08 — Match GlobalInputPolicy: continuous 10s rescue execute. */
     public static final long RESCUE_HOLD_MS =
             com.solar.input.policy.GlobalInputPolicy.RESCUE_EXECUTE_MS;
     public static final int HUD_COUNTDOWN_SECONDS = 3;
@@ -69,7 +69,7 @@ public final class CompanionRescueHoldState {
         armFromHoldStart(kind, 0L);
     }
 
-    /** 2026-07-06 — HUD at 7s stays on 10s total from original hold DOWN. */
+    /** 2026-07-08 — HUD at 7s stays on 10s total from original hold DOWN. */
     public static void armFromHoldStart(String kind, long holdDownAtUptime) {
         long deadline = holdDownAtUptime > 0L
                 ? holdDownAtUptime + RESCUE_HOLD_MS

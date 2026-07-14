@@ -23,4 +23,15 @@ public final class CompanionDeviceFeatures {
     public static boolean isY1() {
         return !isY2();
     }
+
+    /** Short product label for USB lock copy (Y1 / Y2). */
+    public static String productModelLabel() {
+        if (isY2()) return "Y2";
+        if (Build.MODEL != null && Build.MODEL.trim().length() > 0) {
+            String m = Build.MODEL.trim();
+            if (m.toUpperCase().contains("Y1")) return "Y1";
+            return m;
+        }
+        return "Y1";
+    }
 }

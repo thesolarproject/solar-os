@@ -10,13 +10,14 @@ import android.widget.TextView;
 
 /**
  * 2026-07-05 — Companion HOME when persist.solar.emergency_mode=1 after crash loop.
- * Layman: explains Solar could not start and offers repair, app picker, or streak reset.
+ * Layman: explains Solar could not start and offers app picker or streak reset.
  * Technical: lightweight Activity registered as HOME; replaces Solar EmergencyRecoveryActivity when companion installed.
  * Reversal: remove Activity; Solar main APK EmergencyRecoveryActivity owns HOME again.
  */
 public final class EmergencyRecoveryActivity extends Activity {
 
-    private static final String[] MENU = {"repair", "launcher", "clear", "retry"};
+    /** No user-facing platform repair (2026-07-11). */
+    private static final String[] MENU = {"launcher", "clear", "retry"};
     private int focusIndex;
 
     @Override
@@ -58,7 +59,6 @@ public final class EmergencyRecoveryActivity extends Activity {
     }
 
     private String labelFor(String id) {
-        if ("repair".equals(id)) return getString(R.string.emergency_recovery_repair);
         if ("launcher".equals(id)) return getString(R.string.emergency_recovery_launcher);
         if ("clear".equals(id)) return getString(R.string.emergency_recovery_clear);
         return getString(R.string.emergency_recovery_retry);
@@ -109,9 +109,6 @@ public final class EmergencyRecoveryActivity extends Activity {
         if ("retry".equals(id)) {
             EmergencyRockboxMode.clearEmergencyAndRetrySolar(this);
             finish();
-            return;
         }
-        // repair — open Solar settings repair when Solar is reachable; else app picker.
-        EmergencyRockboxMode.openPackageLauncher(this);
     }
 }

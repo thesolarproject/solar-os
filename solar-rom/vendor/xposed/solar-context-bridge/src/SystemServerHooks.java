@@ -243,14 +243,16 @@ final class SystemServerHooks {
                     if (!powerLongFired) {
                         return;
                     }
-                    // Solar foreground — companion/overlay path (same as third-party); not broken in-app intent.
+                    // 2026-07-14 — Solar Home: in-app ThemedContextMenu (focused item options).
+                    // Was: showPowerOverlay companion over Solar → dead keys / no row context.
+                    // Reversal: SolarOverlayClient.showPowerOverlay(ctx) again.
                     if ("com.solar.launcher".equals(fg)) {
                         com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
                         if (!com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
-                            SolarOverlayClient.showPowerOverlay(ctx);
+                            SolarOverlayClient.showInAppPowerMenu(ctx);
                         }
                         XposedHookKit.skipMethod(param);
-                        SolarContextBridge.log("suppressed GlobalActions → Solar overlay power");
+                        SolarContextBridge.log("suppressed GlobalActions → Solar in-app menu");
                         return;
                     }
                     com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
@@ -396,6 +398,12 @@ final class SystemServerHooks {
                     SolarContextBridge.log("power-long skipped overlay opening");
                     return;
                 }
+                // 2026-07-14 — Solar fg → in-app menu; companion only for third-party.
+                if ("com.solar.launcher".equals(fg)) {
+                    SolarOverlayClient.showInAppPowerMenu(ctx);
+                    SolarContextBridge.log("power-long Solar → in-app context menu");
+                    return;
+                }
                 SolarOverlayClient.warmOverlayProcess(ctx);
                 SolarOverlayClient.showPowerOverlay(ctx);
                 SolarContextBridge.log("power-long global modal fg=" + fg);
@@ -473,7 +481,8 @@ final class SystemServerHooks {
         }
     }
 
-    private static void dismissAnyOverlay(Context ctx) {
+    /** Tear down companion + Solar overlay shells — package-visible for OverlayKeyForwarder. */
+    static void dismissAnyOverlay(Context ctx) {
         if (ctx == null) return;
         try {
             Intent solar = new Intent(ACTION_DISMISS_OVERLAY);
@@ -682,6 +691,14 @@ final class SystemServerHooks {
                 }
                 if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
                     SolarContextBridge.log("back-long skipped overlay opening");
+                    return;
+                }
+                // 2026-07-14 — Solar fg: MainActivity already owns BACK-long ThemedContextMenu.
+                // Xposed companion on top stole keys. Reversal: always showPowerOverlay.
+                if ("com.solar.launcher".equals(fg)) {
+                    SolarOverlayClient.showInAppPowerMenu(ctx);
+                    backOpenGestureHeld = true;
+                    SolarContextBridge.log("back-long Solar → in-app context menu");
                     return;
                 }
                 SolarOverlayClient.warmOverlayProcess(ctx);

@@ -4,27 +4,37 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 
+import com.solar.launcher.overlay.OverlayShellRouter;
+
 /**
- * 2026-07-06 — Routes overlay paint to Solar :overlay or companion fallback shell.
- * Layman: companion opens the menu; Solar supplies live rows when it is running.
- * Technical: Solar-first paint delegate until Phase 3 IPC ships full row bind.
- * Reversal: delete; Xposed targets SolarOverlayService directly again.
+ * 2026-07-08 — Routes all overlay paint to the companion shell (sole host).
+ * Layman: every system menu opens in the helper APK, not inside Solar.
+ * Technical: companion GlobalContextOverlayService; legacy_shell prop keeps Solar paint.
+ * Was: companion painted POWER then retried Solar :overlay. Now: companion only.
+ * Reversal: set persist.solar.overlay.legacy_shell=1.
  */
 public final class CompanionOverlayRouter {
 
-    private static final String SOLAR_PKG = "com.solar.launcher";
-    private static final String SOLAR_OVERLAY = SOLAR_PKG + ".SolarOverlayService";
-
     private CompanionOverlayRouter() {}
 
-    /** True when Solar APK can paint the full ThemedContextMenu in :overlay. */
+    /** @deprecated Phase unification — always paint companion; Solar supplies IPC rows. */
     public static boolean shouldDelegatePaintToSolar(Context ctx) {
-        return CompanionSolarProbe.isSolarInstalled(ctx);
+        return !OverlayShellRouter.useCompanionShell();
     }
 
-    /** Phase 5 — companion always paints; Solar supplies live rows via IPC when running. */
+    /** Open power tier on the preferred overlay shell. */
     public static boolean startSolarOverlayPower(Context ctx) {
         if (ctx == null) return false;
+        if (shouldDelegatePaintToSolar(ctx)) {
+            Intent solar = new Intent(CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
+            solar.setComponent(new ComponentName(
+                    OverlayShellRouter.SOLAR_PKG,
+                    OverlayShellRouter.SOLAR_OVERLAY_SERVICE));
+            try {
+                ctx.startService(solar);
+                return true;
+            } catch (Exception ignored) {}
+        }
         startCompanionPowerOverlay(ctx);
         return true;
     }
@@ -34,22 +44,37 @@ public final class CompanionOverlayRouter {
         if (ctx == null) return;
         Intent keep = new Intent(CompanionOverlayTriggers.ACTION_OVERLAY_KEEPALIVE);
         keep.setComponent(new ComponentName(
-                "com.solar.launcher.globalcontext",
-                "com.solar.launcher.globalcontext.GlobalContextOverlayService"));
+                OverlayShellRouter.COMPANION_PKG,
+                OverlayShellRouter.COMPANION_OVERLAY_SERVICE));
         try {
             ctx.startService(keep);
         } catch (Exception ignored) {}
     }
 
-    /** Companion-owned power overlay — sole WM paint path (Phase 5). */
+    /** Companion-owned power overlay — sole WM paint path. */
     public static void startCompanionPowerOverlay(Context ctx) {
         if (ctx == null) return;
         Intent overlay = new Intent(CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
         overlay.setComponent(new ComponentName(
-                "com.solar.launcher.globalcontext",
-                "com.solar.launcher.globalcontext.GlobalContextOverlayService"));
+                OverlayShellRouter.COMPANION_PKG,
+                OverlayShellRouter.COMPANION_OVERLAY_SERVICE));
         try {
             ctx.startService(overlay);
         } catch (Exception ignored) {}
+    }
+
+    /** Start any overlay action on the configured shell (companion unless legacy). */
+    public static boolean startOverlayAction(Context ctx, String action) {
+        if (ctx == null || action == null) return false;
+        Intent svc = new Intent(action);
+        svc.setComponent(new ComponentName(
+                OverlayShellRouter.overlayPackage(),
+                OverlayShellRouter.overlayServiceClass()));
+        try {
+            ctx.startService(svc);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 }
