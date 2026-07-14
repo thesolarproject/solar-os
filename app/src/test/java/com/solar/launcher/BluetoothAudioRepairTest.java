@@ -27,4 +27,17 @@ public class BluetoothAudioRepairTest {
         assertFalse(BluetoothAudioRepair.isBondAuthFailure(state, prev, 0));
         assertFalse(BluetoothAudioRepair.isBondAuthFailure(BluetoothDevice.BOND_BONDED, prev, BluetoothAudioRepair.BOND_REASON_AUTH_FAILED));
     }
+
+    /**
+     * 2026-07-14 — A2DP route must keep the user's level (was quiet-floor at 75% max).
+     * Reversal: restore Math.max(cur, (max*3)/4) in forceA2dpRoute + delete this assert.
+     */
+    @Test
+    public void a2dpRoutePreservesQuietVolumeIndex() {
+        assertEquals(2, BluetoothAudioRepair.preserveUserVolumeIndex(2, 15));
+        assertEquals(0, BluetoothAudioRepair.preserveUserVolumeIndex(0, 15));
+        assertEquals(14, BluetoothAudioRepair.preserveUserVolumeIndex(14, 15));
+        // Old floor would have returned 11 for cur=2/max=15 — must not return that.
+        assertTrue(BluetoothAudioRepair.preserveUserVolumeIndex(2, 15) < Math.max(1, (15 * 3) / 4));
+    }
 }
