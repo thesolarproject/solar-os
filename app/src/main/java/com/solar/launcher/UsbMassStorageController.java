@@ -26,7 +26,27 @@ public final class UsbMassStorageController {
     private static final String ENABLE_DATA = "/data/data/solar-enable-ums.sh";
     private static final String DISABLE_DATA = "/data/data/solar-disable-ums.sh";
 
+    /**
+     * 2026-07-14 — TTL for kernel/LUN probes used on UI hot paths (changeScreen, Back, menus).
+     * Layman: remember disk-mode status briefly so scrolling/menus do not open sysfs every time.
+     * Tech: coalesce getprop/sysfs into one refresh; invalidate on toggle + cable events.
+     * Reversal: set TTL to 0L to force live probes again.
+     */
+    private static final long PROBE_TTL_MS = 750L;
+    private static volatile long probeCacheAtMs = 0L;
+    private static volatile boolean cachedKernelUms = false;
+    private static volatile boolean cachedLunBound = false;
+
     private UsbMassStorageController() {}
+
+    /**
+     * 2026-07-14 — Drop cached UMS/kernel probe so the next read hits sysfs/props.
+     * Layman: after Turn On/Off or unplug, forget the old answer and look again.
+     * Reversal: no-op — callers keep using TTL until natural expiry.
+     */
+    public static void invalidateProbeCache() {
+        probeCacheAtMs = 0L;
+    }
 
     /** Enable USB mass storage (verified LUN bind) as root — Y2 gated on experiment (2026-07-05). */
     public static boolean enable(Context context) {
@@ -130,11 +150,12 @@ public final class UsbMassStorageController {
      * True when USB is in mass_storage mode and a LUN is bound (2026-07-05).
      * Layman: PC can see the SD as a disk — not just a stale sysfs path after MTP restore.
      * Tech: requires {@code sys.usb.config}/kernel functions mass_storage plus non-empty lun/file.
+     * 2026-07-14 — Served from TTL cache; UI hot paths must not open sysfs every key.
      * Reversal: revert to lun-only probe if a future ROM clears lun nodes synchronously on disable.
      */
     public static boolean isMassStorageExported() {
-        if (!isKernelMassStorageMode()) return false;
-        return probeLunBackingBound();
+        refreshProbeCacheIfStale();
+        return cachedKernelUms && cachedLunBound;
     }
 
     /** Test hook — kernel USB mode from config + functions strings without sysfs. */
@@ -147,6 +168,17 @@ public final class UsbMassStorageController {
     static boolean isMassStorageActiveState(String usbConfig, String kernelFunctions,
             boolean lunBackingBound) {
         return isKernelMassStorageModeFromStrings(usbConfig, kernelFunctions) && lunBackingBound;
+    }
+
+    /** Test hook — TTL gate without touching device I/O (2026-07-14). */
+    static boolean isProbeCacheFreshForTest(long cacheAtMs, long nowMs, long ttlMs) {
+        if (ttlMs <= 0L || cacheAtMs <= 0L) return false;
+        return (nowMs - cacheAtMs) < ttlMs;
+    }
+
+    /** Test hook — published TTL used by production probes (2026-07-14). */
+    static long probeTtlMsForTest() {
+        return PROBE_TTL_MS;
     }
 
     /** Build the legacy Y2 UmsEnabler su command — test hook only. */
@@ -187,7 +219,10 @@ public final class UsbMassStorageController {
         String cmd = buildUmsShellCommand(script, enable);
         if (cmd.length() == 0) return false;
         logUmsAttempt(enable, script);
+        // 2026-07-14 — Toggle changes USB mode; forget stale cache before/after su.
+        invalidateProbeCache();
         boolean rootOk = RootShell.run(cmd);
+        invalidateProbeCache();
         boolean result;
         if (!enable) {
             result = rootOk && !isKernelMassStorageMode();
@@ -290,27 +325,52 @@ public final class UsbMassStorageController {
     }
     // #endregion
 
-    /** Read {@code sys.usb.config} for debug session b6af9f. */
+    /**
+     * 2026-07-14 — Read {@code sys.usb.config} via SystemProperties (no getprop fork).
+     * Was: Runtime.exec("getprop") on every UI probe — spawned a process per key/menu paint.
+     * Now: reflection get; empty string on miss.
+     * Reversal: restore getprop exec if SystemProperties is unavailable on a future ROM.
+     */
     private static String readSysUsbConfig() {
-        java.io.BufferedReader br = null;
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"getprop", "sys.usb.config"});
-            br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-            String line = br.readLine();
-            return line != null ? line.trim() : "";
-        } catch (Exception ignored) {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class)
+                    .invoke(null, "sys.usb.config", "");
+            return v != null ? v.toString() : "";
+        } catch (Throwable t) {
             return "";
-        } finally {
-            if (br != null) {
-                try {
-                    br.close();
-                } catch (Exception ignored) {}
-            }
         }
     }
 
-    /** True when {@code sys.usb.config} or kernel functions include mass_storage (2026-07-05). */
+    /**
+     * True when {@code sys.usb.config} or kernel functions include mass_storage (2026-07-05).
+     * 2026-07-14 — TTL-cached with LUN probe; UI must not hit sysfs every navigation.
+     */
     static boolean isKernelMassStorageMode() {
+        refreshProbeCacheIfStale();
+        return cachedKernelUms;
+    }
+
+    /**
+     * 2026-07-14 — One live kernel+LUN snapshot shared by exported/kernel helpers.
+     * Layman: look at USB disk mode once, reuse the answer for a short moment.
+     * Tech: elapsedRealtime TTL; lun skipped when kernel not mass_storage.
+     */
+    private static void refreshProbeCacheIfStale() {
+        // 2026-07-14 — currentTimeMillis (not SystemClock) so host unit tests need no Android mock.
+        long now = System.currentTimeMillis();
+        if (probeCacheAtMs > 0L && (now - probeCacheAtMs) < PROBE_TTL_MS) {
+            return;
+        }
+        boolean kernel = probeKernelMassStorageModeLive();
+        boolean lun = kernel && probeLunBackingBound();
+        cachedKernelUms = kernel;
+        cachedLunBound = lun;
+        probeCacheAtMs = now;
+    }
+
+    /** Live kernel USB mode — sys.usb.config + functions sysfs (no cache). */
+    private static boolean probeKernelMassStorageModeLive() {
         String config = readSysUsbConfig();
         if (config.contains("mass_storage")) return true;
         return readSysfsFirstLine("/sys/class/android_usb/android0/functions").contains("mass_storage");

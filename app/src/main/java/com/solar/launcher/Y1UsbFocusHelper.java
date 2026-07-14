@@ -154,6 +154,7 @@ public final class Y1UsbFocusHelper {
             interceptPaused = false;
             // ponytail: dismiss global USB overlay prompt when unplugged and app is running dynamically
             UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(activity);
+            // 2026-07-14 — clearOnUsbDisconnect also invalidates UMS + concierge probe caches.
             UsbStorageConcierge.clearOnUsbDisconnect();
             UsbHostSessionPolicy.onUsbHostDisconnected(activity.getApplicationContext());
             stopUmsWatchdog();
@@ -175,6 +176,9 @@ public final class Y1UsbFocusHelper {
                     + " flapWhileDeclined=" + flapWhileDeclined);
             hostConnected = true;
             usbConnected = true;
+            // 2026-07-14 — Fresh plug: drop stale UMS/concierge answers from prior session.
+            UsbMassStorageController.invalidateProbeCache();
+            UsbStorageConcierge.invalidateConciergeCache();
             UsbHostSessionPolicy.onUsbHostConnected(activity.getApplicationContext());
             if (flapWhileDeclined || isSessionIdle()) {
                 interceptPaused = true;
@@ -282,15 +286,18 @@ public final class Y1UsbFocusHelper {
         public void run() {
             if (!umsWatchdog) return;
             // #region agent log
-            try {
-                JSONObject d = new JSONObject();
-                d.put("concierge", UsbStorageConcierge.isXposedConciergeActive());
-                d.put("reclaimSuspended", reclaimSuspended);
-                d.put("hasWindowFocus", activity.hasWindowFocus());
-                d.put("hostConnected", hostConnected);
-                d.put("massStorageIntercept", massStorageIntercept);
-                Debug86bbe0Log.log("Y1UsbFocusHelper.umsWatchdog", "tick", "H1", d);
-            } catch (Exception ignored) {}
+            // 2026-07-14 — Gate prop/sysfs work behind ENABLED; was probing concierge every tick.
+            if (Debug86bbe0Log.ENABLED) {
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("concierge", UsbStorageConcierge.isXposedConciergeActive());
+                    d.put("reclaimSuspended", reclaimSuspended);
+                    d.put("hasWindowFocus", activity.hasWindowFocus());
+                    d.put("hostConnected", hostConnected);
+                    d.put("massStorageIntercept", massStorageIntercept);
+                    Debug86bbe0Log.log("Y1UsbFocusHelper.umsWatchdog", "tick", "H1", d);
+                } catch (Exception ignored) {}
+            }
             // #endregion
             if (OverlayKeyGate.isOverlayKeysActive() || isSessionIdle() || reclaimSuspended) {
                 stopUmsWatchdog();
