@@ -116,8 +116,14 @@ public final class OverlayMenuClient {
 
     private static boolean startShell(Context ctx, String action, Bundle extras) {
         if (ctx == null || action == null) return false;
+        // 2026-07-14 — DISMISS hits both shells; SHOW clears the peer so chrome never stacks.
+        if (OverlayMenuContract.ACTION_DISMISS_OVERLAY.equals(action)) {
+            OverlayShellRouter.dismissAllOverlayShells(ctx);
+            return true;
+        }
+        OverlayShellRouter.dismissPeerOverlayShell(ctx);
         Intent svc = new Intent(action);
-        // 2026-07-14 — One component from OverlayShellRouter (Solar primary).
+        // One component from OverlayShellRouter (Solar primary).
         svc.setComponent(OverlayShellRouter.overlayComponent());
         if (extras != null) {
             svc.putExtras(extras);
@@ -128,20 +134,8 @@ public final class OverlayMenuClient {
         } catch (Exception e) {
             Log.w(TAG, "startShell primary failed " + action + ": " + e.getMessage());
         }
-        // Fail-open: if Solar primary is dead, Chip redirects SHOW_POWER back to Solar when unset.
-        if (!OverlayShellRouter.useCompanionShell() && isCompanionInstalled(ctx)) {
-            Intent fallback = new Intent(action);
-            fallback.setComponent(new ComponentName(
-                    OverlayShellRouter.COMPANION_PKG,
-                    OverlayShellRouter.COMPANION_OVERLAY_SERVICE));
-            if (extras != null) {
-                fallback.putExtras(extras);
-            }
-            try {
-                ctx.startService(fallback);
-                return true;
-            } catch (Exception ignored) {}
-        }
+        // Was: fail-open paint on the other shell → two menus. Now: no second paint.
+        // Reversal: restore companion startService fallback below.
         return false;
     }
 

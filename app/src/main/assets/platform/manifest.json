@@ -1,5 +1,5 @@
 {
-  "prepVersion": 16,
+  "prepVersion": 17,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",
@@ -31,7 +31,7 @@
       "required": true,
       "device": "y1",
       "versionCode": 1,
-      "sha256": "c27b4b35f3fcd291b45aeb969a778df421953b2b242cb247dbeda00f1d49b1c9"
+      "sha256": "849542dd0927e54d0aed7c8b2ccb78e17ba16e28651056bd30bd38d6e12f57a1"
     },
     {
       "pkg": "com.solar.launcher.xposed.bridge.y2",
@@ -40,7 +40,7 @@
       "required": true,
       "device": "y2",
       "versionCode": 1,
-      "sha256": "8b66e30418a584537e4ac43d6a727621898d705cbf0aefcb1951be847c67d8a2"
+      "sha256": "2a2cfeeeb994ea57cb9b48c1bf822889c900ba0216277b595fd94669344a42fa"
     },
     {
       "pkg": "com.solar.launcher.xposed.themefont",
@@ -94,7 +94,7 @@
       "required": true,
       "device": "both",
       "versionCode": 1,
-      "sha256": "e5a1364d240a6a0f59fac91114f15553ca8b9e6cd9fcd06f1f825f67b0fcc2e0"
+      "sha256": "b8582ba6c6752dd4c13e1445538ee6683992b080a3f80ecfa350c545a8c73f3e"
     },
     {
       "pkg": "com.solar.launcher.homehelper",
@@ -124,7 +124,7 @@
       "systemApk": "/system/app/org.rockbox.apk",
       "device": "y2",
       "versionCode": 1,
-      "sha256": "4de55ce0430ec17e0e680387dcba83d5246e936b3876130b3ea491ec6509d620"
+      "sha256": "0393cb736a5e8215bf3a6ec44cc9b84bbfb92938ae4f6542d75dfca0a20468a7"
     },
     "systemLib": {
       "asset": "rockbox/librockbox-system.so",

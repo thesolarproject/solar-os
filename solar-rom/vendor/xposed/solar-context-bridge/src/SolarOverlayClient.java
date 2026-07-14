@@ -36,6 +36,8 @@ public final class SolarOverlayClient {
             "com.solar.launcher.action.SHOW_OVERLAY_USB_STORAGE_LOCK";
     public static final String ACTION_SHOW_OVERLAY_BT_PAIRING =
             "com.solar.launcher.action.SHOW_OVERLAY_BT_PAIRING";
+    public static final String ACTION_DISMISS_OVERLAY =
+            "com.solar.launcher.action.DISMISS_OVERLAY";
     public static final String EXTRA_BT_PAIRING_MODE = "bt_pairing_mode";
     public static final String EXTRA_BT_PAIRING_ADDRESS = "bt_pairing_address";
     public static final String EXTRA_BT_PAIRING_NAME = "bt_pairing_name";
@@ -139,6 +141,8 @@ public final class SolarOverlayClient {
      */
     public static void showInAppPowerMenu(Context ctx) {
         if (ctx == null) return;
+        // Never stack Home's sheet over a floating Chip/Solar WM menu.
+        SystemServerHooks.dismissAnyOverlay(ctx);
         try {
             Intent i = new Intent(ACTION_OPEN_CONTEXT_MENU);
             i.setClassName(SOLAR_PKG, MAIN_ACTIVITY);
@@ -164,6 +168,8 @@ public final class SolarOverlayClient {
         } catch (Throwable ignored) {}
         // #endregion
         com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
+        // Drop the other shell first so Chip + Solar never share the screen.
+        dismissPeerOverlayShell(ctx);
         if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
             SolarContextBridge.log("showPowerOverlay skipped — already active/opening");
             return;
@@ -185,6 +191,23 @@ public final class SolarOverlayClient {
             PowerMenuDebugLog.event("SolarOverlayClient.showPowerOverlay", "broadcast fallback", "H4", null);
             // #endregion
         }
+    }
+
+    /**
+     * 2026-07-14 — DISMISS the package that is NOT about to paint.
+     * Layman: close the spare menu before opening the real one.
+     */
+    private static void dismissPeerOverlayShell(Context ctx) {
+        if (ctx == null) return;
+        try {
+            Intent dismiss = new Intent(ACTION_DISMISS_OVERLAY);
+            if (useCompanionShell(ctx)) {
+                dismiss.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+            } else {
+                dismiss.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
+            }
+            ctx.startService(dismiss);
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -216,17 +239,10 @@ public final class SolarOverlayClient {
         } catch (Throwable t) {
             SolarContextBridge.log("shell startService failed: " + t.getClass().getSimpleName());
         }
-        // Fail-open: try the other host once (Chip redirects SHOW_POWER to Solar when default).
+        // Fail-open Solar only when Chip primary failed — never paint Solar+Chip together.
+        // Was: also start companion when Solar primary failed → dual chrome. Reversal: restore that branch.
         if (useCompanionShell(ctx) && isSolarInstalled(ctx)) {
             return startOverlayService(ctx, ACTION_SHOW_OVERLAY_POWER);
-        }
-        if (!useCompanionShell(ctx) && isCompanionInstalled(ctx)) {
-            Intent fallback = new Intent(ACTION_SHOW_OVERLAY_POWER);
-            fallback.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
-            try {
-                ctx.startService(fallback);
-                return true;
-            } catch (Throwable ignored) {}
         }
         return false;
     }

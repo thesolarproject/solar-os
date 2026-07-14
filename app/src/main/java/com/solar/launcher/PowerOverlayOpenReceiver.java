@@ -36,6 +36,8 @@ public final class PowerOverlayOpenReceiver extends BroadcastReceiver {
         // #endregion
         OverlayHandoffRestoreReceiver.notifyPause(context);
         // One shell — Solar ThemedContextMenu unless companion_shell=1.
+        // Drop the other shell first so Chip + Solar never stack.
+        OverlayShellRouter.dismissPeerOverlayShell(context);
         ComponentName shell = OverlayShellRouter.overlayComponent();
         Intent svc = new Intent(action);
         svc.setComponent(shell);

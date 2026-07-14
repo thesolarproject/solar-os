@@ -87,6 +87,13 @@ import com.solar.launcher.navidrome.NavidromeDownloader;
 import com.solar.launcher.navidrome.NavidromePrefs;
 import com.solar.launcher.navidrome.NavidromeScreenHost;
 import com.solar.launcher.navidrome.NavidromeSettingsHost;
+import com.solar.launcher.plex.PlexAlbum;
+import com.solar.launcher.plex.PlexArtist;
+import com.solar.launcher.plex.PlexClient;
+import com.solar.launcher.plex.PlexDownloader;
+import com.solar.launcher.plex.PlexPrefs;
+import com.solar.launcher.plex.PlexScreenHost;
+import com.solar.launcher.plex.PlexSettingsHost;
 import com.solar.launcher.flow.FlowView;
 import com.solar.launcher.flow.PlayerAlbumArt3dView;
 import com.solar.launcher.ui.ListDrillTransition;
@@ -141,6 +148,7 @@ import android.provider.Settings;
 import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -236,6 +244,7 @@ public class MainActivity extends Activity {
     static final int STATE_FLOW = 24;
     static final int STATE_USB_STORAGE = 25;
     static final int STATE_NAVIDROME = 26;
+    static final int STATE_PLEX = 27;
     private static final int KEYBOARD_WIFI = 0;
     private static final int KEYBOARD_SOULSEEK_USER = 1;
     private static final int KEYBOARD_SOULSEEK_PASS = 2;
@@ -447,6 +456,9 @@ public class MainActivity extends Activity {
     private TextView playerLyricsPlain;
     private TextView tvVizTitle, tvVizArtist, tvVizAlbum, tvVizTrackCount;
 
+    // 2026-07-11: list path trail (Music > Artists…) stays off; status bar title is enough.
+    // Reversal: set true to show tv_browser_path again under the status bar.
+    private static final boolean SHOW_BROWSER_PATH_BREADCRUMB = false;
     private TextView tvBrowserPath, tvPlayerTitle, tvPlayerArtist, tvPlayerAlbum, tvPlayerTimeCurrent, tvPlayerTimeTotal;
     private TextView tvPlayerTrackCount;
     private LinearLayout playerStatusRow;
@@ -470,6 +482,8 @@ public class MainActivity extends Activity {
     private int blockingOverlayOwners;
     private TextView tvLoadingOverlayText;
     private ImageView ivMenuPreview, ivAlbumArt, ivPlayerBgBlur, ivPauseOverlay;
+    /** 2026-07-11 — Darken only when album-art blur is the NP backdrop. */
+    private View playerBgScrim;
     private PlayerAlbumArt3dView ivAlbumArt3d;
 
     private FrameLayout menuListHost;
@@ -862,7 +876,7 @@ public class MainActivity extends Activity {
     private boolean statusBarShowsTitle = true;
     private boolean statusBarMatchFont = false;
     private boolean nowPlayingMatchFont = false;
-    private boolean nowPlayingBackdrop = false;
+    private boolean nowPlayingBackdrop = true;
     private boolean nowPlayingLcdArt = false;
     private boolean nowPlaying3dAlbumArt = false;
     /** Skip default-art reset on first prepareMusicTrack after Flow 3D handoff. */
@@ -902,6 +916,12 @@ public class MainActivity extends Activity {
     private Button btnThemeInterstitialDownload, btnThemeInterstitialBack;
     private FrameLayout settingsMenuHost;
     private View settingsPreviewPane;
+    // 2026-07-11 — A5 portrait bottom strip (icon + marquee title/hint).
+    private View a5BottomStrip;
+    private ImageView ivA5StripIcon;
+    private TextView tvA5StripTitle;
+    private TextView tvA5StripHint;
+    private View playerAlbumContainer;
     private boolean centerMovePickHandled = false;
     private boolean centerQuickBarTapHandled = false;
     private long centerKeyDownTime = 0;
@@ -997,13 +1017,23 @@ public class MainActivity extends Activity {
     /** Y2 OK long-press — in-app context menu; ~420ms (GlobalInputPolicy tier). */
     private static final long CENTER_LONG_PRESS_MS =
             com.solar.input.policy.GlobalInputPolicy.CENTER_MENU_HOLD_MS;
-    private static final long BACK_FORCE_QUIT_MS = 8000L;
-    private static final long BACK_FORCE_QUIT_HINT_MS = 6000L;
+    /**
+     * 2026-07-08 — In-app Solar soft-restart: continuous 10s BACK hold (match GlobalInputPolicy).
+     * Layman: keep holding Back a full 10s on Solar Home to restart Solar; hint at ~7s.
+     * Was 8000/6000 hardcoded — mismatched Xposed 10s and fired after short overlay open.
+     * Reversal: restore 8000L / 6000L locals if in-app restart must stay shorter than OS rescue.
+     */
+    private static final long BACK_FORCE_QUIT_MS =
+            com.solar.input.policy.GlobalInputPolicy.RESCUE_EXECUTE_MS;
+    /** Hint toast when ~3s remain on the 10s hold (same window as rescue HUD). */
+    private static final long BACK_FORCE_QUIT_HINT_MS =
+            com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS;
     private boolean backForceQuitHandled = false;
     private boolean backForceQuitHintShown = false;
     private final Runnable backForceQuitHintRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-08 — Only when BACK still held; overlay/focus loss clears backKeyHeld.
             if (!backKeyHeld || backForceQuitHandled || otaSystemReplaceInProgress) return;
             backForceQuitHintShown = true;
             Toast.makeText(MainActivity.this, getString(R.string.back_force_quit_hint), Toast.LENGTH_SHORT).show();
@@ -1012,6 +1042,7 @@ public class MainActivity extends Activity {
     private final Runnable backForceQuitRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-08 — Continuous hold gate: never restart if finger already up / timers cleared.
             if (!backKeyHeld || backForceQuitHandled || otaSystemReplaceInProgress) return;
             backForceQuitHandled = true;
             clickFeedback();
@@ -1023,7 +1054,10 @@ public class MainActivity extends Activity {
         public void run() {
             if (!backKeyHeld) return;
             backLongPressHandled = true;
-            if (themedContextMenu != null && themedContextMenu.isShowing()) {
+            // 2026-07-10 — solar_home_* lives on companion/WM; themedContextMenu.isShowing is false.
+            // Was: only local menu → second BACK-hold re-opened overlay + arm force-quit.
+            // Reversal: restore themedContextMenu-only check if Home menus paint in-app again.
+            if (isSolarContextMenuOpen()) {
                 if (contextMenuVolumeOnly) {
                     expandVolumeOverlayToFullContext();
                 } else {
@@ -1049,7 +1083,8 @@ public class MainActivity extends Activity {
                         "center long fired", "H-C1", d);
             } catch (Exception ignored) {}
             // #endregion
-            if (themedContextMenu != null && themedContextMenu.isShowing()) {
+            // 2026-07-10 — Same as BACK-long: global overlay session counts as menu open.
+            if (isSolarContextMenuOpen()) {
                 if (contextMenuVolumeOnly) {
                     expandVolumeOverlayToFullContext();
                 } else {
@@ -1102,6 +1137,8 @@ public class MainActivity extends Activity {
     private final java.util.ArrayDeque<String> contextMenuTierStack = new java.util.ArrayDeque<String>();
     private boolean contextMenuInVolumeSlider = false;
     private boolean contextMenuVolumeOnly = false;
+    /** 2026-07-11 — Emulator mouse right-button held; release fires Back. */
+    private boolean emulatorRightClickDown = false;
     /** Blocks Back while a non-interactive please-wait overlay is up (Rockbox switch). */
     private boolean contextMenuBlockingHint = false;
     private static final int VOLUME_CONTEXT_DISMISS_MS = 2000;
@@ -1153,6 +1190,53 @@ public class MainActivity extends Activity {
     private java.util.List<SongItem> audiobookLibrary = new ArrayList<SongItem>();
     private int wheelFastCount;
     private long lastWheelTime;
+    // PR #23 — allocation-free wheel flywheel + section index (2026-07-11).
+    private final WheelPhysics wheelPhysics = new WheelPhysics();
+    private final WheelPhysics.Result wheelResult = new WheelPhysics.Result();
+    private WheelSectionIndex wheelSectionIndex = WheelSectionIndex.EMPTY;
+    private android.widget.ListAdapter wheelIndexedAdapter;
+    private int wheelIndexGeneration;
+    private int pendingWheelFocusPosition = ListView.INVALID_POSITION;
+    private boolean pendingWheelFocusRetried;
+    private Vibrator cachedVibrator;
+    private long lastWheelHapticNanos;
+    private long suppressOverlayHapticUntilNanos;
+    private SimpleDateFormat statusClockFormat;
+    private boolean cachedClockIs24Hour;
+    private int cachedBatteryLevel;
+    private boolean cachedBatteryCharging;
+    private static final java.util.concurrent.ExecutorService WHEEL_IO =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
+    private final android.database.DataSetObserver wheelDataObserver =
+            new android.database.DataSetObserver() {
+                @Override public void onChanged() { scheduleWheelSectionIndex(); }
+                @Override public void onInvalidated() { scheduleWheelSectionIndex(); }
+            };
+    // 2026-07-11 — Fallback focus after ensureListPositionVisible; skip if already focused
+    // so we do not clear FocusScrollHelper's edge suppress then re-scroll (bounce).
+    private final Runnable wheelFocusTask = new Runnable() {
+        @Override public void run() {
+            if (listVirtualSongs == null || pendingWheelFocusPosition == ListView.INVALID_POSITION) {
+                return;
+            }
+            int childIndex = pendingWheelFocusPosition - listVirtualSongs.getFirstVisiblePosition();
+            View child = listVirtualSongs.getChildAt(childIndex);
+            if (child != null) {
+                // Already focused by FocusScrollHelper — do not requestFocus again.
+                if (!child.isFocused() && child.isFocusable()) {
+                    child.requestFocus();
+                }
+                pendingWheelFocusPosition = ListView.INVALID_POSITION;
+                pendingWheelFocusRetried = false;
+            } else if (!pendingWheelFocusRetried) {
+                pendingWheelFocusRetried = true;
+                listVirtualSongs.post(this);
+            } else {
+                pendingWheelFocusPosition = ListView.INVALID_POSITION;
+                pendingWheelFocusRetried = false;
+            }
+        }
+    };
     private boolean listWraparound;
     private String librarySearchQuery = "";
     private LibrarySearch.Results librarySearchResults;
@@ -1164,8 +1248,10 @@ public class MainActivity extends Activity {
     private boolean librarySearchNavidromeSearching;
     private boolean librarySearchNavidromeActive;
     private NavidromeSettingsHost navidromeSettingsHost;
+    private PlexSettingsHost plexSettingsHost;
     private int audiobookPendingResumeMs;
     private NavidromeScreenHost navidromeScreenHost;
+    private PlexScreenHost plexScreenHost;
     private int navidromeNowPlayingArtGen;
     private long suppressPlayPauseAfterNavidromeSelectUntil;
     private int contextQueueFocusIndex = 0;
@@ -2227,8 +2313,21 @@ public class MainActivity extends Activity {
         requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
         super.onCreate(savedInstanceState);
         final long onCreateStartMs = android.os.SystemClock.uptimeMillis();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("phase", "onCreate_enter");
+            d.put("uptimeMs", onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "boot enter", "A", d);
+        } catch (Exception ignored) {}
+        // #endregion
         // Debug session logs off by default — enable via adb --ez solar_adb_debug_898913 true
         DebugSessionLog.ENABLED = false;
+        try {
+            cachedVibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+        } catch (Exception ignored) {
+            cachedVibrator = null;
+        }
         // #region agent log
         Debug898913Log.ENABLED = getIntent().getBooleanExtra("solar_adb_debug_898913", false);
         final Thread.UncaughtExceptionHandler prevHandler = Thread.getDefaultUncaughtExceptionHandler();
@@ -2271,14 +2370,20 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
         LandscapeOrientationGuard.enforceLandscape(this);
         initY1LayoutMetrics();
+        // 2026-07-11 — A5 portrait: force full-width (no dual-pane masks).
+        if (DeviceFeatures.isA5() && A5NavigationMode.forcePortraitThemeRules(this)) {
+            isFullWidthMenus = true;
+        }
         // #region agent log
         try {
             org.json.JSONObject dbg = new org.json.JSONObject();
             dbg.put("phase", "after_setContentView");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
             android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
             dbg.put("screenOn", pm != null && pm.isScreenOn());
             DebugSessionLog.log("MainActivity.onCreate", "early startup", "H5", dbg);
             DebugAf054eLog.log(this, "MainActivity.onCreate", "early startup", "H2,H3", dbg);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after setContentView", "A", dbg);
         } catch (Exception ignored) {}
         // #endregion
 
@@ -2343,8 +2448,7 @@ public class MainActivity extends Activity {
                         org.json.JSONObject d = Debug266f21Log.usbSnapshot();
                         d.put("fg", fg);
                         d.put("hasWindowFocus", hasWindowFocus());
-                        d.put("useGlobalOverlay", UsbStorageOverlayReceiver
-                                .shouldUseGlobalOverlayPrompt(MainActivity.this));
+                        d.put("handoffInFlight", UsbStorageOverlayReceiver.isHandoffInFlight());
                         d.put("autoConnect", isUsbAutoConnectEnabled());
                         Debug266f21Log.log(MainActivity.this, "MainActivity.onUsbStateChanged",
                                 "host connect route", "H2,H7", d);
@@ -2363,6 +2467,10 @@ public class MainActivity extends Activity {
                                     "host connect — stay idle (declined)", "H-USB-IDLE", d);
                         } catch (Exception ignored) {}
                         // #endregion
+                        return;
+                    }
+                    // Xposed already launched MainActivity with USB extras — do not double-route.
+                    if (UsbStorageOverlayReceiver.isHandoffInFlight()) {
                         return;
                     }
                     routeUsbHostInterceptUi(true);
@@ -2494,6 +2602,7 @@ public class MainActivity extends Activity {
             dbg.put("phase", "after_fastTheme");
             dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
             DebugSessionLog.log("MainActivity.onCreate", "fast theme ready", "H1", dbg);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after fast theme", "A", dbg);
         } catch (Exception ignored) {}
         // #endregion
 
@@ -2506,8 +2615,11 @@ public class MainActivity extends Activity {
                 ThemeManager.setThemeIndex(savedThemeIndex);
             }
             ThemeManager.ensureActiveThemeOrFallback(this);
-            ThemeManager.cacheActiveTheme(this);
-            ThemeManager.preferInternalCacheForActiveTheme(this);
+            // 2026-07-11 — Do NOT cacheActiveTheme / preferInternalCache on UI thread here.
+            // Habbo-sized tree copy + .solar mirror blocked onCreate → black screen → ANR →
+            // system_server StackOverflowError in startHomeActivity recursion.
+            // Heavy I/O stays on ThemeUiRefresh via scheduleDeferredColdStartWork (below).
+            // Reversal: restore cacheActiveTheme + preferInternalCacheForActiveTheme here.
             ThemeManager.ThemeEntry active = ThemeManager.getCurrentTheme();
             String persistPath = ThemeManager.persistPathForTheme(active, this);
             if (active != null && !active.folderPath.startsWith("asset://")) {
@@ -2517,6 +2629,16 @@ public class MainActivity extends Activity {
                         .apply();
             }
         } catch (Exception e) {}
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "after_theme_identity");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            ThemeManager.ThemeEntry te = ThemeManager.getCurrentTheme();
+            dbg.put("theme", te != null ? te.folderName : "");
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after theme identity (no sync cache)", "A", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
 
         // (이하 블랙리스트 및 다른 설정 불러오기 코드 유지)
         // 💡 1. 블랙리스트 (안드로이드 내부 버그 방지를 위해 HashSet을 새로 감싸서 안전하게 로드)
@@ -2558,6 +2680,14 @@ public class MainActivity extends Activity {
         try {
             favoritePaths = MusicLibraryStore.getInstance(MainActivity.this).loadFavoritePaths();
         } catch (Exception e) {}
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "after_prefs_favorites");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after prefs/favorites", "A", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         NavidromePrefs.load(NavidromeClient.getInstance(), prefs);
         try { currentTimeoutIndex = prefs.getInt("timeout_idx", 1); } catch (Exception e) {}
         migrateInactivityShutdownPrefs();
@@ -2584,7 +2714,9 @@ public class MainActivity extends Activity {
         try {
             org.json.JSONObject dbg = new org.json.JSONObject();
             dbg.put("phase", "after_findViewById");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
             DebugSessionLog.log("MainActivity.onCreate", "views bound", "H5", dbg);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after findViewById main", "A", dbg);
         } catch (Exception ignored) {}
         // #endregion
         menuListHost = findViewById(R.id.menu_list_host);
@@ -2610,6 +2742,10 @@ public class MainActivity extends Activity {
         layoutSettingsMode = findViewById(R.id.layout_settings_mode);
         settingsMenuHost = findViewById(R.id.settings_menu_host);
         settingsPreviewPane = findViewById(R.id.settings_preview_pane);
+        a5BottomStrip = findViewById(R.id.layout_a5_bottom_info);
+        ivA5StripIcon = findViewById(R.id.iv_a5_strip_icon);
+        tvA5StripTitle = findViewById(R.id.tv_a5_strip_title);
+        tvA5StripHint = findViewById(R.id.tv_a5_strip_hint);
         tvSettingsPreviewTitle = findViewById(R.id.tv_settings_preview_title);
         settingsPreviewStateScroll = findViewById(R.id.settings_preview_state_scroll);
         tvSettingsPreviewState = findViewById(R.id.tv_settings_preview_state);
@@ -2635,6 +2771,7 @@ public class MainActivity extends Activity {
             });
         }
         playerContentRow = findViewById(R.id.player_content_row);
+        playerAlbumContainer = findViewById(R.id.player_album_container);
         playerVisualizerContainer = findViewById(R.id.player_visualizer_container);
         playerVisualizerSlot = findViewById(R.id.player_visualizer_slot);
         playerInfoColumn = findViewById(R.id.player_info_column);
@@ -2655,6 +2792,14 @@ public class MainActivity extends Activity {
         npOverlay.loadFromPrefs(prefs);
         lyricsHost = new NowPlayingLyricsHost(this, playerLyricsList, playerLyricsVizList, playerLyricsPlain);
         npOverlay.applyMode();
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "after_npOverlay");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after np overlay wire", "A", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         tvVizTitle = findViewById(R.id.tv_viz_title);
         tvVizArtist = findViewById(R.id.tv_viz_artist);
         tvVizAlbum = findViewById(R.id.tv_viz_album);
@@ -2673,6 +2818,10 @@ public class MainActivity extends Activity {
                     .apply();
         } catch (Exception ignored) {}
         try { isFullWidthMenus = prefs.getBoolean("full_width_menus", false); } catch (Exception e) {}
+        // 2026-07-11 — A5 portrait always full-width regardless of pref/theme.
+        if (DeviceFeatures.isA5() && A5NavigationMode.forcePortraitThemeRules(this)) {
+            isFullWidthMenus = true;
+        }
         try { isInfiniteScroll = NavigationPreferences.isInfiniteScrollEnabled(this); } catch (Exception e) {}
         try {
             menuTransitionsEnabled = prefs.getBoolean(ListDrillTransition.PREF_MENU_TRANSITIONS, true);
@@ -2683,6 +2832,14 @@ public class MainActivity extends Activity {
         } catch (Exception e) {}
         try { migrateBackgroundPrefs(); } catch (Exception e) {}
         try { HomeMenuConfig.migrateHomePrefsIfNeeded(prefs); } catch (Exception e) {}
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "after_home_prefs");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after home prefs migrate", "A", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         clockHandler.post(new Runnable() {
             @Override
             public void run() {
@@ -2795,6 +2952,8 @@ public class MainActivity extends Activity {
 
         layoutSettingsMode = findViewById(R.id.layout_settings_mode);
         containerSettingsItems = findViewById(R.id.container_settings_items);
+        // 2026-07-11 — A5: allow finger taps on existing OnClickListener rows (no layout change).
+        enableA5TouchMenuHosts();
         settingsScrollView = findViewById(R.id.settings_list_scroll);
         if (settingsScrollView instanceof android.widget.ScrollView) {
             Y1ScrollIndicators.applyVerticalScrollView((android.widget.ScrollView) settingsScrollView);
@@ -2821,7 +2980,7 @@ public class MainActivity extends Activity {
         if (tvKeyboardHint != null) {
             tvKeyboardHint.setVisibility(View.GONE);
         }
-        listThemes = new android.widget.ListView(this);
+        listThemes = new Y1SafeListView(this);
         Y1ScrollIndicators.applyVerticalListView(listThemes);
         listThemes.setDivider(null);
         listThemes.setSelector(new android.graphics.drawable.ColorDrawable(0));
@@ -2911,10 +3070,36 @@ public class MainActivity extends Activity {
 
         tvBrowserPath = findViewById(R.id.tv_browser_path);
         tvBrowserPath.setTextColor(ThemeManager.getTextColorPrimary());
+        // 2026-07-11: hide path trail on boot — callers still update text via gate helper.
+        setBrowserPathBreadcrumbVisible(false);
 
         applyFullWidthMenusLayout();
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "before_themed_actions");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "before themed action buttons", "A,E", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         initY1ThemedActionButtons();
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "before_buildHomeMenu");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "before buildHomeMenu", "A,E", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         buildHomeMenu();
+        // #region agent log
+        try {
+            org.json.JSONObject dbg = new org.json.JSONObject();
+            dbg.put("phase", "after_buildHomeMenu");
+            dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "after buildHomeMenu", "A,E", dbg);
+        } catch (Exception ignored) {}
+        // #endregion
         applyThemeToMainMenu();
         requestFirstHomeMenuFocus();
 
@@ -2923,6 +3108,8 @@ public class MainActivity extends Activity {
         tvPlayerAlbum = findViewById(R.id.tv_player_album);
         ivAlbumArt = findViewById(R.id.iv_album_art);
         ivAlbumArt3d = findViewById(R.id.iv_album_art_3d);
+        // 2026-07-11 — A5 NP touch on album art host (tap/swipe/hold/dismiss).
+        attachA5NowPlayingTouchGestures();
 
         visualizerView = new AudioVisualizerView(this);
         visualizerView.setVisibility(View.GONE);
@@ -2930,6 +3117,7 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         ivPlayerBgBlur = findViewById(R.id.iv_player_bg_blur);
+        playerBgScrim = findViewById(R.id.player_bg_scrim);
         ivPauseOverlay = findViewById(R.id.iv_pause_overlay);
         View playerBarRoot = findViewById(R.id.player_transport_bar);
         playerTransport = new MediaTransportBar(this, playerBarRoot);
@@ -2971,9 +3159,12 @@ public class MainActivity extends Activity {
         try { statusBarMatchFont = prefs.getBoolean("status_bar_match_font", false); } catch (Exception e) {}
         ThemeManager.setStatusBarMatchItemText(statusBarMatchFont);
         try { nowPlayingMatchFont = prefs.getBoolean(PREF_NOW_PLAYING_MATCH_FONT, false); } catch (Exception e) {}
-        try { nowPlayingBackdrop = prefs.getBoolean(PREF_NOW_PLAYING_BACKDROP, false); } catch (Exception e) {}
+        // 2026-07-11 — Default on so translucent NP info bars match theme editor / Classipod look.
+        try { nowPlayingBackdrop = prefs.getBoolean(PREF_NOW_PLAYING_BACKDROP, true); } catch (Exception e) {}
         try { nowPlayingLcdArt = prefs.getBoolean(PREF_NOW_PLAYING_LCD_ART, false); } catch (Exception e) {}
         try { nowPlaying3dAlbumArt = prefs.getBoolean(PREF_NOW_PLAYING_3D_ALBUM_ART, false); } catch (Exception e) {}
+        // 2026-07-11 — A5 NP is flat art only; Flow keeps its own 3D carousel.
+        if (DeviceFeatures.isA5()) nowPlaying3dAlbumArt = false;
         syncPlayerAlbumArt3dVisibility();
         syncFlowAlbumArtCoupling();
         ThemeManager.setNowPlayingMatchItemText(nowPlayingMatchFont);
@@ -3075,10 +3266,12 @@ public class MainActivity extends Activity {
             dbg.put("screenState", currentScreenState);
             dbg.put("homeVisible", layoutMainMenu != null && layoutMainMenu.getVisibility() == View.VISIBLE);
             dbg.put("elapsedMs", android.os.SystemClock.uptimeMillis() - onCreateStartMs);
+            dbg.put("overlayOwners", blockingOverlayOwners);
             DebugSessionLog.log("MainActivity.onCreate", "startup complete", "H1-H3", dbg);
             dbg.put("flowHostReady", flowScreenHost != null);
             com.solar.launcher.Debug898913Log.log("MainActivity.onCreate",
                     "startup complete", "H-START", dbg);
+            Debug383b4eLog.log(this, "MainActivity.onCreate", "startup complete", "A,E", dbg);
         } catch (Exception ignored) {}
         // #endregion
 
@@ -3394,6 +3587,19 @@ public class MainActivity extends Activity {
         blockingOverlayOwners |= owner;
         setLoadingOverlayText(text);
         refreshBlockingOverlayVisible();
+        // #region agent log
+        if (owner == OVERLAY_LIB_SCAN) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("owners", blockingOverlayOwners);
+                d.put("text", text != null ? text : "");
+                d.put("screen", currentScreenState);
+                d.put("libSize", customLibrary.size());
+                Debug383b4eLog.log(this, "MainActivity.acquireBlockingOverlay",
+                        "lib scan overlay shown", "B,C", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
     }
 
     private void releaseBlockingOverlay(int owner) {
@@ -3408,15 +3614,22 @@ public class MainActivity extends Activity {
         if (layoutLoadingOverlay == null) return;
         if (blockingOverlayOwners == 0) {
             layoutLoadingOverlay.setVisibility(View.GONE);
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             return;
         }
         boolean libScanOnly = (blockingOverlayOwners & OVERLAY_LIB_SCAN) != 0
                 && (blockingOverlayOwners & ~OVERLAY_LIB_SCAN) == 0;
         if (libScanOnly && !libraryScanOverlayAllowedHere()) {
             layoutLoadingOverlay.setVisibility(View.GONE);
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             return;
         }
         layoutLoadingOverlay.setVisibility(View.VISIBLE);
+        if ((blockingOverlayOwners & OVERLAY_LIB_SCAN) != 0) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     private void updateBlockingOverlayText(String text) {
@@ -3522,13 +3735,164 @@ public class MainActivity extends Activity {
     }
 
     private void showFastScrollLetter(String rawText) {
-        hideFastScrollLetter();
+        if (tvFastScrollLetter == null || rawText == null) {
+            hideFastScrollLetter();
+            return;
+        }
+        String clean = rawText.replace("📁 ", "").replace("👤 ", "")
+                .replace("💿 ", "").replace("🎵 ", "")
+                .replace("📦 [INSTALL] ", "").trim();
+        if (clean.isEmpty()) {
+            hideFastScrollLetter();
+            return;
+        }
+        String firstChar = WheelSectionIndex.normalize(clean);
+        if (firstChar.isEmpty()) firstChar = "#";
+        tvFastScrollLetter.setText(firstChar);
+        int bgColor = ThemeManager.getListButtonFocusedBg();
+        tvFastScrollLetter.setBackgroundColor((bgColor & 0xFFFFFF) | 0xDD000000);
+        tvFastScrollLetter.setTextColor(ThemeManager.getListButtonFocusedTextColor());
+        tvFastScrollLetter.setVisibility(View.VISIBLE);
+        if (android.os.SystemClock.elapsedRealtimeNanos() >= suppressOverlayHapticUntilNanos) {
+            wheelDetentFeedback(true);
+        }
+        fastScrollHandler.removeCallbacks(hideFastScrollTask);
+        fastScrollHandler.postDelayed(hideFastScrollTask, 800);
+    }
+
+    private void setTextIfChanged(android.widget.TextView view, CharSequence text) {
+        if (view != null && !android.text.TextUtils.equals(view.getText(), text)) {
+            view.setText(text);
+        }
+    }
+
+    private void wheelDetentFeedback(boolean section) {
+        long now = android.os.SystemClock.elapsedRealtimeNanos();
+        long throttle = section ? 35_000_000L : 30_000_000L;
+        if (now - lastWheelHapticNanos < throttle) return;
+        lastWheelHapticNanos = now;
+        vibrateCached(section ? 25 : 10);
+    }
+
+    private void vibrateCached(long durationMs) {
+        if (!isVibrationEnabled || cachedVibrator == null) return;
+        try {
+            cachedVibrator.vibrate(durationMs);
+        } catch (Exception ignored) {}
+    }
+
+    private void ensureWheelSectionIndex() {
+        android.widget.ListAdapter adapter =
+                listVirtualSongs != null ? listVirtualSongs.getAdapter() : null;
+        if (adapter == wheelIndexedAdapter) return;
+        if (wheelIndexedAdapter != null) {
+            try { wheelIndexedAdapter.unregisterDataSetObserver(wheelDataObserver); } catch (Exception ignored) {}
+        }
+        wheelIndexedAdapter = adapter;
+        wheelSectionIndex = WheelSectionIndex.EMPTY;
+        if (adapter != null) {
+            try { adapter.registerDataSetObserver(wheelDataObserver); } catch (Exception ignored) {}
+        }
+        scheduleWheelSectionIndex();
+    }
+
+    private void scheduleWheelSectionIndex() {
+        final android.widget.ListAdapter adapter = wheelIndexedAdapter;
+        final int generation = ++wheelIndexGeneration;
+        if (adapter == null) {
+            wheelSectionIndex = WheelSectionIndex.EMPTY;
+            return;
+        }
+        final int count = adapter.getCount();
+        final String[] labels = new String[count];
+        boolean useBrowseLabels = currentScrollIndexList != null
+                && currentScrollIndexList.size() == count;
+        for (int i = 0; i < count; i++) {
+            if (useBrowseLabels) {
+                labels[i] = currentScrollIndexList.get(i);
+                continue;
+            }
+            Object item = adapter.getItem(i);
+            if (item instanceof SongItem) {
+                labels[i] = ((SongItem) item).title;
+            } else {
+                labels[i] = item != null ? item.toString() : "";
+            }
+        }
+        WHEEL_IO.execute(new Runnable() {
+            @Override public void run() {
+                final WheelSectionIndex built = WheelSectionIndex.build(labels);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (generation == wheelIndexGeneration && adapter == wheelIndexedAdapter
+                                && adapter.getCount() == built.itemCount()) {
+                            wheelSectionIndex = built;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private int currentWheelPosition() {
+        if (listVirtualSongs == null) return 0;
+        int position = listVirtualSongs.getSelectedItemPosition();
+        if (position != ListView.INVALID_POSITION) return position;
+        View focused = getCurrentFocus();
+        if (focused != null) {
+            position = listVirtualSongs.getPositionForView(focused);
+            if (position != ListView.INVALID_POSITION) return position;
+        }
+        return listVirtualSongs.getFirstVisiblePosition();
+    }
+
+    private boolean moveWheelSelection(int targetPosition) {
+        if (listVirtualSongs == null) return false;
+        android.widget.ListAdapter adapter = listVirtualSongs.getAdapter();
+        if (adapter == null || adapter.getCount() == 0) return false;
+        int target = Math.max(0, Math.min(adapter.getCount() - 1, targetPosition));
+        int current = currentWheelPosition();
+        if (target == current) return false;
+        String oldLetter = wheelSectionIndex.letterAtPosition(current);
+        String newLetter = wheelSectionIndex.letterAtPosition(target);
+        // 2026-07-11 — Edge-only iPod/feature-phone scroll; was sticky-Y setSelectionFromTop(anchor)
+        // which scrolled the whole list every tick. Reversal: restore sticky-Y anchor path.
+        FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, target);
+        pendingWheelFocusPosition = target;
+        pendingWheelFocusRetried = false;
+        listVirtualSongs.removeCallbacks(wheelFocusTask);
+        listVirtualSongs.post(wheelFocusTask);
+        boolean changed = !android.text.TextUtils.equals(oldLetter, newLetter);
+        if (changed) {
+            showFastScrollLetter(newLetter);
+        } else {
+            suppressOverlayHapticUntilNanos =
+                    android.os.SystemClock.elapsedRealtimeNanos() + 100_000_000L;
+            wheelDetentFeedback(false);
+        }
+        return true;
+    }
+
+    private android.graphics.drawable.StateListDrawable getY1RowStateBackground(
+            int widthPx, int rowKind) {
+        android.graphics.drawable.StateListDrawable states =
+                new android.graphics.drawable.StateListDrawable();
+        android.graphics.drawable.Drawable sel = getY1RowBackground(true, widthPx, rowKind);
+        android.graphics.drawable.Drawable norm = getY1RowBackground(false, widthPx, rowKind);
+        states.addState(new int[] { android.R.attr.state_focused }, sel);
+        states.addState(new int[] { android.R.attr.state_pressed }, sel);
+        states.addState(new int[] {}, norm);
+        return states;
     }
 
     private void refreshBatteryStatus() {
         try {
             Intent intent = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (intent != null) updateBatteryUi(intent);
+            if (intent != null) {
+                updateBatteryUi(intent);
+            } else if (cachedBatteryLevel > 0 && tvStatusBattery != null) {
+                setTextIfChanged(tvStatusBattery, cachedBatteryLevel + "%");
+            }
         } catch (Exception ignored) {}
     }
 
@@ -3540,7 +3904,9 @@ public class MainActivity extends Activity {
         boolean isCharging = (status == BatteryManager.BATTERY_STATUS_CHARGING
                 || status == BatteryManager.BATTERY_STATUS_FULL);
         int batteryPct = scale > 0 ? (int) ((level / (float) scale) * 100) : 0;
-        tvStatusBattery.setText(batteryPct + "%");
+        cachedBatteryLevel = batteryPct;
+        cachedBatteryCharging = isCharging;
+        setTextIfChanged(tvStatusBattery, batteryPct + "%");
 
         int idx = ThemeManager.batteryLevelIndex(batteryPct);
         Bitmap themedBattery = ThemeManager.getBatteryIcon(idx, isCharging);
@@ -4015,9 +4381,21 @@ public class MainActivity extends Activity {
             applyStatusBarTheme();
             applyMenuPanelBackground(menuListHost, y1RowWidthPx, menuListHeightPx,
                     (int) getResources().getDimension(R.dimen.y1_menu_height));
-            int settingsPanelH = isFullWidthMenus && screenHeightPx > 0
-                    ? screenHeightPx - (int) getResources().getDimension(R.dimen.y1_status_bar_height)
+            // 2026-07-11 — Panel art height follows flush chrome (fill under status) or stock gutter.
+            int statusHPanel = (int) getResources().getDimension(R.dimen.y1_status_bar_height);
+            boolean settingsPadPanel = ThemeManager.isMenuItemPaddingEnabled(prefs, true);
+            int settingsTopPanel = settingsPadPanel ? statusHPanel : Math.max(0, statusHPanel - 1);
+            int settingsFlushH = screenHeightPx > settingsTopPanel
+                    ? screenHeightPx - settingsTopPanel
                     : (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+            int settingsPanelH;
+            if (!settingsPadPanel) {
+                settingsPanelH = settingsFlushH;
+            } else if (isFullWidthMenus && screenHeightPx > 0) {
+                settingsPanelH = screenHeightPx - statusHPanel;
+            } else {
+                settingsPanelH = (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+            }
             applyMenuPanelBackground(settingsMenuHost, settingsMenuWidthPx, settingsPanelH,
                     (int) getResources().getDimension(R.dimen.y1_settings_menu_height));
             int primary = ThemeManager.getTextColorPrimary();
@@ -4119,13 +4497,14 @@ public class MainActivity extends Activity {
             int progressText = ThemeManager.getProgressTextColor();
             android.graphics.Typeface font = ThemeManager.getCustomFont();
 
-            applyNowPlayingInfoRow(tvPlayerTitle, infoW, 40, textColor, font);
-            applyNowPlayingInfoRow(tvPlayerArtist, infoW, 32, textColor, font);
-            applyNowPlayingInfoRow(tvPlayerAlbum, infoW, 32, textColor, font);
-            applyNowPlayingInfoRow(tvPlayerTrackCount, infoW, 32, textColor, font);
+            // 2026-07-11 — Bar heights match 235×225 info cell (+8dp padTop in XML).
+            applyNowPlayingInfoRow(tvPlayerTitle, infoW, 36, textColor, font);
+            applyNowPlayingInfoRow(tvPlayerArtist, infoW, 38, textColor, font);
+            applyNowPlayingInfoRow(tvPlayerAlbum, infoW, 38, textColor, font);
+            applyNowPlayingInfoRow(tvPlayerTrackCount, infoW, 38, textColor, font);
             if (playerStatusRow != null) {
                 float d = getResources().getDisplayMetrics().density;
-                int h = (int) (30 * d);
+                int h = (int) (35 * d);
                 playerStatusRow.setBackground(ThemeManager.getNowPlayingInfoBarBackground(getResources(), infoW, h));
             }
             applyNowPlayingInfoRow(tvVizTitle, infoW, 28, textColor, font);
@@ -4193,7 +4572,8 @@ public class MainActivity extends Activity {
     private void applyNowPlayingInfoRow(TextView tv, int widthPx, int heightDp, int textColor,
                                         android.graphics.Typeface font) {
         if (tv == null) return;
-        ThemeManager.applyThemedTextStyle(tv, textColor);
+        // 2026-07-11 — Clash-fix vs wallpaper (white-on-white iPod-ish / black-on-dark).
+        ThemeManager.applyReadableThemedTextStyle(tv, textColor);
         if (font != null) tv.setTypeface(font, android.graphics.Typeface.BOLD);
         float d = getResources().getDisplayMetrics().density;
         int h = (int) (heightDp * d);
@@ -4259,12 +4639,20 @@ public class MainActivity extends Activity {
         startThemeBrowserBackgroundLoad(++unifiedThemesUiGen);
     }
 
+    /** 2026-07-11 — Theme browser page size uses flush list height when padding is off. */
     private int themeListPageCapacityRows() {
         int rowH = y1RowHeightPx > 0 ? y1RowHeightPx : (int) (36 * getResources().getDisplayMetrics().density);
         int statusH = (int) getResources().getDimension(R.dimen.y1_status_bar_height);
-        int listH = isFullWidthMenus && screenHeightPx > statusH
-                ? screenHeightPx - statusH
-                : (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+        boolean settingsPad = ThemeManager.isMenuItemPaddingEnabled(prefs, true);
+        int top = settingsPad ? statusH : Math.max(0, statusH - 1);
+        int listH;
+        if (!settingsPad && screenHeightPx > top) {
+            listH = screenHeightPx - top;
+        } else if (isFullWidthMenus && screenHeightPx > statusH) {
+            listH = screenHeightPx - statusH;
+        } else {
+            listH = (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+        }
         return Math.max(1, listH / Math.max(1, rowH));
     }
 
@@ -4468,17 +4856,19 @@ public class MainActivity extends Activity {
 
     private void scrollThemesToListPos(final int listPos) {
         if (listThemes == null || listPos < 0) return;
-        listThemes.setSelection(listPos);
+        // 2026-07-11 — Edge-only sticky; was setSelection (pinned near top every tick).
+        // FocusScrollHelper owns select+focus; post only retries layout, not a second focus.
+        FocusScrollHelper.ensureListPositionVisible(listThemes, listPos);
         listThemes.post(new Runnable() {
             @Override
             public void run() {
-                listThemes.setSelection(listPos);
-                for (int i = 0; i < listThemes.getChildCount(); i++) {
-                    View v = listThemes.getChildAt(i);
-                    if (listThemes.getPositionForView(v) == listPos && v.isFocusable()) {
-                        v.requestFocus();
-                        break;
-                    }
+                if (listThemes == null) return;
+                int childIdx = listPos - listThemes.getFirstVisiblePosition();
+                View v = (childIdx >= 0 && childIdx < listThemes.getChildCount())
+                        ? listThemes.getChildAt(childIdx) : null;
+                // Layout miss on first pass — ensure again; skip if already focused.
+                if (v == null || !v.isFocused()) {
+                    FocusScrollHelper.ensureListPositionVisible(listThemes, listPos);
                 }
             }
         });
@@ -5153,9 +5543,9 @@ public class MainActivity extends Activity {
                 }
                 if (target != null) {
                     target.requestFocus();
-                    if (containerSettingsItems.getParent() instanceof android.widget.ScrollView) {
-                        ((android.widget.ScrollView) containerSettingsItems.getParent())
-                                .requestChildFocus(containerSettingsItems, target);
+                    // 2026-07-11 — Edge-only; was requestChildFocus (ScrollView scrolls early).
+                    if (settingsScrollView instanceof ScrollView) {
+                        FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, target);
                     }
                     homeScreenEditorFocusIndex = idx;
                     homeScreenOrderFocusIndex = idx;
@@ -5307,7 +5697,7 @@ public class MainActivity extends Activity {
             if (row.requestFocus()) {
                 lastSettingsFocusIndex = i;
                 if (settingsScrollView instanceof ScrollView) {
-                    FocusScrollHelper.scrollToChildBottom((ScrollView) settingsScrollView, row);
+                    FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, row);
                 }
                 return;
             }
@@ -5318,7 +5708,7 @@ public class MainActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setFocusable(false);
         tv.setText(text);
-        ThemeManager.applyThemedTextStyle(tv, titleStyle
+        ThemeManager.applyReadableThemedTextStyle(tv, titleStyle
                 ? ThemeManager.getTextColorPrimary()
                 : ThemeManager.getTextColorSecondary());
         tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
@@ -6023,6 +6413,7 @@ public class MainActivity extends Activity {
                                     getString(R.string.theme_applying, appliedName), "");
                         }
                         ThemeManager.setThemeIndex(applyIndex);
+                        ThemeManager.applySolarConfigPrefs(MainActivity.this);
                         try {
                             SharedPreferences.Editor ed = prefs.edit()
                                     .putInt("app_theme_index", applyIndex)
@@ -6488,6 +6879,12 @@ public class MainActivity extends Activity {
             maskView.setVisibility(View.GONE);
         }
     }
+    /**
+     * 2026-07-11 — Now Playing backdrop: album blur when enabled+art, else theme wallpaper
+     * (globalWallpaper first — Karliky editor parity for non-home screens).
+     * Was: callers cleared ivPlayerBgBlur to empty/#111111 so NP lost Cupertino global wall.
+     * Reversal: setImageResource(0) at those sites again.
+     */
     private void bindPlayerBlurBackdrop() {
         if (ivPlayerBgBlur == null) return;
         String mode = getBackgroundMode();
@@ -6500,18 +6897,21 @@ public class MainActivity extends Activity {
                 Bitmap blurredBg = applyGaussianBlur(sourceBg);
                 ivPlayerBgBlur.setImageBitmap(blurredBg);
                 if (sourceBg != blurredBg) sourceBg.recycle();
-            }
-        } else {
-            Bitmap bg = BG_MODE_CUSTOM.equals(mode)
-                    ? loadCustomBackgroundBitmap()
-                    : loadSelectedThemeWallpaper(STATE_PLAYER);
-            if (bg != null) {
-                ivPlayerBgBlur.setImageBitmap(
-                        ThemeManager.centerCropBitmap(bg, screenWidthPx, screenHeightPx));
-            } else {
-                ivPlayerBgBlur.setImageResource(0);
+                if (playerBgScrim != null) playerBgScrim.setVisibility(View.VISIBLE);
+                return;
             }
         }
+        Bitmap bg = BG_MODE_CUSTOM.equals(mode)
+                ? loadCustomBackgroundBitmap()
+                : loadSelectedThemeWallpaper(STATE_PLAYER);
+        if (bg != null) {
+            ivPlayerBgBlur.setImageBitmap(
+                    ThemeManager.centerCropBitmap(bg, screenWidthPx, screenHeightPx));
+        } else {
+            ivPlayerBgBlur.setImageDrawable(null);
+        }
+        // Theme wallpaper matches the editor — no dark scrim on top.
+        if (playerBgScrim != null) playerBgScrim.setVisibility(View.GONE);
     }
 
     /** Copy live Now Playing blur onto the global outgoing backdrop for slide-down exits. */
@@ -6702,14 +7102,18 @@ public class MainActivity extends Activity {
         }
         if (scaled != null) return scaled;
         boolean menuRows = rowKind == Y1_ROW_MENU;
-        if (!selected && ThemeManager.y1UnselectedRowTransparent(menuRows)) {
-            if (rowKind == Y1_ROW_HOME) {
-                return new android.graphics.drawable.ColorDrawable(ThemeManager.getListButtonNormalBg());
+        // 2026-07-11 — Empty itemBackground → home may use solid; named but missing PNG → transparent.
+        // Was: opaque list fill when Habbo @Be_itemBackground failed to decode. Reversal: always solid.
+        if (!selected) {
+            if (ThemeManager.y1UnselectedRowTransparent(menuRows)) {
+                if (rowKind == Y1_ROW_HOME) {
+                    return new android.graphics.drawable.ColorDrawable(ThemeManager.getListButtonNormalBg());
+                }
+                return new android.graphics.drawable.ColorDrawable(0x00000000);
             }
             return new android.graphics.drawable.ColorDrawable(0x00000000);
         }
-        if (selected) return createButtonBackground(ThemeManager.getRowSelectionFillColor());
-        return new android.graphics.drawable.ColorDrawable(ThemeManager.getListButtonNormalBg());
+        return createButtonBackground(ThemeManager.getRowSelectionFillColor());
     }
 
     private android.graphics.drawable.Drawable getY1RowBackground(boolean focused, int widthPx) {
@@ -7644,7 +8048,6 @@ public class MainActivity extends Activity {
             }
             if (tvLeft != null) {
                 int rowW = row.getWidth() > 0 ? row.getWidth() : y1ActiveRowWidthPx();
-                row.setBackground(getY1RowBackground(hasFocus, rowW, Y1_ROW_MENU));
                 applyY1ListRowStyle(row, hasFocus, tvLeft, tvRight, arrow, Y1_ROW_MENU);
             }
         }
@@ -7653,7 +8056,11 @@ public class MainActivity extends Activity {
     private void applyY1ListRowStyle(View row, boolean focused, TextView label, TextView value,
                                      ImageView arrow, int rowKind) {
         int w = row.getWidth() > 0 ? row.getWidth() : y1ActiveRowWidthPx();
-        row.setBackground(getY1RowBackground(focused, w, rowKind));
+        // PR #23: prefer StateListDrawable set once at create; only paint if missing.
+        if (!(row.getBackground() instanceof android.graphics.drawable.StateListDrawable)) {
+            row.setBackground(getY1RowStateBackground(w, rowKind));
+        }
+        row.setSelected(focused);
         if (label != null) {
             label.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
             ThemeManager.applyThemedTextStyle(label, focused
@@ -7733,9 +8140,18 @@ public class MainActivity extends Activity {
                 if (np != null) homeMenuEntries.add(0, np);
             }
         }
+        final boolean radioExperimentOn =
+                com.solar.launcher.radio.RadioExperiment.isEnabled(prefs);
         java.util.Iterator<HomeMenuConfig.Entry> homeIt = homeMenuEntries.iterator();
         while (homeIt.hasNext()) {
-            if (HomeMenuConfig.ID_NOW_PLAYING.equals(homeIt.next().id) && !showNowPlaying) {
+            HomeMenuConfig.Entry he = homeIt.next();
+            if (HomeMenuConfig.ID_NOW_PLAYING.equals(he.id) && !showNowPlaying) {
+                homeIt.remove();
+                continue;
+            }
+            // 2026-07-10 — FM/Radio home tile only when Debug → Radio experiment is on.
+            if ((HomeMenuConfig.ID_RADIO.equals(he.id) || HomeMenuConfig.ID_FM.equals(he.id))
+                    && !radioExperimentOn) {
                 homeIt.remove();
             }
         }
@@ -7993,6 +8409,7 @@ public class MainActivity extends Activity {
             }
         });
         applyY1ListRowStyle(row, idx == focusedHomeMenuIndex, label, null, arrow, Y1_ROW_HOME);
+        attachA5RowLongPress(row);
         return row;
     }
 
@@ -8098,6 +8515,8 @@ public class MainActivity extends Activity {
 
         row.setTag(HOME_MENU_TAG_LABEL, label);
         row.setTag(HOME_MENU_TAG_ARROW, arrow);
+        // PR #23: assign StateListDrawable once; focus walks flip state only.
+        row.setBackground(getY1RowStateBackground(y1ActiveRowWidthPx(), Y1_ROW_HOME));
         return row;
     }
 
@@ -8115,9 +8534,10 @@ public class MainActivity extends Activity {
                 View target = getHomeMenuRow(index);
                 if (target != null) {
                     target.requestFocus();
+                    // 2026-07-11 — Edge-only via FocusScrollHelper; skip requestChildFocus
+                    // (platform ScrollView may scroll early). Was: requestChildFocus then ensure.
                     if (menuScroll != null) {
-                        menuScroll.requestChildFocus(containerHomeMenuItems, target);
-                        FocusScrollHelper.scrollToChildBottom(menuScroll, target);
+                        FocusScrollHelper.ensureChildVisible(menuScroll, target);
                     }
                 }
                 refreshHomeMenuRowStyles();
@@ -8148,7 +8568,8 @@ public class MainActivity extends Activity {
 
     private void updateHomeMenuPreview(int index) {
         final long t0 = android.os.SystemClock.uptimeMillis();
-        if (isFullWidthMenus || index < 0 || index >= homeMenuEntries.size()) return;
+        boolean a5Strip = A5PortraitChrome.usePortraitChrome(this);
+        if ((!a5Strip && isFullWidthMenus) || index < 0 || index >= homeMenuEntries.size()) return;
 
         String id = homeMenuEntries.get(index).id;
         final String cacheKey = homeMenuPreviewCacheKey(id);
@@ -8171,10 +8592,16 @@ public class MainActivity extends Activity {
                         decoded = true;
                     }
                     if (tvMenuPreviewTitle != null && tvMenuPreviewArtist != null && tvPlayerTitle != null) {
-                        tvMenuPreviewTitle.setVisibility(View.VISIBLE);
-                        tvMenuPreviewArtist.setVisibility(View.VISIBLE);
-                        tvMenuPreviewTitle.setText(tvPlayerTitle.getText());
-                        tvMenuPreviewArtist.setText(tvPlayerArtist != null ? tvPlayerArtist.getText() : "");
+                        // 2026-07-11 — Title/artist under home NP art is opt-in (settingsShow_Now_Playing_Info).
+                        if (ThemeManager.isShowNowPlayingInfoEnabled(prefs)) {
+                            tvMenuPreviewTitle.setVisibility(View.VISIBLE);
+                            tvMenuPreviewArtist.setVisibility(View.VISIBLE);
+                            tvMenuPreviewTitle.setText(tvPlayerTitle.getText());
+                            tvMenuPreviewArtist.setText(tvPlayerArtist != null ? tvPlayerArtist.getText() : "");
+                        } else {
+                            tvMenuPreviewTitle.setVisibility(View.GONE);
+                            tvMenuPreviewArtist.setVisibility(View.GONE);
+                        }
                     }
                 } else {
                     if (preview != null) {
@@ -8202,11 +8629,17 @@ public class MainActivity extends Activity {
             }
             lastHomeMenuPreviewAppliedKey = cacheKey;
         } else if (HomeMenuConfig.ID_NOW_PLAYING.equals(id) && shouldShowNowPlayingPreviewArt()
+                && ThemeManager.isShowNowPlayingInfoEnabled(prefs)
                 && tvMenuPreviewTitle != null && tvMenuPreviewArtist != null && tvPlayerTitle != null) {
             tvMenuPreviewTitle.setVisibility(View.VISIBLE);
             tvMenuPreviewArtist.setVisibility(View.VISIBLE);
             tvMenuPreviewTitle.setText(tvPlayerTitle.getText());
             tvMenuPreviewArtist.setText(tvPlayerArtist != null ? tvPlayerArtist.getText() : "");
+        } else if (HomeMenuConfig.ID_NOW_PLAYING.equals(id)
+                && tvMenuPreviewTitle != null && tvMenuPreviewArtist != null
+                && !ThemeManager.isShowNowPlayingInfoEnabled(prefs)) {
+            tvMenuPreviewTitle.setVisibility(View.GONE);
+            tvMenuPreviewArtist.setVisibility(View.GONE);
         }
         MenuPreviewLayout.Spec previewSpec = MenuPreviewLayout.homeSpec(this, isHomeDesktopMaskActive());
         if (ivMenuPreview.getVisibility() == View.VISIBLE) {
@@ -8217,6 +8650,7 @@ public class MainActivity extends Activity {
             if (tvMenuPreviewTitle != null) tvMenuPreviewTitle.setVisibility(View.GONE);
             if (tvMenuPreviewArtist != null) tvMenuPreviewArtist.setVisibility(View.GONE);
         } else if (HomeMenuConfig.ID_NOW_PLAYING.equals(id) && shouldShowNowPlayingPreviewArt()
+                && ThemeManager.isShowNowPlayingInfoEnabled(prefs)
                 && tvMenuPreviewTitle != null && tvMenuPreviewTitle.getVisibility() == View.VISIBLE) {
             int gap = (int) getResources().getDimension(R.dimen.y1_preview_title_gap);
             MenuPreviewLayout.layoutTitlesBelowArt(ivMenuPreview, tvMenuPreviewTitle, tvMenuPreviewArtist, gap);
@@ -8237,6 +8671,7 @@ public class MainActivity extends Activity {
                     "preview update", "H1", d, "post-fix");
         } catch (Exception ignored) {}
         // #endregion
+        if (a5Strip) syncA5BottomStripFromHome();
     }
 
     private void alignHomePreviewTitleWidth(TextView tv, MenuPreviewLayout.Spec spec) {
@@ -8321,10 +8756,13 @@ public class MainActivity extends Activity {
         } else if (HomeMenuConfig.ID_SETTINGS.equals(id)) {
             changeScreen(STATE_SETTINGS);
         } else if (HomeMenuConfig.ID_RADIO.equals(id) || HomeMenuConfig.ID_FM.equals(id)) {
+            if (!com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
+                Toast.makeText(this, R.string.settings_debug_radio_experiment_hint,
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
             if (playback.isFmActive()) {
                 changeScreen(STATE_PLAYER);
-            } else if (com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(prefs)) {
-                changeScreen(MediaSuiteHost.STATE_RADIO);
             } else if (mediaSuite != null) {
                 mediaSuite.openFmFromHome();
             } else {
@@ -8369,10 +8807,14 @@ public class MainActivity extends Activity {
             return;
         }
         if (!statusBarShowsTitle && currentScreenState == STATE_MENU) {
-            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("h:mm a", java.util.Locale.US);
-            tvStatusClock.setText(sdf.format(new java.util.Date()));
+            boolean is24 = android.text.format.DateFormat.is24HourFormat(this);
+            if (statusClockFormat == null || cachedClockIs24Hour != is24) {
+                cachedClockIs24Hour = is24;
+                statusClockFormat = new SimpleDateFormat(is24 ? "HH:mm" : "h:mm a", Locale.US);
+            }
+            setTextIfChanged(tvStatusClock, statusClockFormat.format(new java.util.Date()));
         } else {
-            tvStatusClock.setText(getStatusBarContextTitle());
+            setTextIfChanged(tvStatusClock, getStatusBarContextTitle());
         }
         if (!statusBarFlowHandoffCrossfade) {
             tvStatusClock.setAlpha(1f);
@@ -8815,13 +9257,22 @@ public class MainActivity extends Activity {
 
     private void changeScreen(int state, boolean isBack) {
         if (otaSystemReplaceInProgress) return;
-        if (usbMassStorageLocked && state != STATE_USB_STORAGE) {
-            Toast.makeText(this,
-                    "Please turn off USB storage before using the device",
-                    Toast.LENGTH_SHORT).show();
-            return;
+        if (isUsbMassStorageUiLocked() && state != STATE_USB_STORAGE) {
+            // Re-check for stale lock before blocking the user.
+            if (!UsbMassStorageController.isMassStorageExported()
+                    && !UsbMassStorageController.isKernelMassStorageMode()) {
+                clearStaleUsbMassStorageLockIfNeeded();
+            } else {
+                Toast.makeText(this,
+                        getString(R.string.usb_storage_mode_body, DeviceFeatures.productModelLabel()),
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
         }
         if (com.solar.launcher.radio.RadioExperiment.isBlockedScreenState(state, prefs)) {
+            return;
+        }
+        if (com.solar.launcher.youtube.YouTubeExperiment.isBlockedScreenState(state, prefs)) {
             return;
         }
         state = com.solar.launcher.radio.RadioExperiment.resolveRadioHomeTarget(state, prefs);
@@ -9100,6 +9551,7 @@ public class MainActivity extends Activity {
                 || state == MediaSuiteHost.STATE_RADIO_FM_PLAYER
                 || state == MediaSuiteHost.STATE_RADIO_NET_BROWSE || state == MediaSuiteHost.STATE_VIDEOS
                 || state == MediaSuiteHost.STATE_VIDEO_HUB || state == MediaSuiteHost.STATE_YOUTUBE_BROWSE
+                || state == MediaSuiteHost.STATE_YOUTUBE_DETAIL
                 || state == MediaSuiteHost.STATE_PHOTOS) ? View.VISIBLE : View.GONE);
         if (state == STATE_BROWSER || state == STATE_PODCASTS || state == STATE_SOULSEEK || state == STATE_DEEZER
                 || state == STATE_APPS || state == STATE_MORE || state == STATE_USB_STORAGE
@@ -9108,6 +9560,7 @@ public class MainActivity extends Activity {
                 || state == MediaSuiteHost.STATE_RADIO_FM_PLAYER
                 || state == MediaSuiteHost.STATE_RADIO_NET_BROWSE || state == MediaSuiteHost.STATE_VIDEOS
                 || state == MediaSuiteHost.STATE_VIDEO_HUB || state == MediaSuiteHost.STATE_YOUTUBE_BROWSE
+                || state == MediaSuiteHost.STATE_YOUTUBE_DETAIL
                 || state == MediaSuiteHost.STATE_PHOTOS) {
             resetBrowserListHost();
         }
@@ -9720,10 +10173,130 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        // 2026-07-11 — Emulator/A5 lab: host right-click = Back (previous menu).
+        // Was: right-click fell through as a normal tap. Now: short Back via key path.
+        // Reversal: delete block; mouse secondary does nothing special.
+        if (ev != null && EmulatorInputMap.shouldRemap()) {
+            int action = ev.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN && EmulatorInputMap.isRightClickBack(ev)) {
+                emulatorRightClickDown = true;
+                return true;
+            }
+            if (emulatorRightClickDown
+                    && (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL)) {
+                boolean fireBack = action == MotionEvent.ACTION_UP;
+                emulatorRightClickDown = false;
+                if (fireBack) {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_DOWN,
+                            KeyEvent.KEYCODE_BACK, 0));
+                    dispatchKeyEvent(new KeyEvent(now, now, KeyEvent.ACTION_UP,
+                            KeyEvent.KEYCODE_BACK, 0));
+                }
+                return true;
+            }
+            // Secondary still held while moving — swallow so it cannot tap a row.
+            if (emulatorRightClickDown || EmulatorInputMap.isRightClickBack(ev)) {
+                return true;
+            }
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
+        // 2026-07-11 — Emulator host keys (Esc/DEL/WASD/space/-/=) → Solar before A5 hardware map.
+        if (event != null && EmulatorInputMap.shouldRemap()) {
+            int hostCode = event.getKeyCode();
+            // Volume host keys handled here so A5 side VOLUME placeholders cannot steal -/=.
+            if (hostCode == KeyEvent.KEYCODE_MINUS || hostCode == KeyEvent.KEYCODE_EQUALS
+                    || hostCode == KeyEvent.KEYCODE_PLUS) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    boolean up = hostCode == KeyEvent.KEYCODE_EQUALS
+                            || hostCode == KeyEvent.KEYCODE_PLUS;
+                    adjustVolume(up);
+                    showPlayerVolumeContextOverlay();
+                    clickFeedback();
+                }
+                return true;
+            }
+            KeyEvent emu = EmulatorInputMap.remapEvent(event);
+            if (emu != null) {
+                return dispatchKeyEvent(emu);
+            }
+        }
+        // 2026-07-11 — A5 face/side placeholders → Solar DPAD/MEDIA/VOLUME/BACK before anything else.
+        // Was: raw HOME/APP_SWITCH/POWER reached stock (Recents / sleep). Now: remap per nav mode.
+        // Reversal: delete block; A5 keys fall through to stock Android.
+        if (event != null && DeviceFeatures.isA5() && A5InputKeys.isA5HardwareKey(event.getKeyCode())) {
+            // 2026-07-11 — Emulator Esc/right-click/DEL already mean previous-menu Back.
+            // Do not remap KEYCODE_BACK → DPAD_UP (face-left) on AVDs.
+            if (!(EmulatorInputMap.isEmulator() && event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
+                boolean np = currentScreenState == STATE_PLAYER;
+                KeyEvent remapped = A5InputKeys.remapEvent(this, event, np);
+                if (remapped != null) {
+                    return dispatchKeyEvent(remapped);
+                }
+                // Unmapped hardware key on A5 — swallow to avoid Recents / unexpected sleep.
+                return true;
+            }
+        }
+        // 2026-07-11 — Post-remap volume (NP edges / emulator / family pin) → Solar volume HUD.
+        if (event != null && shouldUseSolarVolumeHud()
+                && (Y1InputKeys.isVolumeUpKey(event.getKeyCode())
+                || Y1InputKeys.isVolumeDownKey(event.getKeyCode()))) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                adjustVolume(Y1InputKeys.isVolumeUpKey(event.getKeyCode()));
+                showPlayerVolumeContextOverlay();
+                clickFeedback();
+            }
             return true;
         }
+        // 2026-07-10 — Global ChipOverlayHost (power-hold shell) owns keys while painted.
+        // Was: StaleOverlayGate.isActiveOrOpening() → return true with NO forward.
+        // That black-holed wheel/OK/Back when Solar stayed focused (Home Back-hold open).
+        // Power-hold works when Xposed intercepts first; Home open often lands keys here.
+        // Reversal: restore bare return-true if PWM always swallows before the activity.
+        if (event != null && shouldRouteKeysToGlobalChipOverlay()) {
+            int code = event.getKeyCode();
+            int action = event.getAction();
+            // #region agent log
+            long perfT0 = android.os.SystemClock.uptimeMillis();
+            // #endregion
+if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) {
+                if (Y1InputKeys.isBackKey(code) && action == KeyEvent.ACTION_UP) {
+                    clearBackHoldRescueTimers("forwardOverlay-backUp");
+                }
+                OverlayKeyGate.forwardKeyToOverlay(this, code, action);
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("keyCode", code);
+                    d.put("action", action);
+                    d.put("forwarded", true);
+                    d.put("elapsedMs", android.os.SystemClock.uptimeMillis() - perfT0);
+                    Debug62b1bbLog.log("MainActivity.dispatchKeyEvent", "overlay forward", "H-PERF-2", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                return true;
+            }
+            // Swallow unrelated keys so Home list does not scroll under the modal.
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("keyCode", code);
+                d.put("action", action);
+                d.put("swallowed", true);
+                d.put("overlayUi", OverlayKeyGate.isOverlayUiVisible());
+                d.put("overlayActive", OverlayKeyGate.isOverlayKeysActive());
+                d.put("shellVisible", com.solar.input.policy.StaleOverlayGate.isShellVisible());
+                Debug62b1bbLog.log("MainActivity.dispatchKeyEvent", "overlay swallow", "H-PERF-1", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return true;
+        }
+        long dispatchT0 = android.os.SystemClock.uptimeMillis();
         resetInactivityTimer();
         // #region agent log
         if (DebugB85099Log.ENABLED && event != null && event.getAction() == KeyEvent.ACTION_DOWN
@@ -9885,6 +10458,21 @@ public class MainActivity extends Activity {
                 com.solar.launcher.flow.FlowBackDebugLog.log(
                         "MainActivity.dispatchKeyEvent", "player volume key→super", "H-V2", d);
             } catch (Exception ignored) {}
+        }
+        // #endregion
+        // #region agent log
+        if (event != null && event.getAction() == KeyEvent.ACTION_DOWN
+                && Y1InputKeys.isWheelKey(event.getKeyCode())) {
+            long elapsed = android.os.SystemClock.uptimeMillis() - dispatchT0;
+            if (elapsed > 50L) {
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("keyCode", event.getKeyCode());
+                    d.put("screen", currentScreenState);
+                    d.put("elapsedMs", elapsed);
+                    Debug62b1bbLog.log("MainActivity.dispatchKeyEvent", "slow wheel dispatch", "H-PERF-3", d);
+                } catch (Exception ignored) {}
+            }
         }
         // #endregion
         return super.dispatchKeyEvent(event);
@@ -12052,10 +12640,22 @@ public class MainActivity extends Activity {
             changeScreen(STATE_SETTINGS);
             buildNavidromeSettingsUI();
         }
+        else if (keyboardPurpose == PlexSettingsHost.KEYBOARD_URL
+                || keyboardPurpose == PlexSettingsHost.KEYBOARD_TOKEN) {
+            if (plexSettingsHost != null) plexSettingsHost.finishKeyboard(keyboardPurpose, typedPassword.trim());
+            changeScreen(STATE_SETTINGS);
+            buildPlexSettingsUI();
+        }
         else if (keyboardPurpose == NavidromeScreenHost.KEYBOARD_SEARCH) {
             changeScreen(STATE_NAVIDROME);
             if (navidromeScreenHost != null) {
                 navidromeScreenHost.finishSearchKeyboard(typedPassword.trim());
+            }
+        }
+        else if (keyboardPurpose == PlexScreenHost.KEYBOARD_SEARCH) {
+            changeScreen(STATE_PLEX);
+            if (plexScreenHost != null) {
+                plexScreenHost.finishSearchKeyboard(typedPassword.trim());
             }
         }
         else finishSoulseekPassEntry();
@@ -13196,7 +13796,6 @@ public class MainActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 int rowW = y1ActiveRowWidthPx();
-                layout.setBackground(getY1RowBackground(hasFocus, rowW, Y1_ROW_MENU));
                 applyY1ListRowStyle(layout, hasFocus, tvLeft,
                         (isFullWidthMenus && !submenu && !toggleRow) ? tvRight : null,
                         submenu ? rowArrow : null, Y1_ROW_MENU);
@@ -13207,15 +13806,20 @@ public class MainActivity extends Activity {
                     int idx = containerSettingsItems.indexOfChild(layout);
                     if (idx != -1) lastSettingsFocusIndex = idx;
                     if (settingsScrollView instanceof ScrollView) {
-                        FocusScrollHelper.scrollToChildBottom((ScrollView) settingsScrollView, layout);
+                        FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, layout);
                     }
                     refreshSettingsRowInline(rowKey);
                     if (!isFullWidthMenus && !settingsBrowseFullWidth) {
                         updateSettingsPreview(rowKey);
                     }
+                    // 2026-07-11 — Mirror settings preview into A5 bottom strip.
+                    if (A5PortraitChrome.usePortraitChrome(MainActivity.this)) {
+                        syncA5BottomStripFromSettings(rowKey);
+                    }
                 }
             }
         });
+        attachA5RowLongPress(layout);
         return layout;
     }
 
@@ -13223,6 +13827,8 @@ public class MainActivity extends Activity {
         if (currentScreenState == STATE_SETTINGS) {
             refreshSettingsRowInline(rowKey);
             if (!isFullWidthMenus && !settingsBrowseFullWidth) {
+                updateSettingsPreview(rowKey);
+            } else if (A5PortraitChrome.usePortraitChrome(this) && !settingsBrowseFullWidth) {
                 updateSettingsPreview(rowKey);
             }
         }
@@ -13257,24 +13863,45 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 2026-07-11 — Home/settings list column chrome: full-width vs dual-pane widths, left gutter,
+     * and flush vertical insets when Menu Item Padding is off.
+     * Flush: top margin = statusBar−1px (kiss bar edge); height fills to screen bottom.
+     * Padded: stock {@code y1_menu_*} gutters so masked dual-pane themes stay aligned.
+     * Reversal: always use statusH top + defaultMenuH/defaultSettingsH (pre-flush chrome).
+     */
     private void applyFullWidthMenusLayout() {
-        int menuLeft = (int) getResources().getDimension(R.dimen.y1_menu_left);
+        int menuLeftDimen = (int) getResources().getDimension(R.dimen.y1_menu_left);
         int defaultMenuW = (int) getResources().getDimension(R.dimen.y1_menu_width);
         int defaultSettingsW = (int) getResources().getDimension(R.dimen.y1_settings_menu_width);
         int defaultMenuH = (int) getResources().getDimension(R.dimen.y1_menu_height);
         int defaultSettingsH = (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
         int statusH = (int) getResources().getDimension(R.dimen.y1_status_bar_height);
+        // 2026-07-11 — Dual-pane left gutter + vertical flush when padding off.
+        boolean homePad = ThemeManager.isMenuItemPaddingEnabled(prefs, false);
+        boolean settingsPad = ThemeManager.isMenuItemPaddingEnabled(prefs, true);
+        int homeLeft = homePad ? menuLeftDimen : 0;
+        int settingsLeft = settingsPad ? menuLeftDimen : 0;
+        // Flush raises column 1px under the status bar; padded keeps stock statusH top.
+        int homeTop = homePad ? statusH : Math.max(0, statusH - 1);
+        int settingsTop = settingsPad ? statusH : Math.max(0, statusH - 1);
+        // Flush height fills remaining screen; padded dual-pane keeps short guttered column.
+        int homeHFlush = screenHeightPx > homeTop ? screenHeightPx - homeTop : defaultMenuH;
+        int settingsHFlush = screenHeightPx > settingsTop
+                ? screenHeightPx - settingsTop : defaultSettingsH;
         int fullMenuH = screenHeightPx > statusH ? screenHeightPx - statusH : defaultMenuH;
 
         if (isFullWidthMenus) {
             y1RowWidthPx = screenWidthPx > 0 ? screenWidthPx : defaultMenuW;
             settingsMenuWidthPx = y1RowWidthPx;
-            menuListHeightPx = fullMenuH;
+            menuListHeightPx = homePad ? fullMenuH : homeHFlush;
             listRowWidthPx = y1RowWidthPx;
         } else {
-            y1RowWidthPx = defaultMenuW;
-            settingsMenuWidthPx = defaultSettingsW;
-            menuListHeightPx = defaultMenuH;
+            // Flush left: grow column by the old gutter so selection bars reach the edge without shrinking text.
+            y1RowWidthPx = homePad ? defaultMenuW : defaultMenuW + menuLeftDimen;
+            settingsMenuWidthPx = settingsPad ? defaultSettingsW : defaultSettingsW + menuLeftDimen;
+            // 2026-07-11 — Flush also eats the ~8–10dp black strip under the dual-pane column.
+            menuListHeightPx = homePad ? defaultMenuH : homeHFlush;
             listRowWidthPx = (int) (getResources().getDimension(R.dimen.y1_screen_width)
                     - 20 * getResources().getDisplayMetrics().density);
         }
@@ -13283,8 +13910,9 @@ public class MainActivity extends Activity {
             FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) menuListHost.getLayoutParams();
             mlp.width = isFullWidthMenus
                     ? FrameLayout.LayoutParams.MATCH_PARENT : y1RowWidthPx;
-            mlp.height = isFullWidthMenus ? fullMenuH : defaultMenuH;
-            mlp.leftMargin = isFullWidthMenus ? 0 : menuLeft;
+            mlp.height = menuListHeightPx;
+            mlp.leftMargin = isFullWidthMenus ? 0 : homeLeft;
+            mlp.topMargin = homeTop;
             menuListHost.setLayoutParams(mlp);
         }
         if (settingsMenuHost != null) {
@@ -13292,10 +13920,14 @@ public class MainActivity extends Activity {
             boolean settingsWide = isFullWidthMenus || settingsAboutFullWidth || settingsBrowseFullWidth;
             slp.width = settingsWide
                     ? FrameLayout.LayoutParams.MATCH_PARENT : settingsMenuWidthPx;
-            slp.height = settingsWide && screenHeightPx > statusH
-                    ? screenHeightPx - statusH
-                    : (isFullWidthMenus ? fullMenuH : defaultSettingsH);
-            slp.leftMargin = settingsWide ? 0 : menuLeft;
+            // Wide or flush: fill under status; padded dual-pane keeps stock settings height.
+            if (settingsWide) {
+                slp.height = settingsPad ? fullMenuH : settingsHFlush;
+            } else {
+                slp.height = settingsPad ? defaultSettingsH : settingsHFlush;
+            }
+            slp.leftMargin = settingsWide ? 0 : settingsLeft;
+            slp.topMargin = settingsTop;
             settingsMenuHost.setLayoutParams(slp);
         }
         if (settingsPreviewPane != null) {
@@ -13313,7 +13945,7 @@ public class MainActivity extends Activity {
             } else if (canMorph && leavingBrowseFull && hidePreview == false) {
                 com.solar.launcher.ui.LayoutMorphTransition.morphFromFullWidth(
                         settingsMenuHost, settingsPreviewPane, ivScreenMask,
-                        defaultSettingsW, menuLeft, null);
+                        defaultSettingsW + (settingsPad ? 0 : menuLeftDimen), settingsLeft, null);
             } else {
                 settingsPreviewPane.setVisibility(hidePreview ? View.GONE : View.VISIBLE);
             }
@@ -13321,9 +13953,14 @@ public class MainActivity extends Activity {
             lastSettingsBrowseFullWidth = settingsBrowseFullWidth;
         }
         updateHomeMenuPreviewVisibility();
-        int settingsPanelH = (isFullWidthMenus || settingsAboutFullWidth || settingsBrowseFullWidth) && screenHeightPx > 0
-                ? screenHeightPx - (int) getResources().getDimension(R.dimen.y1_status_bar_height)
-                : (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+        // Panel backdrop matches host height (flush fills to bottom; padded keeps stock).
+        int settingsPanelH;
+        if ((isFullWidthMenus || settingsAboutFullWidth || settingsBrowseFullWidth)
+                && screenHeightPx > 0) {
+            settingsPanelH = settingsPad ? fullMenuH : settingsHFlush;
+        } else {
+            settingsPanelH = settingsPad ? defaultSettingsH : settingsHFlush;
+        }
         applyMenuPanelBackground(menuListHost, y1RowWidthPx, menuListHeightPx,
                 (int) getResources().getDimension(R.dimen.y1_menu_height));
         if (settingsMenuHost != null) {
@@ -13340,16 +13977,86 @@ public class MainActivity extends Activity {
         updateScreenBackground(currentScreenState);
         applyPodcastBrowserLayout();
         applySettingsListLayout();
+        applyA5PortraitChrome();
     }
 
+    /**
+     * 2026-07-11 — A5 portrait: full-width lists + bottom info strip; NP art stack.
+     * Layman: tall screen — menus use full width; hints sit in a strip at the bottom.
+     * Reversal: hide strip; leave dual-pane layout alone.
+     */
+    private void applyA5PortraitChrome() {
+        if (!DeviceFeatures.isA5()) {
+            if (a5BottomStrip != null) a5BottomStrip.setVisibility(View.GONE);
+            return;
+        }
+        boolean portrait = A5PortraitChrome.usePortraitChrome(this);
+        if (portrait) {
+            isFullWidthMenus = true;
+        }
+        A5PortraitChrome.apply(this, menuListHost, settingsMenuHost, settingsPreviewPane,
+                ivMenuPreview, tvMenuPreviewTitle, tvMenuPreviewArtist,
+                a5BottomStrip, ivA5StripIcon, tvA5StripTitle, tvA5StripHint,
+                settingsBrowseFullWidth);
+        A5PortraitChrome.applyNowPlayingPortrait(playerContentRow, playerAlbumContainer,
+                playerInfoColumn, portrait);
+        if (portrait && menuListHost != null) {
+            ViewGroup.LayoutParams raw = menuListHost.getLayoutParams();
+            if (raw instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams mlp = (FrameLayout.LayoutParams) raw;
+                mlp.bottomMargin = A5PortraitChrome.stripHeightPx(this);
+                menuListHost.setLayoutParams(mlp);
+            }
+        }
+        if (portrait && settingsMenuHost != null && !settingsBrowseFullWidth) {
+            ViewGroup.LayoutParams raw = settingsMenuHost.getLayoutParams();
+            if (raw instanceof FrameLayout.LayoutParams) {
+                FrameLayout.LayoutParams slp = (FrameLayout.LayoutParams) raw;
+                slp.bottomMargin = A5PortraitChrome.stripHeightPx(this);
+                settingsMenuHost.setLayoutParams(slp);
+            }
+        }
+    }
+
+    /** 2026-07-11 — Mirror home preview into A5 bottom strip when portrait. */
+    private void syncA5BottomStripFromHome() {
+        if (!A5PortraitChrome.usePortraitChrome(this)) return;
+        CharSequence title = tvMenuPreviewTitle != null ? tvMenuPreviewTitle.getText() : "";
+        CharSequence hint = tvMenuPreviewArtist != null ? tvMenuPreviewArtist.getText() : "";
+        A5PortraitChrome.bindHomeStrip(ivA5StripIcon, tvA5StripTitle, tvA5StripHint,
+                ivMenuPreview, title, hint);
+    }
+
+    /** 2026-07-11 — Mirror settings preview into A5 bottom strip when portrait. */
+    private void syncA5BottomStripFromSettings(String rowKey) {
+        if (!A5PortraitChrome.usePortraitChrome(this)) return;
+        CharSequence title = tvSettingsPreviewTitle != null ? tvSettingsPreviewTitle.getText() : "";
+        CharSequence hint = tvSettingsPreviewState != null ? tvSettingsPreviewState.getText() : "";
+        if ((title == null || title.length() == 0) && rowKey != null) {
+            title = rowKey;
+        }
+        A5PortraitChrome.bindSettingsStrip(ivA5StripIcon, tvA5StripTitle, tvA5StripHint,
+                ivSettingsPreviewIcon, title, hint);
+    }
+
+    /** 2026-07-11 — Themes ListView size tracks settings host (flush fills screen under status). */
     private void applySettingsListLayout() {
         if (listThemes == null) return;
         int w = isFullWidthMenus && screenWidthPx > 0
                 ? screenWidthPx : settingsMenuWidthPx;
         int statusH = (int) getResources().getDimension(R.dimen.y1_status_bar_height);
-        int h = isFullWidthMenus && screenHeightPx > statusH
-                ? screenHeightPx - statusH
+        boolean settingsPad = ThemeManager.isMenuItemPaddingEnabled(prefs, true);
+        int top = settingsPad ? statusH : Math.max(0, statusH - 1);
+        int flushH = screenHeightPx > top ? screenHeightPx - top
                 : (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+        int h;
+        if (!settingsPad) {
+            h = flushH;
+        } else if (isFullWidthMenus && screenHeightPx > statusH) {
+            h = screenHeightPx - statusH;
+        } else {
+            h = (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
+        }
         FrameLayout.LayoutParams themesLp = new FrameLayout.LayoutParams(w, h);
         listThemes.setLayoutParams(themesLp);
     }
@@ -13772,12 +14479,9 @@ public class MainActivity extends Activity {
         }
         try {
             if (ivPlayerBgBlur != null) {
-                if (playerAlbumBlurEnabled) {
-                    android.graphics.Bitmap blurredBg = applyGaussianBlur(bmpCenter);
-                    ivPlayerBgBlur.setImageBitmap(blurredBg);
-                } else {
-                    ivPlayerBgBlur.setImageResource(0);
-                }
+                // 2026-07-11 — Theme wall when blur off; blur when on (hasAlbumArtForBlur uses lastAlbumArtBytes).
+                lastAlbumArtBytes = artBytes;
+                bindPlayerBlurBackdrop();
             }
         } catch (Exception ignored) {}
         lastAlbumArtBytes = artBytes;
@@ -13996,6 +14700,7 @@ public class MainActivity extends Activity {
                 || RowKeys.STATUS_BAR_LEFT.equals(rowKey) || RowKeys.STATUS_BAR_MATCH_FONT.equals(rowKey)
                 || RowKeys.NOW_PLAYING_MATCH_FONT.equals(rowKey)
                 || RowKeys.FULL_WIDTH.equals(rowKey)
+                || RowKeys.MENU_ITEM_PADDING.equals(rowKey)
                 || RowKeys.INFINITE_SCROLL.equals(rowKey)
                 || RowKeys.MENU_TRANSITIONS.equals(rowKey)
                 || RowKeys.BACKGROUND.equals(rowKey) || RowKeys.THEMES.equals(rowKey)
@@ -14051,6 +14756,19 @@ public class MainActivity extends Activity {
         if (RowKeys.BUTTON_VIBRATE.equals(rowKey)) return stateOnOff(isVibrationEnabled);
         if (RowKeys.SCREEN_OFF_CTRL.equals(rowKey)) return stateOnOff(isScreenOffControlEnabled);
         if (RowKeys.Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) return stateOnOff(y2HoldOkToSleep);
+        if (RowKeys.A5_MENU_NAV.equals(rowKey)) {
+            return getString(A5NavigationMode.isFaceNav(this)
+                    ? R.string.settings_a5_menu_nav_face : R.string.settings_a5_menu_nav_side);
+        }
+        if (RowKeys.A5_ORIENTATION.equals(rowKey)) {
+            String mode = A5NavigationMode.orientation(this);
+            int label = A5NavigationMode.ORIENT_AUTO.equals(mode)
+                    ? R.string.settings_a5_orientation_auto
+                    : (A5NavigationMode.ORIENT_LANDSCAPE.equals(mode)
+                    ? R.string.settings_a5_orientation_landscape
+                    : R.string.settings_a5_orientation_portrait);
+            return getString(label);
+        }
         if (RowKeys.DEBUG_JJ_THEMES.equals(rowKey)) return stateOnOff(ActiveThemeEngine.isJjMode());
         if (RowKeys.DEBUG_WIRELESS_ADB.equals(rowKey)) {
             return stateOnOff(prefs != null && prefs.getBoolean("settings.debug.wireless_adb_enabled", true));
@@ -14068,7 +14786,16 @@ public class MainActivity extends Activity {
             return BluetoothAudioRepair.pairingPinForAddress(this, null);
         }
         if (RowKeys.DEBUG_RADIO_EXPERIMENT.equals(rowKey)) {
-            return stateOnOff(com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(prefs));
+            return stateOnOff(com.solar.launcher.radio.RadioExperiment.isEnabled(prefs));
+        }
+        if (RowKeys.DEBUG_YOUTUBE_EXPERIMENT.equals(rowKey)) {
+            return stateOnOff(com.solar.launcher.youtube.YouTubeExperiment.isEnabled(prefs));
+        }
+        if (RowKeys.DEBUG_ROCKBOX_EXPERIMENT.equals(rowKey)) {
+            return stateOnOff(RockboxExperiment.isEnabled(prefs));
+        }
+        if (RowKeys.DEBUG_PLEX_EXPERIMENT.equals(rowKey)) {
+            return stateOnOff(com.solar.launcher.plex.PlexExperiment.isEnabled(prefs));
         }
         if (RowKeys.DEBUG_USB_MASS_STORAGE_EXPERIMENT.equals(rowKey)) {
             return stateOnOff(UsbMassStorageExperiment.isEnabled(prefs));
@@ -14119,6 +14846,9 @@ public class MainActivity extends Activity {
             return stateOnOff(prefs != null && prefs.getBoolean(WifiSleepPolicy.PREF_ENABLED, true));
         }
         if (RowKeys.FULL_WIDTH.equals(rowKey)) return stateOnOff(isFullWidthMenus);
+        if (RowKeys.MENU_ITEM_PADDING.equals(rowKey)) {
+            return stateOnOff(ThemeManager.isMenuItemPaddingEnabled(prefs, false));
+        }
         if (RowKeys.INFINITE_SCROLL.equals(rowKey)) return stateOnOff(isInfiniteScroll);
         if (RowKeys.MENU_TRANSITIONS.equals(rowKey)) return stateOnOff(menuTransitionsEnabled);
         if (RowKeys.AUTO_FETCH.equals(rowKey)) return stateOnOff(isAutoFetchEnabled);
@@ -14188,6 +14918,9 @@ public class MainActivity extends Activity {
         if (RowKeys.STATUS_BAR_MATCH_FONT.equals(rowKey)) return stateOnOff(statusBarMatchFont);
         if (RowKeys.NOW_PLAYING_MATCH_FONT.equals(rowKey)) return stateOnOff(nowPlayingMatchFont);
         if (RowKeys.NOW_PLAYING_BACKDROP.equals(rowKey)) return stateOnOff(nowPlayingBackdrop);
+        if (RowKeys.SHOW_NOW_PLAYING_INFO.equals(rowKey)) {
+            return stateOnOff(ThemeManager.isShowNowPlayingInfoEnabled(prefs));
+        }
         if (RowKeys.NOW_PLAYING_LCD_ART.equals(rowKey)) return stateOnOff(nowPlayingLcdArt);
         if (RowKeys.NOW_PLAYING_3D_ALBUM_ART.equals(rowKey)) return stateOnOff(nowPlaying3dAlbumArt);
         if (SettingsScreens.LIBRARY_BROWSE.equals(settingsSubScreenKey)) {
@@ -14572,7 +15305,6 @@ public class MainActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 int rowW = y1ActiveRowWidthPx();
-                layout.setBackground(getY1RowBackground(hasFocus, rowW, Y1_ROW_MENU));
                 applyY1ListRowStyle(layout, hasFocus, tvLeft, showArrow ? null : tvRight,
                         showArrow ? rowArrow : null, Y1_ROW_MENU);
                 if (hasFocus && currentScreenState == STATE_SETTINGS && rowKey != null) {
@@ -14590,7 +15322,8 @@ public class MainActivity extends Activity {
     private void updateSettingsPreview(String rowKey) {
         if (tvSettingsPreviewTitle == null) return;
         if (isThemeGalleryActive() || isThemeVariantPickerActive()) return;
-        if (isFullWidthMenus || settingsBrowseFullWidth) {
+        boolean a5Strip = A5PortraitChrome.usePortraitChrome(this) && !settingsBrowseFullWidth;
+        if ((isFullWidthMenus || settingsBrowseFullWidth) && !a5Strip) {
             if (rowKey != null && rowKey.startsWith("home.shortcut.")
                     && SettingsScreens.isHome(settingsSubScreenKey)) {
                 View focused = getCurrentFocus();
@@ -14707,6 +15440,14 @@ public class MainActivity extends Activity {
             stateText = getString(R.string.settings_infinite_scroll_hint) + "\n\n"
                     + (stateText != null ? stateText : "");
         }
+        if (RowKeys.MENU_ITEM_PADDING.equals(rowKey)) {
+            boolean maskLocks = ThemeManager.menuItemPaddingForcedByMask(false)
+                    || ThemeManager.menuItemPaddingForcedByMask(true);
+            stateText = getString(maskLocks
+                    ? R.string.settings_menu_item_padding_mask_hint
+                    : R.string.settings_menu_item_padding_hint) + "\n\n"
+                    + (stateText != null ? stateText : "");
+        }
         if (RowKeys.DEBUG_WIRELESS_ADB.equals(rowKey)) {
             stateText = getString(R.string.settings_debug_wireless_adb_hint);
         }
@@ -14730,6 +15471,22 @@ public class MainActivity extends Activity {
         if (RowKeys.Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) {
             stateText = getString(R.string.settings_preview_y2_hold_ok_to_sleep);
         }
+        if (RowKeys.A5_MENU_NAV.equals(rowKey)) {
+            boolean face = A5NavigationMode.isFaceNav(this);
+            stateText = getString(face ? R.string.settings_a5_menu_nav_face
+                    : R.string.settings_a5_menu_nav_side)
+                    + "\n\n" + getString(R.string.settings_preview_a5_menu_nav);
+        }
+        if (RowKeys.A5_ORIENTATION.equals(rowKey)) {
+            String mode = A5NavigationMode.orientation(this);
+            int label = A5NavigationMode.ORIENT_AUTO.equals(mode)
+                    ? R.string.settings_a5_orientation_auto
+                    : (A5NavigationMode.ORIENT_LANDSCAPE.equals(mode)
+                    ? R.string.settings_a5_orientation_landscape
+                    : R.string.settings_a5_orientation_portrait);
+            stateText = getString(label)
+                    + "\n\n" + getString(R.string.settings_preview_a5_orientation);
+        }
         if (RowKeys.REPORT_ISSUE.equals(rowKey) && settingsSubScreenKey == null) {
             stateText = getString(R.string.support_link_report_issue_intro) + "\n\n"
                     + SolarSupportLinks.githubIssuesUrlForDisplay();
@@ -14748,6 +15505,7 @@ public class MainActivity extends Activity {
             if (tvSettingsPreviewTitle != null) tvSettingsPreviewTitle.setVisibility(View.GONE);
             if (settingsPreviewStateScroll != null) settingsPreviewStateScroll.setVisibility(View.GONE);
         }
+        if (a5Strip) syncA5BottomStripFromSettings(rowKey);
     }
 
     private String formatStorageLines(long total, long used, long avail) {
@@ -14879,13 +15637,12 @@ public class MainActivity extends Activity {
             clockHandler.removeCallbacks(centerMovePickRunnable);
             clockHandler.removeCallbacks(centerLongPressRunnable);
             clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
-            if (y2CenterOpensContextMenu()) {
-                clockHandler.postDelayed(centerLongPressRunnable, CENTER_LONG_PRESS_MS);
-            }
             if (isKeyboardDelSelected()) {
                 clockHandler.postDelayed(keyboardDelRepeatRunnable, 80);
             } else if (canScheduleCenterMovePick()) {
                 clockHandler.postDelayed(centerMovePickRunnable, CENTER_MOVE_HOLD_MS);
+            } else if (y2CenterOpensContextMenu()) {
+                clockHandler.postDelayed(centerLongPressRunnable, CENTER_LONG_PRESS_MS);
             }
         }
         return true;
@@ -15041,17 +15798,8 @@ public class MainActivity extends Activity {
                 clickFeedback();
                 return true;
             }
-            if (isMediaPlayPauseKey(event.getKeyCode())) {
-                if (!playback.isRadioActive()) {
-                    if (playerScrubCursorActive) {
-                        commitPlayerScrubCursor();
-                    } else {
-                        enterPlayerScrubCursorMode();
-                    }
-                    clickFeedback();
-                    return true;
-                }
-            }
+            // 2026-07-10 — Play/pause on NP is transport (handlePlayPauseKeyUp), not scrub.
+            // Scrub remains Center/OK only. Dead branch kept for clarity if PP ever reaches here.
         }
         if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER && mediaSuite != null
                 && isCenterKey(event.getKeyCode())) {
@@ -15220,9 +15968,9 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 if (row.requestFocus()) {
-                    if (containerSettingsItems.getParent() instanceof android.widget.ScrollView) {
-                        ((android.widget.ScrollView) containerSettingsItems.getParent())
-                                .requestChildFocus(containerSettingsItems, row);
+                    // 2026-07-11 — Edge-only ensure; was requestChildFocus.
+                    if (settingsScrollView instanceof ScrollView) {
+                        FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, row);
                     }
                     lastSettingsFocusIndex = i;
                     return true;
@@ -15238,10 +15986,7 @@ public class MainActivity extends Activity {
                 continue;
             }
             if (!next.requestFocus()) continue;
-            if (containerSettingsItems.getParent() instanceof android.widget.ScrollView) {
-                ((android.widget.ScrollView) containerSettingsItems.getParent())
-                        .requestChildFocus(containerSettingsItems, next);
-            }
+            // 2026-07-11 — Dropped requestChildFocus; ensureChildVisible below is edge-only.
             if (SettingsScreens.HOME.equals(settingsSubScreenKey)) {
                 homeScreenEditorFocusIndex = i;
             }
@@ -15251,7 +15996,7 @@ public class MainActivity extends Activity {
                 updateSettingsPreview((String) tag);
             }
             if (settingsScrollView instanceof ScrollView) {
-                FocusScrollHelper.scrollToChildBottom((ScrollView) settingsScrollView, next);
+                FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, next);
             }
             // #region agent log
             try {
@@ -15275,10 +16020,7 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 if (!next.requestFocus()) continue;
-                if (containerSettingsItems.getParent() instanceof android.widget.ScrollView) {
-                    ((android.widget.ScrollView) containerSettingsItems.getParent())
-                            .requestChildFocus(containerSettingsItems, next);
-                }
+                // 2026-07-11 — Edge-only; was requestChildFocus.
                 if (SettingsScreens.HOME.equals(settingsSubScreenKey)) {
                     homeScreenEditorFocusIndex = i;
                 }
@@ -15288,7 +16030,7 @@ public class MainActivity extends Activity {
                     updateSettingsPreview((String) tag);
                 }
                 if (settingsScrollView instanceof ScrollView) {
-                    FocusScrollHelper.scrollToChildBottom((ScrollView) settingsScrollView, next);
+                    FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, next);
                 }
                 return true;
             }
@@ -15345,6 +16087,13 @@ public class MainActivity extends Activity {
                 }
                 // ponytail: recognise back button as valid focus on Soulseek/Reach screens
                 if (btnConversationBack != null && focused == btnConversationBack) return true;
+                // 2026-07-11 — Get Music / Reach search / action sheets use browser ScrollView.
+                // Was: return false → every wheel tick reseeded to first row (unreachable results).
+                // Reversal: drop layoutBrowserMode check if search moves to listReachBrowse only.
+                if (layoutBrowserMode != null && layoutBrowserMode.getVisibility() == View.VISIBLE
+                        && focused != null && isViewDescendantOf(focused, layoutBrowserMode)) {
+                    return true;
+                }
                 return false;
             case STATE_WIFI:
                 if (focused != null && focused.isShown() && focused.isFocusable()) {
@@ -15385,7 +16134,7 @@ public class MainActivity extends Activity {
     private void scrollBrowserRowIntoView(View row, ViewGroup parent) {
         if (row == null || parent != containerBrowserItems || scrollViewBrowser == null) return;
         if (scrollViewBrowser instanceof android.widget.ScrollView) {
-            FocusScrollHelper.scrollToChildBottom((android.widget.ScrollView) scrollViewBrowser, row);
+            FocusScrollHelper.ensureChildVisible((android.widget.ScrollView) scrollViewBrowser, row);
         }
     }
 
@@ -15397,7 +16146,7 @@ public class MainActivity extends Activity {
             if (pos < 0) pos = 0;
             if (pos >= listVirtualSongs.getCount()) pos = listVirtualSongs.getCount() - 1;
             final int target = pos;
-            listVirtualSongs.setSelection(target);
+            FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, target);
             listVirtualSongs.requestFocus();
             listVirtualSongs.post(new Runnable() {
                 @Override
@@ -15429,7 +16178,7 @@ public class MainActivity extends Activity {
             if (pos < 0) pos = 0;
             if (pos >= listConversationThread.getCount()) pos = listConversationThread.getCount() - 1;
             final int target = pos;
-            listConversationThread.setSelection(target);
+            FocusScrollHelper.ensureListPositionVisible(listConversationThread, target);
             listConversationThread.requestFocus();
             listConversationThread.post(new Runnable() {
                 @Override
@@ -15450,7 +16199,7 @@ public class MainActivity extends Activity {
             if (pos < 0) pos = 0;
             if (pos >= listReachBrowse.getCount()) pos = listReachBrowse.getCount() - 1;
             final int target = pos;
-            listReachBrowse.setSelection(target);
+            FocusScrollHelper.ensureListPositionVisible(listReachBrowse, target);
             listReachBrowse.requestFocus();
             listReachBrowse.post(new Runnable() {
                 @Override
@@ -15465,6 +16214,9 @@ public class MainActivity extends Activity {
             });
             return;
         }
+        // 2026-07-11 — Get Music / Reach search ScrollView: same as browser states.
+        // Was: no fallthrough → dismiss left focus nowhere / first-row trap.
+        ensureBrowserListFocus();
     }
 
     private void restoreFocusAfterContextMenuDismiss() {
@@ -15964,48 +16716,6 @@ public class MainActivity extends Activity {
             }
         });
 
-        if (LauncherSwitch.isSwitchScriptAvailable()) {
-            boolean rockboxFg = LauncherSwitch.isRockboxForeground(this);
-            boolean jjFg = LauncherSwitch.isJjForeground(this);
-            if (rockboxFg || jjFg) {
-                headers.add(Boolean.FALSE);
-                labels.add(getString(R.string.settings_switch_back_to_solar));
-                states.add(null);
-                actions.add(new Runnable() {
-                    @Override public void run() {
-                        suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
-                        dismissThemedContextMenu();
-                        PowerActions.switchToSolar(MainActivity.this);
-                    }
-                });
-            } else {
-                if (LauncherSwitch.isRockboxAvailable(this)) {
-                    headers.add(Boolean.FALSE);
-                    labels.add(getString(R.string.settings_switch_rockbox));
-                    states.add(null);
-                    actions.add(new Runnable() {
-                        @Override public void run() {
-                            suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
-                            dismissThemedContextMenu();
-                            launchRockboxSwitch();
-                        }
-                    });
-                }
-                if (JjLauncherAvailability.isOfferVisible(this)) {
-                    headers.add(Boolean.FALSE);
-                    labels.add(getString(R.string.settings_home_launcher_switch_jj));
-                    states.add(null);
-                    actions.add(new Runnable() {
-                        @Override public void run() {
-                            suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
-                            dismissThemedContextMenu();
-                            launchJjSwitch();
-                        }
-                    });
-                }
-            }
-        }
-
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
@@ -16487,12 +17197,9 @@ public class MainActivity extends Activity {
         restoreContextMenuRootOptions(focusList);
     }
 
-    /**
-     * Rebuild root context action rows without closing the modal (shuffle/repeat toggles).
-     */
     private void refreshContextRootOptionsInPlace() {
-        if (themedContextMenu == null || !themedContextMenu.isShowing()) return;
         if (hasContextActiveTier()) return;
+        if (themedContextMenu == null || !themedContextMenu.isShowing()) return;
         populateContextMenu();
         themedContextMenu.hideSlider();
         themedContextMenu.setSubmenuTierOpen(false);
@@ -16510,10 +17217,6 @@ public class MainActivity extends Activity {
         refreshContextQuickBarIfShowing();
     }
 
-    /**
-     * Rebuild the screen-specific context action list (Now Playing shuffle/repeat, Back to library, …).
-     * Quick-bar-only when the current screen has no contextual rows.
-     */
     private void restoreContextMenuRootOptions(boolean focusList) {
         if (themedContextMenu == null || !themedContextMenu.isShowing()) return;
         populateContextMenu();
@@ -18544,6 +19247,9 @@ public class MainActivity extends Activity {
             d.put("screen", currentScreenState);
             d.put("overlayBlock", ExternalInputHandoff.isBlockedByGlobalOverlay());
             DebugE47f4cLog.log("MainActivity.onWindowFocusChanged", "focus", "H1-H3", d);
+            d.put("overlayOwners", blockingOverlayOwners);
+            d.put("scanRunning", libraryScanRunning);
+            Debug383b4eLog.log(this, "MainActivity.onWindowFocusChanged", "focus", "A,D", d);
         } catch (Exception ignored) {}
         // #endregion
         if (hasFocus) {
@@ -18551,6 +19257,9 @@ public class MainActivity extends Activity {
             // 2026-07-06 — MTK FM fallback: restore airplane/Wi‑Fi/BT when user returns.
             com.solar.launcher.radio.fm.FmAirplaneModeHelper.endMtkFallbackSession(this);
         } else {
+            // 2026-07-08 — Losing focus: cancel sticky BACK hold so hint/restart cannot fire without key.
+            // Was: backKeyHeld stayed true when overlay/USB stole focus before KEY_UP arrived.
+            clearBackHoldRescueTimers("onWindowFocusChanged-lost");
             // 2026-07-06 — JJ HOME or stock app foreground while Solar process stays alive.
             ExternalInputHandoff.armForForegroundPackage(this);
         }
@@ -18800,8 +19509,17 @@ public class MainActivity extends Activity {
         if (isUsbLockContextMenuActive()) {
             return;
         }
-        if (usbMassStorageLocked || currentScreenState == STATE_USB_STORAGE) {
-            enterUsbMassStorageLock();
+        // 2026-07-10 — Solar STATE_USB_STORAGE owns lock UI (July-2 monlith restore).
+        // Was: companion chip modal race with MainActivity.
+        if (isUsbMassStorageActive() || currentScreenState == STATE_USB_STORAGE) {
+            if (UsbMassStorageController.isMassStorageExported()
+                    || UsbMassStorageController.isKernelMassStorageMode()
+                    || currentScreenState == STATE_USB_STORAGE
+                    || usbMassStorageLocked) {
+                enterUsbMassStorageLock();
+            } else {
+                clearStaleUsbMassStorageLockIfNeeded();
+            }
             return;
         }
         if (!fromConnectEvent) {
@@ -18863,13 +19581,19 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * True while user is in USB storage mode (July-2 sticky flags + real LUN export).
+     * Layman: after Turn on, stays "active" until Turn Off even while kernel is still binding.
+     */
     private boolean isUsbMassStorageActive() {
-        return usbMassStorageLocked || cachedUmsExported;
+        if (usbMassStorageLocked || currentScreenState == STATE_USB_STORAGE) return true;
+        if (UsbMassStorageController.isMassStorageExported()) return true;
+        return cachedUmsExported;
     }
 
-    /** Solar USB storage lock UI — block navigation away and gate queue/player context actions. */
+    /** Solar USB storage lock UI — block navigation while eject screen / UMS active. */
     private boolean isUsbMassStorageUiLocked() {
-        return usbMassStorageLocked || currentScreenState == STATE_USB_STORAGE;
+        return isUsbMassStorageActive();
     }
 
     private boolean isSystemUsbMassStorageExported() {
@@ -19025,6 +19749,7 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // July-2 monlith: Solar themed context menu owns the enable prompt (not companion).
         if (fromConnectEvent) {
             if (usbDialogShownThisConnection) {
                 // #region agent log
@@ -19039,7 +19764,7 @@ public class MainActivity extends Activity {
             usbDialogShownThisConnection = true;
             UsbHostSessionPolicy.markPromptEvaluated(this);
         } else if (!fromConnectEvent && usbDialogShownThisConnection && !isUsbMassStorageActive()) {
-            // ponytail: one offer per connect — focus intercept must not re-open the enable dialog.
+            // One offer per connect — focus intercept must not re-open the enable dialog.
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -19092,69 +19817,47 @@ public class MainActivity extends Activity {
         showUsbMassStorageDialog();
     }
 
-    /** ponytail: check sysfs backing file directly for massive speedup, falling back to su dumpsys only if needed */
+    /**
+     * True only when kernel is mass_storage AND a LUN is bound (PC can see a disk).
+     * 2026-07-10 — Was: any non-empty lun/file → true even on MTP with stale sysfs → false lock.
+     * Now: {@link UsbMassStorageController#isMassStorageExported()} only.
+     */
     private boolean querySystemUsbMassStorageExported() {
-        for (String path : new String[]{
-                "/sys/class/android_usb/android0/f_mass_storage/lun/file",
-                "/sys/class/android_usb/android0/f_mass_storage/lun0/file",
-                "/sys/class/android_usb/android0/f_mass_storage/lun1/file"
-        }) {
-            java.io.File file = new java.io.File(path);
-            if (file.exists() && file.canRead()) {
-                java.io.BufferedReader reader = null;
-                try {
-                    reader = new java.io.BufferedReader(new java.io.FileReader(file));
-                    String line = reader.readLine();
-                    if (line != null && line.trim().length() > 0) {
-                        return true;
-                    }
-                } catch (Exception ignored) {
-                } finally {
-                    if (reader != null) {
-                        try { reader.close(); } catch (Exception ignored) {}
-                    }
-                }
-            }
-        }
-
-        java.io.BufferedReader br = null;
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c",
-                    "cat /sys/class/android_usb/android0/f_mass_storage/lun*/file 2>/dev/null"});
-            br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (line.trim().length() > 0) {
-                    return true;
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (br != null) {
-                try { br.close(); } catch (Exception ignored) {}
-            }
-        }
-
-        try {
-            Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys usb"});
-            br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-            String line;
-            while ((line = br.readLine()) != null) {
-                if (line.contains("Mass storage backing file:")) {
-                    String path = line.substring(line.indexOf(':') + 1).trim();
-                    return path.length() > 0;
-                }
-            }
-        } catch (Exception ignored) {
-        } finally {
-            if (br != null) {
-                try { br.close(); } catch (Exception ignored) {}
-            }
-        }
-        return false;
+        return UsbMassStorageController.isMassStorageExported();
     }
 
-    /** Mass-storage lock: one screen, no Reach/Deezer/playback until user turns UMS off. */
+    /**
+     * Clear sticky USB lock when LUN is not exported and user is not mid-enable.
+     * Layman: fake "USB storage in use" goes away; real Turn on screen stays until Turn Off.
+     */
+    private void clearStaleUsbMassStorageLockIfNeeded() {
+        if (!usbMassStorageLocked && !cachedUmsExported
+                && currentScreenState != STATE_USB_STORAGE) {
+            return;
+        }
+        if (UsbMassStorageController.isMassStorageExported()) return;
+        // User intentionally on eject screen (Turn on just pressed / lock painted) — keep it.
+        if (currentScreenState == STATE_USB_STORAGE && usbMassStorageLocked) {
+            return;
+        }
+        // Kernel mass_storage without LUN still blocks SD — tear down and unlock.
+        if (UsbMassStorageController.isKernelMassStorageMode()) {
+            final Context app = getApplicationContext();
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    UsbMassStorageController.disable(app);
+                }
+            }, "UsbStaleUmsClear").start();
+        }
+        onExternalUsbStorageUnlock();
+        UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(this);
+    }
+
+    /**
+     * Mass-storage lock: Solar STATE_USB_STORAGE eject screen (July-2 monlith).
+     * Layman: stays until Turn Off or unplug — no companion overlay.
+     */
     private void enterUsbMassStorageLock() {
         // #region agent log
         try {
@@ -19167,6 +19870,8 @@ public class MainActivity extends Activity {
             Debug266f21Log.log(this, "MainActivity.enterUsbMassStorageLock", "lock enter", "H4,H5", d);
         } catch (Exception ignored) {}
         // #endregion
+        // Drop any companion USB shell that might still be up from older builds.
+        UsbStorageOverlayReceiver.dismissCompanionShell(this);
         cancelLibraryScanGracefully("usb_storage_lock");
         boolean alreadyOnScreen = currentScreenState == STATE_USB_STORAGE;
         boolean firstEnter = !usbMassStorageLocked;
@@ -19189,7 +19894,10 @@ public class MainActivity extends Activity {
         } else {
             buildUsbStorageUI();
         }
-        cachedUmsExported = true;
+        // Optimistic while enable is in flight; probe will correct on refresh.
+        if (UsbMassStorageController.isMassStorageExported()) {
+            cachedUmsExported = true;
+        }
         SystemUiUsbSuppressor.dismissNow(this);
     }
 
@@ -19877,6 +20585,23 @@ public class MainActivity extends Activity {
     private void showContextMenuTierInPlace(String title, java.util.List<String> labels,
             java.util.List<String> stateTexts, java.util.List<String> iconKeys,
             java.util.List<Boolean> headers, final java.util.List<Runnable> actions, boolean resetFocus) {
+        // 2026-07-08 — Mirror tier into global overlay arrays, then refresh WM modal.
+        // Was: only themedContextMenu.replaceListContent (in-app). Now: OverlayTriggers when session live.
+        // Reversal: delete solarHomeOverlaySessionId branch — tiers paint in MainActivity again.
+        contextMenuLabels.clear();
+        contextMenuIconKeys.clear();
+        contextMenuStateTexts.clear();
+        contextMenuHeaders.clear();
+        contextMenuActions.clear();
+        contextMenuKeepOpen.clear();
+        for (int i = 0; i < labels.size(); i++) {
+            contextMenuLabels.add(labels.get(i));
+            contextMenuIconKeys.add(iconKeys != null && i < iconKeys.size() ? iconKeys.get(i) : null);
+            contextMenuStateTexts.add(stateTexts != null && i < stateTexts.size() ? stateTexts.get(i) : null);
+            contextMenuHeaders.add(i < headers.size() ? headers.get(i) : Boolean.FALSE);
+            contextMenuActions.add(actions != null && i < actions.size() ? actions.get(i) : null);
+            contextMenuKeepOpen.add(Boolean.FALSE);
+        }
         String[] arr = labels.toArray(new String[labels.size()]);
         String[] states = stateTexts.toArray(new String[stateTexts.size()]);
         String[] icons = iconKeys != null ? iconKeys.toArray(new String[iconKeys.size()]) : null;
@@ -20185,15 +20910,15 @@ public class MainActivity extends Activity {
         clickFeedback();
     }
 
-    /** Y1 wheel OK is often MEDIA_PLAY_PAUSE — short tap should confirm, not transport. */
+    /**
+     * 2026-07-10 — Wheel press is MEDIA_PLAY_PAUSE (85): never list/menu OK.
+     * Layman: play/pause always toggles playback; hold opens Flow when enabled.
+     * Was: empty-queue lists treated short PP as center confirm (opened rows).
+     * Center/OK remains ENTER / DPAD_CENTER only ({@link #isCenterKey}).
+     * Reversal: restore screen-based true for library/home if product wants dual-use OK.
+     */
     private boolean shouldRoutePlayPauseAsCenterConfirm() {
-        if (themedContextMenu != null && themedContextMenu.isShowing()) return false;
-        if (currentScreenState == STATE_PLAYER) return false;
-        if (currentScreenState == STATE_FLOW) return false;
-        if (currentScreenState == STATE_WIFI_KEYBOARD) return false;
-        if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER) return false;
-        if (currentScreenState == STATE_BRIGHTNESS || currentScreenState == STATE_STORAGE) return false;
-        return true;
+        return false;
     }
 
     private boolean handlePlayPauseKeyUp() {
@@ -20201,7 +20926,7 @@ public class MainActivity extends Activity {
         clockHandler.removeCallbacks(globalPpFlowHoldRunnable);
         boolean willToggle = !globalPpLongFlowHandled && globalPpKeyDownAt > 0
                 && System.currentTimeMillis() - globalPpKeyDownAt < FLOW_LAUNCH_HOLD_MS;
-        // 2026-07-06 — Xposed/WM sometimes drops KEY_DOWN; still honor short OK on KEY_UP.
+        // 2026-07-06 — Xposed/WM sometimes drops KEY_DOWN; still honor short press on KEY_UP.
         if (!willToggle && !globalPpLongFlowHandled && globalPpKeyDownAt <= 0) {
             willToggle = true;
         }
@@ -20209,6 +20934,7 @@ public class MainActivity extends Activity {
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("willToggle", willToggle);
+            d.put("longFlow", globalPpLongFlowHandled);
             d.put("contextMenu", themedContextMenu != null && themedContextMenu.isShowing());
             d.put("queueTier", contextMenuInQueueTier);
             d.put("queueMoveFrom", contextQueueMoveFrom);
@@ -20217,23 +20943,29 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
         // #endregion
         if (willToggle) {
-            if (System.currentTimeMillis() < suppressPlayPauseAfterNavidromeSelectUntil
-                    || navidromeListConsumesPlayPause()) {
+            // 2026-07-10 — Brief suppress only right after Navidrome row select (center OK),
+            // so the same physical press cannot double-fire play. Never use PP as list confirm.
+            if (System.currentTimeMillis() < suppressPlayPauseAfterNavidromeSelectUntil) {
                 // #region agent log
                 try {
                     org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("navidromeList", navidromeListConsumesPlayPause());
                     d.put("suppressedMs", suppressPlayPauseAfterNavidromeSelectUntil - System.currentTimeMillis());
                     com.solar.launcher.debug.AgentDebugLog.log(
-                            "MainActivity.handlePlayPauseKeyUp", "F", "pp blocked for navidrome", d);
+                            "MainActivity.handlePlayPauseKeyUp", "F", "pp suppress after navidrome select", d);
                 } catch (Exception ignored) {}
                 // #endregion
-            } else if (shouldRoutePlayPauseAsCenterConfirm() && (!playback.isFmActive() || mediaSuite == null || mediaSuite.radioScrubMode != com.solar.launcher.radio.RadioScrubMode.TUNE_FM)) {
-                handleCenterShortClick();
-                clickFeedback();
-            } else {
+            } else if (currentScreenState != STATE_FLOW) {
+                // Always transport — never handleCenterShortClick from play/pause (2026-07-10).
                 playOrPauseMusic();
                 clickFeedback();
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("screen", currentScreenState);
+                    d.put("route", "transport");
+                    Debug62b1bbLog.log("MainActivity.handlePlayPauseKeyUp", "pp transport", "H-PP-1", d);
+                } catch (Exception ignored) {}
+                // #endregion
             }
         }
         globalPpKeyDownAt = 0;
@@ -20410,26 +21142,40 @@ public class MainActivity extends Activity {
         // #endregion
     }
 
-    /** Settings → Auto-Connect ON — enable UMS without showing the enable dialog (2026-07-06). */
+    /**
+     * Settings → Auto-Connect ON — paint lock immediately, enable UMS in background (July-2 style).
+     */
     private void enableUsbMassStorageAutoConnect() {
         if (!isUsbAutoConnectEnabled()) return;
         if (!UsbMassStorageExperiment.isEnabled(this)) return;
+        if (usbFocusHelper != null) {
+            usbFocusHelper.clearHostInterceptDecline();
+        }
+        // Paint eject screen first so the user is never left without UI while UMS binds.
         enterUsbMassStorageLock();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                UsbMassStorageController.enable(MainActivity.this, "auto.main");
+                final boolean ok = UsbMassStorageController.enable(MainActivity.this, "auto.main");
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         SystemUiUsbSuppressor.dismissNow(MainActivity.this);
+                        if (!ok && !UsbMassStorageController.isMassStorageExported()) {
+                            onExternalUsbStorageUnlock();
+                        } else {
+                            cachedUmsExported = UsbMassStorageController.isMassStorageExported();
+                        }
                     }
                 });
             }
         }, "UsbAutoConnectEnable").start();
     }
 
-    /** User tapped Turn on USB storage — explicit consent (context menu / settings). */
+    /**
+     * User tapped Turn on USB storage — July-2 monlith: lock screen first, then enable UMS.
+     * Layman: dialog closes → eject screen stays until Turn Off or unplug.
+     */
     private void enableUsbMassStorageFromRoot() {
         // #region agent log
         try {
@@ -20446,7 +21192,6 @@ public class MainActivity extends Activity {
         if (usbFocusHelper != null) {
             usbFocusHelper.clearHostInterceptDecline();
         }
-        enterUsbMassStorageLock();
         // #region agent log
         try {
             org.json.JSONObject d = Debug705932Log.usbSnapshot();
@@ -20458,16 +21203,19 @@ public class MainActivity extends Activity {
                     "user explicit enable", "USB-CONSENT", d);
         } catch (Exception ignored) {}
         // #endregion
+        // July-2: show STATE_USB_STORAGE immediately, enable kernel UMS in the background.
+        enterUsbMassStorageLock();
         new Thread(new Runnable() {
             @Override
             public void run() {
-                boolean ok = UsbMassStorageController.enable(MainActivity.this, "user.main.explicit");
+                final boolean ok = UsbMassStorageController.enable(MainActivity.this, "user.main.explicit");
+                final boolean exported = UsbMassStorageController.isMassStorageExported();
                 // #region agent log
                 try {
                     org.json.JSONObject d = Debug705932Log.usbSnapshot();
                     d.put("enableOk", ok);
                     d.put("kernelUms", UsbMassStorageController.isKernelMassStorageMode());
-                    d.put("exported", UsbMassStorageController.isMassStorageExported());
+                    d.put("exported", exported);
                     Debug705932Log.log("MainActivity.enableUsbMassStorageFromRoot", "after enable", "H2,H3", d);
                 } catch (Exception ignored) {}
                 // #endregion
@@ -20475,39 +21223,97 @@ public class MainActivity extends Activity {
                     @Override
                     public void run() {
                         SystemUiUsbSuppressor.dismissNow(MainActivity.this);
+                        if (ok || exported || UsbMassStorageController.isKernelMassStorageMode()) {
+                            cachedUmsExported = exported || ok;
+                            return;
+                        }
+                        // Enable failed — leave lock screen so the user is not stuck.
+                        onExternalUsbStorageUnlock();
+                        Toast.makeText(MainActivity.this,
+                                R.string.usb_storage_enable_failed, Toast.LENGTH_LONG).show();
                     }
                 });
             }
         }, "UsbUserEnable").start();
     }
 
-    /** Xposed/overlay handoff extras — lock screen or auto-connect enable (2026-07-06). */
+    /**
+     * Sole consumer of USB handoff extras — clears single-flight so USB_STATE will not re-prompt.
+     * enable+lock → auto-connect; enable only → user confirmed Turn on; lock only → block screen;
+     * evaluate_host → show enable dialog once.
+     */
     private void routeUsbOverlayLaunchExtras(Intent intent) {
         if (intent == null) return;
-        if (intent.getBooleanExtra(EXTRA_USB_OVERLAY_LOCK, false)) {
+        boolean lock = intent.getBooleanExtra(EXTRA_USB_OVERLAY_LOCK, false);
+        boolean enable = intent.getBooleanExtra(EXTRA_USB_OVERLAY_ENABLE, false);
+        boolean evaluate = intent.getBooleanExtra(EXTRA_USB_EVALUATE_HOST, false);
+        if (!lock && !enable && !evaluate) return;
+        if (lock) {
             intent.removeExtra(EXTRA_USB_OVERLAY_LOCK);
-            enterUsbMassStorageLock();
         }
-        if (intent.getBooleanExtra(EXTRA_USB_OVERLAY_ENABLE, false)) {
+        if (enable) {
             intent.removeExtra(EXTRA_USB_OVERLAY_ENABLE);
-            if (UsbStorageSessionFlags.isAutoConnectEnabled(this)) {
-                enableUsbMassStorageAutoConnect();
+        }
+        if (evaluate) {
+            intent.removeExtra(EXTRA_USB_EVALUATE_HOST);
+        }
+        UsbStorageOverlayReceiver.clearHandoffInFlight();
+        if (lock || enable) {
+            applyUsbHandoffFromExternal(enable, lock);
+            return;
+        }
+        if (evaluate) {
+            // Bare evaluate — show enable prompt once if host is connected.
+            if (usbFocusHelper != null && usbFocusHelper.isHostConnected()) {
+                ensureUsbHostInterceptUi(true);
+            } else {
+                routeUsbHostInterceptUi(true);
             }
         }
     }
 
+    /**
+     * In-process USB handoff from UsbStorageOverlayReceiver / Xposed (July-2 monlith).
+     * enable+lock → auto-connect; enable only → enable prompt; lock only → block screen.
+     */
+    void applyUsbHandoffFromExternal(boolean enable, boolean lock) {
+        if (lock && !enable) {
+            if (UsbMassStorageController.isMassStorageExported()
+                    || UsbMassStorageController.isKernelMassStorageMode()
+                    || usbMassStorageLocked) {
+                enterUsbMassStorageLock();
+            } else {
+                clearStaleUsbMassStorageLockIfNeeded();
+            }
+            return;
+        }
+        if (enable && lock) {
+            enableUsbMassStorageAutoConnect();
+            return;
+        }
+        if (enable) {
+            if (isUsbAutoConnectEnabled()) {
+                enableUsbMassStorageAutoConnect();
+            } else if (!isUsbEnablePromptShowing() && !isUsbMassStorageUiLocked()) {
+                showUsbMassStorageDialog();
+            }
+        }
+    }
+
+    /** Package-visible for UsbStorageOverlayReceiver when MainActivity is already alive. */
+    void enterUsbMassStorageLockFromExternal() {
+        enterUsbMassStorageLock();
+    }
+
     private void disableUsbMassStorageFromRoot() {
+        final Context app = getApplicationContext();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 boolean ok = false;
                 String err = null;
                 try {
-                    String apkPath = getPackageCodePath();
-                    String cmd = "export CLASSPATH=" + apkPath
-                            + " && app_process /system/bin com.solar.launcher.UmsEnabler 0";
-                    int code = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd}).waitFor();
-                    ok = code == 0;
+                    ok = UsbMassStorageController.disable(app);
                 } catch (Exception e) {
                     err = e.getMessage();
                 }
@@ -20526,20 +21332,26 @@ public class MainActivity extends Activity {
                             DebugSessionLog.log("MainActivity.disableUsbMassStorageFromRoot", "done", "H-USB-OFF", d);
                         } catch (Exception ignored) {}
                         // #endregion
+                        // Mark session dismissed so reconnect does not immediately re-prompt.
+                        UsbHostSessionPolicy.markUserDismissed(MainActivity.this);
+                        usbDialogDismissedThisConnection = true;
                         usbMassStorageLocked = false;
+                        cachedUmsExported = false;
                         settingsBrowseFullWidth = false;
                         lastUmsProbeMs = 0L;
-                        if (currentScreenState == STATE_USB_STORAGE) {
-                            changeScreen(STATE_MENU);
+                        ThemeManager.setBlockSdcardThemeAssets(false);
+                        if (usbFocusHelper != null) {
+                            usbFocusHelper.setMassStorageInterceptActive(false);
                         }
-                        if (usbFocusHelper != null && usbFocusHelper.isHostConnected()
-                                && !usbDialogDismissedThisConnection) {
-                            ensureUsbHostInterceptUi(false);
+                        if (currentScreenState == STATE_USB_STORAGE) {
+                            int dest = usbReturnScreen != 0 ? usbReturnScreen : STATE_MENU;
+                            usbReturnScreen = STATE_MENU;
+                            changeScreen(dest);
                         }
                     }
                 });
             }
-        }).start();
+        }, "UsbUserDisable").start();
     }
 
     private static String readGetprop(String key) {
@@ -20559,21 +21371,30 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 2026-07-05 — Y2 PWM legacy path: OPEN_CONTEXT_MENU + context_power_hold from Xposed.
-     * Layman: if power-hold still routes here, show the global menu instead of a blank screen.
-     * Technical: interim RC1 fallback until Phase 5 routes all fg through companion overlay.
+     * 2026-07-14 — Solar Home context hold → in-app ThemedContextMenu only (no WM stack).
+     * Layman: long-press Power on Solar Home opens the same quick menu as Back-hold on Y1.
+     * Technical: dismiss Chip+Solar WM first; Xposed routes Solar fg here.
+     * Was: July 2 in-app path without dismissing floating shells (dual chrome risk).
      */
     private void handleContextPowerHoldIntent() {
         Intent intent = getIntent();
         if (intent != null) {
             intent.removeExtra(OverlayTriggers.EXTRA_CONTEXT_POWER_HOLD);
         }
+        // Never leave a floating system menu under Home's sheet.
+        com.solar.launcher.overlay.OverlayShellRouter.dismissAllOverlayShells(this);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("sessionId", "083511");
+            d.put("dismissAll", true);
+            DebugMenuLog.log("MainActivity.handleContextPowerHoldIntent",
+                    "sole in-app menu", "H-DUAL", d);
+        } catch (Exception ignored) {}
+        // #endregion
         new Handler().post(new Runnable() {
             @Override
             public void run() {
-                if (CompanionContextMenuLauncher.openPowerQuickMenu(MainActivity.this)) {
-                    return;
-                }
                 if (themedContextMenu != null && themedContextMenu.isShowing()) {
                     refreshContextPowerTier(false);
                 } else {
@@ -20583,10 +21404,13 @@ public class MainActivity extends Activity {
         });
     }
 
+    /**
+     * 2026-07-10 — Solar Home context menu paints in-app (fast, no companion IPC).
+     * Layman: hold Back or Power on Solar opens the familiar quick bar + options list here.
+     * Technical: ThemedContextMenu on content root; global companion overlay is third-party only.
+     * Was: presentSolarHomeContextViaOverlay → stuck gate props and dead input.
+     */
     private void showThemedContextMenu() {
-        if (CompanionContextMenuLauncher.openPowerQuickMenu(this)) {
-            return;
-        }
         if (themedContextMenu == null) return;
         if (layoutLoadingOverlay != null && layoutLoadingOverlay.getVisibility() == View.VISIBLE) return;
         volumeHandler.removeCallbacks(hideVolumeContextTask);
@@ -20621,31 +21445,39 @@ public class MainActivity extends Activity {
         syncUsbReclaimForContextMenu(isUsbMassStorageUiLocked() || usbEnablePromptSession
                 || isUsbEnablePromptTierActive());
         contextMenuOpenedAtMs = System.currentTimeMillis();
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("screen", currentScreenState);
-            d.put("usbLocked", isUsbMassStorageUiLocked());
-            d.put("reclaimSuspended", usbFocusHelper != null && usbFocusHelper.isReclaimSuspended());
-            DebugSessionLog.log("MainActivity.showThemedContextMenu", "opened", "H-USB-CTX", d);
-        } catch (Exception ignored) {}
-        // #endregion
         markHoldBackHintDismissed();
         maybeAutoOpenReachContextTier();
+        clickFeedback();
+        updateVideoStatusBarPolicy();
+    }
+
+    /** True when the in-app context menu is painted on Solar Home. */
+    private boolean isSolarContextMenuOpen() {
+        return themedContextMenu != null && themedContextMenu.isShowing();
+    }
+
+    /**
+     * 2026-07-08 — Cancel force-quit / long-press timers on KEY_UP, focus loss, or overlay UP steal.
+     * Layman: stop “keep holding Back…” whenever Back is no longer held or Solar loses the window.
+     * Technical: clears backKeyHeld + callbacks + rescue sysprops so sticky DOWN cannot fire at 10s.
+     */
+    private void clearBackHoldRescueTimers(String reason) {
+        // 2026-07-08 — Finger-up / overlay steal / focus loss — cancel timers + clear sticky HUD props.
+        backKeyHeld = false;
+        clockHandler.removeCallbacks(backLongPressRunnable);
+        clockHandler.removeCallbacks(backForceQuitRunnable);
+        clockHandler.removeCallbacks(backForceQuitHintRunnable);
+        backForceQuitHintShown = false;
+        try {
+            SolarRescueHoldState.disarm();
+        } catch (Exception ignored) {}
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
-            d.put("screen", currentScreenState);
-            d.put("actionCount", contextMenuLabels.size());
-            d.put("quickOnly", contextMenuQuickOnly);
-            d.put("hasQueue", playback.hasAnyQueue());
-            d.put("queueSize", playback.unifiedQueue().size());
-            d.put("singleTrackChip", playback.hasAnyQueue() && playback.unifiedQueue().size() == 1);
-            QueueDebugLog.log("MainActivity.showThemedContextMenu", "opened", "H6", d);
+            d.put("reason", reason != null ? reason : "");
+            Debug434250Log.log("MainActivity.clearBackHoldRescueTimers", "disarm back hold", "H-A", d);
         } catch (Exception ignored) {}
         // #endregion
-        clickFeedback();
-        updateVideoStatusBarPolicy();
     }
 
     private void populateContextMenu() {
@@ -21957,6 +22789,7 @@ public class MainActivity extends Activity {
     private static final long ROCKBOX_SWITCH_TIMEOUT_MS = 10_000L;
 
     private void launchRockboxSwitch() {
+        // 2026-07-08 — Canonical PowerActions path (helper single-fire); keep please-wait + poll.
         launchAlternateHomeSwitch(LauncherDefault.TARGET_ROCKBOX);
     }
 
@@ -21965,6 +22798,17 @@ public class MainActivity extends Activity {
         launchAlternateHomeSwitch(LauncherDefault.TARGET_JJ);
     }
 
+    /** 2026-07-08 — Switch to Stock (Innioasis) HOME without reboot. */
+    private void launchStockSwitch() {
+        launchAlternateHomeSwitch(LauncherDefault.TARGET_STOCK);
+    }
+
+    /**
+     * 2026-07-08 — Please-wait + poll wrapping PowerActions (was: local script race with helper).
+     * Layman: show a short waiting screen while the home app changes, then close it when it lands.
+     * Technical: PowerActions owns helper/script; here we only arm handoff after fg probe succeeds.
+     * Reversal: restore inline LauncherSwitch.switchTo* on this thread.
+     */
     private void launchAlternateHomeSwitch(final String target) {
         if (LauncherDefault.TARGET_JJ.equals(target)) {
             if (!JjLauncherAvailability.isOfferVisible(this)) {
@@ -21972,63 +22816,54 @@ public class MainActivity extends Activity {
                 return;
             }
             showPleaseWaitOverlay(getString(R.string.dialog_jj_rebooting));
+            PowerActions.switchToJj(this);
         } else if (LauncherDefault.TARGET_ROCKBOX.equals(target)) {
             if (!LauncherSwitch.isRockboxInstalled(this)) {
                 Toast.makeText(this, getString(R.string.dialog_rockbox_unavailable), Toast.LENGTH_SHORT).show();
                 return;
             }
             showPleaseWaitOverlay(getString(R.string.dialog_rockbox_rebooting));
+            PowerActions.switchToRockbox(this);
+        } else if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            if (!LauncherSwitch.isStockOfferVisible(this)) {
+                Toast.makeText(this, getString(R.string.dialog_stock_unavailable), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            showPleaseWaitOverlay(getString(R.string.dialog_stock_rebooting));
+            PowerActions.switchToStock(this);
         } else {
             return;
         }
         isIntentionalFocusLoss = true;
         final long switchStart = System.currentTimeMillis();
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                boolean ok;
-                if (LauncherDefault.TARGET_JJ.equals(target)) {
-                    ok = LauncherSwitch.isJjInstalled(MainActivity.this)
-                            || JjLauncherInstaller.ensureInstalledBlocking(MainActivity.this);
-                    if (ok) {
-                        ok = LauncherSwitch.switchToJj(MainActivity.this);
-                    }
-                } else {
-                    ok = LauncherSwitch.switchToRockbox(MainActivity.this);
-                }
-                final boolean success = ok;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (!success) {
-                            isIntentionalFocusLoss = false;
-                            dismissPleaseWaitOverlay();
-                            int msg = LauncherDefault.TARGET_JJ.equals(target)
-                                    ? R.string.dialog_jj_failed : R.string.dialog_rockbox_failed;
-                            Toast.makeText(MainActivity.this, getString(msg), Toast.LENGTH_SHORT).show();
-                            return;
-                        }
-                        pollAlternateHomeSwitchCompletion(target, switchStart, 0);
-                    }
-                });
-            }
-        }, "AlternateHomeSwitch").start();
+        // Poll on UI thread — PowerActions already started the switch off-thread.
+        pollAlternateHomeSwitchCompletion(target, switchStart, 0);
     }
 
     /** Poll until alternate HOME owns the screen, then drop overlay or time out. */
     private void pollAlternateHomeSwitchCompletion(final String target, final long switchStartMs,
             final int attempt) {
-        boolean fg = LauncherDefault.TARGET_JJ.equals(target)
-                ? LauncherSwitch.isJjForeground(this)
-                : LauncherSwitch.isRockboxForeground(this);
+        boolean fg;
+        if (LauncherDefault.TARGET_JJ.equals(target)) {
+            fg = LauncherSwitch.isJjForeground(this);
+        } else if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            fg = LauncherSwitch.isStockForeground(this);
+        } else {
+            fg = LauncherSwitch.isRockboxForeground(this);
+        }
         if (fg) {
             dismissRockboxSwitchOverlayIfNeeded();
-            // 2026-07-06 — JJ/Rockbox now foreground: reclaim MEDIA_BUTTON before user touches wheel (H2).
-            if (LauncherDefault.TARGET_JJ.equals(target)) {
+            // 2026-07-06 — JJ/Rockbox/Stock now foreground: reclaim MEDIA_BUTTON before wheel (H2).
+            if (LauncherDefault.TARGET_JJ.equals(target)
+                    || LauncherDefault.TARGET_STOCK.equals(target)) {
                 MediaButtonRegistrar.ensureRegistered(this);
-                ExternalInputHandoff.armForForegroundPackage(this);
+                ExternalInputHandoff.armJjShim(this);
                 RockboxForegroundMonitor.ensureStarted(this);
-                beginExternalInputHandoff(LauncherDefault.JJ_PACKAGE);
+                if (LauncherDefault.TARGET_JJ.equals(target)) {
+                    beginExternalInputHandoff(LauncherDefault.JJ_PACKAGE);
+                } else {
+                    beginExternalInputHandoff(LauncherSwitch.stockPackageForDevice(this));
+                }
             } else if (LauncherDefault.TARGET_ROCKBOX.equals(target)) {
                 MediaButtonRegistrar.ensureRegistered(this);
                 ExternalInputHandoff.armForForegroundPackage(this);
@@ -22044,7 +22879,10 @@ public class MainActivity extends Activity {
             dismissRockboxSwitchOverlayIfNeeded();
             isIntentionalFocusLoss = false;
             int msg = LauncherDefault.TARGET_JJ.equals(target)
-                    ? R.string.dialog_jj_failed : R.string.dialog_rockbox_failed;
+                    ? R.string.dialog_jj_failed
+                    : (LauncherDefault.TARGET_STOCK.equals(target)
+                            ? R.string.dialog_stock_failed
+                            : R.string.dialog_rockbox_failed);
             Toast.makeText(this, getString(msg), Toast.LENGTH_SHORT).show();
             RockboxRestartGrace.arm(getApplicationContext());
             return;
@@ -22778,8 +23616,14 @@ public class MainActivity extends Activity {
             return;
         }
         if (currentScreenState == STATE_USB_STORAGE) {
-            Toast.makeText(this, "Please turn off USB storage before using the device", Toast.LENGTH_SHORT).show();
-            return;
+            if (!UsbMassStorageController.isMassStorageExported()
+                    && !UsbMassStorageController.isKernelMassStorageMode()) {
+                clearStaleUsbMassStorageLockIfNeeded();
+            } else {
+                Toast.makeText(this, getString(R.string.usb_storage_mode_body,
+                        DeviceFeatures.productModelLabel()), Toast.LENGTH_SHORT).show();
+                return;
+            }
         }
         if (currentScreenState == STATE_STORAGE) {
             returnFromAuxScreen();
@@ -23050,16 +23894,30 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 2026-07-06 — Global WM modal is NOT_FOCUSABLE; when Solar keeps focus, pipe wheel/back/OK to :overlay.
-     * Layman: USB quick menu on screen — wheel moves that menu, not the home list behind it.
-     * Tech: {@link OverlayKeyGate#forwardKeyToOverlay} when {@link OverlayKeyGate#isOverlayKeysActive()}.
-     * Reversal: remove calls; rely on Xposed PWM intercept only (breaks when Solar is foreground).
+     * 2026-07-10 — Forward keys to companion only when third-party global overlay is live.
+     * Layman: in-app Solar menu keeps keys here; companion overlay over other apps uses IPC.
+     */
+    private boolean shouldRouteKeysToGlobalChipOverlay() {
+        if (themedContextMenu != null && themedContextMenu.isShowing()) return false;
+        if (!com.solar.input.policy.StaleOverlayGate.isShellVisible()) return false;
+        return OverlayKeyGate.isOverlayUiVisible() || OverlayKeyGate.isOverlayKeysActive();
+    }
+
+    /**
+     * 2026-07-10 — Pipe wheel/Back/OK into companion ChipOverlayHost while Solar keeps focus.
+     * Layman: same keys as when Power-hold opens the menu over another app.
+     * Was: only when OverlayKeyGate props said ui+active (often false → keys never left Home).
+     * Now: session id OR props; open-gesture BACK UP suppressed separately in dispatchKeyEvent.
+     * Reversal: restore prop-only checks; rely on Xposed PWM intercept only.
      */
     private boolean forwardOverlayKeyIfGlobalModalActive(int keyCode, int action) {
-        if (!OverlayKeyGate.isOverlayNavigationKey(keyCode)) return false;
-        // 2026-07-06 — only pipe keys when modal is loading or painted; stale gate must not swallow OK.
-        if (!OverlayKeyGate.isOverlayUiVisible() && !OverlayKeyGate.isOverlayOpening()) return false;
-        if (!OverlayKeyGate.isOverlayKeysActive()) return false;
+        if (!OverlayKeyGate.isOverlayNavigationKey(keyCode) && !Y1InputKeys.isBackKey(keyCode)) {
+            return false;
+        }
+        if (!shouldRouteKeysToGlobalChipOverlay()) return false;
+        if (Y1InputKeys.isBackKey(keyCode) && action == KeyEvent.ACTION_UP) {
+            clearBackHoldRescueTimers("forwardOverlay-backUp");
+        }
         OverlayKeyGate.forwardKeyToOverlay(this, keyCode, action);
         // #region agent log
         try {
@@ -23075,6 +23933,7 @@ public class MainActivity extends Activity {
         // #endregion
         return true;
     }
+
 
     /**
      * 2026-07-06 — Early lightweight wake on OK when display asleep — before isWakingUp swallow.
@@ -23124,6 +23983,11 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    /**
+     * 2026-07-08 — Soft-kill Solar after continuous 10s BACK hold (in-app path).
+     * Layman: closes Solar hard and lets HOME relaunch it — not a full device reboot.
+     * Technical: persist + finishAffinity + killProcess; OS rescue reboot is SolarRescue path.
+     */
     private void performForceQuit() {
         try {
             persistPlaybackQueue();
@@ -23157,7 +24021,27 @@ public class MainActivity extends Activity {
         final Button btn = new Button(this);
         btn.setText(text);
         configureY1ThemedButton(btn, y1RowKindForScreen());
+        attachA5RowLongPress(btn);
         return btn;
+    }
+
+    /**
+     * 2026-07-11 — A5 touch long-press opens global context for the focused row.
+     * Layman: hold a finger on a menu line to get the same quick menu as holding OK.
+     * Tech: OnLongClickListener → requestFocus + showThemedContextMenu; second tap still activates.
+     */
+    private void attachA5RowLongPress(final View row) {
+        if (row == null || !DeviceFeatures.isA5()) return;
+        row.setOnLongClickListener(new View.OnLongClickListener() {
+            @Override
+            public boolean onLongClick(View v) {
+                try {
+                    v.requestFocus();
+                    showThemedContextMenu();
+                } catch (Exception ignored) {}
+                return true;
+            }
+        });
     }
 
     /** Theme row chrome for standalone XML buttons (scan, server toggle) and list rows. */
@@ -23381,25 +24265,6 @@ public class MainActivity extends Activity {
             containerSettingsItems.addView(btnPower);
         }
 
-        if (LauncherSwitch.isSwitchScriptAvailable()
-                && (LauncherSwitch.isRockboxAvailable(this) || JjLauncherAvailability.isOfferVisible(this))) {
-            LinearLayout btnHomeLauncher = createSettingsRow(RowKeys.HOME_LAUNCHER,
-                    R.string.settings_home_launcher, true);
-            btnHomeLauncher.setOnClickListener(new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    clickFeedback();
-                    drillSettingsForward(new Runnable() {
-                        @Override
-                        public void run() {
-                            buildHomeLauncherSettingsUI();
-                        }
-                    });
-                }
-            });
-            containerSettingsItems.addView(btnHomeLauncher);
-        }
-
         LinearLayout btnReset = createSettingsRow(RowKeys.RESET, R.string.settings_reset, true);
         resetSettingsMenuFocusIndex = containerSettingsItems.getChildCount();
         btnReset.setOnClickListener(new View.OnClickListener() {
@@ -23469,13 +24334,11 @@ public class MainActivity extends Activity {
                 if (targetFocusIndex >= 0 && targetFocusIndex < containerSettingsItems.getChildCount()) {
                     View target = containerSettingsItems.getChildAt(targetFocusIndex);
                     target.requestFocus();
-
-                    // 스크롤 뷰가 해당 버튼 위치를 찾아서 화면을 쫙 내려주도록 강제 명령!
+                    // 2026-07-11 — Edge-only; was requestChildFocus (“scroll to button”).
                     if (containerSettingsItems.getParent() instanceof android.widget.ScrollView) {
-                        ((android.widget.ScrollView) containerSettingsItems.getParent()).requestChildFocus(containerSettingsItems, target);
+                        FocusScrollHelper.ensureChildVisible(
+                                (android.widget.ScrollView) containerSettingsItems.getParent(), target);
                     }
-
-                    // 이동을 마친 후 변수 상태를 일치시켜 줍니다.
                     lastSettingsFocusIndex = targetFocusIndex;
                     if (target instanceof LinearLayout) {
                         Object tag = target.getTag();
@@ -23595,6 +24458,9 @@ public class MainActivity extends Activity {
                     launchRockboxSwitch();
                 } else if (LauncherDefault.TARGET_JJ.equals(rowTarget)) {
                     launchJjSwitch();
+                } else if (LauncherDefault.TARGET_STOCK.equals(rowTarget)) {
+                    // 2026-07-08 — Stock Innioasis via Settings (bg thread).
+                    launchStockSwitch();
                 } else {
                     PowerActions.switchToSolar(MainActivity.this);
                 }
@@ -23617,6 +24483,8 @@ public class MainActivity extends Activity {
             statusRes = R.string.settings_home_launcher_rockbox;
         } else if (LauncherDefault.TARGET_JJ.equals(target)) {
             statusRes = R.string.settings_home_launcher_jj;
+        } else if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            statusRes = R.string.settings_home_launcher_stock;
         } else if (HomeTargetPolicy.TARGET_CUSTOM.equals(target)) {
             String flat = LauncherPreference.readHomeComponentProperty();
             String[] parts = HomeTargetPolicy.parseComponent(flat);
@@ -23642,7 +24510,8 @@ public class MainActivity extends Activity {
         addHomeLauncherRow(RowKeys.HOME_LAUNCHER_TO_SOLAR, LauncherDefault.TARGET_SOLAR,
                 target, R.string.settings_home_launcher_restart_solar,
                 R.string.settings_home_launcher_switch_solar, marker);
-        if (LauncherSwitch.isRockboxAvailable(this)) {
+        // 2026-07-11 — Rockbox switch only when Debug → Rockbox experiment is on.
+        if (RockboxExperiment.isEnabled(prefs) && LauncherSwitch.isRockboxAvailable(this)) {
             addHomeLauncherRow(RowKeys.HOME_LAUNCHER_TO_ROCKBOX, LauncherDefault.TARGET_ROCKBOX,
                     target, R.string.settings_home_launcher_restart_rockbox,
                     R.string.settings_home_launcher_switch_rockbox, marker);
@@ -23651,6 +24520,12 @@ public class MainActivity extends Activity {
             addHomeLauncherRow(RowKeys.HOME_LAUNCHER_TO_JJ, LauncherDefault.TARGET_JJ,
                     target, R.string.settings_home_launcher_restart_jj,
                     R.string.settings_home_launcher_switch_jj, marker);
+        }
+        // 2026-07-08 — Stock (Innioasis) dedicated row when factory launcher is installed.
+        if (LauncherSwitch.isStockOfferVisible(this)) {
+            addHomeLauncherRow(RowKeys.HOME_LAUNCHER_TO_STOCK, LauncherDefault.TARGET_STOCK,
+                    target, R.string.settings_home_launcher_restart_stock,
+                    R.string.settings_home_launcher_switch_stock, marker);
         }
         // 2026-07-07 — Any PM CATEGORY_HOME launcher — no Solar-specific manifest required.
         java.util.List<android.content.pm.ResolveInfo> extraHomes =
@@ -23791,6 +24666,41 @@ public class MainActivity extends Activity {
             containerSettingsItems.addView(btnY2HoldOkSleep);
         }
 
+        // 2026-07-11 — A5: pick face vs side for menu nav; portrait vs landscape UI.
+        if (DeviceFeatures.isA5()) {
+            final LinearLayout btnA5Nav = createSettingsRow(RowKeys.A5_MENU_NAV,
+                    R.string.settings_a5_menu_nav, false);
+            btnA5Nav.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    boolean face = A5NavigationMode.isFaceNav(MainActivity.this);
+                    A5NavigationMode.setMenuNav(MainActivity.this,
+                            face ? A5NavigationMode.NAV_SIDE : A5NavigationMode.NAV_FACE);
+                    refreshSettingsPreview(RowKeys.A5_MENU_NAV);
+                }
+            });
+            containerSettingsItems.addView(btnA5Nav);
+
+            final LinearLayout btnA5Orient = createSettingsRow(RowKeys.A5_ORIENTATION,
+                    R.string.settings_a5_orientation, false);
+            btnA5Orient.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    // 2026-07-11 — Cycle auto → portrait → landscape → auto.
+                    A5NavigationMode.cycleOrientation(MainActivity.this);
+                    isFullWidthMenus = A5NavigationMode.forcePortraitThemeRules(MainActivity.this)
+                            || prefs.getBoolean("full_width_menus", false);
+                    LandscapeOrientationGuard.enforceA5Orientation(MainActivity.this);
+                    applyFullWidthMenusLayout();
+                    refreshSettingsPreview(RowKeys.A5_ORIENTATION);
+                    applyReachBrowseLayoutMode();
+                }
+            });
+            containerSettingsItems.addView(btnA5Orient);
+        }
+
         final LinearLayout btnTimeout = createSettingsRow(RowKeys.SCREEN_TIMEOUT, R.string.settings_screen_timeout, false);
         btnTimeout.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -23847,7 +24757,9 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnStorageMenu);
 
-        if (com.solar.launcher.DeviceFeatures.isY2()) {
+        if (com.solar.launcher.DeviceFeatures.isY2()
+                || (com.solar.launcher.DeviceFeatures.isA5()
+                && com.solar.launcher.DeviceFeatures.getSecondaryStorageRoot() != null)) {
             LinearLayout btnPrimaryStorage = createSettingsRow(
                     RowKeys.Y2_PRIMARY_STORAGE, R.string.settings_y2_primary_storage, true);
             btnPrimaryStorage.setOnClickListener(new View.OnClickListener() {
@@ -23958,6 +24870,18 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnNavidrome);
 
+        if (com.solar.launcher.plex.PlexExperiment.isEnabled(prefs)) {
+            LinearLayout btnPlex = createSettingsRow(RowKeys.PLEX_URL, R.string.settings_plex, true);
+            btnPlex.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    clickFeedback();
+                    settingsParentKey = SettingsScreens.LIBRARY;
+                    buildPlexSettingsUI();
+                }
+            });
+            containerSettingsItems.addView(btnPlex);
+        }
+
         LinearLayout btnClearCache = createSettingsRow(RowKeys.CLEAR_CACHE, R.string.settings_clear_cache, true);
         btnClearCache.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -23986,7 +24910,7 @@ public class MainActivity extends Activity {
                                             getString(R.string.dialog_clear_cache_ok, count),
                                             Toast.LENGTH_SHORT).show();
                                     setPlayerDefaultAlbumArt();
-                                    ivPlayerBgBlur.setImageResource(0);
+                                    bindPlayerBlurBackdrop();
                                     lastAlbumArtBytes = null;
                                     updateMainMenuBackground();
                                     refreshNowPlayingPreview();
@@ -24045,6 +24969,49 @@ public class MainActivity extends Activity {
             });
         }
         navidromeSettingsHost.build();
+        if (containerSettingsItems.getChildCount() > 1) {
+            containerSettingsItems.getChildAt(1).requestFocus();
+        }
+    }
+
+    private void buildPlexSettingsUI() {
+        if (plexSettingsHost == null) {
+            plexSettingsHost = new PlexSettingsHost(new PlexSettingsHost.Actions() {
+                @Override public android.app.Activity activity() { return MainActivity.this; }
+                @Override public SharedPreferences prefs() { return prefs; }
+                @Override public void clickFeedback() { MainActivity.this.clickFeedback(); }
+                @Override public LinearLayout createSettingsRow(String rowKey, int labelRes, boolean submenu) {
+                    return MainActivity.this.createSettingsRow(rowKey, labelRes, submenu);
+                }
+                @Override public LinearLayout createSettingsRow(String rowKey, CharSequence title, boolean submenu) {
+                    return MainActivity.this.createSettingsRow(rowKey, title, submenu, true);
+                }
+                @Override public Button createListButton(String label) { return MainActivity.this.createListButton(label); }
+                @Override public void styleSecondaryLabel(Button btn) { MainActivity.this.styleSecondaryLabel(btn); }
+                @Override public void addSettingsRow(View row) { containerSettingsItems.addView(row); }
+                @Override public void clearSettingsRows() { containerSettingsItems.removeAllViews(); }
+                @Override public void setSettingsSubScreen(String key) { MainActivity.this.setSettingsSubScreen(key); }
+                @Override public void updateStatusBarTitle() { MainActivity.this.updateStatusBarTitle(); }
+                @Override public void applyReachBrowseLayoutMode() { MainActivity.this.applyReachBrowseLayoutMode(); }
+                @Override public void refreshSettingsPreview(String rowKey) { MainActivity.this.refreshSettingsPreview(rowKey); }
+                @Override public void drillSettingsBack(Runnable back) {
+                    lastSettingsFocusIndex = librarySettingsMenuFocusIndex;
+                    MainActivity.this.drillSettingsBack(back != null ? back : new Runnable() {
+                        @Override public void run() { buildLibrarySettingsUI(); }
+                    });
+                }
+                @Override public void openKeyboard(int purpose, String prefill) {
+                    keyboardPurpose = purpose;
+                    keyboardReturnState = STATE_SETTINGS;
+                    keyboardPrefill = prefill != null ? prefill : "";
+                    changeScreen(STATE_WIFI_KEYBOARD);
+                }
+                @Override public String previewForRow(String rowKey) {
+                    return PlexSettingsHost.previewValue(prefs, rowKey);
+                }
+            });
+        }
+        plexSettingsHost.build();
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
         }
@@ -24416,8 +25383,7 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnBack);
 
-        if (UsbMassStorageExperiment.isAvailableOnDevice()
-                && !UsbMassStorageExperiment.isEnabled(prefs)) {
+        if (!UsbMassStorageExperiment.isEnabled(prefs)) {
             LinearLayout disabled = createSettingsRow(RowKeys.USB,
                     R.string.settings_usb_mass_storage_unavailable, false);
             disabled.setFocusable(false);
@@ -24856,6 +25822,32 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnFullWidth);
 
+        // 2026-07-11 — Per-theme left gutter; Off flushes selection bars to the screen edge.
+        LinearLayout btnMenuPad = createSettingsRow(RowKeys.MENU_ITEM_PADDING,
+                R.string.settings_menu_item_padding, false);
+        btnMenuPad.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                clickFeedback();
+                boolean maskLocks = ThemeManager.menuItemPaddingForcedByMask(false)
+                        || ThemeManager.menuItemPaddingForcedByMask(true);
+                if (maskLocks) {
+                    refreshSettingsPreview(RowKeys.MENU_ITEM_PADDING);
+                    return;
+                }
+                boolean next = !ThemeManager.isMenuItemPaddingEnabled(prefs, false);
+                ThemeManager.setMenuItemPaddingOverride(prefs, next);
+                applyFullWidthMenusLayout();
+                buildHomeMenu();
+                if (currentScreenState == STATE_MENU) {
+                    requestFirstHomeMenuFocus();
+                } else {
+                    applyThemeToMainMenu();
+                }
+                buildAppearanceLayoutSettingsUI();
+            }
+        });
+        containerSettingsItems.addView(btnMenuPad);
+
         LinearLayout btnInfiniteScroll = createSettingsRow(RowKeys.INFINITE_SCROLL,
                 R.string.settings_infinite_scroll, false);
         btnInfiniteScroll.setOnClickListener(new View.OnClickListener() {
@@ -25002,9 +25994,14 @@ public class MainActivity extends Activity {
 
     /** Debug experiment — confirm then format MicroSD (root shell on Y1, system UI elsewhere). */
     private void promptMicroSdFormat() {
-        if (usbMassStorageLocked) {
-            Toast.makeText(this, getString(R.string.toast_reset_usb_blocked), Toast.LENGTH_SHORT).show();
-            return;
+        if (isUsbMassStorageUiLocked()) {
+            if (!UsbMassStorageController.isMassStorageExported()
+                    && !UsbMassStorageController.isKernelMassStorageMode()) {
+                clearStaleUsbMassStorageLockIfNeeded();
+            } else {
+                Toast.makeText(this, getString(R.string.toast_reset_usb_blocked), Toast.LENGTH_SHORT).show();
+                return;
+            }
         }
         if (!MicroSdFormatTool.shouldUseRootFormat(this)) {
             Toast.makeText(this, getString(R.string.microsd_format_opening_system), Toast.LENGTH_SHORT).show();
@@ -25580,8 +26577,8 @@ public class MainActivity extends Activity {
             containerSettingsItems.addView(btnBtPin);
         }
 
-        if (!UsbMassStorageExperiment.isAvailableOnDevice()
-                || UsbMassStorageExperiment.isEnabled(prefs)) {
+        // 2026-07-10 — Y1 only (UMS product path). Y2 is MTP-only — no USB disk settings.
+        if (UsbMassStorageExperiment.isEnabled(prefs)) {
             LinearLayout btnUsbMenu = createSettingsRow(RowKeys.USB, R.string.settings_usb, true);
             usbSettingsMenuFocusIndex = containerSettingsItems.getChildCount();
             btnUsbMenu.setOnClickListener(new View.OnClickListener() {
@@ -29100,6 +30097,7 @@ public class MainActivity extends Activity {
     }
 
     private int sampleScreenBackgroundColor() {
+        // 2026-07-11 — Prefer live bg view; else ThemeManager wallpaper sample (shared clash helper).
         try {
             if (ivMainBg != null && ivMainBg.getDrawable() instanceof android.graphics.drawable.BitmapDrawable) {
                 Bitmap bm = ((android.graphics.drawable.BitmapDrawable) ivMainBg.getDrawable()).getBitmap();
@@ -29108,8 +30106,7 @@ public class MainActivity extends Activity {
                 }
             }
         } catch (Exception ignored) {}
-        return ThemeManager.relativeLuminance(ThemeManager.getTextColorPrimary()) > 0.45
-                ? 0xFF333333 : 0xFFCCCCCC;
+        return ThemeManager.sampleThemePageBackground();
     }
 
     private static final int ABOUT_LOGO_MAX_PX = 292;
@@ -29630,7 +30627,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 clickFeedback();
-                boolean enable = !com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(prefs);
+                boolean enable = !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs);
                 prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT,
                         enable).apply();
                 refreshSettingsPreview(RowKeys.DEBUG_RADIO_EXPERIMENT);
@@ -29639,6 +30636,54 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnRadioExperiment);
         refreshSettingsPreview(RowKeys.DEBUG_RADIO_EXPERIMENT);
+
+        final LinearLayout btnYouTubeExperiment = createSettingsRow(RowKeys.DEBUG_YOUTUBE_EXPERIMENT,
+                R.string.settings_debug_youtube_experiment, false);
+        btnYouTubeExperiment.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                com.solar.launcher.youtube.YouTubeExperiment.setEnabled(MainActivity.this,
+                        !com.solar.launcher.youtube.YouTubeExperiment.isEnabled(prefs));
+                refreshSettingsPreview(RowKeys.DEBUG_YOUTUBE_EXPERIMENT);
+            }
+        });
+        containerSettingsItems.addView(btnYouTubeExperiment);
+        refreshSettingsPreview(RowKeys.DEBUG_YOUTUBE_EXPERIMENT);
+
+        final LinearLayout btnRockboxExperiment = createSettingsRow(RowKeys.DEBUG_ROCKBOX_EXPERIMENT,
+                R.string.settings_debug_rockbox_experiment, false);
+        btnRockboxExperiment.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                RockboxExperiment.setEnabled(MainActivity.this,
+                        !RockboxExperiment.isEnabled(prefs));
+                refreshSettingsPreview(RowKeys.DEBUG_ROCKBOX_EXPERIMENT);
+                Toast.makeText(MainActivity.this,
+                        R.string.settings_debug_rockbox_experiment_hint,
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+        containerSettingsItems.addView(btnRockboxExperiment);
+        refreshSettingsPreview(RowKeys.DEBUG_ROCKBOX_EXPERIMENT);
+
+        final LinearLayout btnPlexExperiment = createSettingsRow(RowKeys.DEBUG_PLEX_EXPERIMENT,
+                R.string.settings_debug_plex_experiment, false);
+        btnPlexExperiment.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                com.solar.launcher.plex.PlexExperiment.setEnabled(prefs,
+                        !com.solar.launcher.plex.PlexExperiment.isEnabled(prefs));
+                refreshSettingsPreview(RowKeys.DEBUG_PLEX_EXPERIMENT);
+                Toast.makeText(MainActivity.this,
+                        R.string.settings_debug_plex_experiment_hint,
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+        containerSettingsItems.addView(btnPlexExperiment);
+        refreshSettingsPreview(RowKeys.DEBUG_PLEX_EXPERIMENT);
 
         final LinearLayout btnDiag = createSettingsRow(RowKeys.DIAG_AUTO_REPORT,
                 R.string.settings_diag_auto_report, false);
@@ -29970,18 +31015,14 @@ public class MainActivity extends Activity {
         }, "SolarUpdateCheck").start();
     }
 
-    /** 2026-07-06 — JJ + Rockbox on-demand rows on System Update / change-version screen. */
+    /**
+     * 2026-07-11 — Rockbox-Y1 install only when Debug → Rockbox experiment is on.
+     * Was: also offered Get latest JJ Launcher. JJ removed from change-version menu.
+     */
     private void appendOtaCompanionRows() {
-        Button btnJj = createListButton(getString(R.string.update_get_latest_jj));
-        btnJj.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                clickFeedback();
-                runOtaCompanionJjLatest();
-            }
-        });
-        containerSettingsItems.addView(btnJj);
-
+        if (!RockboxExperiment.isEnabled(prefs)) {
+            return;
+        }
         Button btnRockbox = createListButton(getString(R.string.update_get_latest_rockbox));
         btnRockbox.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -29991,52 +31032,6 @@ public class MainActivity extends Activity {
             }
         });
         containerSettingsItems.addView(btnRockbox);
-    }
-
-    private void runOtaCompanionJjLatest() {
-        if (!ConnectivityHelper.isOnline(this)) {
-            Toast.makeText(this, R.string.update_network_error, Toast.LENGTH_LONG).show();
-            return;
-        }
-        final ViewGroup otaRoot = (ViewGroup) findViewById(android.R.id.content);
-        final String dialogTitle = getString(R.string.update_get_latest_jj);
-        if (themedContextMenu != null && otaRoot != null) {
-            themedContextMenu.showProgressOverlay(otaRoot, dialogTitle,
-                    getString(R.string.update_companion_jj), 100);
-        }
-        final File workDir = getDir("update", Context.MODE_PRIVATE);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                final boolean ok = OtaCompanionInstaller.installJjLatest(MainActivity.this, workDir,
-                        new OtaCompanionInstaller.Progress() {
-                            @Override
-                            public void onPhase(String phase) {
-                                final String msg = "jj_install".equals(phase)
-                                        ? getString(R.string.update_companion_installing)
-                                        : getString(R.string.update_companion_jj);
-                                runOnUiThread(new Runnable() {
-                                    @Override
-                                    public void run() {
-                                        if (themedContextMenu != null) {
-                                            themedContextMenu.updateProgressOverlay(-1, msg);
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        dismissThemedContextMenu();
-                        Toast.makeText(MainActivity.this,
-                                ok ? R.string.update_companion_jj_done
-                                        : R.string.update_companion_jj_failed,
-                                Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        }, "OtaJjLatest").start();
     }
 
     private void runOtaCompanionRockboxLatest() {
@@ -30356,6 +31351,24 @@ public class MainActivity extends Activity {
         });
         containerSettingsItems.addView(btnBackdrop);
 
+        // 2026-07-11 — Opt-in home right-pane title/artist; theme: solarConfig.settingsShow_Now_Playing_Info.
+        LinearLayout btnShowNpInfo = createSettingsRow(RowKeys.SHOW_NOW_PLAYING_INFO,
+                R.string.settings_show_now_playing_info, false);
+        btnShowNpInfo.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean next = !ThemeManager.isShowNowPlayingInfoEnabled(prefs);
+                ThemeManager.setShowNowPlayingInfoEnabled(prefs, next);
+                lastHomeMenuPreviewAppliedKey = null;
+                if (currentScreenState == STATE_MENU) {
+                    updateHomeMenuPreview(focusedHomeMenuIndex);
+                }
+                refreshSettingsPreview(RowKeys.SHOW_NOW_PLAYING_INFO);
+            }
+        });
+        containerSettingsItems.addView(btnShowNpInfo);
+
         LinearLayout btnBlur = createSettingsRow(RowKeys.NOW_PLAYING_ALBUM_BLUR,
                 R.string.settings_player_album_blur, false);
         btnBlur.setOnClickListener(new View.OnClickListener() {
@@ -30410,7 +31423,10 @@ public class MainActivity extends Activity {
                 refreshSettingsPreview(RowKeys.NOW_PLAYING_LCD_ART);
             }
         });
-        containerSettingsItems.addView(btnPerspective);
+        // 2026-07-11 — A5 NP is flat-only; hide 3D/perspective toggle (Flow still has carousel 3D).
+        if (!DeviceFeatures.isA5()) {
+            containerSettingsItems.addView(btnPerspective);
+        }
 
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
@@ -30554,7 +31570,9 @@ public class MainActivity extends Activity {
             d.put("gen", gen);
             d.put("userInitiated", userInitiated);
             d.put("libEmpty", customLibrary.isEmpty());
+            d.put("libSize", customLibrary.size());
             Debug898913Log.logAlways("MainActivity.startLibraryScan", "scan started", "H1", d);
+            Debug383b4eLog.log(this, "MainActivity.startLibraryScan", "scan started", "B,C", d);
         } catch (Exception ignored) {}
         // #endregion
         runOnUiThread(new Runnable() {
@@ -30592,9 +31610,9 @@ public class MainActivity extends Activity {
         final int progressInterval = 25;
         LibraryScanner.Callback scanCb = new LibraryScanner.Callback() {
             @Override public boolean isCancelled() { return libraryScanGen != gen; }
-            @Override public void onProgress(int resolvedCount) {
+            @Override public void onProgress(int resolvedCount, int totalCount) {
                 libraryScanTrackCount = resolvedCount;
-                postLibraryScanProgress(gen, resolvedCount);
+                postLibraryScanProgress(gen, resolvedCount, totalCount);
             }
             @Override public int progressInterval() { return progressInterval; }
         };
@@ -30621,6 +31639,8 @@ public class MainActivity extends Activity {
             d.put("ms", scanMs);
             Debug898913Log.logAlways("MainActivity.runLibraryScanWorker",
                     "parallel scan done", "H3,H4", d);
+            Debug383b4eLog.log(MainActivity.this, "MainActivity.runLibraryScanWorker",
+                    "parallel scan done", "B,C", d);
         } catch (Exception ignored) {}
         // #endregion
         // Perf log: full scan timing is recorded after album-art ingest below.
@@ -30779,6 +31799,9 @@ public class MainActivity extends Activity {
                     ? prefs.getInt(PREF_ART_CACHE_READY_TRACKS, -1) : -1);
             Debug3b26caLog.log("MainActivity.tryFinishScanFromFreshCache",
                     staleTrackCount == 0 ? "fast-path eligible" : "full walk required", "H1,H5", d);
+            Debug383b4eLog.log(MainActivity.this, "MainActivity.tryFinishScanFromFreshCache",
+                    staleTrackCount == 0 && legacyYearRows == 0
+                            ? "fast-path eligible" : "full walk required", "B,C", d);
         } catch (Exception ignored) {}
         // #endregion
         if (staleTrackCount > 0) return false;
@@ -31106,7 +32129,9 @@ public class MainActivity extends Activity {
             d.put("userInitiated", userInitiated);
             d.put("libSize", customLibrary.size());
             d.put("screen", currentScreenState);
+            d.put("ownersAfter", blockingOverlayOwners);
             Debug898913Log.logAlways("MainActivity.finishLibraryScan", "scan finished", "H1", d);
+            Debug383b4eLog.log(this, "MainActivity.finishLibraryScan", "scan finished", "B,C", d);
         } catch (Exception ignored) {}
         // #endregion
         requestSoulseekShareRescan();
@@ -31161,13 +32186,13 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void postLibraryScanProgress(final int gen, final int trackCount) {
+    private void postLibraryScanProgress(final int gen, final int trackCount, final int totalCount) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 if (libraryScanGen != gen || !libraryScanRunning) return;
                 if ((blockingOverlayOwners & OVERLAY_LIB_SCAN) == 0) return;
-                updateBlockingOverlayText(getString(R.string.library_scan_progress, trackCount));
+                updateBlockingOverlayText(getString(R.string.library_scan_progress, trackCount, totalCount));
             }
         });
     }
@@ -31233,11 +32258,22 @@ public class MainActivity extends Activity {
         clearArtistOwnAlbumCache();
     }
 
+    /**
+     * Shows or hides the small path trail under the status bar on list screens.
+     * 2026-07-11: gate keeps it gone so lists use full height; status bar still carries the title.
+     * Reversal: flip SHOW_BROWSER_PATH_BREADCRUMB to true (old: always honored wantShow).
+     */
+    private void setBrowserPathBreadcrumbVisible(boolean wantShow) {
+        if (tvBrowserPath == null) return;
+        tvBrowserPath.setVisibility(
+                SHOW_BROWSER_PATH_BREADCRUMB && wantShow ? View.VISIBLE : View.GONE);
+    }
+
     // 💡 2. 라이브러리 메인 라우터 (자체 스캔 버튼 적용)
     private void updateLibraryBreadcrumb() {
         if (tvBrowserPath == null || currentScreenState != STATE_BROWSER) return;
         tvBrowserPath.setText(buildLibraryBreadcrumb());
-        tvBrowserPath.setVisibility(View.VISIBLE);
+        setBrowserPathBreadcrumbVisible(true);
     }
 
     private void refreshBrowserPathBreadcrumb() {
@@ -31245,12 +32281,12 @@ public class MainActivity extends Activity {
         if (currentScreenState == STATE_BROWSER) {
             updateLibraryBreadcrumb();
         } else if (currentScreenState == STATE_PODCASTS || currentScreenState == STATE_SOULSEEK) {
-            tvBrowserPath.setVisibility(View.VISIBLE);
+            setBrowserPathBreadcrumbVisible(true);
         } else if (currentScreenState == STATE_APPS) {
             tvBrowserPath.setText(getString(R.string.path_apps));
-            tvBrowserPath.setVisibility(View.VISIBLE);
+            setBrowserPathBreadcrumbVisible(true);
         } else {
-            tvBrowserPath.setVisibility(View.GONE);
+            setBrowserPathBreadcrumbVisible(false);
         }
     }
 
@@ -31410,7 +32446,7 @@ public class MainActivity extends Activity {
         updateStatusBarTitle();
         if (tvBrowserPath != null) {
             tvBrowserPath.setText(getString(R.string.path_more));
-            tvBrowserPath.setVisibility(View.VISIBLE);
+            setBrowserPathBreadcrumbVisible(true);
         }
 
         Button btnBack = createListButton(getString(R.string.common_back));
@@ -31457,9 +32493,7 @@ public class MainActivity extends Activity {
         containerBrowserItems.removeAllViews();
         browserStatusTitle = getString(R.string.usb_storage_mode_title);
         updateStatusBarTitle();
-        if (tvBrowserPath != null) {
-            tvBrowserPath.setVisibility(View.GONE);
-        }
+        setBrowserPathBreadcrumbVisible(false);
 
         int pad = (int) (20 * getResources().getDisplayMetrics().density);
         int rowW = listRowWidthPx > 0 ? listRowWidthPx : y1ActiveRowWidthPx();
@@ -31481,7 +32515,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView body = new TextView(this);
-        body.setText(getString(R.string.usb_storage_mode_body));
+        body.setText(getString(R.string.usb_storage_mode_body, DeviceFeatures.productModelLabel()));
         body.setGravity(android.view.Gravity.CENTER);
         body.setTypeface(ThemeManager.getCustomFont());
         body.setTextSize(15);
@@ -31491,6 +32525,7 @@ public class MainActivity extends Activity {
         containerBrowserItems.addView(body, new LinearLayout.LayoutParams(
                 rowW > 0 ? rowW : ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+        // No Turn Off button — body copy tells the user to eject from the PC and unplug.
     }
 
     private void buildAppsLauncherUI() {
@@ -31501,7 +32536,7 @@ public class MainActivity extends Activity {
         updateStatusBarTitle();
         if (tvBrowserPath != null) {
             tvBrowserPath.setText(getString(R.string.path_apps));
-            tvBrowserPath.setVisibility(View.VISIBLE);
+            setBrowserPathBreadcrumbVisible(true);
         }
 
         Button btnBack = createListButton(getString(R.string.common_back));
@@ -32596,7 +33631,7 @@ public class MainActivity extends Activity {
                 if (i == 0) targetPos = 0;
             }
         }
-        listVirtualSongs.setSelection(targetPos);
+        FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, targetPos);
         clickFeedback();
         return true;
     }
@@ -32607,9 +33642,9 @@ public class MainActivity extends Activity {
         if (count < 2) return;
         int pos = listVirtualSongs.getSelectedItemPosition();
         if (Y1InputKeys.isWheelUp(keyCode) && pos <= 0) {
-            listVirtualSongs.setSelection(count - 1);
+            FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, count - 1);
         } else if (Y1InputKeys.isWheelDown(keyCode) && pos >= count - 1) {
-            listVirtualSongs.setSelection(0);
+            FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, 0);
         }
     }
 
@@ -34348,7 +35383,7 @@ public class MainActivity extends Activity {
     private void preparePodcastBrowserChrome() {
         if (scrollViewBrowser != null) scrollViewBrowser.setVisibility(View.VISIBLE);
         if (listVirtualSongs != null) listVirtualSongs.setVisibility(View.GONE);
-        if (tvBrowserPath != null) tvBrowserPath.setVisibility(View.VISIBLE);
+        setBrowserPathBreadcrumbVisible(true);
         applyPodcastBrowserLayout();
     }
 
@@ -34641,6 +35676,72 @@ public class MainActivity extends Activity {
                         // NP back-return is armed only in applyScreenChange when leaving STATE_PLAYER.
                     }
                 });
+    }
+
+    /**
+     * 2026-07-11 — Wire A5 touch gestures onto Now Playing album art.
+     * Layman: tap to pause, swipe songs, hold to scrub, pull down to leave.
+     * Tech: NowPlayingTouchGestures on 2D art; 3D view shares parent touch when visible.
+     * Reversal: remove call; NP stays key-only.
+     */
+    private void attachA5NowPlayingTouchGestures() {
+        if (!DeviceFeatures.isA5()) return;
+        NowPlayingTouchGestures.Host host = new NowPlayingTouchGestures.Host() {
+            @Override public void onNpTapPlayPause() {
+                playOrPauseMusic();
+            }
+            @Override public void onNpSwipeNext() {
+                nextTrack();
+            }
+            @Override public void onNpSwipePrevious() {
+                prevTrack();
+            }
+            @Override public void onNpScrubBy(long deltaMs) {
+                scrubMediaBy((int) deltaMs);
+            }
+            @Override public void onNpSwipeDismiss() {
+                if (currentScreenState == STATE_PLAYER) {
+                    returnFromPlayer();
+                }
+            }
+        };
+        // Prefer the visible art surface; fall back to layout host.
+        View target = ivAlbumArt != null ? ivAlbumArt : layoutPlayerMode;
+        if (ivAlbumArt3d != null && ivAlbumArt3d.getVisibility() == View.VISIBLE) {
+            target = ivAlbumArt3d;
+        }
+        if (layoutPlayerMode != null) {
+            // Shade-style dismiss works best on the full player panel.
+            NowPlayingTouchGestures.attachIfA5(layoutPlayerMode, host);
+        } else {
+            NowPlayingTouchGestures.attachIfA5(target, host);
+        }
+    }
+
+    /**
+     * 2026-07-11 — A5 menus stay the same size; just accept finger taps on rows.
+     * Layman: poke a menu line with your finger the same way OK would.
+     * Tech: clickable+focusable on list hosts; OnClickListener already fires performClick.
+     * Reversal: remove; rows remain key-activated only.
+     */
+    private void enableA5TouchMenuHosts() {
+        if (!DeviceFeatures.hasTouchscreen()) return;
+        View[] hosts = new View[] {
+                containerSettingsItems,
+                containerBrowserItems,
+                findViewById(R.id.container_home_menu_items),
+                findViewById(R.id.scroll_view_browser)
+        };
+        for (int i = 0; i < hosts.length; i++) {
+            View h = hosts[i];
+            if (h == null) continue;
+            h.setClickable(true);
+            h.setFocusable(true);
+            if (h instanceof android.view.ViewGroup) {
+                ((android.view.ViewGroup) h).setDescendantFocusability(
+                        android.view.ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            }
+        }
     }
 
     private void returnFromPlayer() {
@@ -35515,18 +36616,28 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Long Back/OK context — play/save focused or now-playing YouTube row. */
+    /** Long Back/OK context — open/play/save focused or now-playing YouTube row. */
     private void addYouTubeContextActionsIfNeeded() {
         if (mediaSuite == null) return;
         YouTubeVideo video = null;
         if (currentScreenState == MediaSuiteHost.STATE_YOUTUBE_BROWSE) {
             video = mediaSuite.getFocusedYouTubeVideo();
+        } else if (currentScreenState == MediaSuiteHost.STATE_YOUTUBE_DETAIL) {
+            video = mediaSuite.getYouTubeDetailVideo();
         } else if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER
                 && mediaSuite.isYouTubePlaybackActive()) {
             video = mediaSuite.getYouTubeNowPlayingVideo();
         }
         if (video == null || video.id == null || video.id.isEmpty()) return;
         final YouTubeVideo target = video;
+        if (currentScreenState == MediaSuiteHost.STATE_YOUTUBE_BROWSE) {
+            addContextAction(getString(R.string.youtube_ctx_open), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.toast_internet_required)) return;
+                    mediaSuite.openYouTubeDetailFromContext(target);
+                }
+            });
+        }
         addContextAction(getString(R.string.youtube_ctx_play), new Runnable() {
             @Override public void run() {
                 if (!requireInternet(R.string.toast_internet_required)) return;
@@ -35549,11 +36660,15 @@ public class MainActivity extends Activity {
         if (savedVideo != null && savedVideo.length() > 1024L) {
             addContextAction(getString(R.string.youtube_ctx_play_saved), new Runnable() {
                 @Override public void run() {
-                    if (!requireInternet(R.string.toast_internet_required)) return;
                     mediaSuite.playYouTubeFromContext(target);
                 }
             });
         }
+    }
+
+    /** MediaSuiteHost adapter — save from detail list actions. */
+    public void mediaRequestYouTubeSave(YouTubeVideo video, boolean audioOnly) {
+        startYouTubeSave(video, audioOnly);
     }
 
     private void startYouTubeSave(final YouTubeVideo video, final boolean audioOnly) {
@@ -36152,7 +37267,7 @@ public class MainActivity extends Activity {
         }
         if (scrollViewBrowser != null) scrollViewBrowser.setVisibility(View.VISIBLE);
         if (listVirtualSongs != null) listVirtualSongs.setVisibility(View.GONE);
-        if (tvBrowserPath != null) tvBrowserPath.setVisibility(View.VISIBLE);
+        setBrowserPathBreadcrumbVisible(true);
     }
 
     private boolean isSoulseekUiActive() {
@@ -39284,7 +40399,7 @@ public class MainActivity extends Activity {
     private void clearReachStreamAlbumArt() {
         lastAlbumArtBytes = null;
         if (ivAlbumArt != null) setPlayerDefaultAlbumArt();
-        if (ivPlayerBgBlur != null) ivPlayerBgBlur.setImageResource(0);
+        if (ivPlayerBgBlur != null) bindPlayerBlurBackdrop();
     }
 
     private void tryReachId3FromPartial(File partial) {
@@ -39327,16 +40442,7 @@ public class MainActivity extends Activity {
             optsCenter.inSampleSize = 2;
             Bitmap bmpCenter = BitmapFactory.decodeByteArray(lastAlbumArtBytes, 0, lastAlbumArtBytes.length, optsCenter);
             if (ivAlbumArt != null || ivAlbumArt3d != null) bindPlayerAlbumArt(bmpCenter);
-            if (playerAlbumBlurEnabled) {
-                BitmapFactory.Options optsBg = new BitmapFactory.Options();
-                optsBg.inSampleSize = 4;
-                Bitmap sourceBg = BitmapFactory.decodeByteArray(lastAlbumArtBytes, 0, lastAlbumArtBytes.length, optsBg);
-                if (sourceBg != null && ivPlayerBgBlur != null) {
-                    Bitmap blurredBg = applyGaussianBlur(sourceBg);
-                    ivPlayerBgBlur.setImageBitmap(blurredBg);
-                    if (sourceBg != blurredBg) sourceBg.recycle();
-                }
-            }
+            bindPlayerBlurBackdrop();
             updateMainMenuBackground();
             refreshNowPlayingPreview();
         } catch (Exception ignored) {}
@@ -40579,7 +41685,7 @@ public class MainActivity extends Activity {
         tvPlayerTimeCurrent.setText("00:00");
         tvPlayerTimeTotal.setText(getString(R.string.podcasts_buffering));
         setPlayerDefaultAlbumArt();
-        ivPlayerBgBlur.setImageResource(0);
+        bindPlayerBlurBackdrop();
         updateMainMenuBackground();
         refreshNowPlayingPreview();
         File savedArtProbe = PodcastLibrary.resolveEpisodeFile(ep, showTitle);
@@ -41567,7 +42673,7 @@ public class MainActivity extends Activity {
             preserveHandoffAlbumArt = false;
             syncPlayerAlbumArt3dVisibility();
         }
-        ivPlayerBgBlur.setImageResource(0);
+        bindPlayerBlurBackdrop();
         playerProgress.setProgress(0);
         tvPlayerTimeCurrent.setText("00:00");
         tvPlayerTimeTotal.setText("00:00");
@@ -41644,16 +42750,7 @@ public class MainActivity extends Activity {
                     } catch (Exception e) {
                         currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
                     }
-                    if (playerAlbumBlurEnabled) {
-                        android.graphics.BitmapFactory.Options optsBg = new android.graphics.BitmapFactory.Options();
-                        optsBg.inSampleSize = 4;
-                        android.graphics.Bitmap sourceBg = android.graphics.BitmapFactory.decodeByteArray(lastAlbumArtBytes, 0, lastAlbumArtBytes.length, optsBg);
-                        android.graphics.Bitmap blurredBg = applyGaussianBlur(sourceBg);
-                        ivPlayerBgBlur.setImageBitmap(blurredBg);
-                        if (sourceBg != blurredBg) sourceBg.recycle();
-                    } else {
-                        ivPlayerBgBlur.setImageResource(0);
-                    }
+                    bindPlayerBlurBackdrop();
                 } catch (Throwable e) {}
                 maybeAutoFetchTrackInfo(track, tags, safeFileName, hasDeezerMeta);
 
@@ -41670,7 +42767,7 @@ public class MainActivity extends Activity {
 
                 setPlayerDefaultAlbumArt();
                 currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
-                ivPlayerBgBlur.setImageResource(0); // 뒷배경 블러 비우기
+                bindPlayerBlurBackdrop(); // 뒷배경 블러 비우기
                 updateMainMenuBackground();
                 refreshNowPlayingPreview();
                 maybeAutoFetchTrackInfo(track, tags, safeFileName, hasDeezerMeta);
@@ -43004,30 +44101,29 @@ public class MainActivity extends Activity {
     }
 
     private void adjustVolume(boolean up) {
-        if (DeviceFeatures.isY2()) return; // Y2 has dedicated side volume buttons; let the OS handle them.
-        int stream = activeVolumeStream();
-        int currentVol = audioManager.getStreamVolume(stream);
-        int maxVol = audioManager.getStreamMaxVolume(stream);
-        if (up && currentVol < maxVol)
-            currentVol++;
-        else if (!up && currentVol > 0)
-            currentVol--;
-        audioManager.setStreamVolume(stream, currentVol, 0);
+        // #region agent log
+        int streamBefore = activeVolumeStream();
+        int volBefore = audioManager != null ? audioManager.getStreamVolume(streamBefore) : -1;
+        boolean y2 = DeviceFeatures.isY2();
+        // #endregion
+        int stream = streamBefore;
+        long volT0 = android.os.SystemClock.uptimeMillis();
+        int currentVol = MediaVolumeControl.adjustStream(this, stream, up);
+        long volT1 = android.os.SystemClock.uptimeMillis();
+        int maxVol = MediaVolumeControl.getMaxVolume(this, stream);
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("up", up);
-            d.put("vol", currentVol);
+            d.put("y2", y2);
+            d.put("volBefore", volBefore);
+            d.put("volAfter", currentVol);
             d.put("max", maxVol);
+            d.put("stream", stream);
             d.put("screen", currentScreenState);
-            d.put("ctxMenu", themedContextMenu != null && themedContextMenu.isShowing());
-            d.put("volOnly", contextMenuVolumeOnly);
-            d.put("volSlider", contextMenuInVolumeSlider);
-            d.put("flowVis", layoutFlowMode != null ? layoutFlowMode.getVisibility() : -1);
-            d.put("playerTransport", playerTransport != null);
-            DebugAgentLog.log(this, "MainActivity.adjustVolume", "volume adjusted", "H-VOLUME", d);
-            com.solar.launcher.flow.FlowBackDebugLog.log(
-                    "MainActivity.adjustVolume", "volume adjusted", "H-V5", d);
+            d.put("changed", volBefore != currentVol);
+            d.put("adjustMs", volT1 - volT0);
+            Debug62b1bbLog.log("MainActivity.adjustVolume", "volume step", "H-VOL-1", d);
         } catch (Exception ignored) {}
         // #endregion
         if (currentScreenState == STATE_PLAYER) {
@@ -43479,22 +44575,27 @@ public class MainActivity extends Activity {
                     if (delta != 0 && handlePlaylistMoveWheel(delta)) return true;
                 }
 
-                if (handleLibraryListFastScroll(keyCode)) return true;
-
-                if (Y1InputKeys.isWheelUp(keyCode)) {
-                    listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_UP));
-                    listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_UP));
-                    applyListWraparoundIfNeeded(keyCode);
-                    if (currentScreenState == STATE_NAVIDROME) refreshNavidromeBrowsePreviewFromSelection();
-                    clickFeedback();
-                    return true;
-                }
-                if (Y1InputKeys.isWheelDown(keyCode)) {
-                    listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_DOWN));
-                    listVirtualSongs.dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DPAD_DOWN));
-                    applyListWraparoundIfNeeded(keyCode);
-                    if (currentScreenState == STATE_NAVIDROME) refreshNavidromeBrowsePreviewFromSelection();
-                    clickFeedback();
+                int direction = Y1InputKeys.isWheelUp(keyCode) ? -1
+                        : Y1InputKeys.isWheelDown(keyCode) ? 1 : 0;
+                if (direction != 0) {
+                    // PR #23 progressive flywheel; section jump replaces legacy fast-scroll letter skip.
+                    ensureWheelSectionIndex();
+                    wheelPhysics.tick(android.os.SystemClock.elapsedRealtimeNanos(),
+                            direction, wheelResult);
+                    int current = currentWheelPosition();
+                    int target = wheelResult.sectionJump
+                            ? wheelSectionIndex.jumpTarget(current, direction)
+                            : current + direction * wheelResult.rowSteps;
+                    if (target < 0) {
+                        target = current + direction * Math.max(1, wheelResult.rowSteps);
+                    }
+                    if (moveWheelSelection(target)) {
+                        applyListWraparoundIfNeeded(keyCode);
+                        if (currentScreenState == STATE_NAVIDROME) {
+                            refreshNavidromeBrowsePreviewFromSelection();
+                        }
+                        clickFeedback();
+                    }
                     return true;
                 }
             }
@@ -43628,20 +44729,20 @@ public class MainActivity extends Activity {
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (Y1InputKeys.isBackKey(keyCode)) {
+            // 2026-07-08 — KEY_UP always cancels 10s restart track before any overlay forward swallow.
+            clearBackHoldRescueTimers("onKeyUp-back");
+        }
         if (forwardOverlayKeyIfGlobalModalActive(keyCode, KeyEvent.ACTION_UP)) return true;
         if (Y1BluetoothInput.isBluetoothTransportKey(event)
                 && handleBluetoothTransportKeyUp(keyCode, event)) {
             return true;
         }
         if (Y1InputKeys.isBackKey(keyCode)) {
-            clockHandler.removeCallbacks(backLongPressRunnable);
-            clockHandler.removeCallbacks(backForceQuitRunnable);
-            clockHandler.removeCallbacks(backForceQuitHintRunnable);
+            // 2026-07-08 — Timers already cleared above; swallow residual if soft-restart already ran.
             if (backForceQuitHandled) {
-                backKeyHeld = false;
                 return true;
             }
-            backKeyHeld = false;
             if (currentScreenState == STATE_WIFI_KEYBOARD) {
                 backLongPressHandled = false;
                 clickFeedback();
@@ -43665,7 +44766,6 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (held >= BACK_LONG_PRESS_MS) {
-                showThemedContextMenu();
                 backLongPressHandled = true;
                 return true;
             }
@@ -43810,6 +44910,8 @@ public class MainActivity extends Activity {
             maybeRestoreWifiAfterSleepPolicy();
         }
         if (usbFocusHelper != null) usbFocusHelper.onResume();
+        // 2026-07-10 — Drop sticky “USB storage in use” when LUN is not exported (Y1 false lock).
+        clearStaleUsbMassStorageLockIfNeeded();
         // 2026-07-06 — No onResume USB route/recovery; host connect evaluates once via USB_STATE.
         try {
             ensurePlaybackQueueSyncedFromStoreAsync();
@@ -43831,6 +44933,32 @@ public class MainActivity extends Activity {
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
         LandscapeOrientationGuard.recoverIfPortrait(this);
+        // 2026-07-11 — A5 auto orientation: re-apply portrait/landscape chrome on rotate.
+        if (DeviceFeatures.isA5()) {
+            try {
+                android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+                screenWidthPx = dm.widthPixels;
+                screenHeightPx = dm.heightPixels;
+            } catch (Exception ignored) {}
+            isFullWidthMenus = A5NavigationMode.forcePortraitThemeRules(this)
+                    || prefs.getBoolean("full_width_menus", false);
+            applyFullWidthMenusLayout();
+        }
+    }
+
+    /**
+     * 2026-07-11 — Solar volume overlay instead of stock panel on emulator / A5 / family pins.
+     * Layman: -/= and volume keys show Solar's own volume bar.
+     */
+    private boolean shouldUseSolarVolumeHud() {
+        if (DeviceFeatures.isA5() || EmulatorInputMap.isEmulator()) return true;
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            String fam = (String) sp.getMethod("get", String.class, String.class)
+                    .invoke(null, "persist.solar.device_family", "");
+            if ("y1".equals(fam) || "y2".equals(fam) || "a5".equals(fam)) return true;
+        } catch (Throwable ignored) {}
+        return false;
     }
 
     @Override
@@ -44538,10 +45666,17 @@ public class MainActivity extends Activity {
                 }
 
                 if (tvMenuPreviewTitle != null && tvMenuPreviewArtist != null) {
-                    tvMenuPreviewTitle.setVisibility(View.VISIBLE);
-                    tvMenuPreviewArtist.setVisibility(View.VISIBLE);
-                    tvMenuPreviewTitle.setText(tvPlayerTitle.getText());
-                    tvMenuPreviewArtist.setText(tvPlayerArtist.getText());
+                    if (ThemeManager.isShowNowPlayingInfoEnabled(prefs)) {
+                        tvMenuPreviewTitle.setVisibility(View.VISIBLE);
+                        tvMenuPreviewArtist.setVisibility(View.VISIBLE);
+                        if (ivMenuPreview != null) ivMenuPreview.setVisibility(View.VISIBLE);
+                        tvMenuPreviewTitle.setText(tvPlayerTitle.getText());
+                        tvMenuPreviewArtist.setText(tvPlayerArtist.getText());
+                    } else {
+                        tvMenuPreviewTitle.setVisibility(View.GONE);
+                        tvMenuPreviewArtist.setVisibility(View.GONE);
+                        if (ivMenuPreview != null) ivMenuPreview.setVisibility(View.GONE);
+                    }
                 }
             }
         }
@@ -44576,21 +45711,15 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
             }
-            try {
-                if (ivPlayerBgBlur != null) {
-                    android.graphics.Bitmap blurredBg = applyGaussianBlur(raw);
-                    ivPlayerBgBlur.setImageBitmap(blurredBg);
-                    if (!playerAlbumBlurEnabled) ivPlayerBgBlur.setImageResource(0);
-                }
-            } catch (Exception e) {}
         } else {
             syncPlayerAlbumArt3dVisibility();
             if (ivAlbumArt != null) ivAlbumArt.setImageResource(R.drawable.default_album);
             if (ivAlbumArt3d != null) ivAlbumArt3d.setCoverBitmap(null);
-            if (ivPlayerBgBlur != null) ivPlayerBgBlur.setImageResource(0);
             currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
         }
+        // 2026-07-11 — No embedded art → theme NP wall (globalWallpaper), not default-album blur.
         lastAlbumArtBytes = null;
+        bindPlayerBlurBackdrop();
         updateMainMenuBackground();
         refreshNowPlayingPreview();
     }
@@ -44639,15 +45768,6 @@ public class MainActivity extends Activity {
                 currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
             }
 
-            // 뒷배경 블러 처리
-            android.graphics.BitmapFactory.Options optsBg = new android.graphics.BitmapFactory.Options();
-            optsBg.inSampleSize = 4;
-            android.graphics.Bitmap sourceBg = android.graphics.BitmapFactory.decodeFile(imagePath, optsBg);
-            android.graphics.Bitmap blurredBg = applyGaussianBlur(sourceBg);
-            ivPlayerBgBlur.setImageBitmap(blurredBg);
-            if (sourceBg != blurredBg) sourceBg.recycle();
-            if (!playerAlbumBlurEnabled) ivPlayerBgBlur.setImageResource(0);
-
             // 메인 메뉴 배경도 연동하기 위해 파일 데이터를 byte[]로 변환해서 lastAlbumArtBytes에 집어넣습니다!
             java.io.File file = new java.io.File(imagePath);
             int size = (int) file.length();
@@ -44657,6 +45777,8 @@ public class MainActivity extends Activity {
             buf.close();
 
             lastAlbumArtBytes = bytes;
+            // 2026-07-11 — Blur or theme globalWallpaper via single binder (scrim only with blur).
+            bindPlayerBlurBackdrop();
             updateMainMenuBackground();
             refreshNowPlayingPreview();
 
@@ -44668,7 +45790,7 @@ public class MainActivity extends Activity {
     private void fetchDeezerCoverArt(final File track, final String coverUrl, final File coverFile) {
         setPlayerDefaultAlbumArt();
         currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
-        ivPlayerBgBlur.setImageResource(0);
+        bindPlayerBlurBackdrop();
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -45566,6 +46688,7 @@ public class MainActivity extends Activity {
         keyboardPrefill = prefill != null ? prefill : "";
         changeScreen(STATE_WIFI_KEYBOARD);
     }
+
     public void mediaClickFeedback() { clickFeedback(); }
     public void mediaDelegateShowReachBrowseList(boolean show) { showReachBrowseList(show); }
     public void mediaApplyReachBrowseLayoutMode() { applyReachBrowseLayoutMode(); }
@@ -46176,7 +47299,8 @@ public class MainActivity extends Activity {
             @Override public void setBreadcrumb(String path) {
                 if (tvBrowserPath != null) {
                     tvBrowserPath.setText(path);
-                    tvBrowserPath.setVisibility(View.VISIBLE);
+                    // 2026-07-11: text still updates; gate keeps trail chrome hidden.
+                    setBrowserPathBreadcrumbVisible(true);
                 }
             }
             @Override public void playSongs(java.util.List<com.solar.launcher.navidrome.NavidromeSong> trackList,
@@ -46838,8 +47962,9 @@ public class MainActivity extends Activity {
         if (show3d) {
             ivAlbumArt.setVisibility(View.GONE);
             ivAlbumArt3d.setVisibility(View.VISIBLE);
-            if (ivPlayerBgBlur != null && currentScreenState == STATE_PLAYER) {
-                ivPlayerBgBlur.setVisibility(View.GONE);
+            // 2026-07-11 — Keep theme NP wallpaper under 3D art (was GONE → home desktop leaked through).
+            if (ivPlayerBgBlur != null) {
+                ivPlayerBgBlur.setVisibility(View.VISIBLE);
             }
         } else {
             ivAlbumArt3d.setVisibility(View.GONE);
@@ -47336,10 +48461,53 @@ public class MainActivity extends Activity {
     public static final String EXTRA_OPEN_NOW_PLAYING = "solar.extra.open_now_playing";
     public static final String EXTRA_USB_OVERLAY_ENABLE = "solar.extra.usb_overlay_enable";
     public static final String EXTRA_USB_OVERLAY_LOCK = "solar.extra.usb_overlay_lock";
+    /** Bare USB handoff — evaluate enable prompt once without force-enable. */
+    public static final String EXTRA_USB_EVALUATE_HOST = "solar.extra.usb_evaluate_host";
 
     /** Overlay service peek — live activity or last instance (2026-07-05). */
     public static MainActivity peekForOverlay() {
         return instance;
+    }
+
+    /**
+     * External USB lock (broadcast / receiver) — enter Solar STATE_USB_STORAGE (July-2 monlith).
+     * Layman: eject screen owns the UI; suspend music quietly.
+     */
+    void onExternalUsbStorageLock() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                boolean exported = UsbMassStorageController.isMassStorageExported();
+                boolean kernelUms = UsbMassStorageController.isKernelMassStorageMode();
+                if (!exported && !kernelUms && !usbMassStorageLocked) {
+                    // Spurious lock with no UMS — ignore.
+                    return;
+                }
+                enterUsbMassStorageLock();
+            }
+        });
+    }
+
+    /**
+     * Turn Off / unplug — clear lock flags and leave STATE_USB_STORAGE if shown.
+     */
+    void onExternalUsbStorageUnlock() {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                usbMassStorageLocked = false;
+                cachedUmsExported = false;
+                ThemeManager.setBlockSdcardThemeAssets(false);
+                if (usbFocusHelper != null) {
+                    usbFocusHelper.setMassStorageInterceptActive(false);
+                }
+                if (currentScreenState == STATE_USB_STORAGE) {
+                    int dest = usbReturnScreen != 0 ? usbReturnScreen : STATE_MENU;
+                    usbReturnScreen = STATE_MENU;
+                    applyScreenChange(dest);
+                }
+            }
+        });
     }
 
     /** Queue row play from overlay process — no-op stub until overlay queue wired (2026-07-05). */
@@ -47369,34 +48537,35 @@ public class MainActivity extends Activity {
         ExternalInputHandoff.forceDisarmForSolarFocus();
     }
 
-    /** 2026-07-06 — Companion IPC: live power-tier row labels for helper overlay paint. */
+    /** 2026-07-10 — Companion IPC: power-tier list rows (not quick-bar chip labels). */
     android.os.Bundle buildPowerMenuSnapshotForIpc() {
-        return OverlayMenuSnapshotBuilder.buildPowerFromQuickItems(this, buildContextQuickBar());
+        return OverlayMenuSnapshotBuilder.buildPowerListRows(this);
     }
 
-    /** 2026-07-06 — Companion IPC: dispatch quick-bar chip by CONTEXT_QUICK_* index. */
+    /** 2026-07-10 — Companion IPC: power list row pick (restart / launcher), not quick-bar index. */
     void dispatchPowerMenuActionFromIpc(final int actionIndex) {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (themedContextMenu == null || !themedContextMenu.isShowing()) {
-                    showThemedContextMenu();
-                }
-                handleContextQuickBar(actionIndex);
+                PowerMenuRowCatalog.dispatch(MainActivity.this, actionIndex);
             }
         });
     }
+
 
     /** 2026-07-06 — Wire MainActivity as live data source for companion overlay IPC. */
     private void registerOverlayStateIpcHandler() {
         SolarOverlayStateService.registerActionHandler(new SolarOverlayStateService.OverlayActionHandler() {
             @Override
             public boolean dispatchAction(String sessionId, int actionIndex) {
+                // 2026-07-08 — Power + solar_home_* / app-menu sessions via companion IPC.
+                // Was: KIND_POWER only. Now: registry + Home context actions too.
                 if (OverlayMenuSnapshotBuilder.KIND_POWER.equals(sessionId)) {
                     dispatchPowerMenuActionFromIpc(actionIndex);
                     return true;
                 }
-                return false;
+                return OverlayMenuSessionRegistry.dispatchAction(
+                        getApplicationContext(), sessionId, actionIndex);
             }
 
             @Override

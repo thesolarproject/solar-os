@@ -198,7 +198,7 @@ RB_LIB_SHA="$(sha256_file "$DST/rockbox/librockbox-system.so")"
 # manifest.json — parsed by PlatformPrepManifest.java at runtime.
 cat > "$DST/manifest.json" <<EOF
 {
-  "prepVersion": 16,
+  "prepVersion": 17,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",

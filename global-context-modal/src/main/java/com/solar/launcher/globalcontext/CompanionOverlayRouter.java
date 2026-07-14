@@ -24,6 +24,8 @@ public final class CompanionOverlayRouter {
     /** Open power tier on the preferred overlay shell. */
     public static boolean startSolarOverlayPower(Context ctx) {
         if (ctx == null) return false;
+        // 2026-07-14 — Drop Chip before Solar opens (sole shell).
+        OverlayShellRouter.dismissPeerOverlayShell(ctx);
         if (shouldDelegatePaintToSolar(ctx)) {
             Intent solar = new Intent(CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
             solar.setComponent(new ComponentName(
@@ -53,6 +55,8 @@ public final class CompanionOverlayRouter {
     /** Chip path power overlay — only when companion_shell=1. */
     public static void startCompanionPowerOverlay(Context ctx) {
         if (ctx == null) return;
+        // Never leave Solar themed shell under Chip.
+        OverlayShellRouter.dismissPeerOverlayShell(ctx);
         Intent overlay = new Intent(CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
         overlay.setComponent(new ComponentName(
                 OverlayShellRouter.COMPANION_PKG,
@@ -65,6 +69,11 @@ public final class CompanionOverlayRouter {
     /** Start any overlay action on the configured shell. */
     public static boolean startOverlayAction(Context ctx, String action) {
         if (ctx == null || action == null) return false;
+        if (CompanionOverlayTriggers.ACTION_DISMISS_OVERLAY.equals(action)) {
+            OverlayShellRouter.dismissAllOverlayShells(ctx);
+            return true;
+        }
+        OverlayShellRouter.dismissPeerOverlayShell(ctx);
         Intent svc = new Intent(action);
         svc.setComponent(new ComponentName(
                 OverlayShellRouter.overlayPackage(),

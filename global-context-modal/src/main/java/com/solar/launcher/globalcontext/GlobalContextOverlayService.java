@@ -23,6 +23,7 @@ import com.solar.input.policy.StaleOverlayGate;
 import com.solar.launcher.overlay.ChipHostActions;
 import com.solar.launcher.overlay.ChipOverlayHost;
 import com.solar.launcher.overlay.OverlayModalTransition;
+import com.solar.launcher.overlay.OverlayShellRouter;
 import com.solar.launcher.overlay.OverlayThemeProvider;
 import com.solar.launcher.overlay.OverlayTierNames;
 
@@ -298,10 +299,16 @@ public final class GlobalContextOverlayService extends Service {
         if (CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER.equals(action)) {
             // 2026-07-14 — Sole shell is Solar ThemedContextMenu; redirect chip process away.
             if (CompanionOverlayRouter.shouldDelegatePaintToSolar(this)) {
+                // Drop any chip chrome already up, then hand Solar the paint.
+                if (overlayRoot != null) {
+                    tearDownOverlay(false);
+                }
                 CompanionOverlayRouter.startSolarOverlayPower(this);
                 stopSelf();
                 return START_NOT_STICKY;
             }
+            // Chip opt-in path — never leave Solar themed shell underneath.
+            OverlayShellRouter.dismissPeerOverlayShell(this);
             AgentDebugLog.log("H-C", "GlobalContextOverlayService.onStartCommand",
                     "SHOW_POWER", "{\"pid\":" + android.os.Process.myPid() + "}");
             // Optional solar_home_* extras → Home options on the same Power-hold shell.

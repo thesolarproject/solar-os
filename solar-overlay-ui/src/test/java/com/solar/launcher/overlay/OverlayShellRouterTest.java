@@ -30,4 +30,14 @@ public class OverlayShellRouterTest {
         assertTrue(OverlayShellRouter.SOLAR_OVERLAY_SERVICE
                 .startsWith(OverlayShellRouter.SOLAR_PKG));
     }
+
+    @Test
+    public void peerIsOtherShellWhenSolarPrimary() {
+        // Default Solar → peer is companion Chip (so dismissPeer cannot hit Solar).
+        assertEquals(OverlayShellRouter.COMPANION_PKG, OverlayShellRouter.peerOverlayPackage());
+        assertEquals(OverlayShellRouter.COMPANION_OVERLAY_SERVICE,
+                OverlayShellRouter.peerOverlayServiceClass());
+        assertFalse(OverlayShellRouter.peerOverlayPackage()
+                .equals(OverlayShellRouter.overlayPackage()));
+    }
 }

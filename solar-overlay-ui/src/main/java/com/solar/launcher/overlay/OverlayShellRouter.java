@@ -1,10 +1,15 @@
 package com.solar.launcher.overlay;
 
+import android.content.ComponentName;
+import android.content.Context;
+import android.content.Intent;
+
 /**
  * 2026-07-14 — Picks the one global overlay shell: Solar ThemedContextMenu by default.
  * Layman: one system menu that matches Solar Home decoration and takes the scroll wheel.
  * Technical: SolarOverlayService + ThemedContextMenu sole paint/key target; companion Chip
  * only if persist.solar.overlay.companion_shell=1 (escape hatch).
+ * Never paint two shells — {@link #dismissPeerOverlayShell} / {@link #dismissAllOverlayShells}.
  * Was: companion ChipOverlayHost primary (parallel chrome, incomplete parity / dead keys).
  * Reversal: set persist.solar.overlay.companion_shell=1 for chip path again.
  */
@@ -60,6 +65,46 @@ public final class OverlayShellRouter {
      */
     public static android.content.ComponentName overlayComponent() {
         return new android.content.ComponentName(overlayPackage(), overlayServiceClass());
+    }
+
+    /** The other shell package — never leave both visible. */
+    public static String peerOverlayPackage() {
+        return useCompanionShell() ? SOLAR_PKG : COMPANION_PKG;
+    }
+
+    /** The other shell Service — dismissed before the active shell paints. */
+    public static String peerOverlayServiceClass() {
+        return useCompanionShell() ? SOLAR_OVERLAY_SERVICE : COMPANION_OVERLAY_SERVICE;
+    }
+
+    /**
+     * 2026-07-14 — Tear down the non-active shell so Chip and Solar never stack.
+     * Layman: closes the spare menu before the real one opens.
+     * Reversal: no-op (risk double chrome again).
+     */
+    public static void dismissPeerOverlayShell(Context ctx) {
+        if (ctx == null) return;
+        startDismiss(ctx, peerOverlayPackage(), peerOverlayServiceClass());
+    }
+
+    /**
+     * 2026-07-14 — Tear down Solar AND Chip WM overlays (in-app menu / boot / rescue).
+     * Layman: wipe every floating system menu so Home's own sheet is alone.
+     * Technical: DISMISS_OVERLAY to both services. Reversal: call once per package again.
+     */
+    public static void dismissAllOverlayShells(Context ctx) {
+        if (ctx == null) return;
+        startDismiss(ctx, SOLAR_PKG, SOLAR_OVERLAY_SERVICE);
+        startDismiss(ctx, COMPANION_PKG, COMPANION_OVERLAY_SERVICE);
+    }
+
+    /** fire-and-forget DISMISS to one overlay Service. */
+    private static void startDismiss(Context ctx, String pkg, String svc) {
+        try {
+            Intent dismiss = new Intent(OverlayMenuContract.ACTION_DISMISS_OVERLAY);
+            dismiss.setComponent(new ComponentName(pkg, svc));
+            ctx.getApplicationContext().startService(dismiss);
+        } catch (Throwable ignored) {}
     }
 
     private static String readProp(String key, String def) {

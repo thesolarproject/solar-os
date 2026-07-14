@@ -377,6 +377,8 @@ public final class SolarOverlayService extends Service {
         final boolean passiveToast =
                 OverlayTriggers.ACTION_SHOW_OVERLAY_TOAST.equals(action);
         if (!passiveVolume && !passiveToast) {
+            // 2026-07-14 — Kill Chip shell before Solar paints (never two menus).
+            com.solar.launcher.overlay.OverlayShellRouter.dismissPeerOverlayShell(this);
             OverlayHandoffRestoreReceiver.notifyPause(getApplicationContext());
             OverlayForegroundGuard.snapshotOnArm(getApplicationContext());
         }
