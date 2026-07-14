@@ -298,14 +298,31 @@ public final class SolarOverlayService extends Service {
         overlayRoot.setClickable(false);
         overlayRoot.setFocusable(false);
         overlayRoot.setFocusableInTouchMode(false);
+        // 2026-07-14 — Passive HUD must stay NOT_TOUCHABLE (fill-parent WM otherwise eats A5 touch).
+        // Was: globalOverlayWindowFlags() after FOCUSABLE interactive change → fl=#30120, no touch pass-through.
+        // Reversal: use globalOverlayWindowFlags() again (breaks touch under volume HUD).
+        int volFlags = passiveOverlayWindowFlags();
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY : WindowManager.LayoutParams.TYPE_SYSTEM_ERROR,
-                globalOverlayWindowFlags(),
+                volFlags,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
         windowManager.addView(overlayRoot, lp);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("wmFlags", volFlags);
+            d.put("notTouchable",
+                    (volFlags & WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0);
+            d.put("notFocusable",
+                    (volFlags & WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE) != 0);
+            d.put("runId", "post-fix");
+            Debug956bbfLog.log(app, "SolarOverlayService.showPassiveVolumeOverlay",
+                    "passive volume WM flags", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
         // 2026-07-08 — Shell attached (volume HUD); stuck BACK can dismiss if gate stays off.
         OverlayKeyGate.setShellVisible(true);
         Runnable finish = new Runnable() {
@@ -392,11 +409,8 @@ public final class SolarOverlayService extends Service {
         overlayRoot.setClickable(interactive);
         // 2026-07-14 — Keep constructor focusable=true for interactive (was forced false → no wheel).
 
-        int wmFlags = interactive ? globalOverlayWindowFlags()
-                : (WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
-                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+        // 2026-07-14 — Toast/volume pass-through vs interactive focusable menu.
+        int wmFlags = interactive ? globalOverlayWindowFlags() : passiveOverlayWindowFlags();
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -756,6 +770,20 @@ public final class SolarOverlayService extends Service {
                 | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
                 | WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
+    }
+
+    /**
+     * 2026-07-14 — Passive volume/toast HUD: never steal touch or focus from the app beneath.
+     * Layman: volume slider can float above Rockbox without freezing the screen under a finger.
+     * Tech: full-screen TYPE_SYSTEM_ERROR without NOT_TOUCHABLE eats every MotionEvent.
+     * Was: reused {@link #globalOverlayWindowFlags()} after interactive became FOCUSABLE/TOUCHABLE.
+     * Reversal: call globalOverlayWindowFlags() from showPassiveVolumeOverlay again.
+     */
+    static int passiveOverlayWindowFlags() {
+        return WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
+                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
     }
 
     private void tearDownOverlay() {
