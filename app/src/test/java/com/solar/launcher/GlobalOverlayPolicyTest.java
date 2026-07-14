@@ -13,9 +13,10 @@ public class GlobalOverlayPolicyTest {
         assertFalse(GlobalOverlayPolicy.shouldOfferGlobalModalForPackage(LauncherDefault.JJ_PACKAGE));
     }
 
+    /** 2026-07-14 — JJ/3P no longer get Solar POWER quick menu; stock GlobalActions owns them. */
     @Test
-    public void jjAllowedForY2PowerLongOnly() {
-        assertTrue(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest(
+    public void jjExcludedFromY2PowerLongSolarOnly() {
+        assertFalse(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest(
                 LauncherDefault.JJ_PACKAGE, true));
         assertFalse(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest(
                 LauncherDefault.JJ_PACKAGE, false));
@@ -28,7 +29,7 @@ public class GlobalOverlayPolicyTest {
     }
 
     @Test
-    public void imeInactiveJjGetsBackLongModalAtFourSeconds() {
+    public void imeInactiveJjGetsBackLongReturnToSolar() {
         assertTrue(GlobalOverlayPolicy.shouldOfferBackLongGlobalModal(
                 LauncherDefault.JJ_PACKAGE, false));
         assertTrue(GlobalOverlayPolicy.shouldArmRescueHoldForPackage(LauncherDefault.JJ_PACKAGE));
@@ -40,19 +41,21 @@ public class GlobalOverlayPolicyTest {
     }
 
     @Test
-    public void rockboxAllowedForY2PowerLongOnly() {
-        assertTrue(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest("org.rockbox", true));
+    public void rockboxExcludedFromY2PowerLongSolarOnly() {
+        assertFalse(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest("org.rockbox", true));
         assertFalse(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest("org.rockbox", false));
     }
 
-    /** Y1/Y2 parity: third-party apps get BACK-long; policy does not branch on device family. */
+    /** Y1/Y2 parity: third-party apps get BACK-long return-to-Solar; policy is device-family agnostic. */
     @Test
     public void thirdPartyEligibleRegardlessOfDeviceFamily() {
         assertTrue(GlobalOverlayPolicy.shouldOfferGlobalModalForPackage("com.android.calculator2"));
+        assertTrue(GlobalOverlayPolicy.shouldOfferBackLongGlobalModal(
+                "com.android.calculator2", false));
     }
 
     @Test
-    public void imeAllowsBackLongOverRockbox() {
+    public void imeAllowsBackLongReturnToSolarOverRockbox() {
         assertTrue(GlobalOverlayPolicy.shouldOfferBackLongGlobalModal("org.rockbox", true));
     }
 
@@ -73,6 +76,14 @@ public class GlobalOverlayPolicyTest {
     }
 
     @Test
+    public void innioasisStockLauncherKeysBlockedWhileOverlayActive() {
+        assertTrue(GlobalOverlayPolicy.shouldBlockForegroundKeysWhileOverlayActive(
+                "com.innioasis.y1"));
+        assertTrue(GlobalOverlayPolicy.shouldBlockForegroundKeysWhileOverlayActive(
+                "com.innioasis.y2"));
+    }
+
+    @Test
     public void innioasisNotBlockedWhileOverlayActive() {
         assertFalse(GlobalOverlayPolicy.shouldBlockForegroundKeysWhileOverlayActive("com.innioasis.music"));
     }
@@ -83,9 +94,19 @@ public class GlobalOverlayPolicyTest {
     }
 
     @Test
-    public void solarAndInnioasisExcluded() {
+    public void solarAndInnioasisMusicExcluded() {
         assertFalse(GlobalOverlayPolicy.shouldOfferGlobalModalForPackage("com.solar.launcher"));
         assertFalse(GlobalOverlayPolicy.shouldOfferGlobalModalForPackage("com.innioasis.music"));
+    }
+
+    @Test
+    public void innioasisStockLauncherGetsBackLongReturnToSolarNotPowerMenu() {
+        assertTrue(GlobalOverlayPolicy.shouldOfferBackLongGlobalModal("com.innioasis.y1", false));
+        assertTrue(GlobalOverlayPolicy.shouldOfferBackLongGlobalModal("com.innioasis.y2", false));
+        assertFalse(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest(
+                "com.innioasis.y1", true));
+        assertTrue(GlobalOverlayPolicy.shouldOfferPowerLongGlobalModalForTest(
+                "com.solar.launcher", true));
     }
 
     @Test

@@ -119,25 +119,27 @@ public final class GlobalInputCoordinatorService extends Service {
                 modalFired = true;
                 String fgAtFire = resolveForegroundAtFire(foregroundPkg);
                 if (activeKeyCode == GlobalInputPolicy.KEYCODE_POWER) {
+                    // 2026-07-14 — Companion hold FSM retired for system-wide modal; Solar uses PWM.
                     if (!GlobalInputPolicy.shouldOfferPowerLongModal(fgAtFire, y2)) return;
-                } else {
-                    boolean emergency = EmergencyRockboxMode.isEmergencyMode();
-                    boolean ime = SysPropHelper.isTrue("sys.solar.ime.active");
-                    if (!GlobalInputPolicy.shouldOfferBackLongModal(
-                            fgAtFire, y2, ime, emergency)) {
-                        return;
-                    }
+                    // Solar-only: do not paint WM shell — MainActivity / PWM owns in-app menu.
+                    return;
+                }
+                boolean emergency = EmergencyRockboxMode.isEmergencyMode();
+                boolean ime = SysPropHelper.isTrue("sys.solar.ime.active");
+                if (!GlobalInputPolicy.shouldLaunchSolarOnBackLong(fgAtFire, ime, emergency)) {
+                    return;
                 }
                 // #region agent log
-                AgentDebugLog.log("H-C", "GlobalInputCoordinator.modalRunnable",
-                        "hold_threshold_met", "{\"heldMs\":" + held
+                AgentDebugLog.log("c54726-H3", "GlobalInputCoordinator.modalRunnable",
+                        "launch_solar_home", "{\"heldMs\":" + held
                                 + ",\"thresholdMs\":" + thresholdMs
                                 + ",\"keyCode\":" + activeKeyCode
                                 + ",\"fg\":\"" + (fgAtFire != null
                                         ? fgAtFire.replace("\"", "'") : "")
                                 + "\"}");
                 // #endregion
-                openPowerOverlay();
+                // 2026-07-14 — HOLD BACK → Solar Home (was openPowerOverlay WM shell).
+                launchSolarHome();
             }
         };
         worker.postDelayed(modalRunnable, holdDelayMs);
@@ -194,6 +196,26 @@ public final class GlobalInputCoordinatorService extends Service {
         return live != null ? live : cached;
     }
 
+    /**
+     * 2026-07-14 — HOLD BACK returns to Solar MainActivity (no companion WM quick menu).
+     * Layman: Back-hold from this leftover FSM still goes home, not into a floating shell.
+     */
+    private void launchSolarHome() {
+        try {
+            Intent i = new Intent(Intent.ACTION_MAIN);
+            i.setComponent(new ComponentName(
+                    "com.solar.launcher", "com.solar.launcher.MainActivity"));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(i);
+        } catch (Exception e) {
+            AgentDebugLog.log("c54726-H3", "GlobalInputCoordinator.launchSolarHome",
+                    "failed", "{\"err\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /** @deprecated 2026-07-14 — system-wide quick menu retired; keep for volume/USB escape hatches. */
     private void openPowerOverlay() {
         StaleOverlayGate.clearIfNeeded();
         if (StaleOverlayGate.isActiveOrOpening()) {

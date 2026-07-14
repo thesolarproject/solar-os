@@ -22,96 +22,127 @@ public class GlobalInputPolicyTest {
                 GlobalInputPolicy.SOLAR_PKG, true));
     }
 
+    /** 2026-07-14 — Outside Solar, POWER hold must not open Solar menu (stock GlobalActions). */
     @Test
-    public void y2PowerModalIncludesRockbox() {
-        assertTrue(GlobalInputPolicy.shouldOfferPowerLongModal(
+    public void y2PowerModalSolarOnlyExcludesRockboxAndThirdParty() {
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(
                 GlobalInputPolicy.ROCKBOX_PKG, true));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(
+                "com.android.settings", true));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(
+                GlobalInputPolicy.JJ_PKG, true));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(
+                "com.android.systemui", true));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(null, true));
     }
 
     @Test
-    public void y2PowerFailOpenSystemui() {
+    public void y2PowerFailOpenSystemuiProbeStillRecognized() {
         assertTrue(GlobalInputPolicy.shouldFailOpenPowerFg("com.android.systemui"));
         assertTrue(GlobalInputPolicy.shouldFailOpenPowerFg(null));
     }
 
     @Test
-    public void y2BackFailOpenSystemui() {
+    public void y2BackFailOpenSystemuiLaunchesSolar() {
         assertTrue(GlobalInputPolicy.shouldFailOpenBackFg("com.android.systemui"));
+        assertTrue(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                "com.android.systemui", false, false));
         assertTrue(GlobalInputPolicy.shouldOfferBackLongModal(
                 "com.android.systemui", true, false, false));
     }
 
     @Test
     public void y1RockboxBackPassthroughNormalMode() {
+        // 2026-07-08 — Pass through under 300 ms nav-owned tier; at/over opens power path only.
         assertTrue(GlobalInputPolicy.shouldPassthroughRockboxBack(
-                199L, false, false, false));
+                299L, false, false, false));
         assertFalse(GlobalInputPolicy.shouldPassthroughRockboxBack(
-                200L, false, false, false));
+                300L, false, false, false));
     }
 
     @Test
-    public void timingTiersUnifiedFastSpawn() {
-        assertEquals(200L, GlobalInputPolicy.THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS);
-        assertEquals(200L, GlobalInputPolicy.NAV_OWNED_LAUNCHER_MODAL_HOLD_MS);
-        assertEquals(200L, GlobalInputPolicy.ROCKBOX_BACK_PASSTHROUGH_MS);
-        assertEquals(130L, GlobalInputPolicy.GLOBAL_MODAL_HOLD_MS);
-        assertEquals(130L, GlobalInputPolicy.THIRD_PARTY_MODAL_HOLD_MS);
-        assertEquals(130L, GlobalInputPolicy.MODAL_HOLD_MS);
-        assertEquals(300L, GlobalInputPolicy.CENTER_MENU_HOLD_MS);
-        assertEquals(130L, GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS);
-        assertEquals(4900L, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
-        assertEquals(7000L, GlobalInputPolicy.RESCUE_EXECUTE_MS);
-        assertEquals(18, GlobalInputPolicy.POLICY_REV);
+    public void timingTiersMatchDocumentedHoldGuard() {
+        // 2026-07-08 — 420/300 restore; 130/200 mis-classified firm taps as holds.
+        assertEquals(300L, GlobalInputPolicy.THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS);
+        assertEquals(300L, GlobalInputPolicy.NAV_OWNED_LAUNCHER_MODAL_HOLD_MS);
+        assertEquals(300L, GlobalInputPolicy.ROCKBOX_BACK_PASSTHROUGH_MS);
+        assertEquals(420L, GlobalInputPolicy.GLOBAL_MODAL_HOLD_MS);
+        assertEquals(420L, GlobalInputPolicy.THIRD_PARTY_MODAL_HOLD_MS);
+        assertEquals(420L, GlobalInputPolicy.MODAL_HOLD_MS);
+        assertEquals(420L, GlobalInputPolicy.CENTER_MENU_HOLD_MS);
+        assertEquals(420L, GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS);
+        assertEquals(7000L, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
+        assertEquals(10000L, GlobalInputPolicy.RESCUE_EXECUTE_MS);
+        assertEquals(10000L, GlobalInputPolicy.RESCUE_HOLD_MS);
+        assertEquals(22, GlobalInputPolicy.POLICY_REV);
     }
 
     @Test
-    public void thirdPartyBackModalAtOneHundredThirtyMs() {
-        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.settings"));
-        assertEquals(130L, GlobalInputPolicy.powerModalHoldMsForPackage("com.mediatek.camera"));
-        assertEquals(150L, GlobalInputPolicy.overlayDismissGraceMsForPackage("com.android.settings"));
-        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.systemui"));
+    public void thirdPartyBackModalAtFourHundredTwentyMs() {
+        assertEquals(420L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.settings"));
+        assertEquals(420L, GlobalInputPolicy.powerModalHoldMsForPackage("com.mediatek.camera"));
+        assertEquals(210L, GlobalInputPolicy.overlayDismissGraceMsForPackage("com.android.settings"));
+        assertEquals(420L, GlobalInputPolicy.backModalHoldMsForPackage("com.android.systemui"));
+    }
+
+    /** 2026-07-08 — JJ/stock HOME targets arm the wheel remap even with Solar disabled. */
+    @Test
+    public void jjKeylayoutHomeTargetsArmRemapFallback() {
+        // JJ and factory Innioasis HOME need MEDIA→DPAD wheel translation.
+        assertTrue(GlobalInputPolicy.isJjKeylayoutHomeTarget("jj"));
+        assertTrue(GlobalInputPolicy.isJjKeylayoutHomeTarget("stock"));
+        // Solar/Rockbox/custom handle the wheel natively (or via other tiers) — no remap.
+        assertFalse(GlobalInputPolicy.isJjKeylayoutHomeTarget("solar"));
+        assertFalse(GlobalInputPolicy.isJjKeylayoutHomeTarget("rockbox"));
+        assertFalse(GlobalInputPolicy.isJjKeylayoutHomeTarget("custom"));
+        assertFalse(GlobalInputPolicy.isJjKeylayoutHomeTarget(""));
+        assertFalse(GlobalInputPolicy.isJjKeylayoutHomeTarget(null));
     }
 
     @Test
-    public void navOwnedLauncherHoldTwoHundredMs() {
-        assertEquals(200L, GlobalInputPolicy.backModalHoldMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
-        assertEquals(200L, GlobalInputPolicy.backModalHoldMsForPackage(GlobalInputPolicy.JJ_PKG));
-        assertEquals(200L, GlobalInputPolicy.powerModalHoldMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
-        assertEquals(200L, GlobalInputPolicy.powerModalHoldMsForPackage(GlobalInputPolicy.JJ_PKG));
-        assertEquals(200L, GlobalInputPolicy.overlayDismissGraceMsForPackage(GlobalInputPolicy.JJ_PKG));
-        assertEquals(200L, GlobalInputPolicy.overlayDismissGraceMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
+    public void navOwnedLauncherHoldThreeHundredMs() {
+        assertEquals(300L, GlobalInputPolicy.backModalHoldMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
+        assertEquals(300L, GlobalInputPolicy.backModalHoldMsForPackage(GlobalInputPolicy.JJ_PKG));
+        assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
+        assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage(GlobalInputPolicy.JJ_PKG));
+        assertEquals(300L, GlobalInputPolicy.overlayDismissGraceMsForPackage(GlobalInputPolicy.JJ_PKG));
+        assertEquals(300L, GlobalInputPolicy.overlayDismissGraceMsForPackage(GlobalInputPolicy.ROCKBOX_PKG));
     }
 
     @Test
-    public void y2RockboxBackPassthroughUntilTwoHundredMs() {
+    public void y2RockboxBackPassthroughUntilThreeHundredMs() {
         assertTrue(GlobalInputPolicy.shouldPassthroughRockboxBack(
-                199L, true, false, false));
+                299L, true, false, false));
         assertFalse(GlobalInputPolicy.shouldPassthroughRockboxBack(
-                200L, true, false, false));
+                300L, true, false, false));
     }
 
     @Test
     public void rockboxPowerPassthroughUsesNavOwnedTier() {
         assertTrue(GlobalInputPolicy.shouldPassthroughNavOwnedLauncherPower(
-                199L, GlobalInputPolicy.ROCKBOX_PKG, false));
+                299L, GlobalInputPolicy.ROCKBOX_PKG, false));
         assertFalse(GlobalInputPolicy.shouldPassthroughNavOwnedLauncherPower(
-                200L, GlobalInputPolicy.ROCKBOX_PKG, false));
+                300L, GlobalInputPolicy.ROCKBOX_PKG, false));
     }
 
     @Test
     public void jjPowerPassthroughUsesNavOwnedTier() {
         assertTrue(GlobalInputPolicy.shouldPassthroughNavOwnedLauncherPower(
-                199L, GlobalInputPolicy.JJ_PKG, false));
+                299L, GlobalInputPolicy.JJ_PKG, false));
         assertFalse(GlobalInputPolicy.shouldPassthroughNavOwnedLauncherPower(
-                200L, GlobalInputPolicy.JJ_PKG, false));
+                300L, GlobalInputPolicy.JJ_PKG, false));
     }
 
     @Test
-    public void navOwnedLauncherGetsBackLongModal() {
-        assertFalse(GlobalInputPolicy.shouldOfferBackLongModal(
-                GlobalInputPolicy.ROCKBOX_PKG, false, false, false));
+    public void navOwnedLauncherGetsBackLongReturnToSolar() {
+        assertFalse(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                GlobalInputPolicy.ROCKBOX_PKG, false, false));
+        assertTrue(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                GlobalInputPolicy.JJ_PKG, false, false));
         assertTrue(GlobalInputPolicy.shouldOfferBackLongModal(
-                GlobalInputPolicy.JJ_PKG, true, false, false));
+                GlobalInputPolicy.INNIOASIS_Y1_PKG, false, false, false));
+        assertTrue(GlobalInputPolicy.shouldOfferBackLongModal(
+                GlobalInputPolicy.INNIOASIS_Y2_PKG, true, false, false));
     }
 
     @Test
@@ -123,7 +154,9 @@ public class GlobalInputPolicyTest {
     }
 
     @Test
-    public void imeActiveAllowsBackModalOverRockbox() {
+    public void imeActiveAllowsBackReturnToSolarOverRockbox() {
+        assertTrue(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                GlobalInputPolicy.ROCKBOX_PKG, true, false));
         assertTrue(GlobalInputPolicy.shouldOfferBackLongModal(
                 GlobalInputPolicy.ROCKBOX_PKG, false, true, false));
     }
@@ -134,6 +167,8 @@ public class GlobalInputPolicyTest {
                 GlobalInputPolicy.SOLAR_PKG, true));
         assertFalse(GlobalInputPolicy.shouldOfferLauncherPickerOnPowerHold(
                 GlobalInputPolicy.SOLAR_PKG, false));
+        assertFalse(GlobalInputPolicy.shouldOfferLauncherPickerOnPowerHold(
+                "com.android.settings", true));
     }
 
     @Test
@@ -148,8 +183,9 @@ public class GlobalInputPolicyTest {
     }
 
     @Test
-    public void genericHomeLauncherUsesFastModalHold() {
-        assertEquals(130L, GlobalInputPolicy.backModalHoldMsForPackage("com.example.home"));
+    public void genericHomeLauncherUsesStandardModalHold() {
+        // 2026-07-08 — Generic HOME uses 420 ms like stock apps (not nav-owned 300).
+        assertEquals(420L, GlobalInputPolicy.backModalHoldMsForPackage("com.example.home"));
         assertFalse(GlobalInputPolicy.isThirdPartyHomeLauncher("com.example.home"));
         assertFalse(GlobalInputPolicy.isNavOwnedHomeLauncher("com.example.home"));
     }
@@ -157,7 +193,14 @@ public class GlobalInputPolicyTest {
     @Test
     public void thirdPartyHomeLauncherDetection() {
         assertTrue(GlobalInputPolicy.isThirdPartyHomeLauncher(GlobalInputPolicy.JJ_PKG));
+        assertTrue(GlobalInputPolicy.isJjKeylayoutLauncher(GlobalInputPolicy.INNIOASIS_Y1_PKG));
+        assertTrue(GlobalInputPolicy.isJjKeylayoutLauncher(GlobalInputPolicy.INNIOASIS_Y2_PKG));
+        assertFalse(GlobalInputPolicy.isInnioasisStockLauncher("com.innioasis.music"));
+        assertTrue(GlobalInputPolicy.isInnioasisNonLauncherPackage("com.innioasis.music"));
+        assertFalse(GlobalInputPolicy.shouldOfferBackLongModal(
+                "com.innioasis.music", false, false, false));
         assertFalse(GlobalInputPolicy.isThirdPartyHomeLauncher(GlobalInputPolicy.ROCKBOX_PKG));
         assertTrue(GlobalInputPolicy.isNavOwnedHomeLauncher(GlobalInputPolicy.ROCKBOX_PKG));
+        assertTrue(GlobalInputPolicy.isNavOwnedHomeLauncher(GlobalInputPolicy.INNIOASIS_Y1_PKG));
     }
 }

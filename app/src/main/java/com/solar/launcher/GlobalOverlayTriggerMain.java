@@ -53,14 +53,19 @@ public final class GlobalOverlayTriggerMain {
     private static long powerDownAt;
     private static boolean powerLongFired;
     private static final boolean y2Device = DeviceFeatures.isY2();
+    /**
+     * 2026-07-14 — Root miss-gate: HOLD BACK → Solar Home (not WM quick menu).
+     * Layman: even if Xposed missed the hold, the root watcher still sends you home.
+     * Was: am startservice SHOW_OVERLAY_POWER. Reversal: overlayGlobalModalBroadcastCmd().
+     */
     private static final Runnable backLongRunnable = new Runnable() {
         @Override
         public void run() {
             if (!backDown || backLongFired || backRestartFired) return;
             if (isOverlayActive() || isOverlayOpening()) return;
-            backLongFired = true;
             String fg = resolveBackForegroundForRoot();
             if (!GlobalOverlayPolicy.shouldOfferBackLongGlobalModal(fg, isImeActive())) return;
+            backLongFired = true;
             long holdMs = com.solar.input.policy.GlobalInputPolicy.backModalHoldMsForPackage(fg);
             // #region agent log
             try {
@@ -68,35 +73,45 @@ public final class GlobalOverlayTriggerMain {
                 d.put("fg", fg != null ? fg : "");
                 d.put("holdMs", holdMs);
                 d.put("tier", "root-evdev");
+                d.put("action", "launch_solar_home");
                 DebugBee1b8Log.log("GlobalOverlayTriggerMain.backLongRunnable",
-                        "modal scheduled fire", "bee1b8-H-A", d);
+                        "launch Solar Home", "c54726-H3", d);
             } catch (Exception ignored) {}
             // #endregion
             try {
                 Runtime.getRuntime().exec(new String[]{"sh", "-c",
-                        overlayGlobalModalBroadcastCmd()});
-                System.out.println(TAG + ": overlay fg=" + fg);
+                        "am start -n com.solar.launcher/.MainActivity -f 0x34000000"});
+                System.out.println(TAG + ": launch Solar Home fg=" + fg);
             } catch (Exception e) {
-                System.err.println(TAG + ": start overlay failed: " + e.getMessage());
+                System.err.println(TAG + ": launch Solar Home failed: " + e.getMessage());
             }
         }
     };
-    /** Y2 miss-gated tier — only when Xposed PWM did not open overlay after power-hold. */
+    /**
+     * 2026-07-14 — Y2 root miss-gate: POWER-hold menu only for Solar fg (in-app via broadcast).
+     * Outside Solar: do nothing so stock GlobalActions can own the hold.
+     */
     private static final Runnable powerLongRunnable = new Runnable() {
         @Override
         public void run() {
             if (!powerDown || powerLongFired) return;
+            String fg = resolvePowerForegroundForRoot();
+            if (!com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
+                    fg, DeviceFeatures.isY2())) {
+                return;
+            }
             com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
             if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) return;
             powerLongFired = true;
-            String fg = resolvePowerForegroundForRoot();
-            if (!com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(fg, DeviceFeatures.isY2())) return;
             try {
+                // Solar in-app sheet — same intent MainActivity listens for.
                 Runtime.getRuntime().exec(new String[]{"sh", "-c",
-                        overlayGlobalModalBroadcastCmd()});
-                System.out.println(TAG + ": power overlay fg=" + fg);
+                        "am start -a com.solar.launcher.action.OPEN_CONTEXT_MENU "
+                                + "-n com.solar.launcher/.MainActivity "
+                                + "--ez context_power_hold true -f 0x34000000"});
+                System.out.println(TAG + ": Solar in-app power menu fg=" + fg);
             } catch (Exception e) {
-                System.err.println(TAG + ": power overlay failed: " + e.getMessage());
+                System.err.println(TAG + ": Solar in-app power menu failed: " + e.getMessage());
             }
         }
     };

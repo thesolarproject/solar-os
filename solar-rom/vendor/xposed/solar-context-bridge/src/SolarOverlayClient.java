@@ -134,6 +134,47 @@ public final class SolarOverlayClient {
     public static final String EXTRA_CONTEXT_POWER_HOLD = "context_power_hold";
 
     /**
+     * 2026-07-14 — HOLD BACK outside Solar jumps to Solar MainActivity (no global quick menu).
+     * Layman: hold Back in any Android app to come home to Solar.
+     * Was: showPowerOverlay WM shell with a Home chip. Reversal: call showPowerOverlay(ctx).
+     */
+    public static boolean launchSolarHome(Context ctx) {
+        if (ctx == null) return false;
+        try {
+            Intent i = new Intent(Intent.ACTION_MAIN);
+            i.setComponent(new ComponentName(SOLAR_PKG, MAIN_ACTIVITY));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            ctx.startActivity(i);
+            SolarContextBridge.log("launchSolarHome → MainActivity");
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("via", "startActivity");
+                PowerMenuDebugLog.event("SolarOverlayClient.launchSolarHome",
+                        "Solar Home launched", "c54726-H3", d);
+            } catch (Throwable ignored) {}
+            // #endregion
+            return true;
+        } catch (Throwable t) {
+            try {
+                Runtime.getRuntime().exec(new String[]{
+                        "sh", "-c",
+                        "am start -n " + SOLAR_PKG + "/" + MAIN_ACTIVITY
+                                + " -f 0x34000000 2>/dev/null"
+                });
+                SolarContextBridge.log("launchSolarHome shell fallback");
+                return true;
+            } catch (Throwable t2) {
+                SolarContextBridge.log("launchSolarHome failed: "
+                        + t2.getClass().getSimpleName());
+                return false;
+            }
+        }
+    }
+
+    /**
      * 2026-07-14 — Solar Home POWER/BACK-hold opens in-app ThemedContextMenu (focused-row options).
      * Layman: holding Back/Power inside Solar shows Home's own menu — not the system companion.
      * Was: showPowerOverlay (companion) — dead wheel / hard to dismiss over MainActivity.

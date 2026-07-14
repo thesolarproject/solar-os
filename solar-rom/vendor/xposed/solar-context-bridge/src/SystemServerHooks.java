@@ -115,36 +115,24 @@ final class SystemServerHooks {
     private static boolean overlayPowerDismissFired;
     private static Runnable overlayPowerDismissRunnable;
 
-    /** 2026-07-06 — Companion owns hold FSM when installed; PWM stays thin forwarder. */
+    /**
+     * 2026-07-14 — Companion HOLD_DOWN FSM retired for BACK/POWER (Solar-only menus + perf).
+     * Layman: holding Back/Power no longer wakes a second APK just to decide the menu.
+     * Was: startService companion coordinator on every hold-down (system-wide quick menu).
+     * Reversal: restore startService HOLD_DOWN body (POLICY_REV 21 path).
+     */
     private static boolean forwardHoldDownToCoordinator(Context ctx, int keyCode, String fg) {
-        if (ctx == null || !SolarOverlayClient.isCompanionInstalled(ctx)) return false;
-        android.content.Intent i = new android.content.Intent(ACTION_HOLD_DOWN);
-        i.setComponent(new android.content.ComponentName(COMPANION_PKG, COMPANION_COORDINATOR));
-        i.putExtra(EXTRA_KEY_CODE, keyCode);
-        i.putExtra(EXTRA_FOREGROUND_PKG, fg != null ? fg : "");
-        i.putExtra(EXTRA_Y2_DEVICE, allowRockboxPowerLongOverlay);
-        i.putExtra(EXTRA_HOLD_MS, 0L);
-        try {
-            ctx.startService(i);
-            return true;
-        } catch (Throwable t) {
-            SolarContextBridge.log("coordinator HOLD_DOWN failed: " + t.getClass().getSimpleName());
-            return false;
-        }
+        return false;
     }
 
+    /** 2026-07-14 — HOLD_UP companion forward also retired with HOLD_DOWN. */
     private static void forwardHoldUpToCoordinator(Context ctx) {
-        if (ctx == null || !SolarOverlayClient.isCompanionInstalled(ctx)) return;
-        android.content.Intent i = new android.content.Intent(ACTION_HOLD_UP);
-        i.setComponent(new android.content.ComponentName(COMPANION_PKG, COMPANION_COORDINATOR));
-        try {
-            ctx.startService(i);
-        } catch (Throwable ignored) {}
+        // no-op — companion hold FSM unused
     }
 
     private SystemServerHooks() {}
 
-    /** Y1: long BACK (no power key) + long OK in third-party apps → Solar global context modal. */
+    /** Y1: long BACK → Solar Home; long OK app-menu hooks; volume OSD. */
     static void installY1(LoadPackageParam lpparam) {
         Class<?> pwm = findPhoneWindowManager(lpparam);
         if (pwm == null) return;
@@ -165,7 +153,7 @@ final class SystemServerHooks {
         // #endregion
     }
 
-    /** Y2: power-hold or long BACK + long OK in third-party apps → same global modal. */
+    /** Y2: Solar POWER → in-app menu; long BACK → Solar Home; stock power menu elsewhere. */
     static void installY2(LoadPackageParam lpparam) {
         allowRockboxPowerLongOverlay = true;
         Class<?> pwm = findPhoneWindowManager(lpparam);
@@ -243,30 +231,38 @@ final class SystemServerHooks {
                     if (!powerLongFired) {
                         return;
                     }
-                    // 2026-07-14 — Solar Home: in-app ThemedContextMenu (focused item options).
-                    // Was: showPowerOverlay companion over Solar → dead keys / no row context.
-                    // Reversal: SolarOverlayClient.showPowerOverlay(ctx) again.
-                    if ("com.solar.launcher".equals(fg)) {
+                    // 2026-07-14 — Suppress stock power menu only over Solar Home (in-app sheet).
+                    // Outside Solar: never skipMethod — stock GlobalActions must show.
+                    // Was: showPowerOverlay for 3P/Rockbox/JJ (system-wide Solar quick menu).
+                    // Reversal: restore showSolarPowerOverlay + skipMethod for eligible non-Solar fg.
+                    if ("com.solar.launcher".equals(fg)
+                            && shouldOfferPowerLongOverlayForPackage(fg)) {
                         com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
                         if (!com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
                             SolarOverlayClient.showInAppPowerMenu(ctx);
                         }
                         XposedHookKit.skipMethod(param);
                         SolarContextBridge.log("suppressed GlobalActions → Solar in-app menu");
+                        // #region agent log
+                        try {
+                            JSONObject d = new JSONObject();
+                            d.put("fg", fg);
+                            d.put("action", "solar_inapp");
+                            PowerMenuDebugLog.event("SystemServerHooks.GlobalActions",
+                                    "solar-only suppress", "c54726-H1", d);
+                        } catch (Throwable ignored) {}
+                        // #endregion
                         return;
                     }
-                    com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
-                    if (!shouldOfferPowerLongOverlayForPackage(fg)) {
-                        return;
-                    }
-                    if (OverlayKeyForwarder.isOverlayActiveOrOpening()) {
-                        XposedHookKit.skipMethod(param);
-                        SolarContextBridge.log("suppressed GlobalActions — overlay already opening");
-                        return;
-                    }
-                    showSolarPowerOverlay(param.thisObject);
-                    XposedHookKit.skipMethod(param);
-                    SolarContextBridge.log("suppressed GlobalActions → Solar overlay fg=" + fg);
+                    // #region agent log
+                    try {
+                        JSONObject d = new JSONObject();
+                        d.put("fg", fg != null ? fg : "");
+                        d.put("action", "stock_passthrough");
+                        PowerMenuDebugLog.event("SystemServerHooks.GlobalActions",
+                                "stock power menu", "c54726-H1", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
                 } catch (Throwable t) {
                     SolarContextBridge.log("GlobalActions intercept error: " + t.getClass().getSimpleName());
                 }
@@ -376,11 +372,10 @@ final class SystemServerHooks {
         powerLongRunnable = new Runnable() {
             @Override
             public void run() {
-                powerLongFired = true;
                 Context ctx = resolveContext(phoneWindowManagerRef);
                 if (ctx == null) return;
-                com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
                 String fg = resolvePowerLongForegroundAtFire(ctx);
+                // Gate before powerLongFired — ineligible holds must not swallow POWER UP / stock menu.
                 if (!com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
                         fg, allowRockboxPowerLongOverlay)) {
                     SolarContextBridge.log("power-long skipped fg=" + fg);
@@ -388,31 +383,29 @@ final class SystemServerHooks {
                     try {
                         JSONObject d = new JSONObject();
                         d.put("fg", fg != null ? fg : "");
-                        d.put("rockboxPower", allowRockboxPowerLongOverlay);
-                        PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable", "skipped not eligible", "H-ROCKBOX", d);
+                        d.put("action", "stock_or_noop");
+                        PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable",
+                                "skipped not Solar", "c54726-H2", d);
                     } catch (Throwable ignored) {}
                     // #endregion
                     return;
                 }
+                powerLongFired = true;
+                com.solar.input.policy.StaleOverlayGate.clearIfNeeded();
                 if (com.solar.input.policy.StaleOverlayGate.isActiveOrOpening()) {
                     SolarContextBridge.log("power-long skipped overlay opening");
                     return;
                 }
-                // 2026-07-14 — Solar fg → in-app menu; companion only for third-party.
-                if ("com.solar.launcher".equals(fg)) {
-                    SolarOverlayClient.showInAppPowerMenu(ctx);
-                    SolarContextBridge.log("power-long Solar → in-app context menu");
-                    return;
-                }
-                SolarOverlayClient.warmOverlayProcess(ctx);
-                SolarOverlayClient.showPowerOverlay(ctx);
-                SolarContextBridge.log("power-long global modal fg=" + fg);
+                // 2026-07-14 — Solar-only: in-app ThemedContextMenu (never WM companion outside).
+                SolarOverlayClient.showInAppPowerMenu(ctx);
+                SolarContextBridge.log("power-long Solar → in-app context menu");
                 // #region agent log
                 try {
                     JSONObject d = new JSONObject();
                     d.put("fg", fg != null ? fg : "");
-                    d.put("rockbox", "org.rockbox".equals(fg));
-                    PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable", "overlay fired", "H-ROCKBOX", d);
+                    d.put("action", "solar_inapp");
+                    PowerMenuDebugLog.event("SystemServerHooks.powerLongRunnable",
+                            "solar in-app menu", "c54726-H2", d);
                 } catch (Throwable ignored) {}
                 // #endregion
             }
@@ -570,7 +563,11 @@ final class SystemServerHooks {
         return false;
     }
 
-    /** Arm modal-hold timer — shared by queue hooks and interceptPowerKeyDown (RC3). */
+    /**
+     * 2026-07-14 — Arm Y2 POWER hold: Solar in-app menu timer and/or 10s rescue only.
+     * Layman: outside Solar we do not steal Power for a Solar menu — stock sleep/power owns it.
+     * Was: companion HOLD_DOWN + modal for almost every fg (laggy + hid stock power menu).
+     */
     private static void armPowerLongPress(Object pwmThis, String fg, Context ctx) {
         if (powerTracking) return;
         phoneWindowManagerRef = pwmThis;
@@ -584,14 +581,15 @@ final class SystemServerHooks {
         powerDownAt = SystemClock.uptimeMillis();
         cachedPowerLongFg = fg;
         ensureMainHandler();
-        if (forwardHoldDownToCoordinator(ctx, KeyEvent.KEYCODE_POWER, fg)) {
-            return;
-        }
         mainHandler.removeCallbacks(powerLongRunnable);
         mainHandler.removeCallbacks(powerRestartRunnable);
         removePowerRescueArmCallback();
-        mainHandler.postDelayed(powerLongRunnable,
-                com.solar.input.policy.GlobalInputPolicy.powerModalHoldMsForPackage(fg));
+        // Solar fg only — never schedule modal arms that set powerLongFired over 3P apps.
+        if (com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(
+                fg, allowRockboxPowerLongOverlay)) {
+            mainHandler.postDelayed(powerLongRunnable,
+                    com.solar.input.policy.GlobalInputPolicy.powerModalHoldMsForPackage(fg));
+        }
         if (shouldTrackPowerUltraLong(fg)) {
             initPowerRestartRunnable();
             initPowerRescueArmRunnable();
@@ -693,30 +691,26 @@ final class SystemServerHooks {
                     SolarContextBridge.log("back-long skipped overlay opening");
                     return;
                 }
-                // 2026-07-14 — Solar fg: MainActivity already owns BACK-long ThemedContextMenu.
-                // Xposed companion on top stole keys. Reversal: always showPowerOverlay.
+                // 2026-07-14 — Solar fg: in-app menu; elsewhere HOLD BACK → Solar Home (no WM shell).
+                // Was: warmOverlayProcess + showPowerOverlay (system-wide context modal).
+                // Reversal: SolarOverlayClient.showPowerOverlay(ctx) for non-Solar.
                 if ("com.solar.launcher".equals(fg)) {
                     SolarOverlayClient.showInAppPowerMenu(ctx);
                     backOpenGestureHeld = true;
                     SolarContextBridge.log("back-long Solar → in-app context menu");
                     return;
                 }
-                SolarOverlayClient.warmOverlayProcess(ctx);
-                SolarOverlayClient.showPowerOverlay(ctx);
+                boolean launched = SolarOverlayClient.launchSolarHome(ctx);
                 backOpenGestureHeld = true;
-                SolarContextBridge.log("back-long global modal fg=" + fg);
+                SolarContextBridge.log("back-long → Solar Home fg=" + fg + " ok=" + launched);
                 // #region agent log
                 try {
                     JSONObject d = new JSONObject();
                     d.put("fg", fg != null ? fg : "");
-                    d.put("holdMs", com.solar.input.policy.GlobalInputPolicy
-                            .backModalHoldMsForPackage(fg));
-                    d.put("thirdPartyLauncher", com.solar.input.policy.GlobalInputPolicy
-                            .isThirdPartyHomeLauncher(fg));
-                    d.put("failOpenShell", com.solar.input.policy.GlobalInputPolicy
-                            .shouldFailOpenBackFg(fg));
+                    d.put("launched", launched);
+                    d.put("action", "launch_solar_home");
                     PowerMenuDebugLog.event("SystemServerHooks.backLongRunnable",
-                            "showPowerOverlay fired", "bee1b8-H-A", d);
+                            "launch Solar Home", "c54726-H3", d);
                 } catch (Throwable ignored) {}
                 // #endregion
             }
@@ -1013,8 +1007,8 @@ final class SystemServerHooks {
                     mainHandler.postDelayed(backRescueArmRunnable,
                             com.solar.input.policy.GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
                     mainHandler.postDelayed(backRestartRunnable, BACK_RESTART_SOLAR_MS);
+                    // 2026-07-14 — Schedule HOLD BACK → Solar Home; no warmOverlayProcess (perf).
                     if (overlayEligible) {
-                        SolarOverlayClient.warmOverlayProcess(ctx);
                         long backHoldMs = com.solar.input.policy.GlobalInputPolicy
                                 .backModalHoldMsForPackage(fg);
                         mainHandler.postDelayed(backLongRunnable, backHoldMs);
@@ -1024,9 +1018,10 @@ final class SystemServerHooks {
                 try {
                     JSONObject d = new JSONObject();
                     d.put("fg", fg != null ? fg : "");
-                    d.put("overlayEligible", overlayEligible);
-                    d.put("scheduledOverlay", overlayEligible);
-                    PowerMenuDebugLog.event("SystemServerHooks.handleBackLongPress", "back down tracked", "H3", d);
+                    d.put("launchSolarEligible", overlayEligible);
+                    d.put("action", "arm_back_long");
+                    PowerMenuDebugLog.event("SystemServerHooks.handleBackLongPress",
+                            "back down tracked", "c54726-H3", d);
                 } catch (Throwable ignored) {}
                 // #endregion
             }

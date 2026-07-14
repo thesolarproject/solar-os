@@ -2,6 +2,7 @@ package com.solar.input.policy;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
@@ -18,5 +19,35 @@ public class GlobalInputPolicyTest {
     public void solarHomeOffersPowerLongOnY2() {
         assertTrue(GlobalInputPolicy.shouldOfferPowerLongModal(
                 GlobalInputPolicy.SOLAR_PKG, true));
+    }
+
+    @Test
+    public void rockboxAndJjUseShorterModalTier() {
+        assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage(
+                GlobalInputPolicy.ROCKBOX_PKG));
+        assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage(
+                GlobalInputPolicy.JJ_PKG));
+        assertEquals(420L, GlobalInputPolicy.powerModalHoldMsForPackage(
+                "com.android.settings"));
+    }
+
+    @Test
+    public void systemUiFailOpenDoesNotOfferPowerModalSolarOnly() {
+        assertTrue(GlobalInputPolicy.shouldFailOpenPowerFg("com.android.systemui"));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(
+                "com.android.systemui", true));
+        assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal(null, true));
+        assertTrue(GlobalInputPolicy.shouldOfferPowerLongModal(
+                GlobalInputPolicy.SOLAR_PKG, true));
+    }
+
+    @Test
+    public void rockboxBackLongBlockedSettingsReturnsToSolar() {
+        assertFalse(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                GlobalInputPolicy.ROCKBOX_PKG, false, false));
+        assertTrue(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
+                "com.android.settings", false, false));
+        assertTrue(GlobalInputPolicy.shouldOfferBackLongModal(
+                GlobalInputPolicy.JJ_PKG, true, false, false));
     }
 }

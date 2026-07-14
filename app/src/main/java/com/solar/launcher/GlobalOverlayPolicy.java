@@ -1,11 +1,11 @@
 package com.solar.launcher;
 
 /**
- * 2026-07-06 — Global overlay trigger policy: Y1 BACK-long, Y2 power/BACK-long with fg-dependent delays.
- * Layman: ~420ms opens quick menu in apps + SystemUI shells; Rockbox/JJ nav-owned ~300ms; Rockbox BACK blocked.
- * Technical: delegates hold ms to {@link com.solar.input.policy.GlobalInputPolicy} (policy_rev 16).
- * Ultra-long BACK/power arms rescue hold (7s HUD preview, 7s exec). Mutex: OverlayKeyGate / IME arbiter.
- * Reversal: return true for Rockbox in shouldOfferGlobalModalForPackage — breaks Rockbox BACK nav.
+ * 2026-07-14 — Hold policy: Solar-only POWER menu; HOLD BACK outside Solar returns to Solar Home.
+ * Layman: ~420ms Back-hold jumps home from apps; Power menu only inside Solar; Rockbox keeps BACK.
+ * Technical: delegates to {@link com.solar.input.policy.GlobalInputPolicy} (policy_rev 22).
+ * Ultra-long BACK/power arms rescue (7s HUD, 10s exec). Mutex: OverlayKeyGate / IME arbiter.
+ * Reversal: POLICY_REV 21 system-wide WM quick menu for 3P POWER/BACK.
  */
 public final class GlobalOverlayPolicy {
 
@@ -18,21 +18,23 @@ public final class GlobalOverlayPolicy {
     public static boolean shouldOfferGlobalModalForPackage(String pkg) {
         if (pkg == null || pkg.length() == 0) return false;
         if (LauncherSwitch.ROCKBOX_PACKAGE.equals(pkg)) return false;
-        if (LauncherDefault.JJ_PACKAGE.equals(pkg)) return false;
+        // 2026-07-08 — JJ / Innioasis HOME use BACK-long via shouldOfferBackLongGlobalModal (300ms tier).
+        if (com.solar.input.policy.GlobalInputPolicy.isJjKeylayoutLauncher(pkg)) return false;
         if ("com.solar.launcher".equals(pkg)) return false;
-        if (pkg.startsWith("com.innioasis.")) return false;
+        // Other com.innioasis.* (music/fm) stay denylisted for center-long path.
+        if (com.solar.input.policy.GlobalInputPolicy.isInnioasisNonLauncherPackage(pkg)) return false;
         return true;
     }
 
     /**
-     * Y2 power-hold / GlobalActions intercept — Rockbox may open the global quick modal.
-     * Y1 has no hardware power key; BACK-long still uses {@link #shouldOfferGlobalModalForPackage}.
+     * 2026-07-14 — Y2 power-hold / GlobalActions — Solar Home only (stock menu elsewhere).
+     * Y1 has no hardware power key; BACK-long uses {@link #shouldOfferBackLongGlobalModal}.
      */
     public static boolean shouldOfferPowerLongGlobalModalForPackage(String pkg) {
         return shouldOfferPowerLongGlobalModalForTest(pkg, DeviceFeatures.isY2());
     }
 
-    /** Test hook — Y2 power-hold over Rockbox without Robolectric device model. */
+    /** Test hook — Y2 Solar-only power menu without Robolectric device model. */
     static boolean shouldOfferPowerLongGlobalModalForTest(String pkg, boolean y2Device) {
         return com.solar.input.policy.GlobalInputPolicy.shouldOfferPowerLongModal(pkg, y2Device);
     }
@@ -45,8 +47,10 @@ public final class GlobalOverlayPolicy {
         if (pkg == null || pkg.length() == 0) return false;
         if (isSolarForegroundPackage(pkg)) return true;
         if (LauncherSwitch.ROCKBOX_PACKAGE.equals(pkg)) return true;
-        if (LauncherDefault.JJ_PACKAGE.equals(pkg)) return true;
-        if (pkg.startsWith("com.innioasis.")) return false;
+        // 2026-07-08 — JJ + Innioasis HOME: overlay owns wheel while quick menu is up.
+        if (com.solar.input.policy.GlobalInputPolicy.isJjKeylayoutLauncher(pkg)) return true;
+        // Other innioasis vendor apps — leave keys alone (prior denylist).
+        if (com.solar.input.policy.GlobalInputPolicy.isInnioasisNonLauncherPackage(pkg)) return false;
         return true;
     }
 
@@ -78,7 +82,8 @@ public final class GlobalOverlayPolicy {
     }
 
     /**
-     * BACK-long global modal eligibility — when IME is active, offer modal even over Rockbox.
+     * 2026-07-14 — BACK-long → Solar Home eligibility (IME may escape Rockbox).
+     * Name kept; action is launch Solar, not WM quick menu.
      */
     public static boolean shouldOfferBackLongGlobalModal(String pkg, boolean imeActive) {
         return com.solar.input.policy.GlobalInputPolicy.shouldOfferBackLongModal(
