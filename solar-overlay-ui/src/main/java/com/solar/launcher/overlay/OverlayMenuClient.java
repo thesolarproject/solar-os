@@ -13,10 +13,10 @@ import android.util.Log;
 import java.util.UUID;
 
 /**
- * 2026-07-08 — Public helper: Solar Home + signed apps open companion chip shell / dialogs.
- * Layman: one call to show the usual system options list or quick menu over any app.
- * Technical: startService → OverlayShellRouter host; result via package-targeted broadcast.
- * Reversal: delete; callers use CompanionContextMenuLauncher / raw OverlayTriggers again.
+ * 2026-07-14 — Public helper: open Solar ThemedContextMenu shell (Home parity).
+ * Layman: one call for the decorated system options / quick menu over any app.
+ * Technical: startService → OverlayShellRouter (Solar by default; Chip if companion_shell=1).
+ * Was: companion Chip primary. Reversal: companion_shell=1.
  */
 public final class OverlayMenuClient {
 
@@ -25,7 +25,7 @@ public final class OverlayMenuClient {
     private OverlayMenuClient() {}
 
     /**
-     * Opens power / quick-chip shell on the companion (or Solar legacy_shell).
+     * Opens power / quick menu on the one shell (Solar ThemedContextMenu by default).
      * @return true when startService accepted
      */
     public static boolean showPowerQuickMenu(Context ctx) {
@@ -98,12 +98,12 @@ public final class OverlayMenuClient {
         return startShell(ctx, OverlayMenuContract.ACTION_SHOW_OVERLAY_NATIVE_DIALOG, extras);
     }
 
-    /** Tears down the companion / legacy Solar overlay shell. */
+    /** Tears down the active overlay shell (Solar or Chip escape). */
     public static boolean dismiss(Context ctx) {
         return startShell(ctx, OverlayMenuContract.ACTION_DISMISS_OVERLAY, null);
     }
 
-    /** True when companion package is installed (preferred paint host). */
+    /** True when companion package is installed (opt-in Chip escape hatch). */
     public static boolean isCompanionInstalled(Context ctx) {
         if (ctx == null) return false;
         try {
@@ -117,7 +117,7 @@ public final class OverlayMenuClient {
     private static boolean startShell(Context ctx, String action, Bundle extras) {
         if (ctx == null || action == null) return false;
         Intent svc = new Intent(action);
-        // 2026-07-10 — One component from OverlayShellRouter (companion default).
+        // 2026-07-14 — One component from OverlayShellRouter (Solar primary).
         svc.setComponent(OverlayShellRouter.overlayComponent());
         if (extras != null) {
             svc.putExtras(extras);
@@ -128,7 +128,7 @@ public final class OverlayMenuClient {
         } catch (Exception e) {
             Log.w(TAG, "startShell primary failed " + action + ": " + e.getMessage());
         }
-        // Fail-open companion if router pointed at Solar (legacy) and Solar :overlay is dead.
+        // Fail-open: if Solar primary is dead, Chip redirects SHOW_POWER back to Solar when unset.
         if (!OverlayShellRouter.useCompanionShell() && isCompanionInstalled(ctx)) {
             Intent fallback = new Intent(action);
             fallback.setComponent(new ComponentName(

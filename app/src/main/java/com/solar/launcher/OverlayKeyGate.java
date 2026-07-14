@@ -23,6 +23,13 @@ public final class OverlayKeyGate {
     public static final String OPENING_AT_PROPERTY = "sys.solar.overlay.opening_at";
     /** Elapsed-realtime ms when active=1 without ui=1 — stale after 2s (watchdog ceiling). */
     public static final String ACTIVE_AT_PROPERTY = "sys.solar.overlay.active_at";
+    /**
+     * 2026-07-08 — WM shell attached (addView done); independent of active/ui gate.
+     * Layman: “is the global menu window still on screen?”
+     * Reversal: stop writing; stuck BACK heal idle.
+     */
+    public static final String SHELL_VISIBLE_PROPERTY =
+            com.solar.input.policy.StaleOverlayGate.SHELL_VISIBLE_PROPERTY;
     /** Uptime millis until handoff inject must stay off after overlay dismiss (Xposed reads too). */
     public static final String COOLDOWN_UNTIL_PROPERTY = "sys.solar.overlay.cooldown";
     /** Monotonic pulse written on disarm — Xposed clears stale BACK/center long-press state. */
@@ -32,7 +39,12 @@ public final class OverlayKeyGate {
     /** Swallow only the dismiss release tail — repeated open/close cycles must stay snappy. */
     static final long POST_OVERLAY_COOLDOWN_MS = 90L;
     /** Drop duplicate Xposed forwards (queue + dispatch hooks) within this window. */
+    /**
+     * 2026-07-10 — Dual-hook coalesce only for non-wheel; wheel uses tighter window.
+     * Was 45ms for all keys → rapid scroll ticks dropped in legacy Solar shell too.
+     */
     private static final long DELIVER_DEDUPE_MS = 45L;
+    private static final long WHEEL_DEDUPE_MS = 12L;
 
     public interface Handler {
         /** @return true when the key was consumed by the overlay modal */
@@ -48,6 +60,16 @@ public final class OverlayKeyGate {
     private static volatile long lastDeliverAt;
 
     private OverlayKeyGate() {}
+
+    /**
+     * 2026-07-08 — Publish WM shell attach/detach for stuck-overlay BACK heal.
+     * Layman: marks whether the global menu window is still painted.
+     * Technical: shell_visible only; does not arm keys (active/ui stay separate).
+     * Reversal: no-op; OverlayKeyForwarder heal never fires.
+     */
+    public static void setShellVisible(boolean visible) {
+        writeProperty(SHELL_VISIBLE_PROPERTY, visible ? "1" : "0");
+    }
 
     public static boolean isOverlayUiVisible() {
         return "1".equals(readProperty(UI_PROPERTY, "0"));
@@ -179,17 +201,32 @@ public final class OverlayKeyGate {
     private static boolean isOverlayProcessRunning(Context context) {
         if (context == null) return true;
         try {
-            android.app.ActivityManager am = (android.app.ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+            android.app.ActivityManager am = (android.app.ActivityManager)
+                    context.getSystemService(Context.ACTIVITY_SERVICE);
             if (am != null) {
-                java.util.List<android.app.ActivityManager.RunningAppProcessInfo> procs = am.getRunningAppProcesses();
+                java.util.List<android.app.ActivityManager.RunningAppProcessInfo> procs =
+                        am.getRunningAppProcesses();
                 if (procs != null) {
                     for (android.app.ActivityManager.RunningAppProcessInfo p : procs) {
-                        if ("com.solar.launcher:overlay".equals(p.processName)) return true;
+                        // 2026-07-08 — Companion :overlay is the live shell; Solar :overlay for legacy.
+                        if ("com.solar.launcher.globalcontext:overlay".equals(p.processName)
+                                || "com.solar.launcher:overlay".equals(p.processName)) {
+                            return true;
+                        }
                     }
                 }
             }
         } catch (Exception ignored) {}
         return false;
+    }
+
+    /**
+     * Recover from a stuck overlay-active prop when :overlay crashed before paint — blocks wheel
+     * inject and Xposed key capture while no modal is visible.
+     */
+    public static void ensureCleanState(Context context) {
+        // 2026-07-08 — Public alias for watchdogs / recovery; same as disarmStaleIfNeeded.
+        disarmStaleIfNeeded(context);
     }
 
     /**
@@ -214,11 +251,18 @@ public final class OverlayKeyGate {
             disarm();
             if (context != null) {
                 ExternalInputHandoff.restoreAfterOverlayDismiss(context.getApplicationContext());
-                SolarOverlayHost.ensureStarted(context);
+                if (!com.solar.launcher.overlay.OverlayShellRouter.useCompanionShell()) {
+                    SolarOverlayHost.ensureStarted(context);
+                }
             }
             return;
         }
         if (!"1".equals(readProperty(ACTIVE_PROPERTY, "0"))) return;
+        if ("1".equals(readProperty(UI_PROPERTY, "0"))
+                && !com.solar.input.policy.StaleOverlayGate.isShellVisible()) {
+            disarm();
+            return;
+        }
         if ("1".equals(readProperty(UI_PROPERTY, "0"))) return;
         clearStaleGatesIfNeeded();
         if (!"1".equals(readProperty(ACTIVE_PROPERTY, "0"))) return;
@@ -231,11 +275,12 @@ public final class OverlayKeyGate {
             return;
         }
         if (isOverlayOpening()) return;
-        // Tear down :overlay WM shell — main process must not clear props alone.
+        // Tear down the one overlay shell — companion primary (legacy Solar if escape hatch).
         if (context != null) {
             try {
-                Intent dismiss = new Intent(context, SolarOverlayService.class);
-                dismiss.setAction(OverlayTriggers.ACTION_DISMISS_OVERLAY);
+                Intent dismiss = new Intent(OverlayTriggers.ACTION_DISMISS_OVERLAY);
+                dismiss.setComponent(
+                        com.solar.launcher.overlay.OverlayShellRouter.overlayComponent());
                 context.getApplicationContext().startService(dismiss);
             } catch (Exception ignored) {}
         }
@@ -320,8 +365,10 @@ public final class OverlayKeyGate {
     /** MTK may hit queue + dispatch hooks — ignore duplicate for same key+action within window. */
     private static boolean isDuplicateDeliver(int keyCode, int action) {
         long now = SystemClock.uptimeMillis();
+        // 2026-07-10 — Wheel scroll ticks must not share the long non-wheel coalesce window.
+        long window = isWheelNavKey(keyCode) ? WHEEL_DEDUPE_MS : DELIVER_DEDUPE_MS;
         if (keyCode == lastDeliverKeyCode && action == lastDeliverAction
-                && now - lastDeliverAt < DELIVER_DEDUPE_MS) {
+                && now - lastDeliverAt < window) {
             return true;
         }
         lastDeliverKeyCode = keyCode;
@@ -330,11 +377,24 @@ public final class OverlayKeyGate {
         return false;
     }
 
+    private static boolean isWheelNavKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_MEDIA_PLAY
+                || keyCode == KeyEvent.KEYCODE_MEDIA_PAUSE
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                || keyCode == 126 || keyCode == 127 || keyCode == 19 || keyCode == 20;
+    }
+
     /** Test hook — reset dedupe state between unit cases. */
     static void resetDeliverDedupeForTest() {
         lastDeliverKeyCode = 0;
         lastDeliverAction = 0;
         lastDeliverAt = 0L;
+    }
+
+    /** Host JUnit — expose dedupe window without calling SystemClock.uptimeMillis(). */
+    static long dedupeWindowMsForTest(int keyCode) {
+        return isWheelNavKey(keyCode) ? WHEEL_DEDUPE_MS : DELIVER_DEDUPE_MS;
     }
 
     /** Debug 72b98f — whether this process still holds the overlay key handler. */
@@ -377,39 +437,47 @@ public final class OverlayKeyGate {
     }
 
     /**
-     * IPC keys into {@link SolarOverlayService} (:overlay) — handler lives there, not in main process.
-     * Used when Solar is foreground (PWM forwards miss) and by the root input daemon on Y1/Y2.
+     * 2026-07-14 — IPC keys into the one Solar ThemedContextMenu shell (Chip if companion_shell=1).
+     * Layman: key presses travel to the power-hold system menu window.
+     * Was: companion Chip primary. Reversal: companion_shell=1.
      */
     public static void forwardKeyToOverlay(Context ctx, int keyCode, int action) {
         if (ctx == null || keyCode == 0) return;
         if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return;
+        Context app = ctx.getApplicationContext();
+        // Chip escape hatch — package broadcast first.
+        if (com.solar.launcher.overlay.OverlayShellRouter.useCompanionShell()) {
+            try {
+                Intent bcast = new Intent(OverlayTriggers.ACTION_OVERLAY_KEY);
+                bcast.setPackage(com.solar.launcher.overlay.OverlayShellRouter.COMPANION_PKG);
+                bcast.putExtra(OverlayTriggers.EXTRA_KEY_CODE, keyCode);
+                bcast.putExtra(OverlayTriggers.EXTRA_KEY_ACTION, action);
+                bcast.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+                app.sendBroadcast(bcast);
+            } catch (Exception ignored) {}
+            // Non-wheel: also poke service (cold process / arm). Wheel stays broadcast-only.
+            if (isWheelNavKey(keyCode)) {
+                return;
+            }
+        }
         try {
-            Context app = ctx.getApplicationContext();
-            Intent svc = new Intent(app, SolarOverlayService.class);
-            svc.setAction(OverlayTriggers.ACTION_OVERLAY_KEY);
+            Intent svc = new Intent(OverlayTriggers.ACTION_OVERLAY_KEY);
+            svc.setComponent(com.solar.launcher.overlay.OverlayShellRouter.overlayComponent());
             svc.putExtra(OverlayTriggers.EXTRA_KEY_CODE, keyCode);
             svc.putExtra(OverlayTriggers.EXTRA_KEY_ACTION, action);
             app.startService(svc);
-            // #region agent log
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("keyCode", keyCode);
-            d.put("action", action);
-            d.put("prop", readProperty(ACTIVE_PROPERTY, "0"));
-            DebugEdc27bLog.log("OverlayKeyGate.forwardKeyToOverlay", "startService", "H-A", d);
-            // #endregion
         } catch (Exception e) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("keyCode", keyCode);
-                d.put("err", e.getMessage());
-                DebugEdc27bLog.log("OverlayKeyGate.forwardKeyToOverlay", "failed", "H-A", d);
-            } catch (Exception ignored) {}
-            // #endregion
+            // Best-effort — stale gate heal covers dead shell.
         }
     }
 
-    /** Write a sys prop — hidden API first, su setprop when SELinux blocks the app. */
+    /**
+     * Write a sys prop — hidden API first, su setprop when SELinux blocks the app.
+     * 2026-07-08 — Host JVM unit tests use android.jar stubs with no setuid su; skip root
+     * fallback there so OverlayTierSchedulerTest cannot hang on Runtime.exec("su").
+     * Was: always fall through to RootShell.run after stub set miss. Now: device-only su.
+     * Reversal: remove hostSuAvailable gate; desktop JUnit may block on su again.
+     */
     static boolean writeProperty(String key, String value) {
         if (key == null || value == null) return false;
         try {
@@ -420,7 +488,16 @@ public final class OverlayKeyGate {
                 return true;
             }
         } catch (Exception ignored) {}
+        // Layman: no device root binary on the PC → don't try to become root.
+        // Technical: avoid blocking Runtime.exec(su) on host unit-test classpath.
+        if (!hostSuAvailable()) return false;
         return RootShell.run("setprop " + key + " " + value);
+    }
+
+    /** True when a ROM setuid su path exists — false on desktop JUnit hosts. */
+    private static boolean hostSuAvailable() {
+        return new java.io.File("/system/xbin/su").exists()
+                || new java.io.File("/system/bin/su").exists();
     }
 
     private static String readProperty(String key, String def) {

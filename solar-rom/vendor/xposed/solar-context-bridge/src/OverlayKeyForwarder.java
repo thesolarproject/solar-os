@@ -31,6 +31,12 @@ final class OverlayKeyForwarder {
     private static final String SOLAR_PKG = "com.solar.launcher";
     private static final String KEY_RECEIVER = SOLAR_PKG + ".OverlayKeyReceiver";
     private static final String OVERLAY_SERVICE = SOLAR_PKG + ".SolarOverlayService";
+    /** 2026-07-14 — Solar is the one shell; Chip keys only if companion_shell=1. */
+    private static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
+    private static final String COMPANION_OVERLAY = COMPANION_PKG + ".GlobalContextOverlayService";
+    private static final String LEGACY_SHELL_PROP = "persist.solar.overlay.legacy_shell";
+    /** 2026-07-08 — Debounce clock for stuck-shell DISMISS (uptime ms). */
+    private static volatile long lastStuckShellDismissAt;
 
     private OverlayKeyForwarder() {}
 
@@ -57,6 +63,36 @@ final class OverlayKeyForwarder {
         }
     }
 
+    /**
+     * 2026-07-08 — Ghost shell heal: short BACK dismisses stuck WM menu (gate disarmed).
+     * Layman: Back closes the stuck global menu — it must not open a second one.
+     * Technical: DISMISS on DOWN; consume whole BACK gesture while shell_visible=1 + capture off.
+     * Was: UP-only heal that never consumed — DOWN still armed HOLD → openPowerOverlay.
+     * Reversal: return false always; PWM back-long path owns short BACK again.
+     *
+     * @return true when BACK must be swallowed (caller setResult / return true).
+     */
+    static boolean maybeHealStuckShellOnBack(Context ctx, int keyCode, int action) {
+        if (ctx == null) return false;
+        if (!Y1InputKeysBridge.isBackKey(keyCode)) return false;
+        boolean cooldown = SystemServerHooks.isPostOverlayCooldown();
+        boolean shellVisible = com.solar.input.policy.StaleOverlayGate.isShellVisible();
+        // Capture already known unarmed at call sites — keep false so heal can arm.
+        boolean consume = com.solar.input.policy.StaleOverlayGate.shouldConsumeStuckShellBack(
+                false, cooldown, shellVisible);
+        if (!consume) return false;
+        long now = SystemClock.uptimeMillis();
+        if (com.solar.input.policy.StaleOverlayGate.shouldDismissStuckShellOnBack(
+                false, cooldown, shellVisible, action, now, lastStuckShellDismissAt)) {
+            lastStuckShellDismissAt = now;
+            SolarContextBridge.log("edc27b stuck-shell BACK dismiss action=" + action);
+            SystemServerHooks.dismissAnyOverlay(ctx);
+        } else {
+            SolarContextBridge.log("edc27b stuck-shell BACK swallow action=" + action);
+        }
+        return true;
+    }
+
     /** Shared intercept — swallow + forward so NOT_FOCUSABLE overlay receives wheel/back/center. */
     private static void handleOverlayKeyIntercept(XC_MethodHook.MethodHookParam param, boolean queueing) {
         long t0 = System.nanoTime();
@@ -79,6 +115,13 @@ final class OverlayKeyForwarder {
             if (!queueing) {
                 SystemServerHooks.absorbOverlayDisarmPulse();
             }
+            // 2026-07-08 — Unarmed + shell_visible: short BACK dismisses only (consume gesture).
+            if (event != null) {
+                Context healCtx = SystemServerHooks.resolveContext(param.thisObject);
+                if (maybeHealStuckShellOnBack(healCtx, event.getKeyCode(), event.getAction())) {
+                    param.setResult(queueing ? KEY_CONSUMED_QUEUE : KEY_CONSUMED_DISPATCH);
+                }
+            }
             return;
         }
         if (event == null) return;
@@ -94,6 +137,14 @@ final class OverlayKeyForwarder {
             return;
         }
         keyCode = event.getKeyCode();
+        // 2026-07-10 — Wheel: deliver once from BeforeQueueing only.
+        // Dispatch path still swallows so the fg app never sees the key, but does not
+        // startService again (was dual-forward + 45ms dedupe → dropped rapid scroll ticks).
+        // Reversal: remove this branch if a single-hook PWM path is guaranteed.
+        if (Y1InputKeysBridge.isWheelKey(keyCode) && !queueing) {
+            param.setResult(KEY_CONSUMED_DISPATCH);
+            return;
+        }
         // Back always goes to overlay dismiss handler — except while open-gesture finger is still down.
         if (Y1InputKeysBridge.isBackKey(keyCode)) {
             if (SystemServerHooks.shouldBlockBackForwardToOverlay()) {
@@ -156,7 +207,8 @@ final class OverlayKeyForwarder {
                     && SystemServerHooks.isPostOverlayCooldown()) {
                 return true;
             }
-            return false;
+            // 2026-07-08 — App got BACK while ghost shell up — dismiss + swallow (no new open).
+            return maybeHealStuckShellOnBack(ctx, event.getKeyCode(), event.getAction());
         }
         if (Y1InputKeysBridge.isBackKey(event.getKeyCode())
                 && SystemServerHooks.shouldBlockBackForwardToOverlay()) {
@@ -183,7 +235,8 @@ final class OverlayKeyForwarder {
             if (Y1InputKeysBridge.isBackKey(keyCode) && SystemServerHooks.isPostOverlayCooldown()) {
                 return true;
             }
-            return false;
+            // 2026-07-08 — Unarmed app path; dismiss stuck shell and swallow short BACK.
+            return maybeHealStuckShellOnBack(ctx, keyCode, action);
         }
         String pkg = null;
         try {
@@ -242,18 +295,39 @@ final class OverlayKeyForwarder {
         return true;
     }
 
+    /**
+     * 2026-07-11 — Capture when any live overlay signal is set.
+     * Was: only active||opening — Y2 often fails app setprop for active while ui/shell stick
+     * (or vice versa) after Power-hold paints companion → wheel never forwarded.
+     * Now: active OR opening OR ui OR shell_visible.
+     * Reversal: return isOverlayOpening() || isOverlayActive() only.
+     */
     static boolean isOverlayKeyCaptureArmed() {
         clearOpeningGateIfStale();
-        return isOverlayOpening() || isOverlayActive();
+        return isOverlayOpening() || isOverlayActive() || isOverlayUiVisible()
+                || isShellVisible();
     }
 
     private static final String UI_PROPERTY = "sys.solar.overlay.ui";
+    private static final String SHELL_VISIBLE_PROPERTY = "sys.solar.overlay.shell_visible";
 
     static boolean isOverlayUiVisible() {
         try {
             Class<?> sp = getSystemPropertiesClass();
             if (sp == null) return false;
             Object v = XposedHelpers.callStaticMethod(sp, "get", UI_PROPERTY, "0");
+            return "1".equals(String.valueOf(v));
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** WM shell attached — companion writes this at addView even when active lags. */
+    static boolean isShellVisible() {
+        try {
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return false;
+            Object v = XposedHelpers.callStaticMethod(sp, "get", SHELL_VISIBLE_PROPERTY, "0");
             return "1".equals(String.valueOf(v));
         } catch (Throwable t) {
             return false;
@@ -316,37 +390,80 @@ final class OverlayKeyForwarder {
         return Y1InputKeysBridge.isWheelKey(keyCode);
     }
 
+    /**
+     * 2026-07-14 — Forward keys to the one shell (Solar ThemedContextMenu by default).
+     * Layman: wheel talks to the same themed menu as Solar Home.
+     * Was: companion Chip primary unless legacy_shell=1.
+     * Reversal: readLegacyShellProp default "0" + companion branch first.
+     */
     private static void forwardKey(Context ctx, int keyCode, int action) {
+        if (ctx == null) return;
+        // companion_shell=1 → chip path; otherwise Solar OverlayKeyReceiver / SolarOverlayService.
+        boolean companion = "1".equals(readCompanionShellProp())
+                && !"1".equals(readLegacyShellProp());
+        if (companion) {
+            Intent bcast = new Intent(ACTION_OVERLAY_KEY);
+            bcast.setPackage(COMPANION_PKG);
+            bcast.putExtra(EXTRA_KEY_CODE, keyCode);
+            bcast.putExtra(EXTRA_KEY_ACTION, action);
+            bcast.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
+            try {
+                ctx.sendBroadcast(bcast);
+            } catch (Throwable t) {
+                SolarContextBridge.log("edc27b companion key broadcast failed key=" + keyCode);
+            }
+            if (!Y1InputKeysBridge.isWheelKey(keyCode)) {
+                try {
+                    Intent svc = new Intent(ACTION_OVERLAY_KEY);
+                    svc.setComponent(new ComponentName(COMPANION_PKG, COMPANION_OVERLAY));
+                    svc.putExtra(EXTRA_KEY_CODE, keyCode);
+                    svc.putExtra(EXTRA_KEY_ACTION, action);
+                    ctx.startService(svc);
+                } catch (Throwable ignored) {}
+            }
+            return;
+        }
         Intent intent = new Intent(ACTION_OVERLAY_KEY);
         intent.setComponent(new ComponentName(SOLAR_PKG, KEY_RECEIVER));
         intent.putExtra(EXTRA_KEY_CODE, keyCode);
         intent.putExtra(EXTRA_KEY_ACTION, action);
         intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
-        if (ctx != null) {
+        try {
+            ctx.sendBroadcast(intent);
+            return;
+        } catch (Throwable t) {
+            if (shouldForwardOverlayKeyFastPath(keyCode)) return;
             try {
-                ctx.sendBroadcast(intent);
-                // #region agent log
-                SolarContextBridge.log("edc27b forward bcast key=" + keyCode + " action=" + action);
-                // #endregion
-                return;
-            } catch (Throwable t) {
-                if (shouldForwardOverlayKeyFastPath(keyCode)) {
-                    // ponytail: high frequency wheel keys must never fallback to startService to avoid scrolling lag.
-                    SolarContextBridge.log("edc27b forward bcast failed for wheel key, suppress startService fallback");
-                    return;
-                }
-                try {
-                    Intent svc = new Intent(ACTION_OVERLAY_KEY);
-                    svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
-                    svc.putExtra(EXTRA_KEY_CODE, keyCode);
-                    svc.putExtra(EXTRA_KEY_ACTION, action);
-                    ctx.startService(svc);
-                    // #region agent log
-                    SolarContextBridge.log("edc27b forward svc fallback key=" + keyCode + " action=" + action);
-                    // #endregion
-                    return;
-                } catch (Throwable ignored) {}
-            }
+                Intent svc = new Intent(ACTION_OVERLAY_KEY);
+                svc.setComponent(new ComponentName(SOLAR_PKG, OVERLAY_SERVICE));
+                svc.putExtra(EXTRA_KEY_CODE, keyCode);
+                svc.putExtra(EXTRA_KEY_ACTION, action);
+                ctx.startService(svc);
+            } catch (Throwable ignored) {}
+        }
+    }
+
+    /** Default "0" — match OverlayShellRouter; was "1" which blocked companion_shell opt-in. */
+    private static String readLegacyShellProp() {
+        try {
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return "0";
+            Object v = XposedHelpers.callStaticMethod(sp, "get", LEGACY_SHELL_PROP, "0");
+            return v != null ? String.valueOf(v) : "0";
+        } catch (Throwable t) {
+            return "0";
+        }
+    }
+
+    private static String readCompanionShellProp() {
+        try {
+            Class<?> sp = getSystemPropertiesClass();
+            if (sp == null) return "0";
+            Object v = XposedHelpers.callStaticMethod(sp, "get",
+                    "persist.solar.overlay.companion_shell", "0");
+            return v != null ? String.valueOf(v) : "0";
+        } catch (Throwable t) {
+            return "0";
         }
     }
 

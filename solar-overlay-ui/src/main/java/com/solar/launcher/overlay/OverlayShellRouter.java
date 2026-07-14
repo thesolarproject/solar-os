@@ -1,20 +1,24 @@
 package com.solar.launcher.overlay;
 
 /**
- * 2026-07-08 — Picks the one global overlay shell (companion by default).
- * Layman: opens the system-wide menu in the helper app, not inside Solar Home.
- * Technical: companion GlobalContextOverlayService primary; persist.solar.overlay.legacy_shell=1
- * keeps Solar :overlay SolarOverlayService for one-release rollback.
- * 2026-07-10 — Defaults must match Xposed OverlayKeyForwarder (legacy default "0").
- * Was: legacy default "1" + companion_shell default "0" → paint always Solar while keys
- * went to companion (or nowhere) → dead input + Solar BACK hold force-quit looked like crash.
- * Reversal: set persist.solar.overlay.legacy_shell=1 for Solar :overlay paint again.
+ * 2026-07-14 — Picks the one global overlay shell: Solar ThemedContextMenu by default.
+ * Layman: one system menu that matches Solar Home decoration and takes the scroll wheel.
+ * Technical: SolarOverlayService + ThemedContextMenu sole paint/key target; companion Chip
+ * only if persist.solar.overlay.companion_shell=1 (escape hatch).
+ * Was: companion ChipOverlayHost primary (parallel chrome, incomplete parity / dead keys).
+ * Reversal: set persist.solar.overlay.companion_shell=1 for chip path again.
  */
 public final class OverlayShellRouter {
 
-    /** Escape hatch — set to "1" to paint with Solar :overlay again (rollback). */
+    /**
+     * Escape hatch pairing — with companion_shell=1, set this to "1" to force Solar again.
+     * Unused when companion_shell is off (Solar is already default).
+     */
     public static final String LEGACY_SHELL_PROP = "persist.solar.overlay.legacy_shell";
-    /** Optional hard-off for companion; default "1" (on). Set "0" only with legacy_shell=1. */
+    /**
+     * Opt-in chip companion. Default "0" (off) — Solar ThemedContextMenu is the one shell.
+     * Set "1" to revive ChipOverlayHost (incomplete parity — escape hatch only).
+     */
     public static final String COMPANION_SHELL_PROP = "persist.solar.overlay.companion_shell";
 
     public static final String SOLAR_PKG = "com.solar.launcher";
@@ -26,15 +30,18 @@ public final class OverlayShellRouter {
     private OverlayShellRouter() {}
 
     /**
-     * Companion is the sole shell unless legacy_shell=1 (matches Xposed key forward default).
-     * Empty/unset props → companion. Must stay aligned with OverlayKeyForwarder.readLegacyShellProp.
+     * 2026-07-14 — Solar ThemedContextMenu is sole shell unless companion_shell=1 is forced.
+     * Empty/unset → Solar. Must stay aligned with OverlayKeyForwarder.readLegacyShellProp.
      */
     public static boolean useCompanionShell() {
-        // Explicit rollback: paint + keys stay on Solar :overlay.
-        if ("1".equals(readProp(LEGACY_SHELL_PROP, "0"))) return false;
-        // Optional hard-off (default on). Only meaningful with a deliberate legacy roll-forward.
-        if ("0".equals(readProp(COMPANION_SHELL_PROP, "1"))) return false;
-        return true;
+        // Explicit chip opt-in (old companion primary path).
+        if ("1".equals(readProp(COMPANION_SHELL_PROP, "0"))) {
+            // companion_shell=1 still honors legacy_shell=1 as Solar rollback.
+            if ("1".equals(readProp(LEGACY_SHELL_PROP, "0"))) return false;
+            return true;
+        }
+        // Default: Solar ThemedContextMenu (Home parity + themed decoration).
+        return false;
     }
 
     /** Package that owns the live WM shell. */

@@ -7,17 +7,16 @@ import android.content.Intent;
 import com.solar.launcher.overlay.OverlayShellRouter;
 
 /**
- * 2026-07-08 — Routes all overlay paint to the companion shell (sole host).
- * Layman: every system menu opens in the helper APK, not inside Solar.
- * Technical: companion GlobalContextOverlayService; legacy_shell prop keeps Solar paint.
- * Was: companion painted POWER then retried Solar :overlay. Now: companion only.
- * Reversal: set persist.solar.overlay.legacy_shell=1.
+ * 2026-07-14 — Routes paint to the one shell (Solar ThemedContextMenu by default).
+ * Layman: opens the same decorated menu as Solar Home — not a second chip look.
+ * Technical: OverlayShellRouter; companion Chip only if companion_shell=1.
+ * Was: companion always. Reversal: companion_shell=1.
  */
 public final class CompanionOverlayRouter {
 
     private CompanionOverlayRouter() {}
 
-    /** @deprecated Phase unification — always paint companion; Solar supplies IPC rows. */
+    /** True when Solar ThemedContextMenu owns power/global paint. */
     public static boolean shouldDelegatePaintToSolar(Context ctx) {
         return !OverlayShellRouter.useCompanionShell();
     }
@@ -39,7 +38,7 @@ public final class CompanionOverlayRouter {
         return true;
     }
 
-    /** Warm companion overlay host — Solar supplies IPC rows when alive. */
+    /** Warm companion overlay host — USB/rescue SPOF; optional when chip path enabled. */
     public static void warmOverlayHost(Context ctx) {
         if (ctx == null) return;
         Intent keep = new Intent(CompanionOverlayTriggers.ACTION_OVERLAY_KEEPALIVE);
@@ -51,7 +50,7 @@ public final class CompanionOverlayRouter {
         } catch (Exception ignored) {}
     }
 
-    /** Companion-owned power overlay — sole WM paint path. */
+    /** Chip path power overlay — only when companion_shell=1. */
     public static void startCompanionPowerOverlay(Context ctx) {
         if (ctx == null) return;
         Intent overlay = new Intent(CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER);
@@ -63,7 +62,7 @@ public final class CompanionOverlayRouter {
         } catch (Exception ignored) {}
     }
 
-    /** Start any overlay action on the configured shell (companion unless legacy). */
+    /** Start any overlay action on the configured shell. */
     public static boolean startOverlayAction(Context ctx, String action) {
         if (ctx == null || action == null) return false;
         Intent svc = new Intent(action);

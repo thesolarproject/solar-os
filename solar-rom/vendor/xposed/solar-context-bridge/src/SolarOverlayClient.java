@@ -61,11 +61,11 @@ public final class SolarOverlayClient {
     public static final String EXTRA_DIALOG_BUTTONS = "dialog_buttons";
 
     private static final String SOLAR_PKG = "com.solar.launcher";
-    /** 2026-07-08 — Companion is the one overlay shell; Solar supplies IPC rows. */
+    /** 2026-07-14 — Solar ThemedContextMenu is the one overlay shell; companion Chip is opt-in. */
     private static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
     private static final String COMPANION_OVERLAY = COMPANION_PKG + ".GlobalContextOverlayService";
     private static final String OVERLAY_SERVICE = SOLAR_PKG + ".SolarOverlayService";
-    /** Rollback: persist.solar.overlay.legacy_shell=1 paints Solar :overlay again. */
+    /** Rollback with companion_shell=1: set legacy_shell=1 to force Solar again. */
     private static final String LEGACY_SHELL_PROP = "persist.solar.overlay.legacy_shell";
     private static final String OPEN_RECEIVER = SOLAR_PKG + ".PowerOverlayOpenReceiver";
     private static final String TRIGGER_RECEIVER = SOLAR_PKG + ".OverlayTriggerReceiver";
@@ -80,20 +80,16 @@ public final class SolarOverlayClient {
     private SolarOverlayClient() {}
 
     /**
-     * 2026-07-08 — Primary paint package: companion unless legacy_shell rollback.
-     * Layman: helper APK draws the menu; old Solar window only if we flip the escape hatch.
-     * 2026-07-10 — Defaults MUST match OverlayShellRouter + OverlayKeyForwarder (legacy default "0").
-     * Was: companion_shell default "0" + legacy default "1" + Solar installed → always Solar paint
-     * while keys went to companion → dead wheel/OK on global menu.
-     * Reversal: set persist.solar.overlay.legacy_shell=1 for Solar :overlay again.
+     * 2026-07-14 — Sole shell = Solar ThemedContextMenu unless companion_shell=1 opt-in.
+     * Layman: one themed system menu that matches Home; chip companion only if forced.
+     * Was: companion Chip primary (default legacy_shell=0). Reversal: companion_shell=1.
      */
     private static boolean useCompanionShell(Context ctx) {
-        // Explicit rollback escape hatch (default off — companion is sole shell).
-        if ("1".equals(readSysProp(LEGACY_SHELL_PROP, "0"))) return false;
-        // Optional hard-off for companion (default on).
-        if ("0".equals(readSysProp("persist.solar.overlay.companion_shell", "1"))) return false;
-        // Prefer companion when installed; Solar paints only if companion missing.
-        if (isCompanionInstalled(ctx)) return true;
+        // Explicit chip opt-in.
+        if ("1".equals(readSysProp("persist.solar.overlay.companion_shell", "0"))) {
+            if ("1".equals(readSysProp(LEGACY_SHELL_PROP, "0"))) return false;
+            return isCompanionInstalled(ctx);
+        }
         return false;
     }
 
@@ -205,8 +201,8 @@ public final class SolarOverlayClient {
     }
 
     /**
-     * 2026-07-08 — Companion paints power tier; Solar only when legacy_shell=1.
-     * Was: Solar :overlay first, companion only on startService miss.
+     * 2026-07-14 — Open power tier on Solar ThemedContextMenu (Chip only if companion_shell=1).
+     * Was: companion Chip primary. Reversal: companion_shell=1.
      */
     private static boolean startPowerOverlayService(Context ctx) {
         if (ctx == null) return false;
@@ -220,7 +216,7 @@ public final class SolarOverlayClient {
         } catch (Throwable t) {
             SolarContextBridge.log("shell startService failed: " + t.getClass().getSimpleName());
         }
-        // Fail-open: try the other host once.
+        // Fail-open: try the other host once (Chip redirects SHOW_POWER to Solar when default).
         if (useCompanionShell(ctx) && isSolarInstalled(ctx)) {
             return startOverlayService(ctx, ACTION_SHOW_OVERLAY_POWER);
         }

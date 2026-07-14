@@ -58,6 +58,9 @@ public final class SolarOverlayService extends Service {
             } catch (Exception ignored) {}
             // #endregion
             OverlayKeyGate.refreshLiveOverlayGate();
+            // 2026-07-08 — Stuck active with dead :overlay: heal key gate so wheel works again.
+            // Was: only refresh props. Now: ensureCleanState when process gone.
+            OverlayKeyGate.ensureCleanState(SolarOverlayService.this);
             if (overlayRoot != null) {
                 overlayRoot.postDelayed(this, OVERLAY_WATCHDOG_MS);
             }
@@ -100,24 +103,11 @@ public final class SolarOverlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        // 2026-07-07 — IPC lives in :overlay with modalHost sessions (companion reads live rows).
-        SolarOverlayStateService.registerActionHandler(new SolarOverlayStateService.OverlayActionHandler() {
-            @Override
-            public boolean dispatchAction(String sessionId, int actionIndex) {
-                return OverlayMenuSessionRegistry.dispatchAction(
-                        SolarOverlayService.this, sessionId, actionIndex);
-            }
-
-            @Override
-            public android.os.Bundle buildContextSnapshot(String sessionId) {
-                return OverlayMenuSessionRegistry.buildSnapshot(sessionId);
-            }
-
-            @Override
-            public android.os.Bundle buildPowerMenuSnapshot() {
-                return OverlayMenuSnapshotBuilder.buildPowerFallback(SolarOverlayService.this);
-            }
-        });
+        // 2026-07-08 — Fresh :overlay process has no WM view; clear crash-stale shell_visible.
+        OverlayKeyGate.setShellVisible(false);
+        // 2026-07-08 — SolarOverlayStateService runs in main process now (MainActivity registers
+        // the action handler). Was: register here in :overlay — companion binder never reached Home.
+        // Reversal: restore registerActionHandler here if state service returns to :overlay.
     }
 
     @Override
@@ -133,9 +123,9 @@ public final class SolarOverlayService extends Service {
         }
         String action = intent.getAction();
         if (OverlayTriggers.ACTION_DISMISS_OVERLAY.equals(action)) {
-            if (modalHost != null && !modalHost.isUsbStoragePromptVisible()) {
-                return START_NOT_STICKY;
-            }
+            // 2026-07-08 — Always tear down on explicit dismiss (Solar Home, rescue, boot).
+            // Was: skipped tearDown when modalHost non-null and not USB — left APP_MENU stuck.
+            // Reversal: restore USB-only early return if a new anti-stomp policy is needed.
             tearDownOverlay();
             return START_NOT_STICKY;
         }
@@ -175,6 +165,8 @@ public final class SolarOverlayService extends Service {
         // App menu refresh while overlay is up — submenu pick without tear-down.
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_APP_MENU.equals(action)
                 && overlayRoot != null && modalHost != null) {
+            // 2026-07-08 — Re-publish ui=1 before Solar Home tier swap so gate never looks stale mid-refresh.
+            OverlayKeyGate.setOverlayUiVisible(true);
             String[] titles = intent.getStringArrayExtra(OverlayTriggers.EXTRA_MENU_TITLES);
             String title = intent.getStringExtra(OverlayTriggers.EXTRA_MENU_TITLE);
             String sessionId = intent.getStringExtra(OverlayTriggers.EXTRA_MENU_SESSION_ID);
@@ -194,11 +186,18 @@ public final class SolarOverlayService extends Service {
             modalHost.showNativeDialogMode(title, message, buttons, sessionId, callerPackage);
             return START_NOT_STICKY;
         }
-        // 2026-07-06 — USB behind native ANR/crash tier — queue, never stomp error UI.
+        // 2026-07-10 — USB never paints on :overlay; always Solar MainActivity.
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)
-                && overlayRoot != null && modalHost != null
-                && modalHost.isNativeDialogVisible()) {
-            OverlayTierScheduler.queuePendingUsbPrompt();
+                || OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK.equals(action)) {
+            boolean lock = OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK.equals(action)
+                    || intent.getBooleanExtra(OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false);
+            UsbStorageOverlayReceiver.routeToSolar(getApplicationContext(), !lock, lock,
+                    "SolarOverlayService");
+            if (overlayRoot != null) {
+                tearDownOverlay();
+            } else {
+                disarmIfOverlayNotShown();
+            }
             return START_NOT_STICKY;
         }
         // Solar Now Playing — transport bar shows level; skip global volume HUD entirely.
@@ -251,33 +250,23 @@ public final class SolarOverlayService extends Service {
             }
             OverlayKeyGate.setOverlayOpening(true);
         }
-        if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)) {
-            if (OverlayTierScheduler.shouldDeferUsbSpawn()) {
-                OverlayTierScheduler.queuePendingUsbPrompt();
-                disarmIfOverlayNotShown();
-                return START_NOT_STICKY;
-            }
-            if (routeUsbStorageIntent(intent)) {
-                disarmIfOverlayNotShown();
-                return START_NOT_STICKY;
-            }
-        }
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_BT_PAIRING.equals(action)) {
             if (routeBluetoothPairingIntent(intent)) {
                 disarmIfOverlayNotShown();
                 return START_NOT_STICKY;
             }
         }
-        // USB tier already visible — refresh rows instead of tearDown/re-arm (avoids focus flicker).
-        if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)
-                && overlayRoot != null && modalHost != null) {
-            modalHost.showUsbStoragePromptMode();
-            return START_NOT_STICKY;
-        }
         // BT pairing tier already visible — refresh with latest device/session.
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_BT_PAIRING.equals(action)
                 && overlayRoot != null && modalHost != null) {
             paintBluetoothPairingFromIntent(intent);
+            return START_NOT_STICKY;
+        }
+        // 2026-07-08 — Native dialog also morphs in place when shell already up (not USB — queued).
+        if (OverlayTriggers.ACTION_SHOW_OVERLAY_NATIVE_DIALOG.equals(action)
+                && overlayRoot != null && modalHost != null) {
+            loadOverlayAndFinish(intent, action, false,
+                    new ContextThemeWrapper(getApplicationContext(), R.style.Theme_Solar));
             return START_NOT_STICKY;
         }
         if (overlayRoot != null) {
@@ -317,6 +306,8 @@ public final class SolarOverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
         windowManager.addView(overlayRoot, lp);
+        // 2026-07-08 — Shell attached (volume HUD); stuck BACK can dismiss if gate stays off.
+        OverlayKeyGate.setShellVisible(true);
         Runnable finish = new Runnable() {
             @Override
             public void run() {
@@ -392,15 +383,18 @@ public final class SolarOverlayService extends Service {
 
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         Context themed = new ContextThemeWrapper(getApplicationContext(), R.style.Theme_Solar);
-        // Never capture WM focus — foreground app stays on top; keys forwarded by Xposed / Y1 daemon.
-        overlayRoot = new KeyCapturingOverlayRoot(themed, false);
+        boolean interactive = !passiveVolume && !passiveToast;
+        overlayRoot = new KeyCapturingOverlayRoot(themed, interactive);
         // 2026-07-06 — transparent WM root; panel-only chrome (no full-screen dim tint).
         overlayRoot.setBackgroundColor(0x00000000);
-        overlayRoot.setClickable(false);
-        overlayRoot.setFocusable(false);
-        overlayRoot.setFocusableInTouchMode(false);
+        overlayRoot.setClickable(interactive);
+        // 2026-07-14 — Keep constructor focusable=true for interactive (was forced false → no wheel).
 
-        int wmFlags = globalOverlayWindowFlags();
+        int wmFlags = interactive ? globalOverlayWindowFlags()
+                : (WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
+                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
@@ -409,12 +403,26 @@ public final class SolarOverlayService extends Service {
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.LEFT;
         windowManager.addView(overlayRoot, lp);
+        // 2026-07-08 — Shell attached; stuck BACK heal if gate later disarms without removeView.
+        OverlayKeyGate.setShellVisible(true);
+        // 2026-07-14 — Claim focus so KeyCapturingOverlayRoot gets wheel/Back (FOCUSABLE WM).
+        if (interactive) {
+            overlayRoot.requestFocus();
+            overlayRoot.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (overlayRoot != null) overlayRoot.requestFocus();
+                }
+            });
+        }
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("wmRootBg", 0x00000000);
             d.put("passiveVolume", passiveVolume);
             d.put("y2", DeviceFeatures.isY2());
+            d.put("sessionId", "083511");
+            d.put("focusableWm", interactive);
             DebugMenuLog.log("SolarOverlayService.showOverlay", "wm overlay added", "H3", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -545,8 +553,17 @@ public final class SolarOverlayService extends Service {
         } else if (OverlayTriggers.ACTION_SHOW_OVERLAY_LAUNCHER_RECOVERY.equals(action)) {
             modalHost.showLauncherCrashRecoveryMode(
                     intent.getStringExtra(OverlayTriggers.EXTRA_RECOVERY_PROCESS));
-        } else if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)) {
-            modalHost.showUsbStoragePromptMode();
+        } else if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK.equals(action)
+                || OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)) {
+            // 2026-07-10 — Never paint USB on :overlay (MainActivity owns it).
+            UsbStorageOverlayReceiver.routeToSolar(getApplicationContext(),
+                    OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)
+                            && !intent.getBooleanExtra(OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false),
+                    OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK.equals(action)
+                            || intent.getBooleanExtra(OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false),
+                    "SolarOverlayService.loadOverlay");
+            tearDownOverlay();
+            return;
         } else if (OverlayTriggers.ACTION_SHOW_OVERLAY_BT_PAIRING.equals(action)) {
             paintBluetoothPairingFromIntent(intent);
         } else {
@@ -554,6 +571,8 @@ public final class SolarOverlayService extends Service {
             return;
         }
         if (!passiveVolume) {
+            // 2026-07-08 — Mark UI live before finish returns so MainActivity key pipe + Xposed gate agree.
+            // Was: arm then setUi after paint. Still after host.show* (needs menu) but before return.
             armOverlayKeyGate();
             OverlayKeyGate.setOverlayUiVisible(true);
             if (overlayRoot != null) {
@@ -724,12 +743,17 @@ public final class SolarOverlayService extends Service {
         } catch (Exception ignored) {}
     }
 
-    /** WM flags for global overlays — always non-focus-stealing (test hook). */
+    /**
+     * 2026-07-14 — Interactive global overlays are FOCUSABLE so wheel/Back hit KeyCapturingOverlayRoot
+     * even when Xposed prop arm lags (same approach as companion KeyCapturingRoot).
+     * Was: FLAG_NOT_FOCUSABLE → keys only via OverlayKeyGate IPC (dead wheel when hooks missed).
+     * Reversal: add FLAG_NOT_FOCUSABLE again for IPC-only capture.
+     */
     static int globalOverlayWindowFlags() {
         return WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
                 | WindowManager.LayoutParams.FLAG_LAYOUT_INSET_DECOR
-                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+                | WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM
+                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL;
     }
 
     private void tearDownOverlay() {
@@ -790,6 +814,8 @@ public final class SolarOverlayService extends Service {
                 windowManager.removeView(overlayRoot);
             } catch (Exception ignored) {}
         }
+        // 2026-07-08 — WM gone; stop stuck-BACK DISMISS from firing on every app BACK.
+        OverlayKeyGate.setShellVisible(false);
         overlayRoot = null;
         stopSelf();
     }
@@ -814,36 +840,7 @@ public final class SolarOverlayService extends Service {
                 intent.getStringExtra(OverlayTriggers.EXTRA_BT_PAIRING_PIN_PREFILL));
     }
 
-    private boolean routeUsbStorageIntent(Intent intent) {
-        Context appCtx = getApplicationContext();
-        if (!UsbMassStorageExperiment.isEnabled(appCtx)) {
-            return true;
-        }
-        boolean lockOnly = intent.getBooleanExtra(OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false);
-        if (lockOnly) {
-            if (UsbStorageOverlayReceiver.shouldUseGlobalOverlayPrompt(appCtx)) {
-                return true;
-            }
-            UsbStorageOverlayReceiver.launchSolarUsbHandoff(appCtx, false, true);
-            return true;
-        }
-        if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(appCtx)) {
-            return true;
-        }
-        if (UsbStorageSessionFlags.isAutoConnectEnabled(appCtx)) {
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    UsbMassStorageController.enable(appCtx, "auto.overlay");
-                }
-            }, "UsbAutoConnectOverlay").start();
-            UsbStorageOverlayReceiver.launchSolarUsbHandoff(appCtx, false, true);
-            return true;
-        }
-        return false;
-    }
-
-    /** USB route bailed (auto-connect, lock handoff, prefs) — clear stale overlay-active prop. */
+    /** USB route bailed — clear stale overlay-active prop. */
     private void disarmIfOverlayNotShown() {
         if (overlayRoot != null) return;
         OverlayKeyGate.disarm();
@@ -877,6 +874,14 @@ public final class SolarOverlayService extends Service {
             } catch (Exception ignored) {}
             // #endregion
             if (modalHost == null) return super.dispatchKeyEvent(event);
+            // 2026-07-08 — Drop center/play auto-repeat DOWNs (held OK used to chain Power → Restart).
+            // Was: every ACTION_DOWN reached handleOverlayKeyDown. Now: repeats consumed here.
+            // Reversal: remove this block — held center may auto-fire again via WM path.
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() > 0
+                    && (Y1InputKeys.isCenterKey(event.getKeyCode())
+                    || Y1InputKeys.isPlayPauseKey(event.getKeyCode()))) {
+                return true;
+            }
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
                 return modalHost.handleOverlayKeyDown(event.getKeyCode()) || super.dispatchKeyEvent(event);
             }

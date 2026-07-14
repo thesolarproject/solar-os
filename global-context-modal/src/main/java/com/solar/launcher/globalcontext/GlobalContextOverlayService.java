@@ -296,6 +296,12 @@ public final class GlobalContextOverlayService extends Service {
         }
         StaleOverlayGate.clearIfNeeded();
         if (CompanionOverlayTriggers.ACTION_SHOW_OVERLAY_POWER.equals(action)) {
+            // 2026-07-14 — Sole shell is Solar ThemedContextMenu; redirect chip process away.
+            if (CompanionOverlayRouter.shouldDelegatePaintToSolar(this)) {
+                CompanionOverlayRouter.startSolarOverlayPower(this);
+                stopSelf();
+                return START_NOT_STICKY;
+            }
             AgentDebugLog.log("H-C", "GlobalContextOverlayService.onStartCommand",
                     "SHOW_POWER", "{\"pid\":" + android.os.Process.myPid() + "}");
             // Optional solar_home_* extras → Home options on the same Power-hold shell.

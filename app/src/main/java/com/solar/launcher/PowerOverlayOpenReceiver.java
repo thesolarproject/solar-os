@@ -1,11 +1,16 @@
 package com.solar.launcher;
 
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 
+import com.solar.launcher.overlay.OverlayShellRouter;
+
 /**
  * Open entry for power/volume overlay — no signature permission (system_server + shell am start).
+ * 2026-07-14 — Routes to OverlayShellRouter (Solar ThemedContextMenu by default).
+ * Was: companion Chip primary → dual chrome. Reversal: companion_shell=1.
  */
 public final class PowerOverlayOpenReceiver extends BroadcastReceiver {
 
@@ -22,22 +27,32 @@ public final class PowerOverlayOpenReceiver extends BroadcastReceiver {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("action", action);
             d.put("process", processName(context));
+            d.put("shell", OverlayShellRouter.overlayPackage());
+            d.put("sessionId", "083511");
             DebugMenuLog.log("PowerOverlayOpenReceiver.onReceive", "open overlay", "H-RBX", d);
+            Debug383b4eLog.log(context, "PowerOverlayOpenReceiver.onReceive",
+                    "open overlay via router", "DUAL", d);
         } catch (Exception ignored) {}
         // #endregion
         OverlayHandoffRestoreReceiver.notifyPause(context);
-        // Explicit component — starts :overlay service without waking MainActivity.
-        Intent svc = new Intent(context, SolarOverlayService.class);
-        svc.setAction(action);
-        svc.setClassName(context, SolarOverlayService.class.getName());
+        // One shell — Solar ThemedContextMenu unless companion_shell=1.
+        ComponentName shell = OverlayShellRouter.overlayComponent();
+        Intent svc = new Intent(action);
+        svc.setComponent(shell);
         try {
             context.startService(svc);
         } catch (Exception e) {
             android.util.Log.w("PowerOverlayOpen", "startService failed: " + e.getMessage());
+            // Fail-open: Solar :overlay if companion missing.
+            try {
+                Intent legacy = new Intent(context, SolarOverlayService.class);
+                legacy.setAction(action);
+                context.startService(legacy);
+            } catch (Exception ignored) {}
         }
     }
 
-    /** Debug: confirm overlay open runs in :overlay, not main Solar process. */
+    /** Debug: confirm overlay open runs in :overlay / companion, not main Solar process. */
     private static String processName(Context context) {
         try {
             int pid = android.os.Process.myPid();

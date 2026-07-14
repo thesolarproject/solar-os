@@ -45,7 +45,8 @@ public final class OverlayModalHost {
     /** Fresh BACK hold after open release closes overlay; quick taps are ignored. */
     private static final long BACK_HOLD_DISMISS_MS = 150L;
     /** Block center/OK activate briefly after long-press opened app-menu overlay (release key). */
-    private static final long APP_MENU_CENTER_GRACE_MS = 595L;
+    private static final long APP_MENU_CENTER_GRACE_MS =
+            OverlayCenterActivation.SUB_TIER_CENTER_GRACE_MS;
 
     public interface DismissListener {
         void onDismissOverlay();
@@ -64,6 +65,13 @@ public final class OverlayModalHost {
     private boolean simpleNetworkTier;
     private boolean queueTierVisible;
     private long powerTierOpenedAt;
+    /**
+     * 2026-07-08 — Uptime when quick bar opened a sub-tier (Power/Wi‑Fi/BT/confirm).
+     * Blocks the same-press KEY_UP from activating Restart (row 0) after chip select.
+     * Was: no stamp — KEY_DOWN + focusSubmenuList could chain into reboot.
+     * Reversal: leave at 0 and activate on DOWN again.
+     */
+    private long subTierChangedAt;
     private int queueFocusIndex;
     private int queueMoveFrom = -1;
     private PlayQueue overlayQueue;
@@ -107,10 +115,16 @@ public final class OverlayModalHost {
     private boolean[] savedAppMenuHasSubmenu;
     /** SystemUI USB enable prompt — result stays in Solar, not a hooked third-party app. */
     private boolean usbStoragePromptVisible;
+    /**
+     * 2026-07-08 — UMS lock overlay fail-open (companion preferred).
+     * Layman: “disk mode on” block screen — only Turn Off or unplug closes it.
+     * Was: MainActivity.STATE_USB_STORAGE. Now: same shell as enable prompt / :overlay lock tier.
+     * Reversal: drop field; lock only on companion GlobalContextOverlayService.
+     */
+    private boolean usbStorageLockVisible;
     /** Bluetooth passkey match / consent tier — Solar-native, not hooked-app session. */
     private boolean bluetoothPairingPromptVisible;
     private Runnable bluetoothPairingTierRestore;
-    private OverlayBluetoothPinKeyboard btPinKeyboard;
     private OverlayWifiPasswordKeyboard wifiPasswordKeyboard;
     private String btPairingAddress;
     private int savedBtPairingMode;
@@ -186,6 +200,8 @@ public final class OverlayModalHost {
                 .overlayDismissGraceMsForPackage(fg);
         suppressBackDismissUntilLift = true;
         powerTierOpenedAt = SystemClock.uptimeMillis();
+        // 2026-07-08 — Open gesture may still be holding OK/BACK; block until release settles.
+        markSubTierChanged();
         powerTierVisible = true;
         launcherPickerVisible = false;
         mediaSlidersActive = false;
@@ -202,7 +218,7 @@ public final class OverlayModalHost {
         OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_POWER);
     }
 
-    /** 2026-07-06 — Sync in-modal rescue strip with sysprop HUD (7s..10s hold). */
+    /** 2026-07-08 — Sync in-modal rescue strip with sysprop HUD (7s..10s continuous hold). */
     private void startRescueBannerPoll() {
         dismissHandler.removeCallbacks(rescueBannerPollRunnable);
         dismissHandler.post(rescueBannerPollRunnable);
@@ -321,6 +337,13 @@ public final class OverlayModalHost {
                     R.string.settings_home_launcher_restart_jj,
                     R.string.settings_home_launcher_switch_jj);
         }
+        // 2026-07-08 — Stock (Innioasis) in crash/hold HOME picker.
+        if (LauncherSwitch.isStockOfferVisible(context)) {
+            appendLauncherPickerRow(labels, targets, isRestart, current, marker,
+                    LauncherDefault.TARGET_STOCK,
+                    R.string.settings_home_launcher_restart_stock,
+                    R.string.settings_home_launcher_switch_stock);
+        }
         int focusIndex = 0;
         for (int i = 0; i < targets.size(); i++) {
             if (targets.get(i).equals(current)) {
@@ -354,8 +377,8 @@ public final class OverlayModalHost {
     }
 
     /**
-     * 2026-07-07 — Repeated HOME crash recovery — fallback launchers + keep Solar row.
-     * Layman: after 3 crashes in 2 min, pick Rockbox/JJ or stay on Solar without stock dialog.
+     * 2026-07-10 — Solar-only crash recovery — restart Solar or dismiss (no alternate launchers).
+     * Layman: if Solar keeps stopping, try again or close the message — no Rockbox/JJ picker.
      */
     public void showLauncherCrashRecoveryMode(String crashedProcess) {
         powerTierVisible = false;
@@ -364,82 +387,31 @@ public final class OverlayModalHost {
         mediaSlidersActive = false;
         simpleNetworkTier = false;
         clearAppMenuSession();
-        final ArrayList<String> labels = new ArrayList<String>();
-        final ArrayList<String> targets = new ArrayList<String>();
-        final ArrayList<Boolean> isKeepSolar = new ArrayList<Boolean>();
-        final ArrayList<String> customComponents = new ArrayList<String>();
-        String current = LauncherPreference.getHomeTarget(context);
-        if (LauncherSwitch.isRockboxAvailable(context)
-                && !LauncherDefault.TARGET_ROCKBOX.equals(current)) {
-            labels.add(context.getString(R.string.launcher_crash_recovery_use_rockbox));
-            targets.add(LauncherDefault.TARGET_ROCKBOX);
-            isKeepSolar.add(Boolean.FALSE);
-            customComponents.add("");
-        }
-        if (JjLauncherAvailability.isOfferVisible(context)
-                && !LauncherDefault.TARGET_JJ.equals(current)) {
-            labels.add(context.getString(R.string.launcher_crash_recovery_use_jj));
-            targets.add(LauncherDefault.TARGET_JJ);
-            isKeepSolar.add(Boolean.FALSE);
-            customComponents.add("");
-        }
-        // 2026-07-07 — PM CATEGORY_HOME extras — any third-party launcher user installed.
-        java.util.List<android.content.pm.ResolveInfo> extras =
-                LauncherHomeApply.discoverExtraHomeLaunchers(context);
-        for (android.content.pm.ResolveInfo info : extras) {
-            if (info == null || info.activityInfo == null) continue;
-            android.content.ComponentName cn = new android.content.ComponentName(
-                    info.activityInfo.packageName, info.activityInfo.name);
-            String flat = LauncherDiscovery.flattenComponent(cn);
-            if (LauncherHomeApply.isCustomHomePackage(context, info.activityInfo.packageName)) {
-                continue;
-            }
-            String label = LauncherHomeApply.labelForPackage(context, info.activityInfo.packageName);
-            labels.add(context.getString(R.string.launcher_crash_recovery_use_custom, label));
-            targets.add(LauncherDefault.TARGET_CUSTOM);
-            isKeepSolar.add(Boolean.FALSE);
-            customComponents.add(flat);
-        }
-        if (!LauncherDefault.TARGET_SOLAR.equals(current)) {
-            labels.add(context.getString(R.string.launcher_crash_recovery_use_solar));
-            targets.add(LauncherDefault.TARGET_SOLAR);
-            isKeepSolar.add(Boolean.FALSE);
-            customComponents.add("");
-        }
-        labels.add(context.getString(R.string.launcher_crash_recovery_keep_solar));
-        targets.add(LauncherDefault.TARGET_SOLAR);
-        isKeepSolar.add(Boolean.TRUE);
-        customComponents.add("");
+        final String[] labels = new String[] {
+                context.getString(R.string.launcher_crash_recovery_use_solar),
+                context.getString(R.string.launcher_crash_recovery_keep_solar),
+        };
+        Boolean[] headers = new Boolean[] { Boolean.FALSE, Boolean.FALSE };
         String detail = context.getString(R.string.launcher_crash_recovery_body,
                 crashedProcess != null ? crashedProcess : context.getString(R.string.app_name));
-        Boolean[] headers = new Boolean[labels.size()];
-        for (int i = 0; i < headers.length; i++) {
-            headers[i] = Boolean.FALSE;
-        }
         menu.show(overlayRoot, context.getString(R.string.launcher_crash_recovery_title),
-                detail, labels.toArray(new String[labels.size()]), null, null, toPrimitive(headers),
+                detail, labels, null, null, toPrimitive(headers),
                 new ThemedContextMenu.Listener() {
                     @Override
                     public void onSelected(int index) {
-                        if (index < 0 || index >= targets.size()) return;
-                        if (isKeepSolar.get(index).booleanValue()) {
+                        if (index == 0) {
+                            LauncherRecoveryHelper.clearRecoveryState(context);
+                            PowerActions.switchToSolar(context);
+                        } else {
                             LauncherRecoveryHelper.clearRecoveryState(context);
                             dismissListener.onDismissOverlay();
-                            return;
                         }
-                        String custom = customComponents.get(index);
-                        if (LauncherDefault.TARGET_CUSTOM.equals(targets.get(index))
-                                && custom != null && custom.length() > 0) {
-                            applyCustomLauncherRecoverySelection(custom);
-                            return;
-                        }
-                        applyLauncherPickerSelection(targets.get(index));
                     }
-                }, rowHeightPx, panelWidthPx, true, true, null, null);
-        menu.focusSubmenuList();
+                }, rowHeightPx, panelWidthPx, true, true);
+        menu.focusOptionsList();
     }
 
-    /** 2026-07-07 — Recovery picker chose PM-discovered custom HOME — apply + clear streak. */
+    /** Recovery picker chose PM-discovered custom HOME — apply + clear streak (legacy). */
     private void applyCustomLauncherRecoverySelection(String flatComponent) {
         dismissOverlayForLauncherSelection("overlay_recovery_custom",
                 HomeTargetPolicy.TARGET_CUSTOM);
@@ -526,11 +498,18 @@ public final class OverlayModalHost {
     private void handleAppMenuSelection(int index) {
         boolean opensSubmenu = savedAppMenuHasSubmenu != null && index >= 0
                 && index < savedAppMenuHasSubmenu.length && savedAppMenuHasSubmenu[index];
+        // 2026-07-08 — Solar Home owns dismiss; every pick may drill to another overlay tier.
+        // Was: non-submenu rows tore down :overlay before MainActivity could refresh APP_MENU.
+        // Now: solar_home_* sessions stay up until MainActivity sends DISMISS_OVERLAY.
+        // Reversal: remove solarHomeSession branch — third-party one-shot menus only.
+        boolean solarHomeSession = appMenuSessionId != null
+                && appMenuSessionId.startsWith("solar_home_");
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("index", index);
             d.put("opensSubmenu", opensSubmenu);
+            d.put("solarHomeSession", solarHomeSession);
             d.put("sessionId", appMenuSessionId != null ? appMenuSessionId.substring(0,
                     Math.min(8, appMenuSessionId.length())) : "");
             d.put("caller", appMenuCallerPackage);
@@ -539,8 +518,10 @@ public final class OverlayModalHost {
         } catch (Exception ignored) {}
         // #endregion
         sendAppMenuResult(index);
-        if (opensSubmenu) {
-            appMenuSessionId = null;
+        if (opensSubmenu || solarHomeSession) {
+            if (opensSubmenu && !solarHomeSession) {
+                appMenuSessionId = null;
+            }
             return;
         }
         appMenuTierVisible = false;
@@ -614,7 +595,7 @@ public final class OverlayModalHost {
                         if (index < 1) return;
                         finishNativeDialogSelection(index);
                     }
-                }, rowHeightPx, panelWidthPx, true, true,
+                }, rowHeightPx, panelWidthPx, true, false,
                 buildQuickBar(), createModalQuickBarListener());
         menu.focusSubmenuList();
         menu.moveFocus(1);
@@ -662,6 +643,82 @@ public final class OverlayModalHost {
                 showNativeDialogMode(title, message, buttons, sessionId, callerPackage);
             }
         };
+    }
+
+    /**
+     * 2026-07-08 — UMS exported lock — legacy Solar :overlay fail-open paint.
+     * Layman: block screen saying disk mode is on; only Turn Off ends it (unplug also dismisses).
+     * Technical: opaque themed detail + one action row; BACK swallowed (see finishOverlayBackHold).
+     * Solar ThemedContextMenu is the preferred host; Chip path only if companion_shell=1.
+     * Reversal: delete; restore launchSolarUsbHandoff → MainActivity.STATE_USB_STORAGE.
+     */
+    public void showUsbStorageLockMode() {
+        powerTierVisible = false;
+        appMenuTierVisible = false;
+        dialogTierVisible = false;
+        launcherPickerVisible = false;
+        volumeOnlyVisible = false;
+        mediaSlidersActive = false;
+        simpleNetworkTier = false;
+        modalQuickSubTier = false;
+        clearModalSessions();
+        usbStoragePromptVisible = false;
+        usbStorageLockVisible = true;
+        usbStorageTierRestore = new Runnable() {
+            @Override
+            public void run() {
+                showUsbStorageLockMode();
+            }
+        };
+        ThemeManager.prepareThemeForUsbStorage(context);
+        // Opaque root — covers Rockbox / third-party under the lock tier.
+        if (overlayRoot != null) {
+            overlayRoot.setBackgroundColor(ThemeManager.getOverlayBackgroundColor());
+        }
+        ArrayList<String> labels = new ArrayList<String>();
+        ArrayList<Boolean> headers = new ArrayList<Boolean>();
+        String model = DeviceFeatures.productModelLabel();
+        labels.add(context.getString(R.string.usb_storage_mode_body, model));
+        headers.add(Boolean.TRUE);
+        labels.add(context.getString(R.string.usb_storage_mode_turn_off));
+        headers.add(Boolean.FALSE);
+        menu.setScrollableDetailHeader(true);
+        menu.show(overlayRoot, context.getString(R.string.usb_storage_mode_title), null,
+                labels.toArray(new String[labels.size()]),
+                null, null, toPrimitive(headers.toArray(new Boolean[headers.size()])),
+                new ThemedContextMenu.Listener() {
+                    @Override
+                    public void onSelected(int index) {
+                        if (index == 1) {
+                            handleUsbStorageOverlayTurnOff();
+                        }
+                    }
+                }, rowHeightPx, panelWidthPx, true, false,
+                buildQuickBar(), createModalQuickBarListener());
+        menu.focusSubmenuList();
+        menu.moveFocus(1);
+        OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_USB_LOCK);
+        UsbStorageOverlayReceiver.notifyMainUsbLocked(context);
+    }
+
+    /**
+     * 2026-07-08 — Turn Off from Solar :overlay lock fail-open path.
+     * Layman: ends disk mode and closes block screen; idle until next USB plug.
+     */
+    private void handleUsbStorageOverlayTurnOff() {
+        usbStorageLockVisible = false;
+        OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_NONE);
+        OverlayTierScheduler.clearPendingUsbPrompt();
+        final Context app = context.getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                UsbMassStorageController.disable(app);
+            }
+        }, "UsbUmsDisableLock").start();
+        // markUserDismissed runs in UsbStorageLockSuspendReceiver via EXTRA_USB_FORCE_OFF.
+        UsbStorageOverlayReceiver.notifyMainUsbUnlocked(app, true);
+        dismissListener.onDismissOverlay();
     }
 
     /** SystemUI USB enable prompt — scrollable PC-connected notice + Turn on / Dismiss rows. */
@@ -724,6 +781,7 @@ public final class OverlayModalHost {
         menu.moveFocus(1);
         OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_USB);
     }
+
     private Runnable buildUsbStorageRestoreRunnable() {
         return new Runnable() {
             @Override
@@ -750,34 +808,13 @@ public final class OverlayModalHost {
         savedBtPairingPasskey = passkey;
         savedBtPairingName = name;
         savedBtPairingPinPrefill = pinPrefill;
-        if (mode == BluetoothPairingCoordinator.MODE_PIN) {
-            bluetoothPairingPromptVisible = false;
-            showBluetoothPinKeyboardTier(name, address, pinPrefill);
-            return;
-        }
         bluetoothPairingPromptVisible = true;
         bluetoothPairingTierRestore = buildBluetoothPairingRestoreRunnable();
-        if (btPinKeyboard != null) btPinKeyboard.dismiss();
         if (wifiPasswordKeyboard != null) wifiPasswordKeyboard.dismiss();
         showBluetoothPasskeyMenu(mode, name, passkey);
     }
 
-    /** Full-screen digit keyboard for Bluetooth PIN entry in :overlay. */
-    private void showBluetoothPinKeyboardTier(String name, String address, String prefill) {
-        if (menu.isShowing()) menu.dismiss();
-        if (btPinKeyboard == null) {
-            btPinKeyboard = new OverlayBluetoothPinKeyboard(context, overlayRoot,
-                    new Runnable() {
-                        @Override
-                        public void run() {
-                            dismissListener.onDismissOverlay();
-                        }
-                    });
-        }
-        String label = name != null && name.length() > 0 ? name : address;
-        String title = context.getString(R.string.keyboard_bt_pairing_pin, label);
-        btPinKeyboard.show(title, address, prefill);
-    }
+
 
     /** Passkey display, passkey match, or Just Works consent — scrollable detail + action rows. */
     private void showBluetoothPasskeyMenu(int mode, String name, int passkey) {
@@ -846,23 +883,23 @@ public final class OverlayModalHost {
         return new Runnable() {
             @Override
             public void run() {
-                if (mode == BluetoothPairingCoordinator.MODE_PIN) {
-                    showBluetoothPinKeyboardTier(name, btPairingAddress, savedBtPairingPinPrefill);
-                } else {
-                    showBluetoothPasskeyMenu(mode, name, passkey);
-                }
+                showBluetoothPasskeyMenu(mode, name, passkey);
             }
         };
     }
 
-    /** User chose Turn on USB storage — bring Solar to USB full screen, then enable UMS there. */
+    /**
+     * 2026-07-08 — User chose Turn on USB storage — enable UMS then paint lock overlay.
+     * 2026-07-10 — Enable first; lock only when LUN is exported (no sticky false lock).
+     * Was: dismiss + lock immediately while enable ran async.
+     * Reversal: paint lock before enable if UX needs instant block (risks false lock).
+     */
     private void handleUsbStorageOverlayEnable() {
         if (!UsbMassStorageExperiment.isEnabled(context)) {
             handleUsbStorageOverlayDismiss();
             return;
         }
         usbStoragePromptVisible = false;
-        OverlayForegroundGuard.markUserRequestedSolarNavigation();
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
@@ -873,15 +910,19 @@ public final class OverlayModalHost {
         // #endregion
         final Context app = context.getApplicationContext();
         ThemeManager.prepareThemeForUsbStorage(app);
-        // Start UMS while Solar comes forward — overlaps overlay dismiss + activity handoff (2026-07-05).
         new Thread(new Runnable() {
             @Override
             public void run() {
-                UsbMassStorageController.enable(app, "user.overlay.confirm");
+                final boolean ok = UsbMassStorageController.enable(app, "user.overlay.confirm");
+                final boolean exported = UsbMassStorageController.isMassStorageExported();
+                if (ok && exported) {
+                    // Solar MainActivity owns the lock screen — not a second overlay tier.
+                    UsbStorageOverlayReceiver.launchSolarUsbHandoff(app, false, true);
+                }
             }
         }, "UsbUmsEnableEarly").start();
+        // Tear down enable prompt; Solar paints STATE_USB_STORAGE after enable succeeds.
         dismissListener.onDismissOverlay();
-        UsbStorageOverlayReceiver.launchSolarUsbHandoff(app, false, true);
     }
 
     /** User dismissed enable prompt — stay in third-party app; no recovery HOME storm. */
@@ -949,9 +990,6 @@ public final class OverlayModalHost {
         if (wifiPasswordKeyboard != null && wifiPasswordKeyboard.isShowing()) {
             return wifiPasswordKeyboard.handleKeyDown(keyCode);
         }
-        if (btPinKeyboard != null && btPinKeyboard.isShowing()) {
-            return btPinKeyboard.handleKeyDown(keyCode);
-        }
         if (menu == null || !menu.isShowing()) return false;
         if (handleOverlayBackgroundTransportKeyDown(keyCode)) return true;
         if (handleGlobalOverlayVolumeKey(keyCode)) return true;
@@ -1005,17 +1043,21 @@ public final class OverlayModalHost {
                 if (queueMoveFrom >= 0) {
                     return true;
                 }
+                // 2026-07-08 — Long-press move only when list focused; quick-bar chips use KEY_UP activate.
                 if (isOverlayQueueListFocused()) {
                     centerKeyDownAt = System.currentTimeMillis();
                     centerMovePickHandled = false;
                     dismissHandler.removeCallbacks(centerQueueMoveRunnable);
                     dismissHandler.postDelayed(centerQueueMoveRunnable, CENTER_QUEUE_MOVE_MS);
-                } else {
-                    menu.activateFocused();
+                    return true;
                 }
+                // Quick bar over queue — fall through to KEY_UP activateFocused (Power / Wi‑Fi chips).
                 return true;
             }
-            menu.activateFocused();
+            // 2026-07-08 — Quick bar / Power / Wi‑Fi activate on KEY_UP only.
+            // Was: menu.activateFocused() here — held OK could auto-repeat into Restart → reboot.
+            // Now: swallow DOWN; handleOverlayKeyUp + OverlayCenterActivation fire the tap.
+            // Reversal: restore menu.activateFocused() here (hold Power chip may restart again).
             return true;
         }
         if (Y1InputKeys.isBackKey(keyCode)) {
@@ -1055,9 +1097,6 @@ public final class OverlayModalHost {
         if (wifiPasswordKeyboard != null && wifiPasswordKeyboard.isShowing()) {
             return wifiPasswordKeyboard.handleKeyUp(keyCode);
         }
-        if (btPinKeyboard != null && btPinKeyboard.isShowing()) {
-            return btPinKeyboard.handleKeyUp(keyCode);
-        }
         if (menu == null || !menu.isShowing()) return false;
         if ((appMenuTierVisible || dialogTierVisible)
                 && (Y1InputKeys.isCenterKey(keyCode) || Y1InputKeys.isPlayPauseKey(keyCode))) {
@@ -1084,7 +1123,32 @@ public final class OverlayModalHost {
                 centerMovePickHandled = false;
                 return true;
             }
-            handleOverlayQueueActivate(false);
+            // 2026-07-08 — List row play on UP; quick-bar chips fall through to grace + activateFocused.
+            if (isOverlayQueueListFocused()) {
+                handleOverlayQueueActivate(false);
+                return true;
+            }
+        }
+        // 2026-07-08 — Global quick / Power / Wi‑Fi / BT: activate on release like in-app menu.
+        // Was: KEY_DOWN in handleOverlayKeyDown. Now: KEY_UP + sub-tier grace blocks Restart auto-fire.
+        // Reversal: delete this branch; move activateFocused() back to KEY_DOWN.
+        if (Y1InputKeys.isCenterKey(keyCode) || Y1InputKeys.isPlayPauseKey(keyCode)) {
+            long now = SystemClock.uptimeMillis();
+            if (!OverlayCenterActivation.shouldActivateOnEvent(true, false, now, subTierChangedAt,
+                    OverlayCenterActivation.SUB_TIER_CENTER_GRACE_MS)) {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("keyCode", keyCode);
+                    d.put("sinceSubTierMs", now - subTierChangedAt);
+                    d.put("graceMs", OverlayCenterActivation.SUB_TIER_CENTER_GRACE_MS);
+                    DebugAgentLog.log(context, "OverlayModalHost.handleOverlayKeyUp",
+                            "sub-tier center grace", "H-POWER", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                return true;
+            }
+            menu.activateFocused();
             return true;
         }
         if (handleOverlayBackgroundTransportKeyUp(keyCode)) return true;
@@ -1094,17 +1158,21 @@ public final class OverlayModalHost {
         return false;
     }
 
-    /** 2026-07-06 — Arm 10s rescue HUD on BACK down while global overlay owns keys. */
+    /**
+     * 2026-07-08 — Arm continuous 10s rescue on BACK down while global overlay owns keys.
+     * Layman: keeping Back down after the quick menu opens can still restart Solar at 10s.
+     * Technical: deadline = DOWN + RESCUE_HOLD_MS; UP calls cancelOverlayBackHold → disarm.
+     */
     private void beginOverlayBackHold() {
         overlayBackDownAt = SystemClock.uptimeMillis();
         overlayBackRescueFired = false;
         dismissHandler.removeCallbacks(overlayBackRescueRunnable);
-        SolarRescueHoldState.armBack();
+        SolarRescueHoldState.armFromHoldStart(SolarRescueHoldState.KIND_BACK, overlayBackDownAt);
         SolarRescueHoldHost.ping(context);
         dismissHandler.postDelayed(overlayBackRescueRunnable, SolarRescueHoldState.RESCUE_HOLD_MS);
     }
 
-    /** Finger up before rescue — disarm HUD unless restart already fired. */
+    /** 2026-07-08 — Finger up before rescue — disarm HUD/sysprops unless restart already fired. */
     private void cancelOverlayBackHold() {
         dismissHandler.removeCallbacks(overlayBackRescueRunnable);
         if (!overlayBackRescueFired) {
@@ -1149,6 +1217,10 @@ public final class OverlayModalHost {
         if (held < BACK_HOLD_DISMISS_MS) {
             return true;
         }
+        // 2026-07-08 — USB lock ignores BACK dismiss (must Turn Off or unplug).
+        if (usbStorageLockVisible) {
+            return true;
+        }
         if (powerTierVisible) {
             if (SystemClock.uptimeMillis() - powerTierOpenedAt < backDismissGraceMs) {
                 return true;
@@ -1185,6 +1257,11 @@ public final class OverlayModalHost {
     /** Queue list rows — not quick bar / slider while queue tier is open. */
     private boolean isOverlayQueueListFocused() {
         return menu.focusZone() == ThemedContextMenu.FocusZone.TIER_CONTENT;
+    }
+
+    /** 2026-07-08 — Record when a submenu paints so the opening key's UP is ignored. */
+    private void markSubTierChanged() {
+        subTierChangedAt = SystemClock.uptimeMillis();
     }
 
     /**
@@ -1412,6 +1489,16 @@ public final class OverlayModalHost {
     /** Back from quick-bar sub-tier — restore dialog/app menu when open, else power list. */
     private void leaveSubTier() {
         modalQuickSubTier = false;
+        // 2026-07-08 — Leaving Power list opened from APP_MENU must restore Solar Home options.
+        // Was: powerTier stayed sticky; Back jumped to dismiss. Now: clear power, run appMenuTierRestore.
+        if (powerTierVisible && appMenuTierVisible && appMenuTierRestore != null) {
+            powerTierVisible = false;
+            mediaSlidersActive = false;
+            simpleNetworkTier = false;
+            menu.hideSlider();
+            appMenuTierRestore.run();
+            return;
+        }
         if (dialogTierVisible && dialogTierRestore != null) {
             mediaSlidersActive = false;
             simpleNetworkTier = false;
@@ -1444,6 +1531,8 @@ public final class OverlayModalHost {
     }
 
     private void showOverlayMediaSliders(int quickIndex) {
+        // 2026-07-08 — Chip open → list focus; grace stops same-press UP from firing slider confirm.
+        markSubTierChanged();
         powerTierVisible = false;
         mediaSlidersActive = true;
         simpleNetworkTier = false;
@@ -1461,6 +1550,8 @@ public final class OverlayModalHost {
     }
 
     private void showOverlayWifiTier() {
+        // 2026-07-08 — Same grace as Power chip: release must not auto-pick first Wi‑Fi row.
+        markSubTierChanged();
         powerTierVisible = false;
         mediaSlidersActive = false;
         simpleNetworkTier = true;
@@ -1535,6 +1626,8 @@ public final class OverlayModalHost {
     }
 
     private void showOverlayBluetoothTier() {
+        // 2026-07-08 — Grace after BT chip so UP does not toggle Bluetooth immediately.
+        markSubTierChanged();
         powerTierVisible = false;
         mediaSlidersActive = false;
         simpleNetworkTier = true;
@@ -1582,6 +1675,8 @@ public final class OverlayModalHost {
 
     private void showPowerConfirm(String title, String message, String confirmLabel,
             final Runnable onConfirm) {
+        // 2026-07-08 — Confirm list opens with focus on message/actions; grace blocks chained OK.
+        markSubTierChanged();
         String[] labels = new String[] {message, confirmLabel, context.getString(R.string.common_cancel)};
         Boolean[] headers = new Boolean[] {Boolean.TRUE, Boolean.FALSE, Boolean.FALSE};
         menu.setScrollableDetailHeader(true);
@@ -1601,6 +1696,8 @@ public final class OverlayModalHost {
     }
 
     private void refreshPowerTier(boolean resetFocus) {
+        // 2026-07-08 — Power chip / list refresh focuses Restart; stamp so KEY_UP cannot reboot.
+        markSubTierChanged();
         ArrayList<String> labels = new ArrayList<String>();
         ArrayList<Boolean> headers = new ArrayList<Boolean>();
         powerRowActions.clear();
@@ -1633,31 +1730,49 @@ public final class OverlayModalHost {
             }
         });
 
-        if (LauncherSwitch.isSwitchScriptAvailable()) {
-            String homeTarget = LauncherPreference.getHomeTarget(context);
-            String marker = context.getString(R.string.settings_home_launcher_current_marker);
-            appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
-                    LauncherDefault.TARGET_SOLAR,
-                    R.string.settings_home_launcher_restart_solar,
-                    R.string.settings_home_launcher_switch_solar);
-            appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
-                    LauncherDefault.TARGET_ROCKBOX,
-                    R.string.settings_home_launcher_restart_rockbox,
-                    R.string.settings_home_launcher_switch_rockbox);
-            if (JjLauncherAvailability.isOfferVisible(context)) {
-                appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
-                        LauncherDefault.TARGET_JJ,
-                        R.string.settings_home_launcher_restart_jj,
-                        R.string.settings_home_launcher_switch_jj);
-            }
-        }
-
         menu.setScrollableDetailHeader(false);
         menu.replaceListContent(context.getString(R.string.context_quick_power),
                 labels.toArray(new String[labels.size()]), null, null,
                 toPrimitive(headers.toArray(new Boolean[headers.size()])),
                 createListListener(), resetFocus);
         powerTierVisible = true;
+    }
+
+    /**
+     * 2026-07-08 — Add third-party HOME apps to Power tier (skip Solar/Rockbox/JJ + provision).
+     * Layman: any other home screen app you installed also shows in the Power menu.
+     * Technical: PM CATEGORY_HOME via discoverExtraHomeLaunchers; filter com.android.provision.
+     */
+    private void appendExtraHomeLauncherPowerRows(ArrayList<String> labels, ArrayList<Boolean> headers,
+            ArrayList<Runnable> powerRowActions, final String currentTarget, String marker) {
+        java.util.List<android.content.pm.ResolveInfo> extras =
+                LauncherHomeApply.discoverExtraHomeLaunchers(context);
+        if (extras == null || extras.isEmpty()) return;
+        for (android.content.pm.ResolveInfo info : extras) {
+            if (info == null || info.activityInfo == null) continue;
+            final String pkg = info.activityInfo.packageName;
+            // Setup wizard is not a user launcher — hide from Power / picker.
+            if ("com.android.provision".equals(pkg)) continue;
+            // Always list extras (including current custom HOME with marker) — do not skip current.
+            final android.content.ComponentName cn = new android.content.ComponentName(
+                    pkg, info.activityInfo.name);
+            final String flat = LauncherDiscovery.flattenComponent(cn);
+            String name = LauncherHomeApply.labelForPackage(context, pkg);
+            String savedFlat = LauncherPreference.readHomeComponentProperty();
+            final boolean current = LauncherDefault.TARGET_CUSTOM.equals(currentTarget)
+                    && flat != null && flat.equals(savedFlat);
+            String label = current
+                    ? (name + marker)
+                    : context.getString(R.string.launcher_crash_recovery_use_custom, name);
+            headers.add(Boolean.FALSE);
+            labels.add(label);
+            powerRowActions.add(new Runnable() {
+                @Override public void run() {
+                    dismissOverlayForLauncherSelection("overlay_power_custom", flat);
+                    LauncherHomeApply.applyCustomHome(context, cn, "overlay_power");
+                }
+            });
+        }
     }
 
     /** Quick bar over dialog/app menu — sub-tiers must not cancel pending hook session. */
@@ -1695,6 +1810,13 @@ public final class OverlayModalHost {
                         showOverlayMediaSliders(QUICK_VOLUME);
                         break;
                     case QUICK_POWER:
+                        // 2026-07-08 — APP_MENU / dialog quick bar used to no-op Power; launchers never appeared.
+                        // Was: break. Now: same power list as global quick (Restart / Shutdown / HOME rows).
+                        // Reversal: restore empty break — Power chip does nothing over Solar Home menus.
+                        refreshPowerTier(true);
+                        menu.setQuickReturnIndex(QUICK_POWER);
+                        menu.focusSubmenuList();
+                        modalQuickSubTier = true;
                         break;
                     default:
                         break;
@@ -1706,7 +1828,7 @@ public final class OverlayModalHost {
 
             @Override
             public void onBackActivated() {
-                if (mediaSlidersActive || simpleNetworkTier) {
+                if (mediaSlidersActive || simpleNetworkTier || powerTierVisible) {
                     leaveSubTier();
                 } else {
                     sendOverlayModalCancelResult();
@@ -1820,7 +1942,8 @@ public final class OverlayModalHost {
         int brightIcon = ThemedContextMenu.brightnessIconResForLevel(
                 SystemBrightnessControl.read(context), SystemBrightnessControl.MAX);
         boolean rooted = DeviceFeatures.canRunRootShell();
-        boolean y1 = DeviceFeatures.isY1();
+        // 2026-07-11 — A5 locks/volume via overlay (no dedicated hard buttons off NP).
+        boolean showVolLock = DeviceFeatures.showsOverlayVolumeLockChips();
         boolean rockboxFg = OverlayForegroundGuard.isRockboxSnapshottedForeground();
         if (!rockboxFg) {
             rockboxFg = LauncherSwitch.isRockboxForeground(context);
@@ -1830,7 +1953,7 @@ public final class OverlayModalHost {
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_home,
                     context.getString(R.string.context_go_to_home), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock,
-                    context.getString(R.string.context_action_lock_screen), y1),
+                    context.getString(R.string.context_action_lock_screen), showVolLock),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_wifi,
                     context.getString(R.string.context_tier_wifi), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_bluetooth,
@@ -1842,7 +1965,7 @@ public final class OverlayModalHost {
             new ThemedContextMenu.QuickItem(null, brightIcon,
                     context.getString(R.string.context_quick_brightness), true),
             new ThemedContextMenu.QuickItem(null, volIcon,
-                    context.getString(R.string.context_quick_volume), y1)
+                    context.getString(R.string.context_quick_volume), showVolLock)
         };
     }
 
@@ -1856,6 +1979,11 @@ public final class OverlayModalHost {
         }
         if (LauncherDefault.TARGET_JJ.equals(rowTarget)
                 && !JjLauncherAvailability.isOfferVisible(context)) {
+            return;
+        }
+        // 2026-07-08 — Stock Innioasis HOME only when installed.
+        if (LauncherDefault.TARGET_STOCK.equals(rowTarget)
+                && !LauncherSwitch.isStockOfferVisible(context)) {
             return;
         }
         final boolean current = rowTarget.equals(currentTarget);
@@ -1874,6 +2002,9 @@ public final class OverlayModalHost {
                 } else if (LauncherDefault.TARGET_JJ.equals(rowTarget)) {
                     LauncherPreference.applyHomeTarget(context, LauncherDefault.TARGET_JJ);
                     PowerActions.switchToJj(context);
+                } else if (LauncherDefault.TARGET_STOCK.equals(rowTarget)) {
+                    // 2026-07-08 — Factory home via Power tier (was missing from Switch path).
+                    PowerActions.switchToStock(context);
                 } else {
                     OverlayForegroundGuard.markUserRequestedSolarNavigation();
                     LauncherPreference.applyHomeTarget(context, LauncherDefault.TARGET_SOLAR);
@@ -1932,6 +2063,8 @@ public final class OverlayModalHost {
                 PowerActions.switchToRockbox(context);
             } else if (LauncherDefault.TARGET_JJ.equals(target)) {
                 PowerActions.switchToJj(context);
+            } else if (LauncherDefault.TARGET_STOCK.equals(target)) {
+                PowerActions.switchToStock(context);
             } else {
                 PowerActions.switchToSolar(context);
             }
@@ -1952,15 +2085,19 @@ public final class OverlayModalHost {
         appMenuTierRestore = null;
         usbStorageTierRestore = null;
         usbStoragePromptVisible = false;
+        usbStorageLockVisible = false;
         bluetoothPairingTierRestore = null;
         bluetoothPairingPromptVisible = false;
         btPairingAddress = null;
-        if (btPinKeyboard != null) btPinKeyboard.dismiss();
         if (wifiPasswordKeyboard != null) wifiPasswordKeyboard.dismiss();
     }
 
     /** Back/dismiss without a row pick — route to app menu, native dialog, USB, or BT pairing tier. */
     private void sendOverlayModalCancelResult() {
+        // 2026-07-08 — USB lock ignores Back cancel (Turn Off / unplug only).
+        if (usbStorageLockVisible) {
+            return;
+        }
         if (usbStoragePromptVisible) {
             handleUsbStorageOverlayDismiss();
             return;
@@ -1988,11 +2125,17 @@ public final class OverlayModalHost {
 
     private void sendAppMenuResult(int index) {
         if (appMenuSessionId == null) return;
+        // 2026-07-08 — Solar Home keeps session while drilling overlay tiers.
+        // Was: clearModalSessions() always wiped flags before MainActivity refresh.
+        // Now: solar_home_* keeps appMenuTierVisible + restore runnable.
+        // Reversal: always clearModalSessions after broadcast.
+        final boolean solarHomeSession = appMenuSessionId.startsWith("solar_home_");
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("index", index);
             d.put("caller", appMenuCallerPackage);
+            d.put("solarHomeSession", solarHomeSession);
             DebugAgentLog.log(context, "OverlayModalHost.sendAppMenuResult", "broadcast result", "H3", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -2003,6 +2146,10 @@ public final class OverlayModalHost {
             result.setPackage(appMenuCallerPackage);
         }
         context.sendBroadcast(result);
+        if (solarHomeSession) {
+            OverlayMenuSessionRegistry.remove(appMenuSessionId);
+            return;
+        }
         clearModalSessions();
     }
 
@@ -2043,7 +2190,8 @@ public final class OverlayModalHost {
         return n;
     }
 
+    /** True while USB enable or lock tier is painted on this shell. */
     public boolean isUsbStoragePromptVisible() {
-        return usbStoragePromptVisible;
+        return usbStoragePromptVisible || usbStorageLockVisible;
     }
 }

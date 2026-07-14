@@ -102,7 +102,7 @@ public final class GlobalOverlayTriggerMain {
     };
     /** Y2 continued power hold — 10s rescue (parallel to modal hold). */
     private static boolean powerRestartFired;
-    /** 2026-07-06 — BACK rescue HUD at 7s — deadline anchored to hold DOWN (10s total). */
+    /** 2026-07-08 — BACK rescue HUD at 7s — deadline anchored to hold DOWN (10s exec). */
     private static final Runnable backRescueArmRunnable = new Runnable() {
         @Override
         public void run() {
@@ -301,7 +301,7 @@ public final class GlobalOverlayTriggerMain {
         handleBackScancode(value, false);
     }
 
-    /** BACK down arms fg-dependent modal + 7s HUD + 10s rescue; short up dismisses IME or injects BACK. */
+    /** 2026-07-08 — BACK down: fg modal + 7s HUD arm + continuous 10s rescue; UP disarms. */
     private static void handleBackScancode(int value, boolean imeActive) {
         if (value == 1) {
             backDown = true;
@@ -341,8 +341,17 @@ public final class GlobalOverlayTriggerMain {
         }
     }
 
-    /** 2026-07-06 — BACK/POWER fg-dependent hold opens full global context modal (not HOME-only picker). */
+    /**
+     * 2026-07-14 — BACK/POWER hold opens Solar ThemedContextMenu; Chip only if companion_shell=1.
+     * Layman: same decorated menu as home — not a second chip look. Was: companion-first.
+     */
     private static String overlayGlobalModalBroadcastCmd() {
+        // companion_shell=1 → Chip escape hatch; default → Solar ThemedContextMenu.
+        if ("1".equals(readSysProp("persist.solar.overlay.companion_shell", "0"))
+                && isCompanionInstalled()) {
+            return "am startservice -a com.solar.launcher.action.SHOW_OVERLAY_POWER "
+                    + "-n com.solar.launcher.globalcontext/.GlobalContextOverlayService";
+        }
         if (isSolarInstalled()) {
             return "am startservice -a com.solar.launcher.action.SHOW_OVERLAY_POWER "
                     + "-n com.solar.launcher/.SolarOverlayService";
@@ -360,19 +369,19 @@ public final class GlobalOverlayTriggerMain {
         return overlayGlobalModalBroadcastCmd();
     }
 
-    /** Phase 2a — prefer companion startService; Solar broadcast fallback. */
+    /** Same as global modal — companion owns power tier. */
     private static String overlayPowerBroadcastCmd() {
-        // 2026-07-05 — Solar :overlay owns full quick menu; companion only when Solar is absent.
-        if (isSolarInstalled()) {
-            return "am startservice -a com.solar.launcher.action.SHOW_OVERLAY_POWER "
-                    + "-n com.solar.launcher/.SolarOverlayService";
+        return overlayGlobalModalBroadcastCmd();
+    }
+
+    private static String readSysProp(String key, String def) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class).invoke(null, key, def);
+            return v != null ? v.toString() : def;
+        } catch (Throwable t) {
+            return def;
         }
-        if (isCompanionInstalled()) {
-            return "am startservice -a com.solar.launcher.action.SHOW_OVERLAY_POWER "
-                    + "-n com.solar.launcher.globalcontext/.GlobalContextOverlayService";
-        }
-        return "am broadcast -a com.solar.launcher.action.SHOW_OVERLAY_POWER "
-                + "-n com.solar.launcher/.PowerOverlayOpenReceiver";
     }
 
     /** Solar APK present — full themed overlay host. */
