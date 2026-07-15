@@ -6,7 +6,8 @@ import org.junit.After;
 import org.junit.Test;
 
 /**
- * 2026-07-14 — A5FocusConfirm wrap: unfocused = focus only; focused = activate.
+ * 2026-07-14 — A5FocusConfirm wrap: key path unfocused = focus only; focused = activate.
+ * 2026-07-15 — Touch path is short-tap activate (see attachTouchConfirm).
  */
 public class A5FocusConfirmTest {
 

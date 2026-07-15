@@ -6,12 +6,17 @@ import android.telephony.TelephonyManager;
 
 import java.util.Locale;
 
-/** FM + internet radio user prefs — band region, country filter, buffer location. */
+/**
+ * FM + internet radio user prefs — band region, country filter, buffer location, last station.
+ * 2026-07-15 — Last kHz so reopen lands on the dial you left, not a fixed 101.1.
+ */
 public final class RadioSettings {
   public static final String PREF_FM_BAND_REGION = "fm_band_region";
   public static final String PREF_INTERNET_RADIO_COUNTRY = "internet_radio_country";
   public static final String PREF_AUTO_DETECT_REGION = "auto_detect_region";
   public static final String PREF_BUFFER_ON_SD = "buffer_on_sd";
+  /** Last tuned/played FM kHz — 0 means never saved. */
+  public static final String PREF_LAST_FM_KHZ = "last_fm_khz";
 
   private static final String PREFS = "radio_settings";
   private static final String DEFAULT_REGION = "US";
@@ -21,6 +26,24 @@ public final class RadioSettings {
 
   private static SharedPreferences prefs(Context ctx) {
     return ctx.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+  }
+
+  /**
+   * Last FM frequency in kHz, or 0 if the user has never tuned.
+   * Layman: remembers the station you were listening to.
+   */
+  public static int getLastFmKhz(Context ctx) {
+    if (ctx == null) return 0;
+    return prefs(ctx).getInt(PREF_LAST_FM_KHZ, 0);
+  }
+
+  /**
+   * Persist last FM dial position after a successful tune/play.
+   * Technical: unclamped store; callers clamp with {@link FmBandPlan} on read.
+   */
+  public static void setLastFmKhz(Context ctx, int khz) {
+    if (ctx == null || khz <= 0) return;
+    prefs(ctx).edit().putInt(PREF_LAST_FM_KHZ, khz).commit();
   }
 
   /**

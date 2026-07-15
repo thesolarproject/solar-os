@@ -31,7 +31,7 @@
       "required": true,
       "device": "y1",
       "versionCode": 1,
-      "sha256": "177a746bb974f4cabe111dd9570245289939dd17d356362bd5a7c7ee3d516b36"
+      "sha256": "aa48905ee577a7c1f7b9ea2bf50c2b9ca00da8c491d49e18c895a3de1d8a1609"
     },
     {
       "pkg": "com.solar.launcher.xposed.bridge.y2",
@@ -40,7 +40,7 @@
       "required": true,
       "device": "y2",
       "versionCode": 1,
-      "sha256": "e4deda5eb17619e5ed24d046c3e51fbafb6efd5efd8d4e5a4599805aa900b2f2"
+      "sha256": "753702808166f33781338d17989e8f9248143369bd46853ee05b2723f03a5dcc"
     },
     {
       "pkg": "com.solar.launcher.xposed.themefont",
@@ -76,7 +76,7 @@
       "required": true,
       "device": "both",
       "versionCode": 1,
-      "sha256": "4cf9131aaa16c2083bd6643b8f1d683820a3602e505c44953a570d20615f0550"
+      "sha256": "1540b0c7e78f44e32debbec3889e940aab1887936fc9e11df5135200e3b1c217"
     },
     {
       "pkg": "com.solar.launcher.homehelper",
@@ -85,7 +85,7 @@
       "required": true,
       "device": "both",
       "versionCode": 1,
-      "sha256": "97f49d25ea7136307f535c444881af7dc0c054f561c6590faae8a00ea656ea43"
+      "sha256": "e8ba1338ba4525e3ed3df7a72032821786fbba82e39d5976aa22bae237d93038"
     }
   ],
   "files": [
@@ -106,7 +106,7 @@
       "systemApk": "/system/app/org.rockbox.apk",
       "device": "y2",
       "versionCode": 1,
-      "sha256": "caded80ca67c2a29112e3abecd00a4abfcafd8aec9ac897efca2392ffc26f7a8"
+      "sha256": "eae386d4652b8f946b12f09bfa874199f7659fc73e491247555ddb06e77cc476"
     },
     "systemLib": {
       "asset": "rockbox/librockbox-system.so",

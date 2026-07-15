@@ -127,13 +127,22 @@ public final class HearingSafetyVolume {
         if (am == null || !MediaVolumeControl.isMediaVolumeStream(streamType)) return 0;
         int cur = am.getStreamVolume(streamType);
         int effMax = getEffectiveMaxIndex(ctx, streamType);
+        int target = cur;
         if (up && cur < effMax) {
-            cur++;
+            target = cur + 1;
         } else if (!up && cur > 0) {
-            cur--;
+            target = cur - 1;
         }
-        setStreamIndex(ctx, streamType, cur);
-        return cur;
+        setStreamIndex(ctx, streamType, target);
+        int after = am.getStreamVolume(streamType);
+        // 2026-07-15 — OS EU cap often freezes index at ~80%; clear brake and retry once.
+        // Layman: if the wheel won't go louder, knock off the phone's hidden volume lock.
+        if (up && target > cur && after <= cur && !isEnabled(ctx)) {
+            ensureFullVolumeRange(ctx);
+            setStreamIndex(ctx, streamType, target);
+            after = am.getStreamVolume(streamType);
+        }
+        return after;
     }
 
     /** Set stream index with effective cap and hearing warning. */
@@ -258,15 +267,49 @@ public final class HearingSafetyVolume {
                 svc.getClass().getMethod("disableSafeMediaVolume").invoke(svc);
             }
         } catch (Exception ignored) {
-            // Y1 JB / OEM stubs — root settings put below still clears the lock.
+            // Y1 JB / OEM stubs — settings / root put below still clears the lock.
         }
-        writeOsSafeVolumeState(OS_SAFE_VOLUME_DISABLED);
+        writeOsSafeVolumeState(ctx, OS_SAFE_VOLUME_DISABLED);
+    }
+
+    /**
+     * 2026-07-15 — Re-assert full range before video / music if OS still clamps ~80%.
+     * Layman: phones hide a “headphones too loud” brake — knock it off again if volume sticks.
+     * Call from player open and volume wheel when up-step fails.
+     */
+    public static void ensureFullVolumeRange(Context ctx) {
+        if (ctx == null || isEnabled(ctx)) return;
+        syncSystemBypass(ctx.getApplicationContext(), false);
+    }
+
+    /**
+     * Write {@code audio_safe_volume_state} — prefer Settings API (no root), then su.
+     * 1 = full volume, 3 = EU ~80% lock.
+     */
+    private static void writeOsSafeVolumeState(Context ctx, int state) {
+        boolean wrote = false;
+        if (ctx != null) {
+            try {
+                android.provider.Settings.Global.putInt(
+                        ctx.getContentResolver(), "audio_safe_volume_state", state);
+                wrote = true;
+            } catch (Exception ignored) {}
+            if (!wrote) {
+                try {
+                    android.provider.Settings.System.putInt(
+                            ctx.getContentResolver(), "audio_safe_volume_state", state);
+                    wrote = true;
+                } catch (Exception ignored) {}
+            }
+        }
+        if (!wrote && RootShell.canRun()) {
+            RootShell.run("settings put global audio_safe_volume_state " + state);
+        }
     }
 
     /** Root write of {@code audio_safe_volume_state} — 1 = full volume, 3 = EU ~80% lock. */
     private static void writeOsSafeVolumeState(int state) {
-        if (!RootShell.canRun()) return;
-        RootShell.run("settings put global audio_safe_volume_state " + state);
+        writeOsSafeVolumeState(null, state);
     }
 
     private static AudioManager audioManager(Context ctx) {

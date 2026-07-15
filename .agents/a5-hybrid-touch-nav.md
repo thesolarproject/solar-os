@@ -4,9 +4,9 @@ Two input modes in one APK — finger and buttons stay friendly.
 
 ## Lists / settings / Reach / context modals
 
-- **Swipe** scrolls (`ListView` / `ScrollView` as today).
-- **First tap** focuses the row; **second tap** activates (`A5FocusConfirm`).
-- Gate: `A5FocusConfirm.enabled()` (`isA5` / touchscreen).
+- **Scrollable screens** (content taller/wider than the viewport): **scroll**, **peck** (first tap focuses), **tap** again to activate. No drag-to-move-focus (would fight flings).
+- **Short / non-scrollable screens**: finger **slide** moves the highlight (`A5FocusConfirm.followFinger`); **second tap** on the lit row activates.
+- Gate: `A5FocusConfirm.enabled()` (`isA5` / touchscreen); followFinger only when `isShortNonScrollSurface`.
 - In-app: `createListButton`, home/settings shells, adapters, `ThemedContextMenu`.
 - Companion: `ChipContextMenu` + TextView fallback in `GlobalContextOverlayService`.
 

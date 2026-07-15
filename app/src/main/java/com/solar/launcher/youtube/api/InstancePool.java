@@ -100,7 +100,10 @@ public final class InstancePool {
      * Layman: find a playable link and remember who handed it out.
      */
     public StreamPick getVideoUrlPick(String videoId, String quality) throws IOException {
-        boolean wantHq = quality != null && !"360".equals(quality);
+        // 2026-07-15 — 240/144 are low-tier (A5 fallback); do not prefer HQ backends.
+        // Was: quality != null && !"360".equals(quality)
+        boolean wantHq = quality != null && !"360".equals(quality) && !"240".equals(quality)
+                && !"144".equals(quality);
         List<YoutubeBackend> order = shuffled();
         if (wantHq) {
             List<YoutubeBackend> hq = new ArrayList<YoutubeBackend>();
@@ -120,7 +123,8 @@ public final class InstancePool {
                 // After HQ exhausted, try 360 backends with quality forced to 360.
                 try {
                     String url = b.getVideoUrl(videoId, "360");
-                    if (url != null && url.length() > 0) {
+                    if (url != null && url.length() > 0
+                            && com.solar.launcher.net.SolarHttp.isUrlReachable(url)) {
                         return new StreamPick(url, b.getName(), "360");
                     }
                 } catch (IOException e) {
@@ -131,7 +135,8 @@ public final class InstancePool {
             if (!b.supportsVideo360() && !b.supportsHqVideo()) continue;
             try {
                 String url = b.getVideoUrl(videoId, quality);
-                if (url != null && url.length() > 0) {
+                if (url != null && url.length() > 0
+                        && com.solar.launcher.net.SolarHttp.isUrlReachable(url)) {
                     return new StreamPick(url, b.getName(), quality);
                 }
             } catch (IOException e) {
@@ -171,7 +176,8 @@ public final class InstancePool {
                             "InstancePool.resolveAudio", "backend attempt", "A", d);
                 } catch (Exception ignored) {}
                 // #endregion
-                if (a != null && a.url != null && a.url.length() > 0) return a;
+                if (a != null && a.url != null && a.url.length() > 0
+                        && com.solar.launcher.net.SolarHttp.isUrlReachable(a.url)) return a;
             } catch (IOException e) {
                 // #region agent log
                 try {

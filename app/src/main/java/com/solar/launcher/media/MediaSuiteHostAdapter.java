@@ -53,6 +53,7 @@ public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
 
     @Override public void pauseMusicPlayback() { act.mediaPauseMusicPlayback(); }
     @Override public void stopMusicPlayback() { act.mediaStopMusicPlayback(); }
+    @Override public void stopNonFmPlayback() { act.mediaStopNonFmPlayback(); }
     @Override public MediaTransportBar playerTransportBar() { return act.getPlayerTransport(); }
     @Override public MediaTransportBar videoTransportBar() { return act.getVideoTransport(); }
     @Override public void resetBrowserListHost() { act.resetBrowserListHost(); }
@@ -100,5 +101,13 @@ public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
             Runnable onConfirm,
             Runnable onCancel) {
         act.mediaShowThemedConfirm(title, message, confirmLabel, cancelLabel, onConfirm, onCancel);
+    }
+
+    @Override public boolean isInputPriorityBusy() {
+        return act.mediaIsInputPriorityBusy();
+    }
+
+    @Override public long msUntilInputIdle() {
+        return act.mediaMsUntilInputIdle();
     }
 }

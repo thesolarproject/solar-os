@@ -745,8 +745,8 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_alignParentLeft="true"
-            android:layout_toLeftOf="@+id/status_bar_icons"
-            android:layout_marginRight="8dp"
+            android:layout_toLeftOf="@+id/pb_status_loading"
+            android:layout_marginRight="6dp"
             android:layout_centerVertical="true"
             android:singleLine="true"
             android:ellipsize="marquee"
@@ -756,6 +756,22 @@
             android:textColor="#FFFFFF"
             android:textSize="18sp"
             android:textStyle="bold" />
+
+        <!-- 2026-07-15 — Search throbber; never focusable (A5 DPAD must stay on menus/modals). -->
+        <ProgressBar
+            android:id="@+id/pb_status_loading"
+            style="?android:attr/progressBarStyleSmall"
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:layout_toLeftOf="@+id/status_bar_icons"
+            android:layout_centerVertical="true"
+            android:layout_marginRight="8dp"
+            android:visibility="gone"
+            android:indeterminate="true"
+            android:focusable="false"
+            android:focusableInTouchMode="false"
+            android:clickable="false"
+            android:importantForAccessibility="no" />
 
         <LinearLayout
             android:id="@+id/status_bar_icons"
@@ -825,10 +841,26 @@
         android:background="#FF000000"
         android:visibility="gone">
 
+        <!-- 2026-07-15 — Host centers letterboxed SurfaceRenderView (Gravity.CENTER). -->
         <FrameLayout
             android:id="@+id/video_surface_host"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <!-- Calm load/buffer status over the picture (Hallmark: honest progress, not “Resolving…”). -->
+        <TextView
+            android:id="@+id/tv_video_status"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:paddingLeft="16dp"
+            android:paddingRight="16dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="8dp"
+            android:textColor="#EEFFFFFF"
+            android:textSize="16sp"
+            android:gravity="center"
+            android:visibility="gone" />
 
         <include
             android:id="@+id/video_transport_bar"

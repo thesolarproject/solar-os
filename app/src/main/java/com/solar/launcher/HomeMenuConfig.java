@@ -57,14 +57,23 @@ public final class HomeMenuConfig {
             ID_NOW_PLAYING, ID_MUSIC, ID_VIDEOS, ID_AUDIOBOOKS, ID_PHOTOS, ID_RADIO, ID_BLUETOOTH,
             ID_SETTINGS);
 
-    /** Solar-only shortcuts after stock rows, in display order. */
+    /**
+     * Solar-only shortcuts after stock rows, in display order.
+     * 2026-07-15 — Get Music + Podcasts before transfer tools (listen/get → system).
+     * Was: pc_upload, podcasts, soulseek, themes, apps. Reversal: restore that list.
+     */
     private static final List<String> SOLAR_HOME_EXTRAS = Arrays.asList(
-            ID_PC_UPLOAD, ID_PODCASTS, ID_SOULSEEK, ID_THEMES, ID_APPS);
+            ID_SOULSEEK, ID_PODCASTS, ID_PC_UPLOAD, ID_THEMES, ID_APPS);
 
-    /** Default enabled home shortcuts (coming-soon opt-in items omitted). */
+    /**
+     * Default enabled home shortcuts (coming-soon opt-in items omitted).
+     * 2026-07-15 — Media first, then Get Music/Podcasts, Radio, then device/system.
+     * Existing users keep their saved order; this only seeds new installs / empty prefs.
+     * Was: np, music, radio, bt, settings, pc_upload, podcasts, soulseek.
+     */
     private static final String DEFAULT_ORDER = String.join(",",
-            ID_NOW_PLAYING, ID_MUSIC, ID_RADIO, ID_BLUETOOTH, ID_SETTINGS,
-            ID_PC_UPLOAD, ID_PODCASTS, ID_SOULSEEK);
+            ID_NOW_PLAYING, ID_MUSIC, ID_SOULSEEK, ID_PODCASTS, ID_RADIO,
+            ID_BLUETOOTH, ID_SETTINGS, ID_PC_UPLOAD);
 
     /**
      * 2026-07-15 — Default catalog sequence + editor listing order.

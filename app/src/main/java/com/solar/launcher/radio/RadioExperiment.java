@@ -5,64 +5,70 @@ import android.content.SharedPreferences;
 import com.solar.launcher.media.MediaSuiteHost;
 
 /**
- * 2026-07-10 — FM radio + Internet radio behind Debug → Radio experiment (off by default).
- * Was: FM production always; only internet gated. Now: entire Radio feature is experimental.
- * Reversal: restore isFmProduction()=true and isInAppRadioUiEnabled()=true.
+ * 2026-07-15 — FM is production on all Solar devices; Internet radio stays Debug-gated.
+ * Was (2026-07-10): entire Radio feature behind experiment (off by default).
+ * Layman: FM Radio always works; online stations still opt-in under Debug.
+ * Reversal: isFmEnabled()=isEnabled(); block FM screens when pref off.
  */
 public final class RadioExperiment {
+    /** Gates Internet radio + hub dual-row; FM ignores this pref. */
     public static final String PREF_RADIO_EXPERIMENT = "solar_radio_experiment";
 
     private RadioExperiment() {}
 
-    /** Master switch — FM + internet radio need Debug → Radio experiment. */
+    /**
+     * Debug experiment master — Internet radio browse only.
+     * FM does not read this for availability.
+     */
     public static boolean isEnabled(SharedPreferences prefs) {
         return prefs != null && prefs.getBoolean(PREF_RADIO_EXPERIMENT, false);
     }
 
-    /** FM browse / player / settings — same gate as internet (2026-07-10). */
+    /** FM browse / player / settings — always on (JJ-parity production path). */
     public static boolean isFmEnabled(SharedPreferences prefs) {
-        return isEnabled(prefs);
+        return true;
     }
 
-    /** @deprecated use {@link #isFmEnabled} — FM is no longer production-default. */
+    /** FM ships production-default (not experiment). */
     public static boolean isFmProduction() {
-        return false;
+        return true;
     }
 
-    /** Internet radio hub row + net browse — same experiment pref. */
+    /** Internet radio hub row + net browse — Debug experiment. */
     public static boolean isInternetRadioEnabled(SharedPreferences prefs) {
         return isEnabled(prefs);
     }
 
-    /** Hub + FM browse + internet browse screen ids. */
+    /** Hub + FM browse + internet browse + FM player screen ids. */
     public static boolean isRadioScreenState(int state) {
         return state >= MediaSuiteHost.STATE_RADIO && state <= MediaSuiteHost.STATE_RADIO_NET_BROWSE
                 || state == MediaSuiteHost.STATE_RADIO_FM_PLAYER;
     }
 
-    /** Any in-app Radio UI (FM or internet) when experiment is on. */
+    /** In-app FM UI always; internet only when experiment on. */
     public static boolean isInAppRadioUiEnabled(SharedPreferences prefs) {
-        return isEnabled(prefs);
+        return true;
     }
 
-    /** Block all radio screens when experiment off. 2026-07-10 */
+    /**
+     * Block only Internet browse when experiment off.
+     * FM hub/player/browse always allowed.
+     */
     public static boolean isBlockedScreenState(int state, SharedPreferences prefs) {
-        if (!isRadioScreenState(state)) return false;
-        return !isEnabled(prefs);
+        if (state == MediaSuiteHost.STATE_RADIO_NET_BROWSE) {
+            return !isInternetRadioEnabled(prefs);
+        }
+        return false;
     }
 
-    /** Home Radio/FM — only when experiment on (caller should hide row otherwise). */
+    /**
+     * Home Radio — open FM player (JJ style) unless Internet experiment unlocks the hub.
+     */
     public static int resolveRadioHomeTarget(int state, SharedPreferences prefs) {
-        if (!isEnabled(prefs)) {
-            return state;
+        if (state != MediaSuiteHost.STATE_RADIO) return state;
+        if (isInternetRadioEnabled(prefs)) {
+            return MediaSuiteHost.STATE_RADIO;
         }
-        if (state == MediaSuiteHost.STATE_RADIO && !isInternetRadioEnabled(prefs)) {
-            return MediaSuiteHost.STATE_RADIO_FM_PLAYER;
-        }
-        // With unified experiment, hub is available; prefer FM player for simple home open.
-        if (state == MediaSuiteHost.STATE_RADIO) {
-            return MediaSuiteHost.STATE_RADIO_FM_PLAYER;
-        }
-        return state;
+        return MediaSuiteHost.STATE_RADIO_FM_PLAYER;
     }
 }

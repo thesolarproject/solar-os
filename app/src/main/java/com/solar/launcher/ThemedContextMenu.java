@@ -1,6 +1,7 @@
 package com.solar.launcher;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.PorterDuff;
@@ -8,6 +9,7 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.text.TextUtils;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
@@ -110,6 +112,15 @@ public final class ThemedContextMenu {
     }
 
     /**
+     * 2026-07-15 — Tap dimmed scrim (outside the panel) to close on touch devices.
+     * Layman: poke the dark area around the menu and it goes away — like phone dialogs.
+     * Host should clear tier stack / USB flags via {@link MainActivity} dismiss path.
+     */
+    public interface OutsideTapListener {
+        void onOutsideTapDismiss();
+    }
+
+    /**
      * 2026-07-15 — Touch reorder bridge for play-queue ribbon (MainActivity / OverlayModalHost).
      * Layman: finger lifts and drags tracks; wheel/OK still work the same.
      * Reversal: leave unset — touch does nothing on queue.
@@ -209,6 +220,15 @@ public final class ThemedContextMenu {
     private boolean systemOverlayMode;
     /** True while modal shell enter/exit animation runs. */
     private boolean modalEnterExitAnimating = false;
+    /** 2026-07-15 — Host cleanup when user taps outside the panel (touch devices). */
+    private OutsideTapListener outsideTapListener;
+    /**
+     * When false, outside taps never dismiss (OTA / blocking progress).
+     * Default true; interactive show() enables; progress overlays clear.
+     */
+    private boolean outsideTapDismissAllowed = true;
+    /** Scrim DOWN was outside the panel — UP dismisses if still outside. */
+    private boolean outsideTapDownOutside = false;
 
     public ThemedContextMenu(Context context) {
         this.context = context;
@@ -223,6 +243,19 @@ public final class ThemedContextMenu {
     /** {@link SolarOverlayService} — no enter/exit anim; keep dark scrim opaque immediately. */
     public void setSystemOverlayMode(boolean systemOverlayMode) {
         this.systemOverlayMode = systemOverlayMode;
+    }
+
+    /**
+     * 2026-07-15 — Called when the user taps the dimmed area outside the modal panel.
+     * MainActivity should run {@code dismissContextMenuAnimated()} so tier state clears.
+     */
+    public void setOutsideTapListener(OutsideTapListener listener) {
+        this.outsideTapListener = listener;
+    }
+
+    /** Disable outside-tap close (blocking OTA / progress shells). */
+    public void setOutsideTapDismissAllowed(boolean allowed) {
+        this.outsideTapDismissAllowed = allowed;
     }
 
     /** Scrim tint — transparent on WM overlay; in-app keeps dim for readability until Phase 5. */
@@ -1602,6 +1635,9 @@ public final class ThemedContextMenu {
         overlay.addView(panel, panelLp);
 
         attachOverlayKeyListener();
+        // 2026-07-15 — Touch devices: tap dimmed scrim outside panel to close.
+        outsideTapDismissAllowed = true;
+        attachOutsideTapDismiss();
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
@@ -3058,11 +3094,98 @@ public final class ThemedContextMenu {
         scrollQueueRowToViewportSlotImmediate(index);
     }
 
+    /**
+     * 2026-07-15 — Scrim tap outside the panel dismisses (touch / emulator mouse).
+     * Layman: poke the dark frame, not the menu card, and the modal closes.
+     * Tech: DOWN outside + UP outside; panel absorbs its own hits; no-op for volume/hint/OTA.
+     * Reversal: empty method body.
+     */
+    private void attachOutsideTapDismiss() {
+        if (overlay == null || panel == null) return;
+        if (!supportsOutsideTapDismiss()) return;
+        // Blocking shells — no accidental dismiss mid-OTA / wait hint.
+        if (hintOnlyMode) return;
+        // Volume-only HUD may still close on outside tap (expected for transient HUD).
+        outsideTapDownOutside = false;
+        // Panel must eat clicks so they do not bubble as "outside".
+        panel.setClickable(true);
+        panel.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Absorb — selection rows have their own listeners.
+            }
+        });
+        overlay.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                if (!outsideTapDismissAllowed || isEnterExitAnimating()) {
+                    return false;
+                }
+                if (event == null) return false;
+                boolean onPanel = isEventOnPanel(event);
+                int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    outsideTapDownOutside = !onPanel;
+                    // Consume only outside so panel children still get full gestures.
+                    return outsideTapDownOutside;
+                }
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    boolean dismiss = outsideTapDownOutside && !onPanel
+                            && action == MotionEvent.ACTION_UP;
+                    outsideTapDownOutside = false;
+                    if (dismiss) {
+                        fireOutsideTapDismiss();
+                    }
+                    return true;
+                }
+                // MOVE while tracking outside — keep ownership of the gesture.
+                return outsideTapDownOutside;
+            }
+        });
+    }
+
+    /** A5 touch, any FEATURE_TOUCHSCREEN device, or emulator (host mouse/touch lab). */
+    private boolean supportsOutsideTapDismiss() {
+        if (DeviceFeatures.hasTouchscreen() || DeviceFeatures.isA5()) return true;
+        if (DeviceFeatures.isEmulator()) return true;
+        try {
+            PackageManager pm = context.getPackageManager();
+            return pm != null && pm.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * Event coords are relative to the overlay FrameLayout.
+     * 2026-07-15 — Before layout, width/height are 0; treat as on-panel so the first
+     * taps after open are not stolen as “outside” (A5 options un-tappable for a frame).
+     */
+    private boolean isEventOnPanel(MotionEvent event) {
+        if (panel == null || event == null) return false;
+        if (panel.getWidth() <= 0 || panel.getHeight() <= 0) {
+            return true;
+        }
+        float x = event.getX();
+        float y = event.getY();
+        return x >= panel.getLeft() && x < panel.getRight()
+                && y >= panel.getTop() && y < panel.getBottom();
+    }
+
+    private void fireOutsideTapDismiss() {
+        if (outsideTapListener != null) {
+            outsideTapListener.onOutsideTapDismiss();
+        } else {
+            dismissAnimated(null);
+        }
+    }
+
     /** Compact hint overlay — same chrome as volume-only, without slider (launcher switch wait). */
     public void showHintOnly(ViewGroup root, String hintText, int rowHeightPx, int panelWidthPx) {
         dismiss();
         hintOnlyMode = true;
         volumeOnlyMode = false;
+        outsideTapDismissAllowed = false;
         dialogStyle = false;
         queueMode = false;
         labels = new String[0];
@@ -3119,6 +3242,8 @@ public final class ThemedContextMenu {
         dismiss();
         hintOnlyMode = false;
         volumeOnlyMode = true;
+        // Transient volume HUD: outside tap may dismiss when interactive (requestFocus).
+        outsideTapDismissAllowed = requestFocus;
         queueMode = false;
         labels = new String[0];
         quickItems = new QuickItem[0];
@@ -3173,6 +3298,9 @@ public final class ThemedContextMenu {
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         panelLp.gravity = Gravity.CENTER;
         overlay.addView(panel, panelLp);
+        if (requestFocus) {
+            attachOutsideTapDismiss();
+        }
         addOverlayWithPresentAnim(root, null);
         focusZone = FocusZone.SLIDER;
     }
@@ -3439,6 +3567,7 @@ public final class ThemedContextMenu {
     /** Full-screen progress overlay for OTA download (non-dismissible). */
     public void showProgressOverlay(ViewGroup root, String title, String subtitle, int max) {
         dismiss();
+        outsideTapDismissAllowed = false;
         sliderMax = Math.max(1, max);
         sliderValue = 0;
         panelBgColor = OverlayThemeProvider.get().getContextMenuPanelColor();
@@ -3588,6 +3717,12 @@ public final class ThemedContextMenu {
     }
 
     private void clearOverlayState() {
+        outsideTapDownOutside = false;
+        if (overlay != null) {
+            try {
+                overlay.setOnTouchListener(null);
+            } catch (Throwable ignored) {}
+        }
         overlay = null;
         panel = null;
         titleRow = null;

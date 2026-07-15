@@ -4,28 +4,47 @@ import com.solar.launcher.Debug843b96Log;
 
 import org.json.JSONObject;
 
-/** ponytail: stop background work when leaving a feature screen. */
+/**
+ * 2026-07-15 — Stop screen-bound work when leaving a feature; keep real sessions that must live on.
+ * Layman: leaving Search stops hammering results; leaving Reach still lets messages pop up.
+ * Technical: cancel search/UI flush on Soulseek leave; keep client when Reach is enabled (PM path).
+ * Was: full client teardown on leave → no PM context popups off the Reach screen.
+ * ponytail: one leave hook, callers already use {@link #onLeaveScreen}.
+ */
 public final class SessionLifecycle {
 
     private SessionLifecycle() {}
+
+    /**
+     * 2026-07-15 — Whether Reach client stays after leaving the Soulseek UI.
+     * Layman: if Reach is turned on, stay connected for chat popups.
+     * Tech: keep-for-keyboard/stream OR account still active.
+     */
+    static boolean shouldKeepSoulseekClient(boolean keepForScreen, boolean soulseekServiceActive) {
+        return keepForScreen || soulseekServiceActive;
+    }
 
     public static void onLeaveScreen(MainActivity activity, int from, int to) {
         if (from == to) return;
 
         if (from == MainActivity.STATE_SOULSEEK && to != MainActivity.STATE_SOULSEEK) {
-            final boolean keep = activity.keepSoulseekSessionForScreen(to);
+            final boolean keepForScreen = activity.keepSoulseekSessionForScreen(to);
+            final boolean serviceOn = activity.soulseekActiveForSession();
+            final boolean keepClient = shouldKeepSoulseekClient(keepForScreen, serviceOn);
             // #region agent log
             try {
                 JSONObject d = new JSONObject();
                 d.put("from", from);
                 d.put("to", to);
-                d.put("keep", keep);
+                d.put("keepForScreen", keepForScreen);
+                d.put("serviceOn", serviceOn);
+                d.put("keepClient", keepClient);
                 Debug843b96Log.log(null, "SessionLifecycle.onLeaveScreen", "soulseek leave", "GM-C", d);
             } catch (Exception ignored) {}
             // #endregion
-            if (keep) {
-                activity.pauseSoulseekUiOnly();
-            } else {
+            // Always cancel search + UI flush (no result spam off-screen).
+            activity.pauseSoulseekUiOnly();
+            if (!keepClient) {
                 activity.teardownSoulseekSession();
             }
         }

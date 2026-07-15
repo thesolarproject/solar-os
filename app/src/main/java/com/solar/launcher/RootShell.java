@@ -25,11 +25,19 @@ public final class RootShell {
 
     /** Run one root shell command; returns true when exit code is 0. */
     public static boolean run(String command) {
+        return run(command, false);
+    }
+
+    /**
+     * 2026-07-15 — Root shell; optional A5 allow for FM airplane / platform prep.
+     * Layman: normal Solar still avoids SuperSU popups on A5; FM flight-mode must use su.
+     * Tech: allowA5=true skips the A5 early return (Solar ROM setuid su).
+     * Was: A5 always no-op. Reversal: run(command) only with A5 block.
+     */
+    public static boolean run(String command, boolean allowA5) {
         if (command == null || command.isEmpty()) return false;
-        // 2026-07-14 — A5 stock su prompts SuperSU over Solar and can stall; skip.
-        // Was: always trySuPaths. Now: no-op on A5 (SystemProperties paths used instead).
-        // Reversal: remove isA5 early return.
-        if (DeviceFeatures.isA5()) {
+        // 2026-07-14 — A5 stock su prompts SuperSU over Solar and can stall; skip by default.
+        if (DeviceFeatures.isA5() && !allowA5) {
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -49,10 +57,25 @@ public final class RootShell {
     private static android.os.Handler asyncHandler;
     private static volatile String pendingAsyncCmd;
 
+    private static volatile boolean pendingAsyncAllowA5;
+
     /** Coalesced background su — one thread, skip duplicate pending commands (2026-07-05). */
     public static void runAsync(String command) {
+        runAsync(command, false);
+    }
+
+    /**
+     * 2026-07-15 — Async root with optional A5 allow (FM chip free / airplane).
+     * Layman: background “free the radio” without blocking the UI.
+     */
+    public static void runAsyncAllowA5(String command) {
+        runAsync(command, true);
+    }
+
+    public static void runAsync(String command, boolean allowA5) {
         if (command == null || command.isEmpty()) return;
         pendingAsyncCmd = command;
+        pendingAsyncAllowA5 = allowA5;
         ensureAsyncHandler();
         asyncHandler.removeCallbacks(asyncFlushRunnable);
         asyncHandler.post(asyncFlushRunnable);
@@ -62,8 +85,10 @@ public final class RootShell {
         @Override
         public void run() {
             String cmd = pendingAsyncCmd;
+            boolean a5 = pendingAsyncAllowA5;
             pendingAsyncCmd = null;
-            if (cmd != null) RootShell.run(cmd);
+            pendingAsyncAllowA5 = false;
+            if (cmd != null) RootShell.run(cmd, a5);
         }
     };
 
@@ -143,9 +168,16 @@ public final class RootShell {
 
     /** Run root command and capture combined stdout/stderr (for diagnostics). */
     public static String runCapture(String command) {
+        return runCapture(command, false);
+    }
+
+    /**
+     * 2026-07-15 — Capture stdout with optional A5 allow (FM claim diagnostics).
+     * Also drains stderr into the result when stdout is empty (su noise).
+     */
+    public static String runCapture(String command, boolean allowA5) {
         if (command == null || command.isEmpty()) return "";
-        // 2026-07-14 — Same A5 skip as run() — avoid SuperSU prompt / su hang.
-        if (DeviceFeatures.isA5()) return "";
+        if (DeviceFeatures.isA5() && !allowA5) return "";
         for (String su : SU_PATHS) {
             Process proc = null;
             try {
@@ -158,12 +190,18 @@ public final class RootShell {
                     if (out.length() > 0) out.append('\n');
                     out.append(line);
                 }
+                String err = drainStream(proc.getErrorStream());
                 int code = proc.waitFor();
                 // #region agent log
                 debugLog("RootShell.runCapture", "su capture", "H-C",
                         su, command, code, out.length() > 120 ? out.substring(0, 120) : out.toString());
                 // #endregion
-                if (code == 0) return out.toString();
+                if (code == 0) {
+                    return out.toString();
+                }
+                // Non-zero but we may still have useful CLAIM_DONE lines.
+                if (out.length() > 0) return out.toString();
+                if (err.length() > 0) return err;
             } catch (Exception e) {
                 // #region agent log
                 debugLog("RootShell.runCapture", "su capture exception", "H-A",

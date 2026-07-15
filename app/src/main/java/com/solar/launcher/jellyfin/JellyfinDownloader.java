@@ -19,7 +19,7 @@ import java.util.concurrent.Executors;
 public final class JellyfinDownloader {
 
     public interface Callback {
-        void onProgress(int done, int total);
+        void onProgress(int done, int total, long bytesRead, long totalBytes);
         void onComplete(int saved);
         void onError(String message);
     }
@@ -43,21 +43,27 @@ public final class JellyfinDownloader {
                 File dir = new File(new File(root, artistDir), albumDir);
                 if (!dir.exists()) dir.mkdirs();
                 int saved = 0;
+                final int totalTracks = songs.size();
                 for (int i = 0; i < songs.size(); i++) {
                     JellyfinSong s = songs.get(i);
+                    final int trackNum = i + 1;
                     try {
                         String ext = s.suffix != null && !s.suffix.isEmpty() ? s.suffix : "mp3";
                         File out = new File(dir, safeName(s.title) + "." + ext.toLowerCase(Locale.US));
-                        if (!out.exists() || out.length() < 1024) {
-                            downloadUrl(JellyfinClient.getInstance().getDownloadUrl(s), out);
+                        if (out.exists() && out.length() > 1024) {
+                            // Already offline-ready — count as saved and report full-byte progress.
+                            saved++;
+                            final long len = out.length();
+                            main.post(new Runnable() {
+                                @Override public void run() {
+                                    if (cb != null) cb.onProgress(trackNum, totalTracks, len, len);
+                                }
+                            });
+                        } else {
+                            downloadUrl(JellyfinClient.getInstance().getDownloadUrl(s), out,
+                                    cb, trackNum, totalTracks);
+                            saved++;
                         }
-                        saved++;
-                        final int done = i + 1;
-                        main.post(new Runnable() {
-                            @Override public void run() {
-                                if (cb != null) cb.onProgress(done, songs.size());
-                            }
-                        });
                     } catch (Exception e) {
                         postError(cb, e.getMessage());
                         return;
@@ -74,8 +80,18 @@ public final class JellyfinDownloader {
     }
 
     /** 2026-07-06: Same TLS/HTTP stack as JellyfinClient — avoids refused/wrong-port downloads. */
-    private static void downloadUrl(String urlStr, File out) throws Exception {
-        SolarHttp.downloadToFile(urlStr, out);
+    private static void downloadUrl(String urlStr, File out, final Callback cb,
+            final int trackNum, final int totalTracks) throws Exception {
+        SolarHttp.downloadToFile(urlStr, out, new SolarHttp.DownloadProgress() {
+            @Override
+            public void onProgress(final long bytesRead, final long totalBytes) {
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (cb != null) cb.onProgress(trackNum, totalTracks, bytesRead, totalBytes);
+                    }
+                });
+            }
+        });
     }
 
     static String safeName(String raw) {

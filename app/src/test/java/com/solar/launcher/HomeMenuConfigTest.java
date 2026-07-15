@@ -35,10 +35,10 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void defaultOrder_matchesY1StockLayout() {
-        prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, true).commit();
+    public void defaultOrder_mediaThenGetThenSystem() {
+        // 2026-07-15 — FM production: Radio on default home without experiment pref.
+        // Default: NP → Music → Get Music → Podcasts → Radio → BT → Settings → Transfer.
         List<HomeMenuConfig.Entry> visible = HomeMenuConfig.loadVisible(prefs);
-        // 2026-07-15 — schema 8 dropped youtube_audio home tile (back to 8).
         if (visible.size() != 8) throw new AssertionError("default size " + visible.size());
         if (!HomeMenuConfig.ID_NOW_PLAYING.equals(visible.get(0).id)) {
             throw new AssertionError("now playing position");
@@ -46,14 +46,23 @@ public class HomeMenuConfigTest {
         if (!HomeMenuConfig.ID_MUSIC.equals(visible.get(1).id)) {
             throw new AssertionError("music position");
         }
-        if (!HomeMenuConfig.ID_RADIO.equals(visible.get(2).id)) {
+        if (!HomeMenuConfig.ID_SOULSEEK.equals(visible.get(2).id)) {
+            throw new AssertionError("get music position");
+        }
+        if (!HomeMenuConfig.ID_PODCASTS.equals(visible.get(3).id)) {
+            throw new AssertionError("podcasts position");
+        }
+        if (!HomeMenuConfig.ID_RADIO.equals(visible.get(4).id)) {
             throw new AssertionError("radio position");
         }
-        if (!HomeMenuConfig.ID_BLUETOOTH.equals(visible.get(3).id)) {
+        if (!HomeMenuConfig.ID_BLUETOOTH.equals(visible.get(5).id)) {
             throw new AssertionError("bluetooth position");
         }
-        if (!HomeMenuConfig.ID_SETTINGS.equals(visible.get(4).id)) {
+        if (!HomeMenuConfig.ID_SETTINGS.equals(visible.get(6).id)) {
             throw new AssertionError("settings position");
+        }
+        if (!HomeMenuConfig.ID_PC_UPLOAD.equals(visible.get(7).id)) {
+            throw new AssertionError("pc upload position");
         }
         for (HomeMenuConfig.Entry e : visible) {
             if (HomeMenuConfig.ID_YOUTUBE_AUDIO.equals(e.id)) {

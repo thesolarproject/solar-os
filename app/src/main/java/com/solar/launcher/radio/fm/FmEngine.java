@@ -86,8 +86,41 @@ public final class FmEngine {
     return audioRouter.isSpeakerOn();
   }
 
+  /** 2026-07-15 — Wired / Bluetooth / Speaker selection for FM audio. */
+  public FmAudioRouter.Output audioOutput() {
+    return audioRouter.getOutput();
+  }
+
+  public void setAudioOutput(FmAudioRouter.Output out) {
+    audioRouter.setOutput(out);
+  }
+
+  /** Cycle Wired → Bluetooth → Speaker; returns the new mode. */
+  public FmAudioRouter.Output cycleAudioOutput() {
+    return audioRouter.cycleOutput();
+  }
+
   public void setSpeaker(boolean useSpeaker) {
     audioRouter.setSpeaker(useSpeaker);
+  }
+
+  /** 2026-07-15 — Headset plug event → re-route (headphones unless Speaker chosen). */
+  public void onHeadsetPlug(boolean pluggedIn) {
+    audioRouter.onHeadsetPlug(pluggedIn);
+  }
+
+  public boolean isWiredHeadsetOn() {
+    return audioRouter.isWiredHeadsetOn();
+  }
+
+  /** Active FM MediaPlayer stream (STREAM_MUSIC or STREAM_FM) for volume HUD. */
+  public int audioStreamType() {
+    return audioRouter.activeStreamType();
+  }
+
+  /** True when the audio pump is live. */
+  public boolean isAudioPlaying() {
+    return audioRouter.isPlaying();
   }
 
   /**
@@ -99,6 +132,10 @@ public final class FmEngine {
     // 2026-07-06 — FM chip blocked while airplane mode is on (MTK /dev/fm).
     FmAirplaneModeHelper.beginSolarSession(appCtx);
     float mhz = khzToMhz(freqKhz);
+    android.util.Log.i("FmEngine", "playStation khz=" + freqKhz + " mhz=" + mhz
+            + " serviceFallback=" + useServiceFallback
+            + " nativeReady=" + nativeLoader.isReady()
+            + " speaker=" + audioRouter.isSpeakerOn());
     boolean ok;
     if (useServiceFallback) {
       ok = playStationViaService(freqKhz, mhz);
@@ -109,7 +146,65 @@ public final class FmEngine {
         lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
         ok = false;
       }
+      // 2026-07-15 — Native busy: hard free + full claim + one more native try.
+      if (!ok && lastError != null
+              && (lastError.toLowerCase(java.util.Locale.US).contains("busy")
+                      || lastError.toLowerCase(java.util.Locale.US).contains("blocked")
+                      || lastError.toLowerCase(java.util.Locale.US).contains("opendev"))) {
+        android.util.Log.w("FmEngine", "playStation busy — hardFree + retry native: " + lastError);
+        FmHardwarePrep.hardFreeBlocking();
+        FmHardwarePrep.prepareBlocking();
+        powerUp = false;
+        deviceOpen = false;
+        lastError = "";
+        try {
+          ok = powerUpInternal(mhz) && tuneInternal(mhz);
+        } catch (Throwable t) {
+          lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
+          ok = false;
+        }
+      }
+      // Service path if native still fails but FMRadio.apk is present.
+      if (!ok && isFmPackageInstalled()) {
+        android.util.Log.w("FmEngine", "playStation native fail — try service: " + lastError);
+        String nativeErr = lastError;
+        lastError = "";
+        powerUp = false;
+        deviceOpen = false;
+        ok = playStationViaService(freqKhz, mhz);
+        if (!ok && (lastError == null || lastError.isEmpty())) {
+          lastError = nativeErr;
+        }
+      }
     }
+    // 2026-07-15 — No-jack robustness: allow FM open without earphones (may be weak RF).
+    // Layman: no cable plugged in? Still try power-up via speaker path — better than hard fail.
+    // Never auto-force speaker when a wired jack is present (user picks Speaker in UI).
+    // Was: only retried when lastError mentioned earphone/antenna/power-up.
+    if (!ok && !audioRouter.isSpeakerOn() && !audioRouter.isWiredHeadsetOn()) {
+      android.util.Log.w("FmEngine", "playStation retry with speaker (no jack): " + lastError);
+      audioRouter.setSpeaker(true);
+      lastError = "";
+      powerUp = false;
+      deviceOpen = false;
+      FmHardwarePrep.prepareBlocking();
+      if (useServiceFallback) {
+        ok = playStationViaService(freqKhz, mhz);
+      } else {
+        try {
+          ok = powerUpInternal(mhz) && tuneInternal(mhz);
+        } catch (Throwable t) {
+          lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
+          ok = false;
+        }
+      }
+    }
+    // After any successful start, re-assert headphone routing if jack is in.
+    if (ok) {
+      audioRouter.applyOutputRoute();
+    }
+    android.util.Log.i("FmEngine", "playStation result ok=" + ok + " power=" + powerUp
+            + " audio=" + audioRouter.isPlaying() + " err=" + lastError);
     if (!ok) {
       FmAirplaneModeHelper.endSolarSession(appCtx);
     }
@@ -260,6 +355,38 @@ public final class FmEngine {
   }
 
   /**
+   * 2026-07-15 — Stereo/mono from MTK chip when powered; false if unknown.
+   * Layman: true when the station is coming in as stereo.
+   * Technical: FMRadioNative.stereoMono / service isStereo reflection; never throws.
+   */
+  public synchronized boolean isStereo() {
+    if (!powerUp) return false;
+    if (useServiceFallback) {
+      Object r = invokeService("isStereo");
+      if (r == null) r = invokeService("getStereoMono");
+      if (r instanceof Boolean) return (Boolean) r;
+      if (r instanceof Integer) return ((Integer) r) != 0;
+    }
+    try {
+      Object r = nativeLoader.invokeStatic("stereoMono", new Class<?>[] {}, new Object[] {});
+      if (r instanceof Boolean) return (Boolean) r;
+    } catch (Throwable ignored) {}
+    Boolean b = invokeNativeBool("stereoMono");
+    if (b != null) return b;
+    b = invokeNativeBool("isStereo");
+    return b != null && b;
+  }
+
+  /** Optional native boolean helper — null when method missing. */
+  private Boolean invokeNativeBool(String method) {
+    try {
+      Object r = nativeLoader.invokeStatic(method, new Class<?>[] {}, new Object[] {});
+      if (r instanceof Boolean) return (Boolean) r;
+    } catch (Throwable ignored) {}
+    return null;
+  }
+
+  /**
    * 2026-07-06 — Car-stereo seek: hardware step first, else band walk with RSSI/RDS.
    * Layman: jump to the next station that actually comes in.
    * Technical: JNI seek(float,bool) then stepped tune until signal or band wrap.
@@ -274,7 +401,54 @@ public final class FmEngine {
       currentFreqMhz = k / 1000f;
       return k;
     }
-    return seekByBandWalk(fromKhz, forward, plan);
+    return seekByBandWalk(fromKhz, forward, plan, false);
+  }
+
+  /**
+   * 2026-07-15 — Power-on auto-seek: find the first station that actually receives (car radio).
+   * Layman: turn radio on → skip dead air until something comes in.
+   * Technical: settle RSSI; if weak, hardware seek then band walk; stay put if nothing found.
+   *
+   * @return final kHz after seek (may equal fromKhz)
+   */
+  public synchronized int seekFirstStationIfWeak(int fromKhz, com.solar.launcher.radio.FmBandPlan plan) {
+    if (!powerUp || plan == null) return fromKhz;
+    int start = plan.clampKhz(fromKhz);
+    try {
+      Thread.sleep(150L); // chip settle after powerup
+    } catch (InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    }
+    if (!looksLikeDeadAir()) {
+      return start;
+    }
+    android.util.Log.i("FmEngine", "auto-seek first station from " + start);
+    Integer hw = tryHardwareSeek(true);
+    if (hw != null && hw > 0) {
+      int k = plan.clampKhz(hw);
+      currentFreqMhz = k / 1000f;
+      if (!looksLikeDeadAir()) return k;
+    }
+    int walked = seekByBandWalk(start, true, plan, true);
+    return walked > 0 ? walked : start;
+  }
+
+  /**
+   * True when current tune has no usable signal (RSSI/RDS/stereo).
+   * Layman: “nothing on this dial mark.”
+   */
+  public synchronized boolean looksLikeDeadAir() {
+    if (!powerUp) return true;
+    int rssi = getRssi();
+    if (rssi >= 8) return false;
+    if (rssi >= 3 && isStereo()) return false;
+    String ps = getRdsPs();
+    if (ps != null && ps.trim().length() > 0) return false;
+    String rt = getRdsRt();
+    if (rt != null && rt.trim().length() > 0) return false;
+    // rssi==0 often means “API missing” not silence — only treat as dead if truly zero after power
+    // and no stereo; still seek so car-radio behaviour runs on first start.
+    return rssi < 3;
   }
 
   /** Next/prev grid MHz on the band plan — wraps at ends (unit-testable). 2026-07-06 */
@@ -294,64 +468,193 @@ public final class FmEngine {
 
   // --- Native path ---
 
+  /**
+   * 2026-07-15 — switchAntenna(mode) then powerup. mode 1 = short (earphone), 0 = long (internal).
+   * Layman: try each antenna path; empty jack is OK.
+   * @return true when native powerup reports success
+   */
+  private boolean tryPowerUpWithAntenna(float mhz, int antennaMode) {
+    try {
+      nativeLoader.invokeStatic(
+          "switchAntenna", new Class<?>[] {int.class}, new Object[] {antennaMode});
+    } catch (Throwable t) {
+      android.util.Log.w(
+          "FmEngine", "switchAntenna(" + antennaMode + ") " + t.getMessage());
+      // Continue — some builds ignore switchAntenna when jack empty.
+    }
+    try {
+      Boolean powered =
+          (Boolean)
+              nativeLoader.invokeStatic(
+                  "powerup", new Class<?>[] {float.class}, new Object[] {mhz});
+      boolean ok = powered != null && powered;
+      android.util.Log.i(
+          "FmEngine", "powerup after antenna=" + antennaMode + " ok=" + ok);
+      return ok;
+    } catch (Throwable t) {
+      android.util.Log.w(
+          "FmEngine", "powerup after antenna=" + antennaMode + " " + t.getMessage());
+      return false;
+    }
+  }
+
   private boolean powerUpInternal(float mhz) {
     if (!nativeLoader.isReady()) {
       lastError = "FMRadioNative driver missing";
       return false;
     }
     if (powerUp && Math.abs(currentFreqMhz - mhz) < 0.001f) {
+      // 2026-07-15 — Already on station: restart audio pump if MediaPlayer died.
+      if (!audioRouter.isPlaying()) {
+        if (!audioRouter.start()) {
+          lastError = audioRouter.lastError();
+          return false;
+        }
+        setMuteNative(false);
+      }
       return true;
     }
     if (powerUp) {
       if (!tuneInternal(mhz)) return false;
+      if (!audioRouter.isPlaying()) {
+        if (!audioRouter.start()) {
+          lastError = audioRouter.lastError();
+          return false;
+        }
+      }
+      setMuteNative(false);
       return true;
     }
-    FmHardwarePrep.prepareBlocking();
+    // 2026-07-15 — Root claim of /dev/fm (kill holders, chmod 666, airplane off).
+    // Layman: with root we own the conditions for FM — free the chip before every power-up.
+    boolean claimed = FmHardwarePrep.prepareBlocking();
+    android.util.Log.i("FmEngine", "hardware claim ok=" + claimed + " diag="
+            + FmHardwarePrep.lastDiag());
     try {
-      try {
-        nativeLoader.invokeStatic("closedev", new Class<?>[] {}, new Object[] {});
-      } catch (Throwable ignored) {}
       deviceOpen = false;
-
-      Boolean opened = (Boolean) nativeLoader.invokeStatic("opendev", new Class<?>[] {}, new Object[] {});
-      deviceOpen = opened != null && opened;
-      if (!deviceOpen) {
-        FmHardwarePrep.prepareBlocking();
-        opened = (Boolean) nativeLoader.invokeStatic("opendev", new Class<?>[] {}, new Object[] {});
-        deviceOpen = opened != null && opened;
+      // Up to 5 open attempts; hard-free after 2nd fail; soft unlock before every opendev.
+      for (int attempt = 1; attempt <= 5 && !deviceOpen; attempt++) {
+        try {
+          nativeLoader.invokeStatic("closedev", new Class<?>[] {}, new Object[] {});
+        } catch (Throwable ignored) {}
+        // Re-assert node mode + airplane so udev/settings races cannot undo the claim.
+        FmHardwarePrep.softUnlockBlocking();
+        try {
+          Thread.sleep(attempt == 1 ? 80L : 200L);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+        }
+        try {
+          Boolean opened =
+              (Boolean) nativeLoader.invokeStatic("opendev", new Class<?>[] {}, new Object[] {});
+          deviceOpen = opened != null && opened;
+          android.util.Log.i("FmEngine", "opendev attempt=" + attempt + " open=" + deviceOpen
+                  + " claimDiag=" + FmHardwarePrep.lastDiag());
+        } catch (Throwable t) {
+          android.util.Log.w("FmEngine", "opendev attempt " + attempt + ": " + t.getMessage());
+          deviceOpen = false;
+        }
+        if (!deviceOpen) {
+          if (attempt == 2 || attempt == 4) {
+            android.util.Log.w("FmEngine", "opendev still busy — hardFreeBlocking");
+            FmHardwarePrep.hardFreeBlocking();
+          } else if (attempt >= 3) {
+            FmHardwarePrep.prepareBlocking();
+          }
+        }
       }
       if (!deviceOpen) {
-        lastError = "Failed to open /dev/fm (hardware busy or blocked)";
+        lastError = "Failed to open /dev/fm (hardware busy or blocked). diag="
+            + FmHardwarePrep.lastDiag();
+        android.util.Log.e("FmEngine", lastError);
         return false;
       }
 
+      // Stock: powerUp native then mute immediately (chip silent until enableFmAudio).
+      // 2026-07-15 — Do not hard-require earphones. Try short antenna (1) then long (0).
+      // Layman: open the radio even with no headphones; signal may be weak without a cable.
+      // Technical: MTK switchAntenna(1)=short/earphone, (0)=long/internal; never abort solely
+      // because the jack is empty. Exclusivity (stop other media) is owned by startFmStation.
       Boolean powered =
           (Boolean) nativeLoader.invokeStatic("powerup", new Class<?>[] {float.class}, new Object[] {mhz});
       powerUp = powered != null && powered;
       if (!powerUp) {
-        try {
-          nativeLoader.invokeStatic("switchAntenna", new Class<?>[] {int.class}, new Object[] {1});
-          powered =
-              (Boolean) nativeLoader.invokeStatic("powerup", new Class<?>[] {float.class}, new Object[] {mhz});
-          powerUp = powered != null && powered;
-        } catch (Throwable ex) {
-          lastError = "Earphones required; antenna bypass failed.";
-          return false;
-        }
+        powerUp = tryPowerUpWithAntenna(mhz, 1 /* short / earphone */);
       }
       if (!powerUp) {
-        lastError = "Power up rejected by hardware.";
+        powerUp = tryPowerUpWithAntenna(mhz, 0 /* long / internal */);
+      }
+      if (powerUp) {
+        setMuteNative(true);
+      }
+      if (!powerUp) {
+        // One more prep + open + power after failed powerup (service held chip half-open).
+        FmHardwarePrep.prepareBlocking();
+        try {
+          nativeLoader.invokeStatic("closedev", new Class<?>[] {}, new Object[] {});
+        } catch (Throwable ignored) {}
+        try {
+          Boolean opened =
+              (Boolean) nativeLoader.invokeStatic("opendev", new Class<?>[] {}, new Object[] {});
+          deviceOpen = opened != null && opened;
+          if (deviceOpen) {
+            powerUp = tryPowerUpWithAntenna(mhz, 1);
+            if (!powerUp) {
+              powerUp = tryPowerUpWithAntenna(mhz, 0);
+            }
+            if (!powerUp) {
+              powered =
+                  (Boolean)
+                      nativeLoader.invokeStatic(
+                          "powerup", new Class<?>[] {float.class}, new Object[] {mhz});
+              powerUp = powered != null && powered;
+            }
+          }
+        } catch (Throwable ignored) {}
+      }
+      if (!powerUp) {
+        // Soft error — not "earphones required"; chip may still open later with speaker retry.
+        lastError =
+            (lastError != null && lastError.length() > 0)
+                ? lastError
+                : "Power up rejected by hardware (try Speaker in Audio if silent).";
+        try {
+          nativeLoader.invokeStatic("closedev", new Class<?>[] {}, new Object[] {});
+        } catch (Throwable ignored) {}
+        deviceOpen = false;
         return false;
       }
       currentFreqMhz = mhz;
-      setMuteNative(false);
+      // 2026-07-15 — Stock FmRadioService.startPlayFm sequence (reference MTK + AOSP FMRadio):
+      // powerUp already muted chip → setSpeaker → enableFmAudio (prepare+start) → setRds → unmute.
+      // Layman: open the sound pipe while silent, then open the chip’s mute last.
+      setMuteNative(true);
       try {
         nativeLoader.invokeStatic("rdsset", new Class<?>[] {boolean.class}, new Object[] {true});
       } catch (Throwable ignored) {}
-      audioRouter.start();
+      if (!audioRouter.start()) {
+        lastError = audioRouter.lastError();
+        if (lastError == null || lastError.isEmpty()) {
+          lastError = "FM audio path failed";
+        }
+        android.util.Log.e("FmEngine", "audio fail " + lastError + " " + audioRouter.lastRouteDiag());
+        try {
+          setMuteNative(true);
+          nativeLoader.invokeStatic("powerdown", new Class<?>[] {int.class}, new Object[] {0});
+          nativeLoader.invokeStatic("closedev", new Class<?>[] {}, new Object[] {});
+        } catch (Throwable ignored) {}
+        powerUp = false;
+        deviceOpen = false;
+        return false;
+      }
+      setMuteNative(false);
+      audioRouter.applyOutputRoute();
+      android.util.Log.i("FmEngine", "powered+audio " + audioRouter.lastRouteDiag());
       return true;
     } catch (Throwable t) {
       lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
+      powerUp = false;
+      deviceOpen = false;
       return false;
     }
   }
@@ -457,8 +760,12 @@ public final class FmEngine {
     return null;
   }
 
-  /** Step the band until RSSI/RDS says a station is present — bounded by timeout. 2026-07-06 */
-  private int seekByBandWalk(int startKhz, boolean forward, com.solar.launcher.radio.FmBandPlan plan) {
+  /**
+   * Step the band until RSSI/RDS says a station is present — bounded by timeout. 2026-07-06
+   * @param stayIfNone true for power-on seek (keep start if no hit); false = prev/next nudge
+   */
+  private int seekByBandWalk(
+      int startKhz, boolean forward, com.solar.launcher.radio.FmBandPlan plan, boolean stayIfNone) {
     final long deadline = android.os.SystemClock.elapsedRealtime() + 8000L;
     int khz = plan.clampKhz(startKhz);
     int steps = ((plan.maxKhz() - plan.minKhz()) / plan.stepKhz()) + 2;
@@ -475,9 +782,14 @@ public final class FmEngine {
       int rssi = getRssi();
       if (rssi >= 2 && rssi > baseline) return khz;
       if (rssi >= 8) return khz;
+      if (rssi >= 3 && isStereo()) return khz;
       String ps = getRdsPs();
       if (ps != null && !ps.isEmpty()) return khz;
       if (khz == startKhz && i > 0) break;
+    }
+    if (stayIfNone) {
+      tune(startKhz);
+      return startKhz;
     }
     int fallback = nextBandStepKhz(startKhz, forward, plan);
     tune(fallback);
@@ -487,13 +799,20 @@ public final class FmEngine {
   // --- Service fallback (debug / missing native) ---
 
   private boolean playStationViaService(int freqKhz, float mhz) {
+    // Free /dev/fm then bind a fresh FMRadioService (force-stop may have killed it).
+    FmHardwarePrep.prepareBlocking();
+    unbindServiceQuiet();
     if (!ensureServiceBound()) {
       lastError = "FM service not bound";
       return false;
     }
     if (!invokeServiceBool("openDevice")) {
-      lastError = "openDevice failed";
-      return false;
+      FmHardwarePrep.prepareBlocking();
+      unbindServiceQuiet();
+      if (!ensureServiceBound() || !invokeServiceBool("openDevice")) {
+        lastError = "openDevice failed (service path)";
+        return false;
+      }
     }
     boolean powered = invokeServiceBool("isPowerUp");
     boolean ok;
@@ -505,28 +824,22 @@ public final class FmEngine {
     if (ok) {
       currentFreqMhz = mhz;
       powerUp = true;
-      // 2026-07-15 — Service path must start the FM audio pump (native path already does).
-      // Layman: without this, the dial says tuned but you hear silence.
-      try {
-        audioRouter.start();
-      } catch (Throwable t) {
-        lastError = "FM audio start failed: " + t.getMessage();
-        // #region agent log
-        try {
-          org.json.JSONObject d = new org.json.JSONObject();
-          d.put("err", String.valueOf(t.getMessage()));
-          d.put("mhz", mhz);
-          com.solar.launcher.debug.SessionDebugLog.log(appCtx, "FmEngine.playStationViaService",
-              "audioRouter.start failed", "F1", d);
-        } catch (Exception ignored) {}
-        // #endregion
+      // 2026-07-15 — Service path starts audio pump; boolean start (no throw).
+      if (!audioRouter.start()) {
+        lastError = audioRouter.lastError();
+        if (lastError == null || lastError.isEmpty()) {
+          lastError = "FM audio start failed";
+        }
+        powerUp = false;
         return false;
       }
+      mute(false);
       // #region agent log
       try {
         org.json.JSONObject d = new org.json.JSONObject();
         d.put("mhz", mhz);
         d.put("useService", true);
+        d.put("stream", audioRouter.activeStreamType());
         com.solar.launcher.debug.SessionDebugLog.log(appCtx, "FmEngine.playStationViaService",
             "service tune + audio start", "F1", d);
       } catch (Exception ignored) {}

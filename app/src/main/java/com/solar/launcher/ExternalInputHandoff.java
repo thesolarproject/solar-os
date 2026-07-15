@@ -287,7 +287,12 @@ public final class ExternalInputHandoff {
         }
         int mode = getDpadMode();
         String fgPkg = getForegroundPackageName(context);
-        if (FM_RADIO_PACKAGE.equals(fgPkg) || mode == MODE_FM) {
+        if (mode == MODE_FM
+                || FM_RADIO_PACKAGE.equals(fgPkg)
+                || com.solar.launcher.radio.fm.FmAirplaneModeHelper.isFmLikePackage(fgPkg)) {
+            // Keep airplane off while any FM-like app is foreground (sticky MTK need).
+            com.solar.launcher.radio.fm.FmAirplaneModeHelper.ensureSessionForForegroundPackage(
+                    context, fgPkg);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -537,17 +542,22 @@ public final class ExternalInputHandoff {
         if (com.solar.input.policy.GlobalInputPolicy.isJjKeylayoutLauncher(packageName)) {
             return MODE_JJ;
         }
-        // Other vendor apps under com.innioasis.* (music/fm) — no stock inject remap.
+        // 2026-07-15 — FM packages (including com.innioasis.fm) before generic innioasis OFF.
+        if (FM_RADIO_PACKAGE.equals(packageName)
+                || com.solar.launcher.radio.fm.FmAirplaneModeHelper.isFmLikePackage(packageName)) {
+            return MODE_FM;
+        }
+        // Other vendor apps under com.innioasis.* (music) — no stock inject remap.
         if (com.solar.input.policy.GlobalInputPolicy.isInnioasisNonLauncherPackage(packageName)) {
             return MODE_OFF;
         }
-        if (FM_RADIO_PACKAGE.equals(packageName)) return MODE_FM;
         return MODE_ANDROID;
     }
 
     /**
      * 2026-07-06 — Probe foreground and arm wheel inject (JJ or stock) when Solar loses focus.
-     * Layman: turn on key translation for whichever app is on screen now.
+     * 2026-07-15 — Also force airplane off when FG is any FM-named third-party app.
+     * Layman: turn on key translation for whichever app is on screen now; clear flight mode for FM.
      * Technical: sets static dpadMode + root injector from resolveModeForForegroundPackage.
      */
     public static void armForForegroundPackage(Context context) {
@@ -555,6 +565,9 @@ public final class ExternalInputHandoff {
         if (shouldKeepHandoffOffForSolarHome()) return;
         String fg = getForegroundPackageName(context);
         if (isSolarForegroundPackage(fg)) return;
+        // Airplane off for stock MTK FM or any third-party FM package name.
+        com.solar.launcher.radio.fm.FmAirplaneModeHelper.ensureSessionForForegroundPackage(
+                context, fg);
         int mode = resolveModeForForegroundPackage(fg);
         if (mode == MODE_OFF) return;
         setDpadMode(mode);

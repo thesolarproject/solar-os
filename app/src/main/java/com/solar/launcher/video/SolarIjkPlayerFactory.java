@@ -52,11 +52,15 @@ public final class SolarIjkPlayerFactory {
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1));
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 0));
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48));
-        out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0));
+        // Range headers for long seeks / reconnections on progressive CDN MP4.
+        out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 1));
         // Cold CDN / Piped proxy — microseconds for ffurl / analyzeduration.
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 30000000L));
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1));
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 15000000L));
+        out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1));
+        out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1));
+        out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5));
         out.add(new Option(IjkMediaPlayer.OPT_CATEGORY_FORMAT, "user_agent",
                 "Mozilla/5.0 (Linux; Android 4.2) AppleWebKit/537.36"));
         return Collections.unmodifiableList(out);
@@ -83,7 +87,7 @@ public final class SolarIjkPlayerFactory {
     /** JVM self-check — option keys/values without loading native code. */
     static void selfCheck() {
         List<Option> opts = y1PlayerOptions();
-        if (opts.size() != 13) throw new AssertionError("option count");
+        if (opts.size() != 16) throw new AssertionError("option count");
         expect(opts, 0, IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 1);
         expect(opts, 1, IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-auto-rotate", 0);
         expect(opts, 2, IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec-handle-resolution-change", 0);
@@ -92,16 +96,19 @@ public final class SolarIjkPlayerFactory {
         expect(opts, 5, IjkMediaPlayer.OPT_CATEGORY_PLAYER, "framedrop", 1);
         expect(opts, 6, IjkMediaPlayer.OPT_CATEGORY_PLAYER, "start-on-prepared", 0);
         expect(opts, 7, IjkMediaPlayer.OPT_CATEGORY_CODEC, "skip_loop_filter", 48);
-        expect(opts, 8, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 0);
+        expect(opts, 8, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "http-detect-range-support", 1);
         expect(opts, 9, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "timeout", 30000000L);
         expect(opts, 10, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect", 1);
         expect(opts, 11, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "analyzeduration", 15000000L);
-        Option ua = opts.get(12);
+        expect(opts, 12, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_at_eof", 1);
+        expect(opts, 13, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_streamed", 1);
+        expect(opts, 14, IjkMediaPlayer.OPT_CATEGORY_FORMAT, "reconnect_delay_max", 5);
+        Option ua = opts.get(15);
         if (ua.category != IjkMediaPlayer.OPT_CATEGORY_FORMAT
                 || !"user_agent".equals(ua.name)
                 || ua.stringValue == null
                 || ua.stringValue.indexOf("Android") < 0) {
-            throw new AssertionError("option 12 user_agent");
+            throw new AssertionError("option 15 user_agent");
         }
     }
 

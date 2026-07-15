@@ -1772,6 +1772,26 @@ public final class OverlayModalHost {
             }
         });
 
+        // 2026-07-15 — Power tier HOME switch rows when switch script is present (unit-test gate).
+        if (LauncherSwitch.isSwitchScriptAvailable()) {
+            String homeTarget = LauncherPreference.getHomeTarget(context);
+            String marker = context.getString(R.string.settings_home_launcher_current_marker);
+            appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
+                    LauncherDefault.TARGET_SOLAR,
+                    R.string.settings_home_launcher_restart_solar,
+                    R.string.settings_home_launcher_switch_solar);
+            appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
+                    LauncherDefault.TARGET_ROCKBOX,
+                    R.string.settings_home_launcher_restart_rockbox,
+                    R.string.settings_home_launcher_switch_rockbox);
+            if (JjLauncherAvailability.isOfferVisible(context)) {
+                appendPowerLauncherRow(labels, headers, powerRowActions, homeTarget, marker,
+                        LauncherDefault.TARGET_JJ,
+                        R.string.settings_home_launcher_restart_jj,
+                        R.string.settings_home_launcher_switch_jj);
+            }
+        }
+
         menu.setScrollableDetailHeader(false);
         menu.replaceListContent(context.getString(R.string.context_quick_power),
                 labels.toArray(new String[labels.size()]), null, null,

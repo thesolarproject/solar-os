@@ -1,7 +1,10 @@
 package com.solar.launcher.media;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -38,6 +41,7 @@ import com.solar.launcher.radio.FmBandPlan;
 import com.solar.launcher.radio.RadioScrubMapping;
 import com.solar.launcher.radio.RadioScrubMode;
 import com.solar.launcher.radio.RadioSettings;
+import com.solar.launcher.radio.fm.FmAirplaneModeHelper;
 import com.solar.launcher.radio.fm.FmEngine;
 import com.solar.launcher.radio.fm.FmJjPresetImport;
 import com.solar.launcher.radio.fm.FmPresetStore;
@@ -173,6 +177,12 @@ public final class MediaSuiteHost {
         /** Stop and reset file music so radio streams / FM can take audio. */
         void stopMusicPlayback();
 
+        /**
+         * 2026-07-15 — Silence music / Deezer / podcast / YouTube / video before FM owns audio.
+         * Does not touch the FM chip (caller powers up next).
+         */
+        void stopNonFmPlayback();
+
         MediaTransportBar playerTransportBar();
 
         MediaTransportBar videoTransportBar();
@@ -223,6 +233,15 @@ public final class MediaSuiteHost {
                 Runnable onConfirm,
                 Runnable onCancel);
 
+        /**
+         * 2026-07-15 — True while user is actively typing/scrolling (InputPriorityGate).
+         * Background media suite work (RDS JNI, etc.) should yield.
+         */
+        boolean isInputPriorityBusy();
+
+        /** Ms until input has been idle long enough for background work. */
+        long msUntilInputIdle();
+
         String getString(int resId);
         String getString(int resId, Object arg);
         String getString(int resId, Object arg1, Object arg2);
@@ -260,6 +279,9 @@ public final class MediaSuiteHost {
             };
     /** MHz before manual tune scrub — Back reverts without leaving NP. 2026-07-06 */
     private int fmTuneRevertKhz;
+    /** 2026-07-15 — Headset plug → re-route FM to headphones unless Speaker chosen. */
+    private BroadcastReceiver fmHeadsetReceiver;
+    private boolean fmHeadsetRegistered;
     private final RadioBrowserClient radioBrowser;
     private final InternetRadioFavorites netFavorites;
     private final FmPresetStore fmPresets;
@@ -288,6 +310,11 @@ public final class MediaSuiteHost {
     private boolean youtubeLoading;
     /** 2026-07-14 — Play resolve in progress (detail Play row subtitle); not browse list load. */
     private boolean youtubeResolvingStream;
+    /**
+     * 2026-07-15 — Human phase for resolve/save (“Getting 480p stream…”) instead of flat Resolving.
+     * Empty when idle.
+     */
+    private String youtubeResolveStatus = "";
     /** 2026-07-14 — Quality used for current/last RESOLVE_STREAM (ladder retries). */
     private String youtubeStreamQuality;
     /** 2026-07-14 — Prevent double quality-fallback from rapid IJK error callbacks. */
@@ -378,6 +405,24 @@ public final class MediaSuiteHost {
         Context ctx = host.context();
         fmEngine = new FmEngine(ctx);
         fmRdsPoller = new FmRdsPoller(fmEngine);
+        // 2026-07-15 — RDS JNI yields while the user is typing / wheeling elsewhere.
+        fmRdsPoller.setDefer(
+                new FmRdsPoller.Defer() {
+                    @Override
+                    public boolean shouldDefer() {
+                        // Keep polling when FM NP is on screen — user is looking at the station.
+                        int st = host.getCurrentScreenState();
+                        if (st == STATE_PLAYER || st == STATE_RADIO_FM_PLAYER) {
+                            return false;
+                        }
+                        return host.isInputPriorityBusy();
+                    }
+
+                    @Override
+                    public long msUntilAllowed() {
+                        return host.msUntilInputIdle();
+                    }
+                });
         fmRecorder = new FmRecorder(ctx);
         fmRecorder.setListener(
                 new FmRecorder.Listener() {
@@ -424,12 +469,13 @@ public final class MediaSuiteHost {
                             host.playback()
                                     .updateCurrentFmMeta(currentFmFreqKhz(), ps);
                         }
+                        // 2026-07-15 — Light bind only (not full refreshPlayerUi — was freezing NP).
                         host.runOnUiThread(
                                 new Runnable() {
                                     @Override
                                     public void run() {
                                         if (host.playback().isFmActive()) {
-                                            host.refreshPlayerUi();
+                                            bindRadioNowPlayingUi();
                                         }
                                     }
                                 });
@@ -715,11 +761,18 @@ public final class MediaSuiteHost {
                     buildFmBrowseUi();
                     return true;
                 }
-                if (!com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(host.prefs())) {
-                    host.exitToHomeMenu();
-                    return true;
-                }
-                host.changeScreen(STATE_RADIO);
+                // 2026-07-15 — Leave FM domain only after Exit confirm when hardware is live.
+                requestExitFmThen(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(
+                                host.prefs())) {
+                            host.exitToHomeMenu();
+                        } else {
+                            host.changeScreen(STATE_RADIO);
+                        }
+                    }
+                });
                 return true;
             case STATE_RADIO_FM_PLAYER:
                 if (radioSubMode == RADIO_FM_SAVED_CHANNELS) {
@@ -741,7 +794,13 @@ public final class MediaSuiteHost {
                     buildFmPlayerUi();
                     return true;
                 }
-                host.exitToHomeMenu();
+                // 2026-07-15 — Root of FM shell: Exit confirm so chip powers down cleanly.
+                requestExitFmThen(new Runnable() {
+                    @Override
+                    public void run() {
+                        host.exitToHomeMenu();
+                    }
+                });
                 return true;
             case STATE_RADIO_NET_BROWSE:
                 return handleNetBrowseBack();
@@ -873,10 +932,22 @@ public final class MediaSuiteHost {
                 openFmRecordingsFolder();
             }
         });
+        if (isFmSessionLive()) {
+            addActionRow(host.getString(R.string.radio_fm_exit_row), new Runnable() {
+                @Override
+                public void run() {
+                    promptExitFmToHome();
+                }
+            });
+        }
         focusFirstBrowserChild();
     }
 
-    /** Home menu FM — import JJ presets once, open NP, auto-start last frequency. 2026-07-06 */
+    /**
+     * Home menu FM — import JJ presets once, open NP, auto-start last frequency.
+     * 2026-07-15 — Prefer last tuned kHz (then session dial, then first preset, then band default).
+     * Was: always jumped to first preset when any existed. Reversal: presets.get(0) wins again.
+     */
     public void openFmFromHome() {
         FmJjPresetImport.importIfEmpty(host.context());
         if (!fmEngine.isAvailable()) {
@@ -888,21 +959,125 @@ public final class MediaSuiteHost {
             host.refreshPlayerUi();
             return;
         }
-        int khz = radioTuneFreqKhz > 0 ? radioTuneFreqKhz : defaultFmKhz();
-        List<FmPresetStore.Preset> presets = fmPresets.listAll();
-        if (!presets.isEmpty()) {
-            khz = presets.get(0).freqKhz;
-        }
+        int khz = resolvePreferredFmKhz();
         startFmStation(khz, null);
     }
 
-    /** 2026-07-06 — JJ-style FM player: MHz panel, preset rows, settings entry. */
+    /**
+     * 2026-07-15 — True when FM chip/session is live (user must Exit to leave Solar FM).
+     * Layman: radio is on or Solar is holding the FM RF session.
+     */
+    public boolean isFmSessionLive() {
+        return host.playback().isFmActive()
+                || fmEngine.isPowerUp()
+                || FmAirplaneModeHelper.isSessionActive();
+    }
+
+    /**
+     * 2026-07-15 — Back from shared Now Playing while FM is active → FM shell (not home).
+     * Keeps hardware up; Exit from shell powers down.
+     */
+    public void leaveFmNowPlayingToShell() {
+        fmSettingsMode = false;
+        fmTuningMode = false;
+        radioSubMode = RADIO_UI_HUB;
+        host.changeScreen(STATE_RADIO_FM_PLAYER);
+        buildFmPlayerUi();
+    }
+
+    /**
+     * 2026-07-15 — Power down FM hardware + clear radio queue (no UI).
+     * Layman: turn the radio off and free Wi‑Fi/airplane snapshot.
+     * Technical: stop record/RDS/headset, powerDown (ends airplane session), stopRadio.
+     */
+    public void shutdownFmSession() {
+        try {
+            stopFmRecordingQuiet();
+        } catch (Throwable ignored) {}
+        try {
+            stopFmRdsPolling();
+        } catch (Throwable ignored) {}
+        try {
+            releaseFmHeadsetRouting();
+        } catch (Throwable ignored) {}
+        try {
+            if (fmEngine.isPowerUp() || FmAirplaneModeHelper.isSessionActive()) {
+                fmEngine.powerDown();
+            }
+        } catch (Throwable ignored) {}
+        try {
+            host.playback().stopRadio();
+        } catch (Throwable ignored) {}
+        fmMuted = false;
+        fmTuningMode = false;
+        radioScrubMode = RadioScrubMode.NONE;
+        cachedRdsPs = null;
+        cachedRdsRt = null;
+    }
+
+    /**
+     * 2026-07-15 — If FM is live, show "Exit FM Radio?" then run {@code afterExit}; else run now.
+     * Used for Back from FM menus/player and the Exit row.
+     */
+    public void requestExitFmThen(final Runnable afterExit) {
+        if (!isFmSessionLive()) {
+            if (afterExit != null) afterExit.run();
+            return;
+        }
+        host.showThemedConfirm(
+                host.getString(R.string.radio_fm_exit_title),
+                host.getString(R.string.radio_fm_exit_message),
+                host.getString(R.string.radio_fm_exit_confirm),
+                host.getString(R.string.common_cancel),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        shutdownFmSession();
+                        if (afterExit != null) afterExit.run();
+                    }
+                },
+                null);
+    }
+
+    /** Explicit Exit row / context action — confirm then home. */
+    public void promptExitFmToHome() {
+        requestExitFmThen(new Runnable() {
+            @Override
+            public void run() {
+                host.exitToHomeMenu();
+            }
+        });
+    }
+
+    /**
+     * 2026-07-15 — Best FM dial for cold start: last saved → session → first preset → band mid.
+     * Layman: reopen radio where you left it.
+     */
+    private int resolvePreferredFmKhz() {
+        FmBandPlan plan = currentFmPlan();
+        int last = RadioSettings.getLastFmKhz(host.context());
+        if (last > 0) return plan.clampKhz(last);
+        if (radioTuneFreqKhz > 0) return plan.clampKhz(radioTuneFreqKhz);
+        List<FmPresetStore.Preset> presets = fmPresets.listAll();
+        if (!presets.isEmpty()) return plan.clampKhz(presets.get(0).freqKhz);
+        return defaultFmKhz();
+    }
+
+    /**
+     * 2026-07-15 — FM player shell inspired by JJ: neon dial, candy presets, bottom settings.
+     * Layman: big station number, saved channels, then power / fine-tune / audio / settings.
+     * Technical: theme tokens only; wheel keeps list; candy strip for quick presets (JJ).
+     * Fine tune = TUNE_FM scrub on wheel (same as NP).
+     */
     private void buildFmPlayerUi() {
         host.applyReachBrowseLayoutMode();
         host.showReachBrowseList(true);
         prepareScrollBrowse();
         host.setBrowserStatusTitle(host.getString(R.string.status_radio_fm));
-        fmSettingsMode = false;
+        if (radioSubMode != RADIO_FM_SETTINGS && radioSubMode != RADIO_FM_SAVED_CHANNELS
+                && radioSubMode != RADIO_FM_SCAN) {
+            fmSettingsMode = false;
+        }
 
         if (!fmEngine.isAvailable()) {
             addStatusRow(host.getString(R.string.radio_fm_unavailable));
@@ -910,38 +1085,124 @@ public final class MediaSuiteHost {
             return;
         }
 
+        // Headphone jack → assert headphone route whenever we paint the shell.
+        if (fmEngine.isPowerUp()) {
+            fmEngine.onHeadsetPlug(fmEngine.isWiredHeadsetOn());
+        }
+
         final FmBandPlan plan = currentFmPlan();
         int khz = host.playback().isFmActive() ? currentFmFreqKhz() : radioTuneFreqKhz;
-        if (khz <= 0) khz = defaultFmKhz();
-        final String mhzLabel =
-                FmBandPlan.formatMhz(khz / 1000f) + " MHz";
+        if (khz <= 0) khz = resolvePreferredFmKhz();
+        if (fmTuningMode && radioTuneFreqKhz > 0) khz = radioTuneFreqKhz;
         final boolean powered = fmEngine.isPowerUp() || host.playback().isFmActive();
+        final float mhzF = khz / 1000f;
 
-        addStatusRow(mhzLabel);
+        // JJ layout order: dial → RDS → candy presets → actions → settings last.
+        addFmDialPanel(mhzF, powered || fmTuningMode);
+
         if (powered) {
             String ps = cachedRdsPs;
             if (ps != null && !ps.isEmpty()) {
                 addStatusRow(ps);
+            } else if (fmEngine.isPowerUp()) {
+                addStatusRow(host.getString(
+                        fmEngine.isStereo() ? R.string.radio_fm_stereo : R.string.radio_fm_mono));
             }
-        } else {
+            if (!fmEngine.isAudioPlaying() && fmEngine.isPowerUp()) {
+                addStatusRow(host.getString(R.string.radio_fm_audio_silent_hint));
+            }
+        } else if (!fmTuningMode) {
             addStatusRow(host.getString(R.string.radio_fm_power_off_hint));
         }
 
         final List<FmPresetStore.Preset> presets = fmPresets.listAll();
-        for (final FmPresetStore.Preset p : presets) {
-            String label =
-                    p.label != null && !p.label.isEmpty()
-                            ? p.label
-                            : FmBandPlan.khzToFraction(p.freqKhz, plan);
-            addActionRow(label, new Runnable() {
+        // JJ always shows candy when stations exist (touch + visual; wheel uses list below).
+        if (!presets.isEmpty()) {
+            addFmPresetCandyStrip(presets, plan, khz);
+        }
+
+        if (!powered) {
+            addActionRow(host.getString(R.string.radio_fm_power_on_row), new Runnable() {
                 @Override
                 public void run() {
-                    startFmStation(p.freqKhz, p.label);
-                    buildFmPlayerUi();
+                    startFmStation(resolvePreferredFmKhz(), null);
                 }
             });
         }
 
+        final String tuneLabel = fmTuningMode
+                ? host.getString(R.string.radio_fm_fine_tune_active)
+                : host.getString(R.string.radio_fm_fine_tune);
+        addActionRow(tuneLabel, new Runnable() {
+            @Override
+            public void run() {
+                toggleFmFineTuneFromPlayer();
+            }
+        });
+
+        // Audio: Wired / Bluetooth / Speaker — always visible on main shell (JJ speaker toggle).
+        addActionRow(
+                host.getString(R.string.radio_fm_audio_output_row) + ": " + fmAudioOutputLabel(),
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        fmEngine.cycleAudioOutput();
+                        // If jack is in, cycling away from Speaker still lands on headphones.
+                        if (fmEngine.isWiredHeadsetOn()
+                                && fmEngine.audioOutput()
+                                        != com.solar.launcher.radio.fm.FmAudioRouter.Output.SPEAKER) {
+                            fmEngine.setAudioOutput(
+                                    com.solar.launcher.radio.fm.FmAudioRouter.Output.WIRED);
+                        }
+                        buildFmPlayerUi();
+                        if (host.playback().isFmActive()) host.refreshPlayerUi();
+                    }
+                });
+
+        addActionRow(host.getString(R.string.radio_fm_scan), new Runnable() {
+            @Override
+            public void run() {
+                if (!fmEngine.isPowerUp()) {
+                    startFmStationThenScan();
+                    return;
+                }
+                startFmScanReplacePresets();
+            }
+        });
+
+        if (presets.isEmpty()) {
+            addStatusRow(host.getString(R.string.radio_fm_no_presets));
+        } else {
+            addStatusRow(host.getString(R.string.radio_fm_presets_header, presets.size()));
+            for (final FmPresetStore.Preset p : presets) {
+                String label =
+                        p.label != null && !p.label.isEmpty()
+                                ? p.label
+                                : FmBandPlan.khzToFraction(p.freqKhz, plan) + " MHz";
+                boolean onAir = Math.abs(p.freqKhz - khz) < 50 && powered;
+                if (onAir) label = "▶ " + label;
+                addActionRow(label, new Runnable() {
+                    @Override
+                    public void run() {
+                        fmTuningMode = false;
+                        radioScrubMode = RadioScrubMode.NONE;
+                        startFmStation(p.freqKhz, p.label, true);
+                    }
+                });
+            }
+        }
+
+        // 2026-07-15 — Explicit Exit so hardware power-down is intentional (Wi‑Fi restore).
+        if (powered) {
+            addActionRow(host.getString(R.string.radio_fm_exit_row), new Runnable() {
+                @Override
+                public void run() {
+                    promptExitFmToHome();
+                }
+            });
+        }
+
+        // JJ: settings button sits at bottom of player shell.
         addActionRow(host.getString(R.string.radio_fm_settings_row), new Runnable() {
             @Override
             public void run() {
@@ -951,17 +1212,234 @@ public final class MediaSuiteHost {
             }
         });
 
-        if (!host.playback().isFmActive() && !fmEngine.isPowerUp()) {
-            addActionRow(host.getString(R.string.radio_fm_power_on_row), new Runnable() {
+        // JJ focuses the bottom controls after paint.
+        LinearLayout box = host.containerBrowserItems();
+        if (box != null && box.getChildCount() > 0) {
+            final View last = box.getChildAt(box.getChildCount() - 1);
+            box.post(new Runnable() {
                 @Override
                 public void run() {
-                    int freq = radioTuneFreqKhz > 0 ? radioTuneFreqKhz : defaultFmKhz();
-                    startFmStation(freq, null);
+                    if (last != null) last.requestFocus();
+                }
+            });
+        } else {
+            focusFirstBrowserChild();
+        }
+    }
+
+    /**
+     * 2026-07-15 — Enter/exit fine-tune from the FM list (same TUNE_FM scrub as Now Playing).
+     * Layman: wheel becomes a dial; OK again saves the frequency.
+     */
+    private void toggleFmFineTuneFromPlayer() {
+        fmTuningMode = !fmTuningMode;
+        if (fmTuningMode) {
+            radioScrubMode = RadioScrubMode.TUNE_FM;
+            radioTuneFreqKhz = currentFmFreqKhz();
+            if (radioTuneFreqKhz <= 0) radioTuneFreqKhz = resolvePreferredFmKhz();
+            fmTuneRevertKhz = radioTuneFreqKhz;
+            if (!fmEngine.isPowerUp()) {
+                // Need chip live to hear while scrubbing.
+                startFmStation(radioTuneFreqKhz, null);
+            }
+            if (host.playback().isFmActive()) {
+                host.syncFmTuneScrubUi();
+            }
+        } else {
+            radioScrubMode = RadioScrubMode.NONE;
+            commitFmTuneScrub();
+            if (host.playback().isFmActive()) {
+                host.refreshPlayerUi();
+            }
+        }
+        buildFmPlayerUi();
+    }
+
+    /** Power on then replace-presets scan (browse path). */
+    private void startFmStationThenScan() {
+        final int khz = resolvePreferredFmKhz();
+        final FmBandPlan plan = currentFmPlan();
+        radioTuneFreqKhz = plan.clampKhz(khz);
+        if (!fmEngine.isAvailable()) {
+            Toast.makeText(host.context(), R.string.toast_fm_unavailable, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        stopOtherRadioPlayback(true);
+        host.stopNonFmPlayback();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final boolean ok = fmEngine.playStation(radioTuneFreqKhz);
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!ok) {
+                            String err = fmEngine.lastError();
+                            if (err == null || err.isEmpty()) {
+                                err = host.getString(R.string.radio_fm_play_error);
+                            }
+                            Toast.makeText(host.context(), err, Toast.LENGTH_LONG).show();
+                            host.offerFmMtkFallback(err);
+                            return;
+                        }
+                        finishFmStationStart(radioTuneFreqKhz, null, plan);
+                        startFmScanReplacePresets();
+                    }
+                });
+            }
+        }, "FmStartScan").start();
+    }
+
+    /**
+     * 2026-07-15 — JJ neon dial: large MHz readout using theme focus colour when powered.
+     * Layman: big station number that lights up when the radio is on.
+     * Technical: ThemeManager list-focus colours + GradientDrawable panel; no hard-coded brand palette.
+     */
+    private void addFmDialPanel(float mhz, boolean powered) {
+        Context ctx = host.context();
+        float density = ctx.getResources().getDisplayMetrics().density;
+        FrameLayout freqPanel = new FrameLayout(ctx);
+        LinearLayout.LayoutParams panelLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        // Tighter on A5 240p; roomier on Y1/Y2 480×360.
+        int side = com.solar.launcher.DeviceFeatures.isA5()
+                ? Math.round(8 * density) : Math.round(14 * density);
+        int vPad = com.solar.launcher.DeviceFeatures.isA5()
+                ? Math.round(10 * density) : Math.round(28 * density);
+        panelLp.setMargins(side, Math.round(10 * density), side, Math.round(8 * density));
+        freqPanel.setLayoutParams(panelLp);
+
+        int themeHighlight = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
+        GradientDrawable panelBg = new GradientDrawable();
+        panelBg.setShape(GradientDrawable.RECTANGLE);
+        panelBg.setCornerRadius(12 * density);
+        if (powered) {
+            int backlit = (themeHighlight & 0x00FFFFFF) | 0x42000000;
+            panelBg.setColor(backlit);
+            panelBg.setStroke(Math.max(1, Math.round(3 * density)), themeHighlight);
+        } else {
+            // Dim chrome when off — still themed secondary, not pure black invent.
+            int dim = ThemeManager.getListButtonNormalBg();
+            if ((dim & 0xFF000000) == 0) dim = 0x22FFFFFF;
+            panelBg.setColor(dim);
+            panelBg.setStroke(Math.max(1, Math.round(1 * density)), 0x33FFFFFF);
+        }
+        freqPanel.setBackground(panelBg);
+
+        TextView tvFreq = new TextView(ctx);
+        tvFreq.setTag("fm_dial_freq");
+        tvFreq.setText(String.format(java.util.Locale.US, "%.1f MHz", mhz));
+        tvFreq.setTextColor(powered ? themeHighlight : ThemeManager.getTextColorSecondary());
+        // JJ uses ~54sp on Y1; A5 240p stays smaller.
+        tvFreq.setTextSize(com.solar.launcher.DeviceFeatures.isA5() ? 28f : 50f);
+        tvFreq.setGravity(Gravity.CENTER);
+        try {
+            tvFreq.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+        } catch (Throwable ignored) {
+            tvFreq.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        }
+        tvFreq.setPadding(0, vPad, 0, vPad);
+        // Dial is chrome, not a focus trap — wheel keeps list rows.
+        tvFreq.setFocusable(false);
+        tvFreq.setClickable(false);
+        freqPanel.setFocusable(false);
+        freqPanel.addView(tvFreq);
+        host.containerBrowserItems().addView(freqPanel);
+    }
+
+    /**
+     * 2026-07-15 — JJ candy presets: horizontal themed pills for A5 touch.
+     * Layman: swipe/tap saved stations like JJ.
+     * Technical: HorizontalScrollView; each pill starts FM; current freq uses focus colours.
+     */
+    private void addFmPresetCandyStrip(
+            List<FmPresetStore.Preset> presets, final FmBandPlan plan, int currentKhz) {
+        Context ctx = host.context();
+        float density = ctx.getResources().getDisplayMetrics().density;
+        android.widget.HorizontalScrollView hzScroll = new android.widget.HorizontalScrollView(ctx);
+        hzScroll.setHorizontalScrollBarEnabled(false);
+        hzScroll.setClipChildren(false);
+        hzScroll.setClipToPadding(false);
+        hzScroll.setFillViewport(true);
+        hzScroll.setPadding(0, Math.round(6 * density), 0, Math.round(6 * density));
+        hzScroll.setFocusable(false);
+
+        LinearLayout candyContainer = new LinearLayout(ctx);
+        candyContainer.setOrientation(LinearLayout.HORIZONTAL);
+        candyContainer.setGravity(Gravity.CENTER_VERTICAL);
+
+        int themeHighlight = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
+        int focusedText = ThemeManager.getListButtonFocusedTextColor();
+        int normalBg = ThemeManager.getListButtonNormalBg();
+        int secondary = ThemeManager.getTextColorSecondary();
+
+        View targetScrollChild = null;
+        for (int i = 0; i < presets.size(); i++) {
+            final FmPresetStore.Preset p = presets.get(i);
+            final int pkhz = p.freqKhz;
+            String label =
+                    p.label != null && !p.label.isEmpty()
+                            ? p.label
+                            : FmBandPlan.khzToFraction(pkhz, plan);
+            TextView tvCandy = new TextView(ctx);
+            tvCandy.setText(label);
+            tvCandy.setTextSize(com.solar.launcher.DeviceFeatures.isA5() ? 14f : 16f);
+            tvCandy.setGravity(Gravity.CENTER);
+            tvCandy.setPadding(
+                    Math.round(12 * density), Math.round(5 * density),
+                    Math.round(12 * density), Math.round(5 * density));
+            try {
+                tvCandy.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+            } catch (Throwable ignored) {}
+            tvCandy.setFocusable(true);
+            tvCandy.setClickable(true);
+
+            GradientDrawable candyBg = new GradientDrawable();
+            candyBg.setCornerRadius(16 * density);
+            boolean selected = Math.abs(currentKhz - pkhz) < 50;
+            if (selected) {
+                candyBg.setColor(themeHighlight);
+                tvCandy.setTextColor(focusedText);
+                targetScrollChild = tvCandy;
+            } else {
+                candyBg.setColor(normalBg);
+                tvCandy.setTextColor(secondary);
+            }
+            tvCandy.setBackground(candyBg);
+
+            LinearLayout.LayoutParams candyLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            candyLp.setMargins(Math.round(4 * density), 0, Math.round(4 * density), 0);
+            tvCandy.setLayoutParams(candyLp);
+            tvCandy.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    host.clickFeedback();
+                    startFmStation(pkhz, p.label, true);
+                    buildFmPlayerUi();
+                }
+            });
+            candyContainer.addView(tvCandy);
+        }
+
+        FrameLayout.LayoutParams containerLp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        hzScroll.addView(candyContainer, containerLp);
+        host.containerBrowserItems().addView(hzScroll);
+
+        if (targetScrollChild != null) {
+            final View focusChild = targetScrollChild;
+            final android.widget.HorizontalScrollView scroll = hzScroll;
+            hzScroll.post(new Runnable() {
+                @Override
+                public void run() {
+                    int scrollX = focusChild.getLeft() - (scroll.getWidth() / 2)
+                            + (focusChild.getWidth() / 2);
+                    if (scrollX < 0) scrollX = 0;
+                    scroll.scrollTo(scrollX, 0);
                 }
             });
         }
-
-        focusFirstBrowserChild();
     }
 
     /** FM settings submenu — power, tune, save, scan, speaker (JJ parity). */
@@ -992,13 +1470,10 @@ public final class MediaSuiteHost {
                             return;
                         }
                         lastFmPowerToggleMs = now;
-                        if (fmEngine.isPowerUp()) {
-                            stopFmRdsPolling();
-                            fmEngine.powerDown();
-                            host.playback().stopRadio();
-                            fmMuted = false;
+                        if (fmEngine.isPowerUp() || host.playback().isFmActive()) {
+                            // Power off = full session exit (Wi‑Fi restore); stay on settings shell.
+                            shutdownFmSession();
                         } else {
-                            host.stopMusicPlayback();
                             int f = radioTuneFreqKhz > 0 ? radioTuneFreqKhz : defaultFmKhz();
                             startFmStation(f, null);
                         }
@@ -1074,23 +1549,41 @@ public final class MediaSuiteHost {
             }
         });
 
+        // 2026-07-15 — Wired / Bluetooth / Speaker (stock MTK force-use + user pick).
         addActionRow(
                 host.getString(R.string.radio_fm_audio_output_row)
                         + ": "
-                        + host.getString(
-                                fmEngine.isSpeakerOn()
-                                        ? R.string.radio_fm_output_speaker
-                                        : R.string.radio_fm_output_earphones),
+                        + fmAudioOutputLabel(),
                 new Runnable() {
                     @Override
                     public void run() {
-                        fmEngine.setSpeaker(!fmEngine.isSpeakerOn());
+                        fmEngine.cycleAudioOutput();
+                        Toast.makeText(
+                                        host.context(),
+                                        host.getString(R.string.radio_fm_output_cycle_hint),
+                                        Toast.LENGTH_SHORT)
+                                .show();
                         buildFmSettingsSubmenuUi();
+                        if (host.playback().isFmActive()) {
+                            host.refreshPlayerUi();
+                        }
                     }
                 });
 
         addStatusRow(host.getString(R.string.radio_fm_onboarding_hint));
         focusFirstBrowserChild();
+    }
+
+    /** Label for current FM output mode (Wired / Bluetooth / Speaker). */
+    private String fmAudioOutputLabel() {
+        com.solar.launcher.radio.fm.FmAudioRouter.Output o = fmEngine.audioOutput();
+        if (o == com.solar.launcher.radio.fm.FmAudioRouter.Output.SPEAKER) {
+            return host.getString(R.string.radio_fm_output_speaker);
+        }
+        if (o == com.solar.launcher.radio.fm.FmAudioRouter.Output.BLUETOOTH) {
+            return host.getString(R.string.radio_fm_output_bluetooth);
+        }
+        return host.getString(R.string.radio_fm_output_wired);
     }
 
     private void buildFmSavedChannelsUi() {
@@ -1126,30 +1619,66 @@ public final class MediaSuiteHost {
                         int idx = position - 1;
                         if (idx < 0 || idx >= presets.size()) return;
                         final FmPresetStore.Preset p = presets.get(idx);
-                        startFmStation(p.freqKhz, p.label);
+                        startFmStation(p.freqKhz, p.label, true);
                         fmSettingsMode = false;
                         buildFmPlayerUi();
                     }
                 });
     }
 
-    /** Tune ±step when settings tune mode active. */
+    /**
+     * Tune ±step while fine-tune is active (player list or settings).
+     * 2026-07-15 — Was settings-only; player Fine tune now uses the same path + NP scrub.
+     */
     public boolean handleFmPlayerWheelTune(boolean up) {
-        if (!fmSettingsMode || !fmTuningMode) return false;
+        if (!fmTuningMode) return false;
         FmBandPlan plan = currentFmPlan();
-        int khz = currentFmFreqKhz();
-        if (khz <= 0) khz = radioTuneFreqKhz;
+        int khz = radioTuneFreqKhz > 0 ? radioTuneFreqKhz : currentFmFreqKhz();
+        if (khz <= 0) khz = resolvePreferredFmKhz();
         khz = up ? khz + plan.stepKhz() : khz - plan.stepKhz();
         khz = plan.clampKhz(khz);
         radioTuneFreqKhz = khz;
+        radioScrubMode = RadioScrubMode.TUNE_FM;
         if (fmEngine.isPowerUp()) {
             fmEngine.tune(khz);
         }
+        // Live dial label without full list rebuild (keeps focus on Fine tune row).
+        updateFmDialLabel(khz);
         if (host.playback().isFmActive()) {
+            host.syncFmTuneScrubUi();
             host.refreshPlayerUi();
         }
-        buildFmSettingsSubmenuUi();
         return true;
+    }
+
+    /** Update JJ dial MHz text in place during fine-tune wheel steps. */
+    private void updateFmDialLabel(int khz) {
+        LinearLayout container = host.containerBrowserItems();
+        if (container == null) return;
+        String text = String.format(java.util.Locale.US, "%.1f MHz", khz / 1000f);
+        for (int i = 0; i < container.getChildCount(); i++) {
+            View child = container.getChildAt(i);
+            TextView dial = findTaggedTextView(child, "fm_dial_freq");
+            if (dial != null) {
+                dial.setText(text);
+                return;
+            }
+        }
+    }
+
+    private static TextView findTaggedTextView(View root, String tag) {
+        if (root == null) return null;
+        if (root instanceof TextView && tag.equals(root.getTag())) {
+            return (TextView) root;
+        }
+        if (root instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) root;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                TextView found = findTaggedTextView(vg.getChildAt(i), tag);
+                if (found != null) return found;
+            }
+        }
+        return null;
     }
 
     private void startFmScanReplacePresets() {
@@ -1205,7 +1734,8 @@ public final class MediaSuiteHost {
                                         int first = fmScanResults.get(0);
                                         FmQueueSync.syncQueueFromPresets(
                                                 host.playback(), fmPresets, first);
-                                        startFmStation(first, null);
+                                        // Scan already found live hits — land exact on first.
+                                        startFmStation(first, null, true);
                                         fmSettingsMode = false;
                                         buildFmPlayerUi();
                                         Toast.makeText(
@@ -1264,13 +1794,18 @@ public final class MediaSuiteHost {
                 int idx = position - 1;
                 if (idx < 0 || idx >= presets.size()) return;
                 FmPresetStore.Preset p = presets.get(idx);
-                startFmStation(p.freqKhz, p.label);
+                startFmStation(p.freqKhz, p.label, true);
             }
         });
     }
 
+    /**
+     * Browse-path band scan — collect hits, then show a pickable list (does not wipe presets).
+     * 2026-07-15 — Was status-only with no selectable results. Reversal: drop fmScanResults usage here.
+     */
     private void startFmScan() {
         radioSubMode = RADIO_FM_SCAN;
+        fmScanResults.clear();
         prepareScrollBrowse();
         host.setBrowserStatusTitle(host.getString(R.string.radio_fm_scanning));
         addBackRow(host.getString(R.string.common_cancel_back));
@@ -1294,6 +1829,7 @@ public final class MediaSuiteHost {
                                     new FmEngine.ScanCallback() {
                                         @Override
                                         public void onStationFound(final int freqKhz, int signal, boolean stereo) {
+                                            fmScanResults.add(freqKhz);
                                             host.runOnUiThread(
                                                     new Runnable() {
                                                         @Override
@@ -1321,9 +1857,7 @@ public final class MediaSuiteHost {
                                                                             != STATE_RADIO_FM_BROWSE
                                                                     || radioSubMode != RADIO_FM_SCAN)
                                                                 return;
-                                                            status.setText(
-                                                                    host.getString(
-                                                                            R.string.radio_fm_scan_done));
+                                                            showFmScanResultsUi();
                                                         }
                                                     });
                                         }
@@ -1384,14 +1918,50 @@ public final class MediaSuiteHost {
         focusFirstBrowserChild();
     }
 
+    /**
+     * 2026-07-15 — After browse scan: list found MHz for OK-to-play (presets unchanged).
+     * Layman: pick a station the scan just found without wiping your saved list.
+     */
+    private void showFmScanResultsUi() {
+        prepareScrollBrowse();
+        host.setBrowserStatusTitle(host.getString(R.string.radio_fm_scan_results_title));
+        addBackRow(host.getString(R.string.common_back_short));
+        if (fmScanResults.isEmpty()) {
+            addStatusRow(host.getString(R.string.radio_fm_scan_none));
+            focusFirstBrowserChild();
+            return;
+        }
+        addStatusRow(host.getString(R.string.radio_fm_scan_done));
+        final FmBandPlan plan = currentFmPlan();
+        for (final Integer khzObj : fmScanResults) {
+            final int khz = khzObj != null ? khzObj.intValue() : 0;
+            if (khz <= 0) continue;
+            final String label = FmBandPlan.khzToFraction(khz, plan) + " MHz";
+            addActionRow(label, new Runnable() {
+                @Override
+                public void run() {
+                    startFmStation(khz, label, true);
+                }
+            });
+        }
+        focusFirstBrowserChild();
+    }
+
     private void openFmRecordingsFolder() {
         File dir = fmRecordingsDir();
         if (!dir.isDirectory() && !dir.mkdirs()) {
             Toast.makeText(host.context(), R.string.radio_fm_recordings_missing, Toast.LENGTH_SHORT).show();
             return;
         }
-        videoBrowseFolder = dir;
-        host.changeScreen(STATE_VIDEOS);
+        final File openDir = dir;
+        // 2026-07-15 — Videos browse is outside FM; Exit first so hardware shuts down.
+        requestExitFmThen(new Runnable() {
+            @Override
+            public void run() {
+                videoBrowseFolder = openDir;
+                host.changeScreen(STATE_VIDEOS);
+            }
+        });
     }
 
     /** Stop the other radio path before starting FM or internet playback. */
@@ -1399,14 +1969,65 @@ public final class MediaSuiteHost {
         if (startingFm) {
             internetRadioPlayer.stop();
         } else {
-            stopFmRecordingQuiet();
-            stopFmRdsPolling();
-            fmEngine.powerDown();
-            fmMuted = false;
+            // Internet radio takes over — full FM shutdown (chip + session).
+            shutdownFmSession();
         }
     }
 
+    /**
+     * 2026-07-15 — Listen for earphone plug so FM re-routes off the speaker (stock behaviour).
+     * Layman: plug headphones in → sound leaves the speaker unless you chose Speaker.
+     */
+    private void ensureFmHeadsetRouting() {
+        if (fmHeadsetRegistered) return;
+        fmHeadsetReceiver =
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        if (intent == null || !Intent.ACTION_HEADSET_PLUG.equals(intent.getAction())) {
+                            return;
+                        }
+                        int state = intent.getIntExtra("state", 0);
+                        boolean in = state == 1;
+                        fmEngine.onHeadsetPlug(in);
+                        if (host.playback().isFmActive()) {
+                            host.refreshPlayerUi();
+                        }
+                        if (host.getCurrentScreenState() == STATE_RADIO_FM_PLAYER) {
+                            buildFmPlayerUi();
+                        }
+                    }
+                };
+        try {
+            host.context()
+                    .registerReceiver(fmHeadsetReceiver, new IntentFilter(Intent.ACTION_HEADSET_PLUG));
+            fmHeadsetRegistered = true;
+        } catch (Throwable ignored) {
+            fmHeadsetRegistered = false;
+        }
+    }
+
+    private void releaseFmHeadsetRouting() {
+        if (!fmHeadsetRegistered || fmHeadsetReceiver == null) return;
+        try {
+            host.context().unregisterReceiver(fmHeadsetReceiver);
+        } catch (Throwable ignored) {}
+        fmHeadsetRegistered = false;
+        fmHeadsetReceiver = null;
+    }
+
+    /**
+     * Power on and play. Auto-seeks to a live station when {@code exactStation} is false
+     * (cold start / power button) — car-stereo behaviour.
+     */
     private void startFmStation(final int freqKhz, final String label) {
+        startFmStation(freqKhz, label, false /* exact — auto-seek if dead air */);
+    }
+
+    /**
+     * @param exactStation true = user/preset/queue picked this MHz (do not auto-seek away)
+     */
+    private void startFmStation(final int freqKhz, final String label, final boolean exactStation) {
         final FmBandPlan plan = currentFmPlan();
         final int clampedKhz = plan.clampKhz(freqKhz);
         radioTuneFreqKhz = clampedKhz;
@@ -1414,14 +2035,26 @@ public final class MediaSuiteHost {
             Toast.makeText(host.context(), R.string.toast_fm_unavailable, Toast.LENGTH_SHORT).show();
             return;
         }
+        // 2026-07-15 — FM exclusive: stop internet radio + music/Deezer/YouTube/video/podcast first.
         stopOtherRadioPlayback(true);
-        host.stopMusicPlayback();
+        host.stopNonFmPlayback();
         // 2026-07-06 — MTK bind/tune off UI thread; avoids ANR and browse crash on slow FMRadioService.
+        // 2026-07-15 — After power, auto-seek if dead air (car radio / handheld auto-seek).
         new Thread(
                 new Runnable() {
                     @Override
                     public void run() {
                         final boolean ok = fmEngine.playStation(clampedKhz);
+                        int landed = clampedKhz;
+                        if (ok && !exactStation) {
+                            int sought = fmEngine.seekFirstStationIfWeak(clampedKhz, plan);
+                            if (sought > 0) landed = sought;
+                        }
+                        final int finalKhz = landed;
+                        final String finalLabel =
+                                (label != null && !label.isEmpty())
+                                        ? label
+                                        : FmBandPlan.khzToFraction(finalKhz, plan);
                         host.runOnUiThread(
                                 new Runnable() {
                                     @Override
@@ -1435,7 +2068,8 @@ public final class MediaSuiteHost {
                                             host.offerFmMtkFallback(err);
                                             return;
                                         }
-                                        finishFmStationStart(clampedKhz, label, plan);
+                                        radioTuneFreqKhz = finalKhz;
+                                        finishFmStationStart(finalKhz, finalLabel, plan);
                                     }
                                 });
                     }
@@ -1453,6 +2087,8 @@ public final class MediaSuiteHost {
         if (label == null || label.isEmpty()) {
             label = FmBandPlan.khzToFraction(freqKhz, plan);
         }
+        // 2026-07-15 — Remember dial for next cold start (last station restore).
+        RadioSettings.setLastFmKhz(host.context(), freqKhz);
         host.playback().startRadioStation(PlayQueue.QueueItem.fmStation(freqKhz, label));
         if (!fmPresets.listAll().isEmpty()) {
             FmQueueSync.syncQueueFromPresets(host.playback(), fmPresets, freqKhz);
@@ -1460,6 +2096,9 @@ public final class MediaSuiteHost {
         radioScrubMode = RadioScrubMode.NONE;
         fmTuneRevertKhz = freqKhz;
         ensureFmRdsPolling();
+        ensureFmHeadsetRouting();
+        // Jack in → headphones unless user locked Speaker.
+        fmEngine.onHeadsetPlug(fmEngine.isWiredHeadsetOn());
         primeFmRdsCacheAsync();
         if (host.getCurrentScreenState() == STATE_RADIO_FM_PLAYER) {
             buildFmPlayerUi();
@@ -1866,7 +2505,7 @@ public final class MediaSuiteHost {
         }
         if (!host.requireInternet(R.string.toast_internet_required)) return;
         stopOtherRadioPlayback(false);
-        host.stopMusicPlayback();
+        host.stopNonFmPlayback();
         // #region agent log
         try {
             DebugAgentLog.log(
@@ -1912,7 +2551,21 @@ public final class MediaSuiteHost {
 
     // --- Radio now playing helpers ---
 
-    /** Bind Now Playing title/artist lines for FM or internet radio queue items. */
+    /** Cached NP strings — avoid setText/JNI when nothing changed (FM NP perf). */
+    private String npBoundTitle = "";
+    private String npBoundArtist = "";
+    private String npBoundAlbum = "";
+    private String npBoundTrack = "";
+    private int npBoundKhz = -1;
+    private boolean npBoundPause;
+    private boolean npFmArtSet;
+    private int npBoundVol = -1;
+    private int npBoundVolMax = -1;
+
+    /**
+     * Bind Now Playing title/artist lines for FM or internet radio.
+     * 2026-07-15 — Skip setText / isStereo / art reload when unchanged (was freezing wheel on FM NP).
+     */
     public void bindRadioNowPlayingUi() {
         PlaybackCoordinator playback = host.playback();
         if (!playback.isRadioActive()) return;
@@ -1933,6 +2586,7 @@ public final class MediaSuiteHost {
         String albumText = "";
         String trackCountText = "";
         boolean showPause = false;
+        int khz = 0;
 
         if (playback.isFmActive()) {
             String ps = cachedRdsPs;
@@ -1941,12 +2595,25 @@ public final class MediaSuiteHost {
             if (rt != null && !rt.isEmpty()) {
                 artistText = rt;
             }
-            FmBandPlan plan = currentFmPlan();
             // 2026-07-06 — tune wheel MHz beats queue row until user commits (MTK live dial).
-            int khz = (radioScrubMode == RadioScrubMode.TUNE_FM && radioTuneFreqKhz > 0)
+            khz = (radioScrubMode == RadioScrubMode.TUNE_FM && radioTuneFreqKhz > 0)
                     ? radioTuneFreqKhz
                     : fmFreqKhz();
-            albumText = FmBandPlan.formatMhz(khz / 1000f);
+            String mhz = FmBandPlan.formatMhz(khz / 1000f);
+            // isStereo is JNI — only re-query when MHz changes (not every RDS/volume tick).
+            if (fmEngine.isPowerUp()) {
+                if (khz != npBoundKhz || npBoundAlbum.isEmpty()) {
+                    albumText = host.getString(
+                            fmEngine.isStereo()
+                                    ? R.string.radio_fm_mhz_stereo
+                                    : R.string.radio_fm_mhz_mono,
+                            mhz);
+                } else {
+                    albumText = npBoundAlbum;
+                }
+            } else {
+                albumText = mhz;
+            }
             if (fmRecorder.isRecording()) {
                 trackCountText = formatFmRecordingStatus();
             } else if (fmSeekBusy) {
@@ -1955,12 +2622,17 @@ public final class MediaSuiteHost {
                 trackCountText = host.getString(R.string.radio_fm_tuning_hint);
             }
             showPause = fmMuted;
-            android.widget.ImageView albumArt = host.findViewById(R.id.iv_album_art);
-            if (albumArt != null) {
-                albumArt.setImageResource(R.drawable.radio_fm_np_placeholder);
-                albumArt.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+            // Placeholder art once per FM session — not every bind/RDS tick.
+            if (!npFmArtSet) {
+                android.widget.ImageView albumArt = host.findViewById(R.id.iv_album_art);
+                if (albumArt != null) {
+                    albumArt.setImageResource(R.drawable.radio_fm_np_placeholder);
+                    albumArt.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+                }
+                npFmArtSet = true;
             }
         } else if (playback.isInternetRadioActive()) {
+            npFmArtSet = false;
             if (cur.radioSubtitle != null && !cur.radioSubtitle.isEmpty()) {
                 artistText = cur.radioSubtitle;
             } else {
@@ -1969,30 +2641,42 @@ public final class MediaSuiteHost {
             showPause = !internetRadioPlayer.isPlaying();
         }
 
-        if (title != null) title.setText(titleText);
-        if (artist != null) artist.setText(artistText);
-        if (album != null) album.setText(albumText);
-        // 2026-07-06 — FM N/M lives in updateMusicTrackCountUi unless tune/rec hint here.
+        setTextIfChanged(title, titleText);
+        setTextIfChanged(artist, artistText);
+        setTextIfChanged(album, albumText);
         if (trackCount != null
                 && (!playback.isFmActive()
                         || radioScrubMode == RadioScrubMode.TUNE_FM
                         || fmRecorder.isRecording()
                         || fmSeekBusy)) {
-            trackCount.setText(trackCountText);
+            setTextIfChanged(trackCount, trackCountText);
         }
-        if (vizTitle != null) vizTitle.setText(titleText);
-        if (vizArtist != null) vizArtist.setText(artistText);
-        if (vizAlbum != null) vizAlbum.setText(albumText);
-        if (pauseOverlay != null) {
+        setTextIfChanged(vizTitle, titleText);
+        setTextIfChanged(vizArtist, artistText);
+        setTextIfChanged(vizAlbum, albumText);
+        if (pauseOverlay != null && showPause != npBoundPause) {
             pauseOverlay.setVisibility(showPause ? View.VISIBLE : View.GONE);
         }
         android.widget.ImageView albumArt = host.findViewById(R.id.iv_album_art);
-        if (albumArt != null && !playback.isFmActive()) {
-            albumArt.setAlpha(showPause ? 0.4f : 1.0f);
-        } else if (albumArt != null) {
+        if (albumArt != null && showPause != npBoundPause) {
             albumArt.setAlpha(showPause ? 0.4f : 1.0f);
         }
+        npBoundTitle = titleText != null ? titleText : "";
+        npBoundArtist = artistText != null ? artistText : "";
+        npBoundAlbum = albumText != null ? albumText : "";
+        npBoundTrack = trackCountText != null ? trackCountText : "";
+        npBoundKhz = khz;
+        npBoundPause = showPause;
+        // Progress/volume only when scrubbing or volume may have changed — not full JNI path.
         updateRadioPlayerProgress();
+    }
+
+    private static void setTextIfChanged(android.widget.TextView tv, String text) {
+        if (tv == null) return;
+        String t = text != null ? text : "";
+        CharSequence cur = tv.getText();
+        if (cur != null && t.contentEquals(cur)) return;
+        tv.setText(t);
     }
 
     /** Start RDS polls while FM is on Now Playing — idempotent. */
@@ -2016,6 +2700,9 @@ public final class MediaSuiteHost {
         fmRdsPoller.stop();
         cachedRdsPs = null;
         cachedRdsRt = null;
+        npFmArtSet = false;
+        npBoundVol = -1;
+        npBoundKhz = -1;
     }
 
     public void updateRadioPlayerProgress() {
@@ -2029,16 +2716,29 @@ public final class MediaSuiteHost {
                     ? radioTuneFreqKhz
                     : fmFreqKhz();
             if (khz <= 0) khz = defaultFmKhz();
-            float pos = RadioScrubMapping.khzToPosition(khz, plan);
-            bar.setProgress(Math.round(pos * 100f));
-            // 2026-07-06 — tune mode: keep MHz header + circle knob aligned with wheel (MTK scrub bar).
+            // 2026-07-06 — tune mode: keep MHz header + circle knob aligned with wheel.
             if (radioScrubMode == RadioScrubMode.TUNE_FM) {
+                float pos = RadioScrubMapping.khzToPosition(khz, plan);
+                int prog = Math.round(pos * 100f);
+                if (bar.getProgress() != prog) bar.setProgress(prog);
                 host.syncFmTuneScrubUi();
             } else if (transport != null) {
-                android.media.AudioManager am = (android.media.AudioManager) host.context().getSystemService(Context.AUDIO_SERVICE);
-                int cur = am != null ? am.getStreamVolume(10) : 0;
-                int max = am != null ? am.getStreamMaxVolume(10) : 1;
-                transport.showFmNormalBar(cur, max);
+                // Idle FM: only volume strip — skip if level unchanged (RDS was re-entering every 2s).
+                android.media.AudioManager am =
+                        (android.media.AudioManager)
+                                host.context().getSystemService(Context.AUDIO_SERVICE);
+                int stream =
+                        fmEngine != null && fmEngine.audioStreamType() > 0
+                                ? fmEngine.audioStreamType()
+                                : android.media.AudioManager.STREAM_MUSIC;
+                int cur = am != null ? am.getStreamVolume(stream) : 0;
+                int max = am != null ? am.getStreamMaxVolume(stream) : 1;
+                if (max <= 0) max = 1;
+                if (cur != npBoundVol || max != npBoundVolMax) {
+                    npBoundVol = cur;
+                    npBoundVolMax = max;
+                    transport.showFmNormalBar(cur, max);
+                }
             }
             return;
         }
@@ -2063,19 +2763,9 @@ public final class MediaSuiteHost {
             } else if (before == RadioScrubMode.TUNE_FM) {
                 commitFmTuneScrub();
             }
+            // 2026-07-15 — One light bind (was bind + full refreshPlayerUi thrash).
             bindRadioNowPlayingUi();
             host.syncFmTuneScrubUi();
-            host.refreshPlayerUi();
-            // #region agent log
-            try {
-                DebugF9ef0bLog.log(
-                        host.context(),
-                        "MediaSuiteHost.handleRadioCenterOk",
-                        "fm center ok",
-                        "H2",
-                        new org.json.JSONObject().put("scrubMode", radioScrubMode.name()));
-            } catch (Exception ignored) {}
-            // #endregion
             return;
         }
         if (playback.isInternetRadioActive()) {
@@ -2119,7 +2809,7 @@ public final class MediaSuiteHost {
             if (presets.size() >= 2) {
                 PlayQueue.QueueItem item = playback.fmItemAtWrappedIndex(next ? 1 : -1);
                 if (item != null) {
-                    startFmStation(item.fmFreqKhz, item.fmLabel);
+                    startFmStation(item.fmFreqKhz, item.fmLabel, true);
                     return;
                 }
             }
@@ -2187,6 +2877,8 @@ public final class MediaSuiteHost {
     /** Tune after seek without full power cycle — refresh RDS + queue row. 2026-07-06 */
     private void finishFmSeekFound(int freqKhz, FmBandPlan plan) {
         radioTuneFreqKhz = freqKhz;
+        // 2026-07-15 — Seek lands also update last-station memory.
+        RadioSettings.setLastFmKhz(host.context(), freqKhz);
         cachedRdsPs = null;
         cachedRdsRt = null;
         fmRdsPoller.invalidateCache();
@@ -2245,6 +2937,8 @@ public final class MediaSuiteHost {
         if (label == null || label.isEmpty()) {
             label = FmBandPlan.khzToFraction(khz, currentFmPlan());
         }
+        // 2026-07-15 — Commit also updates last-station restore.
+        RadioSettings.setLastFmKhz(host.context(), khz);
         host.playback().updateCurrentFmMeta(khz, label);
         fmTuneRevertKhz = khz;
         tuneFmAsync(khz, false);
@@ -2348,7 +3042,7 @@ public final class MediaSuiteHost {
             return;
         }
         FmPresetStore.Preset p = presets.get(idx);
-        startFmStation(p.freqKhz, p.label);
+        startFmStation(p.freqKhz, p.label, true);
     }
 
     public boolean handleFmPresetMoveWheel(int delta) {
@@ -2418,7 +3112,8 @@ public final class MediaSuiteHost {
 
     /** Tune to frequency — queue sync after power-on. 2026-07-06 */
     public void playFmStation(int freqKhz, String label) {
-        startFmStation(freqKhz, label);
+        // Exact MHz from queue/external — do not car-seek away.
+        startFmStation(freqKhz, label, true);
     }
 
     public String[] getRadioContextMenuLabels() {
@@ -2429,12 +3124,18 @@ public final class MediaSuiteHost {
                     fmRecorder.isRecording()
                             ? host.getString(R.string.radio_fm_record_stop)
                             : host.getString(R.string.radio_fm_record_start);
+            // 2026-07-15 — Context: cycle audio destination (Wired / BT / Speaker).
+            String audioLabel =
+                    host.getString(R.string.radio_ctx_audio_output, fmAudioOutputLabel());
             return new String[] {
                 recordLabel,
                 host.getString(R.string.radio_ctx_save_preset),
+                audioLabel,
                 saved ? host.getString(R.string.radio_ctx_remove_preset)
                         : host.getString(R.string.radio_ctx_scan),
-                host.getString(saved ? R.string.radio_ctx_scan : R.string.radio_ctx_open_fm_browse)
+                host.getString(saved ? R.string.radio_ctx_scan : R.string.radio_ctx_open_fm_browse),
+                // 2026-07-15 — Context Exit path (same confirm as shell Back).
+                host.getString(R.string.radio_fm_exit_row)
             };
         }
         if (playback.isInternetRadioActive()) {
@@ -2464,6 +3165,16 @@ public final class MediaSuiteHost {
                     Toast.makeText(host.context(), R.string.radio_ctx_preset_saved, Toast.LENGTH_SHORT).show();
                     return true;
                 case 2:
+                    // 2026-07-15 — Cycle Wired → Bluetooth → Speaker and re-route live audio.
+                    fmEngine.cycleAudioOutput();
+                    host.refreshPlayerUi();
+                    Toast.makeText(
+                                    host.context(),
+                                    host.getString(R.string.radio_ctx_audio_output, fmAudioOutputLabel()),
+                                    Toast.LENGTH_SHORT)
+                            .show();
+                    return true;
+                case 3:
                     if (saved) {
                         fmPresets.delete(currentFmFreqKhz());
                         FmQueueSync.syncQueueFromPresets(playback, fmPresets, currentFmFreqKhz());
@@ -2474,13 +3185,16 @@ public final class MediaSuiteHost {
                         startFmScan();
                     }
                     return true;
-                case 3:
+                case 4:
                     if (saved) {
                         host.changeScreen(STATE_RADIO_FM_BROWSE);
                         startFmScan();
                     } else {
                         host.changeScreen(STATE_RADIO_FM_BROWSE);
                     }
+                    return true;
+                case 5:
+                    promptExitFmToHome();
                     return true;
                 default:
                     return false;
@@ -2757,7 +3471,7 @@ public final class MediaSuiteHost {
             if (youtubeAudioMode) {
                 virtualLabels.add(host.getString(R.string.youtube_detail_play_audio));
                 if (youtubeResolvingStream) {
-                    virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+                    virtualSubtitles.add(youtubeResolveStatusText());
                 } else {
                     virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
                             ? youtubeDetailVideo.subtitle()
@@ -2770,9 +3484,9 @@ public final class MediaSuiteHost {
                 youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_AUDIO));
             } else {
                 virtualLabels.add(host.getString(R.string.youtube_detail_play));
-                // 2026-07-14 — Show resolving hint on Play row while stream URL is fetched.
+                // 2026-07-15 — Staged status (Looking up / Getting 480p…) not flat “Resolving”.
                 if (youtubeResolvingStream) {
-                    virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+                    virtualSubtitles.add(youtubeResolveStatusText());
                 } else {
                     virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
                             ? youtubeDetailVideo.subtitle()
@@ -2901,7 +3615,13 @@ public final class MediaSuiteHost {
         youtubePendingSearch = null;
         youtubeLoading = true;
         final int gen = ++youtubeLoadGen;
-        buildYouTubeBrowseUi();
+        updateYouTubeStatusPath();
+        rebuildYouTubeVirtualRows();
+        if (virtualAdapter == null) {
+            buildYouTubeBrowseUi();
+        } else {
+            notifyVirtualDataChangedPreserveFocus();
+        }
         YouTubeClient.getInstance(host.context()).fetchPopular(new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
@@ -2914,7 +3634,9 @@ public final class MediaSuiteHost {
                 } catch (Exception e) {
                     youtubeVideos.clear();
                 }
-                buildYouTubeBrowseUi();
+                updateYouTubeStatusPath();
+                rebuildYouTubeVirtualRows();
+                notifyVirtualDataChangedPreserveFocus();
             }
 
             @Override
@@ -2923,7 +3645,9 @@ public final class MediaSuiteHost {
                 if (host.getCurrentScreenState() != STATE_YOUTUBE_BROWSE) return;
                 youtubeLoading = false;
                 youtubeVideos.clear();
-                buildYouTubeBrowseUi();
+                updateYouTubeStatusPath();
+                rebuildYouTubeVirtualRows();
+                notifyVirtualDataChangedPreserveFocus();
                 Toast.makeText(host.context(),
                         host.getString(R.string.youtube_error, message),
                         Toast.LENGTH_LONG).show();
@@ -2936,7 +3660,8 @@ public final class MediaSuiteHost {
         final int gen = ++youtubeLoadGen;
         updateYouTubeStatusPath();
         rebuildYouTubeVirtualRows();
-        if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        // Keep focus on Search/Back while results load (was always reset to row 0).
+        notifyVirtualDataChangedPreserveFocus();
         YouTubeClient.getInstance(host.context()).search(query, new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
@@ -2949,7 +3674,10 @@ public final class MediaSuiteHost {
                 } catch (Exception e) {
                     youtubeVideos.clear();
                 }
-                buildYouTubeBrowseUi();
+                // Prefer incremental notify over full rebind (keeps selection).
+                updateYouTubeStatusPath();
+                rebuildYouTubeVirtualRows();
+                notifyVirtualDataChangedPreserveFocus();
             }
 
             @Override
@@ -2958,7 +3686,9 @@ public final class MediaSuiteHost {
                 if (host.getCurrentScreenState() != STATE_YOUTUBE_BROWSE) return;
                 youtubeLoading = false;
                 youtubeVideos.clear();
-                buildYouTubeBrowseUi();
+                updateYouTubeStatusPath();
+                rebuildYouTubeVirtualRows();
+                notifyVirtualDataChangedPreserveFocus();
                 Toast.makeText(host.context(),
                         host.getString(R.string.youtube_error, message),
                         Toast.LENGTH_SHORT).show();
@@ -2989,18 +3719,13 @@ public final class MediaSuiteHost {
         youtubeNowPlayingId = video.id;
         final int gen = ++youtubeLoadGen;
         youtubeResolvingStream = true;
-        if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
-            youtubeLoading = true;
-            rebuildYouTubeVirtualRows();
-            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        } else if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
-            rebuildYouTubeDetailRows();
-            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        }
+        setYoutubeResolveStatus(host.getString(R.string.youtube_resolve_looking_up));
+        refreshYouTubeResolveUi();
         File existing = YouTubeSavePaths.findSavedAudio(host.context(), video);
         if (existing != null && existing.length() > 1024L) {
             youtubeResolvingStream = false;
             youtubeLoading = false;
+            youtubeResolveStatus = "";
             clearYouTubeResolveUi();
             host.playAudioFileInNowPlaying(existing);
             return;
@@ -3008,7 +3733,17 @@ public final class MediaSuiteHost {
         YouTubeDownloader.saveAudio(host.context(), video, new YouTubeDownloader.Callback() {
             @Override
             public void onProgress(String phase, int percent, long doneBytes, long totalBytes) {
-                // Browse/detail already shows resolving row via youtubeResolvingStream.
+                if (gen != youtubeLoadGen) return;
+                // 2026-07-15 — Live % while audio file is written (not a frozen “Resolving…”).
+                int pct = Math.max(0, Math.min(100, percent));
+                setYoutubeResolveStatus(host.getString(R.string.youtube_resolve_saving, pct));
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (gen != youtubeLoadGen) return;
+                        refreshYouTubeResolveUi();
+                    }
+                });
             }
 
             @Override
@@ -3016,6 +3751,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
+                youtubeResolveStatus = "";
                 clearYouTubeResolveUi();
                 if (savedFile != null && savedFile.isFile()) {
                     host.playAudioFileInNowPlaying(savedFile);
@@ -3029,6 +3765,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
+                youtubeResolveStatus = "";
                 clearYouTubeResolveUi();
                 toastYouTubePlayError(message);
             }
@@ -3047,15 +3784,9 @@ public final class MediaSuiteHost {
         youtubeIjkFallbackPending = false;
         final int gen = ++youtubeLoadGen;
         youtubeResolvingStream = true;
-        // Only mark browse loading when resolve started from browse (not detail).
-        if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
-            youtubeLoading = true;
-            rebuildYouTubeVirtualRows();
-            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        } else if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
-            rebuildYouTubeDetailRows();
-            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        }
+        String qLabel = quality != null && quality.length() > 0 ? quality : "stream";
+        setYoutubeResolveStatus(host.getString(R.string.youtube_resolve_getting_stream, qLabel));
+        refreshYouTubeResolveUi();
         YouTubeClient.getInstance(host.context()).resolveStream(video.id, quality,
                 new YouTubeClient.Callback() {
             @Override
@@ -3063,6 +3794,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
+                youtubeResolveStatus = "";
                 try {
                     youtubeStreamUrl = YouTubeResultJson.parseStreamUrl(payloadJson);
                 } catch (Exception e) {
@@ -3102,6 +3834,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
+                youtubeResolveStatus = "";
                 // #region agent log
                 try {
                     org.json.JSONObject d = new org.json.JSONObject();
@@ -3122,14 +3855,41 @@ public final class MediaSuiteHost {
         });
     }
 
+    /** 2026-07-15 — Staged status line for Play row / future HUD. */
+    private void setYoutubeResolveStatus(String status) {
+        youtubeResolveStatus = status != null ? status : "";
+    }
+
+    private String youtubeResolveStatusText() {
+        if (youtubeResolveStatus != null && youtubeResolveStatus.length() > 0) {
+            return youtubeResolveStatus;
+        }
+        return host.getString(R.string.youtube_resolve_looking_up);
+    }
+
+    /** Rebuild list so Play subtitle shows current resolve phase. */
+    private void refreshYouTubeResolveUi() {
+        int state = host.getCurrentScreenState();
+        if (state == STATE_YOUTUBE_BROWSE) {
+            youtubeLoading = youtubeResolvingStream;
+            rebuildYouTubeVirtualRows();
+            notifyVirtualDataChangedPreserveFocus();
+            updateYouTubeStatusPath(); // also refreshes status-bar search throbber
+        } else if (state == STATE_YOUTUBE_DETAIL) {
+            rebuildYouTubeDetailRows();
+            notifyVirtualDataChangedPreserveFocus();
+        }
+    }
+
     /** 2026-07-14 — Refresh browse/detail after resolve failure without yanking screen. */
     private void clearYouTubeResolveUi() {
+        youtubeResolveStatus = "";
         int state = host.getCurrentScreenState();
         if (state == STATE_YOUTUBE_BROWSE) {
             buildYouTubeBrowseUi();
         } else if (state == STATE_YOUTUBE_DETAIL) {
             rebuildYouTubeDetailRows();
-            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+            notifyVirtualDataChangedPreserveFocus();
         }
     }
 
@@ -3194,6 +3954,26 @@ public final class MediaSuiteHost {
 
     public boolean isYouTubePlaybackActive() {
         return videoPlaybackYoutube;
+    }
+
+    /**
+     * 2026-07-15 — Silence video / live YouTube stream before music or Deezer takes over.
+     * Layman: starting a song must kill the video player if it was still making noise.
+     * Technical: bump youtubeLoadGen so in-flight resolve/saveAudio callbacks no-op;
+     * release VideoPlayerController; clear stream flags. Does not change screen.
+     * Was: only music MediaPlayer was reset — YouTube video IJK kept playing under music.
+     * Reversal: empty method body.
+     */
+    public void stopVideoAndYoutubeStream() {
+        youtubeLoadGen++;
+        youtubeResolvingStream = false;
+        youtubeLoading = false;
+        youtubeResolveStatus = "";
+        youtubeStreamUrl = null;
+        videoPlaybackYoutube = false;
+        youtubeIjkFallbackPending = false;
+        releaseVideoPlayer();
+        showVideoPlayerLayer(false);
     }
 
     /** Context action — play a YouTube row without OK tap. */
@@ -3560,6 +4340,64 @@ public final class MediaSuiteHost {
     }
 
     /**
+     * MATCH_PARENT surface with CENTER gravity — letterbox bars even top/bottom (and sides).
+     * 2026-07-15 — Was plain MATCH_PARENT (FrameLayout defaults to top-left → picture sat high).
+     */
+    private static FrameLayout.LayoutParams centeredVideoSurfaceLp() {
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        lp.gravity = Gravity.CENTER;
+        return lp;
+    }
+
+    /** Show / hide centered load-buffer label over the video panel. */
+    private void setVideoStatusText(String text) {
+        TextView tv = host.findViewById(R.id.tv_video_status);
+        if (tv == null) return;
+        if (text == null || text.isEmpty()) {
+            tv.setVisibility(View.GONE);
+            tv.setText("");
+            return;
+        }
+        tv.setText(text);
+        tv.setVisibility(View.VISIBLE);
+    }
+
+    private void clearVideoStatusText() {
+        setVideoStatusText(null);
+    }
+
+    /** Buffering % from IJK while the first frames fill. */
+    private VideoPlayerController.BufferingListener videoBufferingListener() {
+        return new VideoPlayerController.BufferingListener() {
+            @Override
+            public void onBuffering(final int percent) {
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (host.getCurrentScreenState() != STATE_VIDEO_PLAYER) return;
+                        if (percent >= 100 || (videoController != null && videoController.isPlaying())) {
+                            clearVideoStatusText();
+                            return;
+                        }
+                        setVideoStatusText(host.getString(R.string.youtube_resolve_buffering, percent));
+                    }
+                });
+            }
+
+            @Override
+            public void onReadyToPlay() {
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        clearVideoStatusText();
+                    }
+                });
+            }
+        };
+    }
+
+    /**
      * 2026-07-15 — After decode size known: letterbox/crop surface; drop force if source is tall.
      */
     private void onVideoDecodedSize(int width, int height) {
@@ -3567,6 +4405,9 @@ public final class MediaSuiteHost {
             videoSurface.setVideoSize(width, height);
             videoSurface.setAspectRatio(
                     com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
+            // Re-assert center gravity after size-driven requestLayout.
+            videoSurface.setLayoutParams(centeredVideoSurfaceLp());
+            clearVideoStatusText();
         }
         boolean portraitSource = height > width;
         if (portraitSource) {
@@ -3639,27 +4480,36 @@ public final class MediaSuiteHost {
             host.changeScreen(STATE_VIDEOS);
             return;
         }
-        host.pauseMusicPlayback();
+        // 2026-07-15 — One activity only: video owns the speaker (stop music/FM, not pause).
+        // Layman: starting a video mutes any song that was playing.
+        // Was: pauseMusicPlayback → music IJK could resume under video.
+        host.stopMusicPlayback();
+        host.stopNonFmPlayback();
         releaseVideoPlayer();
         FrameLayout surfaceHost = host.findViewById(R.id.video_surface_host);
         if (surfaceHost == null) {
             Toast.makeText(host.context(), R.string.video_play_error, Toast.LENGTH_SHORT).show();
             return;
         }
+        // 2026-07-15 — Clear OS ~80% headphone lock so volume wheel can climb full range.
+        com.solar.launcher.HearingSafetyVolume.ensureFullVolumeRange(host.context());
         videoSurface = new SurfaceRenderView(host.context());
         videoSurface.setAspectRatio(
                 com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
-        surfaceHost.addView(videoSurface, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // Letterbox must sit in the middle of the black panel (FrameLayout default is top-left).
+        surfaceHost.addView(videoSurface, centeredVideoSurfaceLp());
         videoController = new VideoPlayerController();
         videoController.setPlaybackListener(videoPlaybackListener());
+        videoController.setBufferingListener(videoBufferingListener());
         videoController.attachHolder(videoSurface.getHolder());
         try {
+            setVideoStatusText(host.getString(R.string.youtube_resolve_opening));
             videoController.open(videoFiles.get(videoIndex));
             videoController.play();
             startVideoProgressUpdates();
             updateVideoProgressUi(0);
         } catch (Exception e) {
+            clearVideoStatusText();
             Toast.makeText(host.context(), R.string.video_play_error, Toast.LENGTH_SHORT).show();
             host.changeScreen(STATE_VIDEOS);
         }
@@ -3687,8 +4537,12 @@ public final class MediaSuiteHost {
             leaveYouTubePlayerOnError();
             return;
         }
-        host.pauseMusicPlayback();
+        // 2026-07-15 — Live YouTube video exclusive: stop music + FM + other engines.
+        host.stopMusicPlayback();
+        host.stopNonFmPlayback();
         releaseVideoPlayer();
+        // 2026-07-15 — Full volume range before stream (same 80% lock as music path).
+        com.solar.launcher.HearingSafetyVolume.ensureFullVolumeRange(host.context());
         FrameLayout surfaceHost = host.findViewById(R.id.video_surface_host);
         if (surfaceHost == null) {
             // #region agent log
@@ -3704,12 +4558,13 @@ public final class MediaSuiteHost {
         videoSurface = new SurfaceRenderView(host.context());
         videoSurface.setAspectRatio(
                 com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
-        surfaceHost.addView(videoSurface, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        surfaceHost.addView(videoSurface, centeredVideoSurfaceLp());
         videoController = new VideoPlayerController();
         videoController.setPlaybackListener(videoPlaybackListener());
+        videoController.setBufferingListener(videoBufferingListener());
         videoController.attachHolder(videoSurface.getHolder());
         try {
+            setVideoStatusText(host.getString(R.string.youtube_resolve_connecting));
             videoController.openUrl(youtubeStreamUrl);
             videoController.play();
             startVideoProgressUpdates();
@@ -3780,6 +4635,7 @@ public final class MediaSuiteHost {
     private void releaseVideoPlayer() {
         stopVideoProgressUpdates();
         clearVideoScrubMode(false);
+        clearVideoStatusText();
         if (videoController != null) {
             if (videoSurface != null) {
                 videoController.detachHolder(videoSurface.getHolder());
@@ -4162,6 +5018,70 @@ public final class MediaSuiteHost {
         });
     }
 
+    /**
+     * 2026-07-15 — Refresh virtual list without yanking focus to row 0 (search streaming).
+     * Layman: keep the blue bar on the row you were on while results fill in.
+     * Only re-focus when selection was lost after notify (never fight live DPAD/wheel).
+     */
+    private void notifyVirtualDataChangedPreserveFocus() {
+        final ListView lv = host.listVirtualSongs();
+        if (lv == null || virtualAdapter == null) return;
+        int pos = lv.getSelectedItemPosition();
+        if (pos < 0) {
+            View foc = host.activity() != null ? host.activity().getCurrentFocus() : null;
+            if (foc != null) {
+                for (int i = 0; i < lv.getChildCount(); i++) {
+                    View child = lv.getChildAt(i);
+                    if (child == foc || isDescendant(child, foc)) {
+                        pos = lv.getFirstVisiblePosition() + i;
+                        break;
+                    }
+                }
+            }
+        }
+        final int restore = pos;
+        virtualAdapter.notifyDataSetChanged();
+        if (restore < 0) return;
+        lv.post(new Runnable() {
+            @Override
+            public void run() {
+                if (virtualAdapter == null) return;
+                int count = virtualAdapter.getCount();
+                if (count <= 0) return;
+                // If focus already sits on a list child, leave A5 face/wheel alone.
+                View foc = host.activity() != null ? host.activity().getCurrentFocus() : null;
+                if (foc != null) {
+                    for (int i = 0; i < lv.getChildCount(); i++) {
+                        if (isDescendant(lv.getChildAt(i), foc) || lv.getChildAt(i) == foc) {
+                            return;
+                        }
+                    }
+                }
+                int selected = lv.getSelectedItemPosition();
+                if (selected >= 0 && selected < count) return;
+                int target = restore >= count ? count - 1 : restore;
+                FocusScrollHelper.focusListPosition(lv, target);
+            }
+        });
+    }
+
+    private static boolean isDescendant(View root, View child) {
+        if (root == null || child == null) return false;
+        View p = child;
+        while (p != null) {
+            if (p == root) return true;
+            android.view.ViewParent vp = p.getParent();
+            p = vp instanceof View ? (View) vp : null;
+        }
+        return false;
+    }
+
+    /** True while YouTube browse is fetching search/popular results. */
+    public boolean isYoutubeBrowseLoading() {
+        int st = host.getCurrentScreenState();
+        return (st == STATE_YOUTUBE_BROWSE || st == STATE_YOUTUBE_DETAIL) && youtubeLoading;
+    }
+
     private final class SimpleListAdapter extends BaseAdapter {
         private final int rowWidth;
         private final VirtualClickHandler handler;
@@ -4356,8 +5276,15 @@ public final class MediaSuiteHost {
         return FmBandPlan.fromRegionCode(RadioSettings.getFmBandRegion(host.context()));
     }
 
+    /**
+     * Band default when nothing is remembered — last dial if any, else 101.1 MHz.
+     * 2026-07-15 — Was always 101.1. Reversal: hardcode 101.1 again.
+     */
     private int defaultFmKhz() {
-        return currentFmPlan().clampKhz(Math.round(101.1f * 1000f));
+        FmBandPlan plan = currentFmPlan();
+        int last = RadioSettings.getLastFmKhz(host.context());
+        if (last > 0) return plan.clampKhz(last);
+        return plan.clampKhz(Math.round(101.1f * 1000f));
     }
 
     private int currentFmFreqKhz() {

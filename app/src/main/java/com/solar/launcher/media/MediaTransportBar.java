@@ -242,18 +242,40 @@ public final class MediaTransportBar {
     }
 
     private void showVolumeInTrack(int current, int max, boolean pulseOverlay) {
-        lastVolCurrent = current;
-        lastVolMax = max;
         if (volumeProgress == null) return;
         if (max < 1) max = 1;
-        volumeProgress.setMax(max);
-        volumeProgress.setProgress(Math.max(0, Math.min(current, max)));
-        if (progressBar != null) progressBar.setVisibility(View.GONE);
-        if (scrubMarker != null) scrubMarker.setVisibility(View.GONE);
-        volumeProgress.setVisibility(View.VISIBLE);
-        applyVolumeProgressTheme();
-        setVolumeLabelsVisible(true, current, max);
-        ensureVolumeHintVisible();
+        current = Math.max(0, Math.min(current, max));
+        boolean sameLevel = volumeModeActive && current == lastVolCurrent && max == lastVolMax
+                && volumeProgress.getVisibility() == View.VISIBLE;
+        lastVolCurrent = current;
+        lastVolMax = max;
+        if (!sameLevel) {
+            volumeProgress.setMax(max);
+            volumeProgress.setProgress(current);
+            if (progressBar != null && progressBar.getVisibility() != View.GONE) {
+                progressBar.setVisibility(View.GONE);
+            }
+            if (scrubMarker != null && scrubMarker.getVisibility() != View.GONE) {
+                scrubMarker.setVisibility(View.GONE);
+            }
+            if (volumeProgress.getVisibility() != View.VISIBLE) {
+                volumeProgress.setVisibility(View.VISIBLE);
+            }
+            // Theme once per pulse session, not every wheel tick.
+            if (!volumeModeActive) {
+                applyVolumeProgressTheme();
+            }
+            setVolumeLabelsVisible(true, current, max);
+            ensureVolumeHintVisible();
+        } else {
+            // Still update % text if icon band unchanged.
+            if (timeTotal != null) {
+                String next = formatVolumePercent(current, max) + "%";
+                if (timeTotal.getText() == null || !next.contentEquals(timeTotal.getText())) {
+                    timeTotal.setText(next);
+                }
+            }
+        }
         if (pulseOverlay && videoOverlayMode) {
             pulseVideoOverlay();
         }
@@ -306,23 +328,53 @@ public final class MediaTransportBar {
         updateScrubMarkerFraction(0f, false);
     }
 
-    /** 2026-07-07 — When tuning is not happening, show volume symbol and current percentage besides bar. */
+    /**
+     * 2026-07-07 — FM idle bar: volume icon + % (not a scrub timeline).
+     * 2026-07-15 — Skip work when volume/mode unchanged (was thrashing NP on every RDS/progress tick).
+     */
     public void showFmNormalBar(int current, int max) {
+        if (max < 1) max = 1;
+        current = Math.max(0, Math.min(current, max));
+        // Coalesce: wheel + 2s RDS were both repainting the same bar.
+        if (fmNormalModeActive
+                && current == lastVolCurrent
+                && max == lastVolMax
+                && volumeProgress != null
+                && volumeProgress.getVisibility() != View.VISIBLE
+                && (scrubFreq == null || scrubFreq.getVisibility() != View.VISIBLE)) {
+            return;
+        }
+        boolean needIcon = !fmNormalModeActive
+                || volumeIconRes(current, max) != volumeIconRes(lastVolCurrent, lastVolMax);
         fmNormalModeActive = true;
         lastVolCurrent = current;
         lastVolMax = max;
         showScrubTrack();
-        if (scrubFreq != null) scrubFreq.setVisibility(View.GONE);
+        if (scrubFreq != null && scrubFreq.getVisibility() != View.GONE) {
+            scrubFreq.setVisibility(View.GONE);
+        }
         updateScrubMarkerFraction(0f, false);
-        if (timeCurrent != null) timeCurrent.setVisibility(View.GONE);
+        if (timeCurrent != null && timeCurrent.getVisibility() != View.GONE) {
+            timeCurrent.setVisibility(View.GONE);
+        }
         if (timeTotal != null) {
             int pct = formatVolumePercent(current, max);
-            timeTotal.setText(pct + "%");
-            timeTotal.setVisibility(View.VISIBLE);
+            CharSequence old = timeTotal.getText();
+            String next = pct + "%";
+            if (old == null || !next.contentEquals(old)) {
+                timeTotal.setText(next);
+            }
+            if (timeTotal.getVisibility() != View.VISIBLE) {
+                timeTotal.setVisibility(View.VISIBLE);
+            }
         }
         if (volumeIcon != null) {
-            volumeIcon.setImageResource(volumeIconRes(current, max));
-            volumeIcon.setVisibility(View.VISIBLE);
+            if (needIcon) {
+                volumeIcon.setImageResource(volumeIconRes(current, max));
+            }
+            if (volumeIcon.getVisibility() != View.VISIBLE) {
+                volumeIcon.setVisibility(View.VISIBLE);
+            }
         }
     }
 

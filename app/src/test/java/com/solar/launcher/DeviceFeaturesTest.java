@@ -202,4 +202,36 @@ public class DeviceFeaturesTest {
         String family = DeviceFeatures.detectFamilyForTest("unknown", "unknown", 17, "Timmkoo A5", "Timmkoo");
         if (!"a5".equals(family)) throw new AssertionError("expected a5 got " + family);
     }
+
+    @Test
+    public void a5DisplayBeatsLyingY1Model() {
+        // 2026-07-15 — Stock A5 ROM reports model=Y1 + mt6572; panel is 240×320.
+        String family = DeviceFeatures.detectFamilyForTest(
+                "MT6572", "mt6572", 17, "Y1", "Timmkoo", 240, 320);
+        if (!"a5".equals(family)) throw new AssertionError("expected a5 got " + family);
+    }
+
+    @Test
+    public void y1DisplayBeatsTimmkooBrand() {
+        // Same OEM brand as A5, but landscape 480×360 is real Y1.
+        String family = DeviceFeatures.detectFamilyForTest(
+                "MT6572", "mt6572", 17, "Y1", "Timmkoo", 480, 360);
+        if (!"y1".equals(family)) throw new AssertionError("expected y1 got " + family);
+    }
+
+    @Test
+    public void a5DisplayHelpers() {
+        if (!DeviceFeatures.looksLikeA5Display(240, 320)) {
+            throw new AssertionError("240x320");
+        }
+        if (!DeviceFeatures.looksLikeA5Display(320, 240)) {
+            throw new AssertionError("320x240 rotated");
+        }
+        if (DeviceFeatures.looksLikeA5Display(480, 360)) {
+            throw new AssertionError("Y1 must not look like A5");
+        }
+        if (!DeviceFeatures.looksLikeY1Display(480, 360)) {
+            throw new AssertionError("480x360 Y1");
+        }
+    }
 }

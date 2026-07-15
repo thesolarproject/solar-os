@@ -20,11 +20,24 @@ public final class A5EdgeGestures {
     public static final int EDGE_BAND_PX = 28;
     /** Min travel to count as swipe. */
     public static final int SWIPE_MIN_PX = 40;
-    /** Hold-still → context (matches SOLAR_BACK_CONTEXT_HOLD_MS ~420ms). */
-    public static final long HOLD_CONTEXT_MS =
-            com.solar.input.policy.GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS;
+    /**
+     * Hold-still → context on empty chrome (not on list rows).
+     * 2026-07-15 — At least system long-press (~500ms); 420ms felt like “tap opens options”.
+     * Was: SOLAR_BACK_CONTEXT_HOLD_MS only (420). Reversal: return that constant alone.
+     */
+    public static final long HOLD_CONTEXT_MS = resolveHoldContextMs();
     /** Max jitter while “still” before hold cancels. */
     public static final int HOLD_SLOP_PX = 16;
+
+    private static long resolveHoldContextMs() {
+        long policy = com.solar.input.policy.GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS;
+        long system = 500L;
+        try {
+            system = ViewConfiguration.getLongPressTimeout();
+        } catch (Throwable ignored) {}
+        // Prefer the longer of policy hold and system long-press so short taps never open context.
+        return system > policy ? system : policy;
+    }
 
     public enum Gesture {
         NONE,
@@ -287,16 +300,18 @@ public final class A5EdgeGestures {
     }
 
     /**
-     * 2026-07-14 — True when a long-clickable view is under (x,y) in root-local coords.
-     * Layman: poke the view tree to see if that spot already has “hold for options”.
-     * Reversal: always return false → edge hold wins everywhere again.
+     * 2026-07-14 — True when a list row / control under (x,y) owns the press.
+     * Layman: poke a menu line → that line handles hold; empty chrome still uses edge hold.
+     * 2026-07-15 — Also defer for clickable+focusable rows (two-tap focus) so 420–500ms
+     * “almost taps” never open context via the activity hold timer.
+     * Reversal: only isLongClickable() check.
      */
     public static boolean shouldDeferHoldToChild(View root, float x, float y) {
         return hitOwnsLongPress(root, x, y);
     }
 
     /**
-     * 2026-07-14 — Walk hit tree; true if a long-clickable ancestor owns the press.
+     * 2026-07-14 — Walk hit tree; true if an interactive row owns the press.
      * Coordinates are relative to {@code root} (same space as MotionEvent in Activity.dispatchTouchEvent
      * when root is the window decor).
      */
@@ -305,6 +320,11 @@ public final class A5EdgeGestures {
         View hit = findDeepestAt(root, x, y);
         while (hit != null) {
             if (hit.isLongClickable()) return true;
+            // Menu / list rows: first-tap focus or activate — never edge-hold context on them.
+            if (hit.isClickable()
+                    && (hit.isFocusable() || hit.isFocusableInTouchMode())) {
+                return true;
+            }
             Object p = hit.getParent();
             if (!(p instanceof View) || p == root.getParent()) break;
             hit = (View) p;

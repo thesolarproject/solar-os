@@ -17,6 +17,8 @@ import java.util.Locale;
  * 2026-07-15 — Dual-storage resilience: all families scan every healthy volume;
  *   Primary storage pref only picks where new downloads/recordings go;
  *   Y1 may discover Internal via A5-style probes when a second mount exists.
+ * 2026-07-15 — A5 stock props often claim model=Y1; use display 240×320 + input scheme,
+ *   not ro.product.model alone (staging/adb must use the same checks).
  * Intentional divergences: Y1 no power button (BACK-long overlay); Y2 power/BACK-long;
  *   Y1 AVRCP native BT patches; Y2 dual storage; Y2 hides volume/lock chips;
  *   A5 touchscreen, dual face/side nav modes, portrait default, overlay volume/lock.
@@ -533,14 +535,26 @@ public final class DeviceFeatures {
 
     static String detectFamilyForTest(String cpuHardware, String boardHardware, int sdkInt, String model) {
         cachedFamily = null;
-        return probeFamily(cpuHardware, boardHardware, sdkInt, model, "");
+        return probeFamily(cpuHardware, boardHardware, sdkInt, model, "", 0, 0);
     }
 
     /** Unit / emulator — include manufacturer tokens (timmkoo, etc.). */
     static String detectFamilyForTest(String cpuHardware, String boardHardware, int sdkInt,
             String model, String manufacturer) {
         cachedFamily = null;
-        return probeFamily(cpuHardware, boardHardware, sdkInt, model, manufacturer);
+        return probeFamily(cpuHardware, boardHardware, sdkInt, model, manufacturer, 0, 0);
+    }
+
+    /**
+     * 2026-07-15 — Include display pixels when model props lie (A5 reports as Y1).
+     * @param displayW physical/logical width px (0 = unknown)
+     * @param displayH physical/logical height px (0 = unknown)
+     */
+    static String detectFamilyForTest(String cpuHardware, String boardHardware, int sdkInt,
+            String model, String manufacturer, int displayW, int displayH) {
+        cachedFamily = null;
+        return probeFamily(cpuHardware, boardHardware, sdkInt, model, manufacturer,
+                displayW, displayH);
     }
 
     private static String detectFamily() {
@@ -558,13 +572,15 @@ public final class DeviceFeatures {
             String manu = (Build.MANUFACTURER != null ? Build.MANUFACTURER : "")
                     + " " + (Build.BRAND != null ? Build.BRAND : "")
                     + " " + (Build.PRODUCT != null ? Build.PRODUCT : "");
+            int[] px = readDisplayPixels();
             cachedFamily = probeFamily(readProcCpuHardware(), board, Build.VERSION.SDK_INT,
-                    Build.MODEL != null ? Build.MODEL : "", manu);
+                    Build.MODEL != null ? Build.MODEL : "", manu, px[0], px[1]);
             try {
                 Log.i(TAG, "detected device family: " + cachedFamily
                         + " hw=" + Build.HARDWARE + " board=" + Build.BOARD
                         + " sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL
-                        + " manu=" + Build.MANUFACTURER);
+                        + " manu=" + Build.MANUFACTURER
+                        + " display=" + px[0] + "x" + px[1]);
             } catch (Throwable ignored) {}
             return cachedFamily;
         }
@@ -572,16 +588,22 @@ public final class DeviceFeatures {
 
     /**
      * 2026-07-11 — A5 tokens before SDK/Y1 defaults so KitKat-class A5 never becomes Y2.
-     * Was: CPU → SDK ≥19 Y2 / ≤16 Y1 → model y1/y2 → default y1.
-     * Now: prop/override elsewhere; then A5 model/manu; then MT6582/MT6572; then SDK/model.
+     * 2026-07-15 — Display size beats lying model=Y1 (A5 is 240×320; Y1 is 480×360).
+     * Was: model containing "y1" blocked A5 forever; mt6572 → y1 swallowed real A5s.
+     * Now: QVGA portrait display → a5; then model a5 tokens; then MT6582/MT6572; then SDK.
      */
     private static String probeFamily(String cpuHardware, String boardHardware, int sdkInt,
-            String model, String manufacturer) {
+            String model, String manufacturer, int displayW, int displayH) {
         String cpu = cpuHardware != null ? cpuHardware.toLowerCase(Locale.US) : "";
         String board = boardHardware != null ? boardHardware.toLowerCase(Locale.US) : "";
         String m = model != null ? model.toLowerCase(Locale.US) : "";
         String manu = manufacturer != null ? manufacturer.toLowerCase(Locale.US) : "";
-        if (looksLikeA5(m, manu)) return "a5";
+        // Strongest: physical panel size (A5 stock ROM still ships Y1 product props).
+        if (looksLikeA5Display(displayW, displayH)) return "a5";
+        // Explicit A5 model string (lab / future ROMs).
+        if (looksLikeA5ModelOrManu(m, manu)) return "a5";
+        // Y1 landscape panel — even if brand is Timmkoo (same OEM as A5).
+        if (looksLikeY1Display(displayW, displayH)) return "y1";
         if (cpu.contains("mt6582") || board.contains("mt6582")) return "y2";
         if (cpu.contains("mt6572") || board.contains("mt6572")) return "y1";
         if (sdkInt >= 19) return "y2";
@@ -591,14 +613,64 @@ public final class DeviceFeatures {
         return "y1";
     }
 
-    /** Model/brand strings that mean Timmkoo A5 (placeholders until props confirmed). */
-    private static boolean looksLikeA5(String m, String manu) {
-        if (m.contains("y1") || m.contains("y2")) return false;
-        if (m.contains("a5")) return true;
-        if (manu.contains("timmkoo") || m.contains("timmkoo")) return true;
-        // 2026-07-11 — Some A5 lab touch keyboards report generic.
-        if (m.equals("generic") && android.os.Build.VERSION.SDK_INT == 19) return false; // Y2 sdk emulator
+    /**
+     * 2026-07-15 — A5 QVGA portrait 240×320 (order-independent; ±20px for overscan).
+     * Pure logic for unit tests and adb staging scripts.
+     */
+    static boolean looksLikeA5Display(int widthPx, int heightPx) {
+        if (widthPx <= 0 || heightPx <= 0) return false;
+        int a = Math.min(widthPx, heightPx);
+        int b = Math.max(widthPx, heightPx);
+        return a >= 220 && a <= 260 && b >= 300 && b <= 340;
+    }
+
+    /**
+     * 2026-07-15 — Y1 360×480 (landscape 480×360 or portrait). ±20px.
+     */
+    static boolean looksLikeY1Display(int widthPx, int heightPx) {
+        if (widthPx <= 0 || heightPx <= 0) return false;
+        int a = Math.min(widthPx, heightPx);
+        int b = Math.max(widthPx, heightPx);
+        return a >= 340 && a <= 380 && b >= 460 && b <= 500;
+    }
+
+    /**
+     * Model/brand tokens for A5 when display is unknown.
+     * 2026-07-15 — Do not treat bare "Y1" or bare "Timmkoo" as A5 (Y1 is also Timmkoo).
+     * Was: any timmkoo → a5; model y1 blocked a5 tokens forever.
+     */
+    private static boolean looksLikeA5ModelOrManu(String m, String manu) {
+        if (m == null) m = "";
+        if (manu == null) manu = "";
+        // Explicit A5 in model/product string.
+        if (m.contains("a5") || manu.contains("a5")) return true;
+        // "Timmkoo A5" style — a5 already matched; avoid classifying plain "Y1" + Timmkoo.
+        if ((manu.contains("timmkoo") || m.contains("timmkoo"))
+                && !m.contains("y1") && !m.contains("y2")
+                && m.length() > 0 && !m.equals("y1")) {
+            // Brand alone is ambiguous — only when model is empty/generic lab.
+            if (m.contains("generic") || m.length() == 0) return false;
+        }
         return false;
+    }
+
+    /** @deprecated use {@link #looksLikeA5ModelOrManu} — kept for older tests if any. */
+    private static boolean looksLikeA5(String m, String manu) {
+        return looksLikeA5ModelOrManu(m, manu);
+    }
+
+    /** Read built-in display size; [0]=w [1]=h or 0,0 when unavailable (JVM tests). */
+    private static int[] readDisplayPixels() {
+        int[] out = new int[] { 0, 0 };
+        try {
+            android.content.res.Resources res = android.content.res.Resources.getSystem();
+            if (res == null) return out;
+            android.util.DisplayMetrics dm = res.getDisplayMetrics();
+            if (dm == null) return out;
+            out[0] = dm.widthPixels;
+            out[1] = dm.heightPixels;
+        } catch (Throwable ignored) {}
+        return out;
     }
 
     private static String readSystemProperty(String key) {

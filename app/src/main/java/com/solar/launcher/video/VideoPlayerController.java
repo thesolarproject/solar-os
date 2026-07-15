@@ -16,7 +16,8 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         IMediaPlayer.OnPreparedListener,
         IMediaPlayer.OnErrorListener,
         IMediaPlayer.OnCompletionListener,
-        IMediaPlayer.OnVideoSizeChangedListener {
+        IMediaPlayer.OnVideoSizeChangedListener,
+        IMediaPlayer.OnBufferingUpdateListener {
 
     /**
      * 2026-07-14 — Host learns when stream fails or ends (YouTube IJK path).
@@ -39,6 +40,18 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         void onVideoSize(int width, int height);
     }
 
+    /**
+     * 2026-07-15 — Honest load progress for YouTube / HTTP (Hallmark: no stuck “Resolving…”).
+     * Layman: show buffering percent while the first frames fill.
+     */
+    public interface BufferingListener {
+        /** 0–100 while downloading ahead of playhead. */
+        void onBuffering(int percent);
+
+        /** Prepared and first start issued — hide status chrome. */
+        void onReadyToPlay();
+    }
+
     private final IjkMediaPlayer player;
     private SurfaceHolder boundHolder;
     private boolean prepared;
@@ -46,6 +59,7 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     private boolean pausedForSurfaceLoss;
     private String pendingPath;
     private PlaybackListener playbackListener;
+    private BufferingListener bufferingListener;
     /** 2026-07-14 — Guard double error callbacks after release / retry. */
     private boolean released;
 
@@ -57,6 +71,11 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     /** Host callback for error / end — YouTube uses this to retry quality or leave. */
     public void setPlaybackListener(PlaybackListener listener) {
         playbackListener = listener;
+    }
+
+    /** Optional buffering % / ready — video shell status label. */
+    public void setBufferingListener(BufferingListener listener) {
+        bufferingListener = listener;
     }
 
     public IjkMediaPlayer getPlayer() {
@@ -177,6 +196,7 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         prepared = false;
         pendingPath = null;
         playbackListener = null;
+        bufferingListener = null;
         try {
             player.stop();
         } catch (IllegalStateException ignored) {}
@@ -201,6 +221,8 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         } catch (Exception ignored) {}
         // #endregion
         if (playWhenSurfaceReady) play();
+        BufferingListener bl = bufferingListener;
+        if (bl != null) bl.onReadyToPlay();
     }
 
     @Override
@@ -317,11 +339,19 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         } catch (IllegalStateException ignored) {}
     }
 
-    /** Re-attach prepared / error / completion after reset (reset clears them). */
+    /** Re-attach prepared / error / completion / buffering after reset (reset clears them). */
     private void wirePlayerListeners() {
         player.setOnPreparedListener(this);
         player.setOnErrorListener(this);
         player.setOnCompletionListener(this);
         player.setOnVideoSizeChangedListener(this);
+        player.setOnBufferingUpdateListener(this);
+    }
+
+    @Override
+    public void onBufferingUpdate(IMediaPlayer mp, int percent) {
+        if (released) return;
+        BufferingListener bl = bufferingListener;
+        if (bl != null) bl.onBuffering(percent);
     }
 }
