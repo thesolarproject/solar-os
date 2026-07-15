@@ -179,6 +179,7 @@
     <string name="path_library_genres">Library / Genres</string>
     <string name="path_library_playlists">Library / Playlists</string>
     <string name="path_library_all_songs">Library / All Songs</string>
+    <string name="path_library_recently_added">Library / Recently Added</string>
     <string name="path_library_artist">Library / Artists / %1$s</string>
     <string name="path_library_album">Library / Albums / %1$s</string>
     <string name="path_library_genre">Library / Genres / %1$s</string>
@@ -240,6 +241,21 @@
     <!-- Date/time / misc -->
     <string name="datetime_apply">✅ APPLY DATE &amp; TIME</string>
     <string name="eq_normal_default">Normal (Default)</string>
+    <string name="settings_equalizer">Equalizer</string>
+    <string name="eq_onboard_hint">Ten-band equalizer. Import Rockbox or AutoEQ presets from Solar/EQ, Music/EQ, or .rockbox/eqs on your card. Soft EQ uses the built-in decoder when needed.</string>
+    <string name="eq_enabled">Equalizer on</string>
+    <string name="eq_preamp">Preamp: %1$s</string>
+    <string name="eq_band_row">%1$s Hz: %2$s</string>
+    <string name="eq_flat">Reset flat</string>
+    <string name="eq_ab_compare">A/B compare</string>
+    <string name="eq_ab_toggled">A/B swapped</string>
+    <string name="eq_save_preset">Save preset to card</string>
+    <string name="eq_saved">Saved %1$s</string>
+    <string name="eq_save_failed">Could not save preset</string>
+    <string name="eq_import_preset">Import preset…</string>
+    <string name="eq_import_empty">No presets found on card</string>
+    <string name="eq_imported">Loaded %1$s</string>
+    <string name="eq_import_failed">Could not import preset</string>
     <string name="bg_mode_theme">Theme wallpaper</string>
     <string name="bg_mode_custom">Custom image</string>
     <string name="bg_mode_album">Album art blur</string>
@@ -264,7 +280,26 @@
     <string name="settings_playback">Playback</string>
     <string name="settings_sub_playback">Settings: Playback</string>
     <string name="settings_repeat_mode">Repeat Mode</string>
-    <string name="settings_equalizer">Equalizer</string>
+    <string name="podcast_started_over">Starting from the beginning</string>
+    <string name="podcast_clear_played">Clear played</string>
+    <string name="podcast_play_next">Play next</string>
+    <string name="podcast_add_queue">Add to queue</string>
+    <string name="podcasts_my_shows">My Shows</string>
+    <string name="podcasts_my_shows_empty">No followed shows yet</string>
+    <string name="podcasts_following">Following</string>
+    <string name="podcasts_follow">Follow show</string>
+    <string name="podcasts_unfollow">Unfollow show</string>
+    <string name="podcasts_followed">Show followed</string>
+    <string name="podcasts_unfollowed">Show unfollowed</string>
+    <string name="skip_back_30">Skip back 30s</string>
+    <string name="skip_fwd_30">Skip forward 30s</string>
+    <string name="sleep_timer_label">Sleep timer: %1$s</string>
+    <string name="sleep_timer_set">Sleep timer: %1$s</string>
+    <string name="sleep_timer_fired">Sleep timer — paused</string>
+    <string name="audiobook_chapters">Chapters</string>
+    <string name="audiobook_no_chapters">No chapters found</string>
+    <string name="browser_recently_added">Recently Added</string>
+    <string name="eq_hires_meta">%1$d Hz · %2$d-bit</string>
     <string name="settings_button_sound">Button Sound</string>
     <string name="settings_button_vibrate">Button Vibrate</string>
     <string name="settings_hearing_safety">Hearing Safety</string>
@@ -374,8 +409,8 @@
     <string name="settings_y2_primary_microsd">MicroSD</string>
     <string name="settings_y2_primary_internal">Internal Storage</string>
     <string name="settings_y2_primary_microsd_absent">Not inserted</string>
-    <string name="settings_preview_y2_primary_storage">Choose where new downloads and saves go. Library scans always include both volumes when mounted. Defaults to MicroSD when a card is inserted, or Internal when the player started without one.</string>
-    <string name="settings_preview_y2_internal_media">When on, new downloads and saves go to Internal Storage (/storage/sdcard0) as well as MicroSD. Library scans always include both volumes. When off, new media stays on MicroSD; internal is used for app caches when space allows.</string>
+    <string name="settings_preview_y2_primary_storage">Choose where new downloads, podcasts, and recordings go. Your library still shows media from every mounted volume. Defaults to MicroSD when a card is healthy, or Internal when the card is missing.</string>
+    <string name="settings_preview_y2_internal_media">Legacy toggle. Prefer Primary storage: pick MicroSD or Internal as the only destination for new downloads. Library scans always include every mounted volume.</string>
     <string name="storage_volume_microsd">MicroSD</string>
     <string name="storage_volume_internal">Internal Storage</string>
     <string name="storage_volume_header">%1$s</string>
@@ -581,6 +616,7 @@
     <string name="plex_artists">Plex: Artists</string>
     <string name="plex_loading">Loading…</string>
     <string name="plex_wifi_required">Wi‑Fi required for Plex streaming</string>
+    <string name="plex_stream_fail">Could not play this Plex track</string>
     <string name="path_plex_artists">Plex / Artists</string>
     <string name="path_plex_root">Plex</string>
     <string name="path_plex_all_albums">Plex / Albums</string>
@@ -604,6 +640,7 @@
     <string name="jellyfin_settings_test">Test connection</string>
     <string name="jellyfin_test_ok">Jellyfin connection OK</string>
     <string name="jellyfin_test_fail">Jellyfin connection failed</string>
+    <string name="jellyfin_stream_fail">Could not play this Jellyfin track</string>
     <string name="jellyfin_not_configured">Jellyfin not configured</string>
     <string name="jellyfin_download_album">Download album for offline</string>
     <string name="jellyfin_downloading">Downloading… %1$d / %2$d</string>
@@ -1406,7 +1443,7 @@
     <string name="settings_debug_radio_experiment">Radio (FM + Internet experiment)</string>
     <string name="settings_debug_radio_experiment_hint">Off by default. Enables the Radio home tile, FM tuner, and Internet radio browse.</string>
     <string name="settings_debug_youtube_experiment">YouTube</string>
-    <string name="settings_debug_youtube_experiment_hint">On by default. Off hides Videos → YouTube. Needs notPipe + NotPipe bridge (platform prep / reboot if probe fails).</string>
+    <string name="settings_debug_youtube_experiment_hint">On by default. Off hides Videos → YouTube. Uses Solar’s built-in Invidious/Piped clients (needs Wi‑Fi).</string>
     <string name="settings_debug_usb_mass_storage_experiment">USB mass storage (Y2 experiment)</string>
     <string name="settings_debug_usb_mass_storage_experiment_hint">Unavailable — Y2 uses MTP only. USB disk mode is not supported on this Android 4.4.2 build.</string>
     <string name="settings_usb_mass_storage_unavailable">USB mass storage is not available on this device. Y2 uses MTP for PC file transfer.</string>
@@ -1637,8 +1674,10 @@
     <string name="youtube_empty">No videos found.</string>
     <string name="youtube_error">Could not load YouTube. Check connection and try again.</string>
     <string name="youtube_unavailable">YouTube is unavailable right now.</string>
-    <string name="youtube_needs_platform_prep">YouTube needs platform prep — install Solar ROM tools or reinstall from your computer, then reboot.</string>
-    <string name="youtube_bridge_not_ready">YouTube bridge not ready. Reboot once after NotPipe bridge is enabled, then try again.</string>
+    <string name="youtube_needs_platform_prep">YouTube needs an internet connection. Check Wi‑Fi and try again.</string>
+    <string name="youtube_bridge_not_ready">YouTube backends are slow to wake. Try again in a moment, or check Wi‑Fi.</string>
+    <!-- 2026-07-15 — Native client soft-probe toast (replaces NotPipe bridge wording). -->
+    <string name="youtube_backend_not_ready">YouTube backends are slow to wake. Try again in a moment, or check Wi‑Fi.</string>
     <string name="youtube_resolving_stream">Resolving stream…</string>
     <string name="youtube_play_error">Could not play this video.</string>
     <string name="youtube_play_error_detail">Could not play: %1$s</string>
@@ -1650,6 +1689,9 @@
     <string name="youtube_ctx_save_audio">Save audio only</string>
     <string name="youtube_ctx_play_saved">Play saved copy</string>
     <string name="youtube_save_progress">Saving… %1$d / %2$d</string>
+    <string name="youtube_save_resolving">Finding stream…</string>
+    <string name="youtube_save_progress_pct">Saving… %1$d%%</string>
+    <string name="youtube_save_progress_bytes">Saving… %1$s</string>
     <string name="youtube_save_done">Saved to library.</string>
     <string name="youtube_save_failed">Could not save: %1$s</string>
     <string name="youtube_already_saved">Already saved on device.</string>
@@ -1667,6 +1709,10 @@
     <string name="settings_video">Video</string>
     <string name="settings_sub_video">Settings: Video</string>
     <string name="video_settings_sleep_during_playback">Sleep screen during playback</string>
+    <string name="video_settings_crop_mode">Picture fit</string>
+    <string name="video_settings_crop_letterbox">Letterbox</string>
+    <string name="video_settings_crop_fill">Crop 4:3</string>
+    <string name="video_settings_crop_hint">Letterbox keeps the whole wide picture with bars. Crop 4:3 zooms to fill our screen like a TV Zoom setting.</string>
 
     <string name="photo_no_folders">No photo folders found.</string>
     <string name="photo_folder_header">Folder: %1$s</string>

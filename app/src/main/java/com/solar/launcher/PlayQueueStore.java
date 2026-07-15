@@ -59,6 +59,13 @@ public final class PlayQueueStore {
                     if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
                         o.put("plexCover", q.navidromeCoverArtId);
                     }
+                    // 2026-07-15: Resume needs Part.key so cold start can still direct-stream.
+                    if (q.plexMediaPartKey != null && !q.plexMediaPartKey.isEmpty()) {
+                        o.put("plexPartKey", q.plexMediaPartKey);
+                    }
+                    if (q.plexContainer != null && !q.plexContainer.isEmpty()) {
+                        o.put("plexContainer", q.plexContainer);
+                    }
                 } else if (q.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
                     o.put("jellyfinId", q.navidromeSongId);
                     o.put("jellyfinTitle", q.navidromeTitle);
@@ -136,11 +143,14 @@ public final class PlayQueueStore {
                             if (i < savedIndex) savedIndex--;
                             continue;
                         }
+                        // 2026-07-15: Restore Part.key/container when present (older JSON omits them).
                         items.add(PlayQueue.QueueItem.plex(plexId,
                                 o.optString("plexTitle", ""),
                                 o.optString("plexArtist", ""),
                                 o.optString("plexAlbum", ""),
-                                o.optString("plexCover", "")));
+                                o.optString("plexCover", ""),
+                                o.optString("plexPartKey", ""),
+                                o.optString("plexContainer", "")));
                         continue;
                     }
                     if ("JELLYFIN_STREAM".equals(kind)) {

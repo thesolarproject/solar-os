@@ -133,6 +133,19 @@ public final class PlexScreenHost {
         return selectedAlbum;
     }
 
+    /** 2026-07-15 — True while Albums list (all albums or under an artist) is on screen. */
+    public boolean isAlbumListVisible() {
+        return uiMode == UI_ALBUMS;
+    }
+
+    /** 2026-07-15 — Focused album row for Save-album context menu. */
+    public PlexAlbum getFocusedAlbum() {
+        if (uiMode != UI_ALBUMS) return null;
+        int pos = actions.getListSelectedPosition();
+        PlexBrowseRow row = adapter.rowAt(pos);
+        return row != null ? row.album : null;
+    }
+
     /** 2026-07-06: Preview pane row lookup by ListView selection index. */
     public PlexBrowseRow getBrowseRowAt(int position) {
         return adapter.rowAt(position);

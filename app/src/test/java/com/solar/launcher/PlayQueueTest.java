@@ -11,6 +11,38 @@ import java.util.List;
 public class PlayQueueTest {
 
     @Test
+    public void activatePlex_preservesPartKeyForDirectStream() throws Exception {
+        PlaybackCoordinator pc = new PlaybackCoordinator();
+        java.util.List<com.solar.launcher.plex.PlexSong> songs =
+                new java.util.ArrayList<com.solar.launcher.plex.PlexSong>();
+        com.solar.launcher.plex.PlexSong s = new com.solar.launcher.plex.PlexSong();
+        s.id = "99";
+        s.title = "Song";
+        s.artist = "Artist";
+        s.album = "Album";
+        s.coverArtId = "c";
+        s.mediaPartKey = "/library/parts/1/file.mp3";
+        s.container = "mp3";
+        songs.add(s);
+        pc.activatePlex(songs, 0, false, null);
+        PlayQueue.QueueItem q = pc.unifiedQueue().current();
+        if (q == null || q.kind != PlayQueue.ItemKind.PLEX_STREAM) {
+            throw new AssertionError("kind");
+        }
+        if (!"/library/parts/1/file.mp3".equals(q.plexMediaPartKey)) {
+            throw new AssertionError("part dropped: " + q.plexMediaPartKey);
+        }
+        if (!"mp3".equals(q.plexContainer)) {
+            throw new AssertionError("container dropped: " + q.plexContainer);
+        }
+        org.json.JSONObject d = new org.json.JSONObject();
+        d.put("partKeyLen", q.plexMediaPartKey.length());
+        d.put("container", q.plexContainer);
+        com.solar.launcher.debug.Debug2241b1Log.log(
+                "PlayQueueTest.activatePlex", "queue keeps part meta", "A", "post-fix", d);
+    }
+
+    @Test
     public void mixedQueue_nextPrev() {
         PlayQueue q = new PlayQueue();
         List<PlayQueue.QueueItem> items = new ArrayList<PlayQueue.QueueItem>();

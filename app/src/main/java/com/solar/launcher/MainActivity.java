@@ -109,7 +109,9 @@ import com.solar.launcher.youtube.YouTubeVideo;
 import com.solar.launcher.podcast.OpenRssClient;
 import com.solar.launcher.podcast.PodcastCatalog;
 import com.solar.launcher.podcast.PodcastLibrary;
+import com.solar.launcher.podcast.PodcastPlayedStore;
 import com.solar.launcher.podcast.PodcastResumeStore;
+import com.solar.launcher.podcast.PodcastSubscriptions;
 
 import org.json.JSONObject;
 
@@ -1481,6 +1483,13 @@ public class MainActivity extends Activity {
     private MediaPlayer mediaPlayer;
     /** Podcast playback on IJK — API 17 has no MediaPlayer speed/pitch control. */
     private com.solar.launcher.podcast.PodcastIjkPlayer podcastIjkPlayer;
+    /**
+     * 2026-07-15 — Local music on IJK when software EQ is active (FFmpeg af filters).
+     * Layman: same IJK engine used for podcasts, but for songs so the 10-band EQ can run.
+     * Reversal: releaseMusicIjkPlayer + MediaPlayer-only prepare when EQ flat/disabled.
+     */
+    private com.solar.launcher.podcast.PodcastIjkPlayer musicIjkPlayer;
+    private boolean musicUsingIjk = false;
     private AudioManager audioManager;
     private File rootFolder = new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), "Music");
     private File currentFolder = rootFolder;
@@ -1604,6 +1613,107 @@ public class MainActivity extends Activity {
         if (podcastIjkPlayer != null) {
             podcastIjkPlayer.release();
             podcastIjkPlayer = null;
+        }
+    }
+
+    /** 2026-07-15 — Tear down music IJK session; next prepare can use MediaPlayer again. */
+    private void releaseMusicIjkPlayer() {
+        if (musicIjkPlayer != null) {
+            try {
+                musicIjkPlayer.release();
+            } catch (Exception ignored) {
+            }
+            musicIjkPlayer = null;
+        }
+        musicUsingIjk = false;
+    }
+
+    private com.solar.launcher.podcast.PodcastIjkPlayer ensureMusicIjkPlayer() {
+        if (musicIjkPlayer == null) {
+            musicIjkPlayer = new com.solar.launcher.podcast.PodcastIjkPlayer(true);
+        } else {
+            musicIjkPlayer.reset();
+        }
+        return musicIjkPlayer;
+    }
+
+    /** 2026-07-15 — True when local music is playing through IJK for software EQ. */
+    private boolean isMusicIjkActive() {
+        return musicUsingIjk && musicIjkPlayer != null && !playback.isPodcastActive();
+    }
+
+    private boolean isActiveAudioPlaying() {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                return podcastIjkPlayer.isPlaying();
+            }
+            if (isMusicIjkActive()) return musicIjkPlayer.isPlaying();
+            return mediaPlayer != null && mediaPlayer.isPlaying();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private int activeAudioPositionMs() {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                return podcastIjkPlayer.getCurrentPosition();
+            }
+            if (isMusicIjkActive()) return musicIjkPlayer.getCurrentPosition();
+            return mediaPlayer != null ? mediaPlayer.getCurrentPosition() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private int activeAudioDurationMs() {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                return podcastIjkPlayer.getDuration();
+            }
+            if (isMusicIjkActive()) return musicIjkPlayer.getDuration();
+            return mediaPlayer != null ? mediaPlayer.getDuration() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void pauseActiveAudio() {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                podcastIjkPlayer.pause();
+            } else if (isMusicIjkActive()) {
+                musicIjkPlayer.pause();
+            } else if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                mediaPlayer.pause();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void startActiveAudio() {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                podcastIjkPlayer.start();
+            } else if (isMusicIjkActive()) {
+                musicIjkPlayer.start();
+            } else if (mediaPlayer != null) {
+                mediaPlayer.start();
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void seekActiveAudio(int ms) {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                podcastIjkPlayer.seekTo(ms);
+            } else if (isMusicIjkActive()) {
+                musicIjkPlayer.seekTo(ms);
+            } else if (mediaPlayer != null) {
+                mediaPlayer.seekTo(ms);
+            }
+        } catch (Exception ignored) {
         }
     }
 
@@ -1765,6 +1875,29 @@ public class MainActivity extends Activity {
                     progressHandler.postDelayed(this, 500);
                     return;
                 }
+                // 2026-07-15 — Music-on-IJK progress (software EQ path).
+                if (isMusicIjkActive() && musicIjkPlayer.isPlaying()) {
+                    if (playerScrubCursorActive) {
+                        progressHandler.postDelayed(this, 500);
+                        return;
+                    }
+                    int current = musicIjkPlayer.getCurrentPosition();
+                    int duration = musicIjkPlayer.getDuration();
+                    if (tvPlayerTimeCurrent != null) tvPlayerTimeCurrent.setText(formatTime(current));
+                    if (tvPlayerTimeTotal != null && duration > 0) {
+                        tvPlayerTimeTotal.setText(formatTime(duration));
+                    }
+                    if (playerProgress != null && duration > 0) {
+                        int progress = (int) (((float) current / duration) * 100);
+                        if (progress > 100) progress = 100;
+                        playerProgress.setProgress(progress);
+                    }
+                    if (avrcpTrackInfoWriter != null) {
+                        avrcpTrackInfoWriter.tickPlayingPosition(current);
+                    }
+                    progressHandler.postDelayed(this, 500);
+                    return;
+                }
                 if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                     if (playerScrubCursorActive) {
                         progressHandler.postDelayed(this, 500);
@@ -1894,6 +2027,8 @@ public class MainActivity extends Activity {
             if (Intent.ACTION_SCREEN_OFF.equals(action)) {
                 isScreenSleeping = true;
                 soulseekScreenSleepArmed = false;
+                // 2026-07-15 — Sleep dismisses stuck menus/USB prompt (wake must not leave shells up).
+                dismissOverlaysAndUsbPromptForScreenSleep("SCREEN_OFF");
                 scheduleWifiSleepOff();
                 scheduleSoulseekSharePolicyRefresh();
                 // #region agent log
@@ -2860,6 +2995,8 @@ public class MainActivity extends Activity {
         } catch (Exception e) {}
 
         loadEqPresetsAsync();
+        // 2026-07-15 — Load ten-band software EQ curve from prefs.
+        com.solar.launcher.eq.SolarEqController.get().ensureLoaded(this);
 
         currentEqPresetIndex = prefs.getInt("eq_preset", 0);
         if (currentEqPresetIndex >= eqPresetNames.size())
@@ -4862,6 +4999,10 @@ public class MainActivity extends Activity {
         } else {
             listH = (int) getResources().getDimension(R.dimen.y1_settings_menu_height);
         }
+        // Portrait lower strip eats height — page capacity must match visible rows.
+        if (A5PortraitChrome.usePortraitChrome(this) && !settingsBrowseFullWidth) {
+            listH -= A5PortraitChrome.stripHeightPx(this);
+        }
         return Math.max(1, listH / Math.max(1, rowH));
     }
 
@@ -5276,8 +5417,24 @@ public class MainActivity extends Activity {
         }, "ThemeVariants").start();
     }
 
+    /**
+     * 2026-07-15 — Landscape dual-pane OR portrait bottom strip share the same preview widgets.
+     * Was: every isFullWidthMenus path skipped previews (portrait strip stayed empty/stale).
+     * Reversal: return !isFullWidthMenus only.
+     */
+    private boolean themeSecondaryPaneActive() {
+        return !isFullWidthMenus
+                || (A5PortraitChrome.usePortraitChrome(this) && !settingsBrowseFullWidth);
+    }
+
+    /** 2026-07-15 — Push theme preview widgets into the portrait lower strip (no rowKey invent). */
+    private void syncThemePreviewToPortraitStrip() {
+        // null rowKey: syncA5BottomStripFromSettings must not invent a title from a key.
+        syncA5BottomStripFromSettings(null);
+    }
+
     private void updateInstalledThemePreview(final ThemeManager.ThemeEntry theme) {
-        if (theme == null || isFullWidthMenus || tvSettingsPreviewTitle == null) return;
+        if (theme == null || !themeSecondaryPaneActive() || tvSettingsPreviewTitle == null) return;
         tvSettingsPreviewTitle.setVisibility(View.VISIBLE);
         tvSettingsPreviewTitle.setText(theme.name);
         tvSettingsPreviewTitle.setSelected(true);
@@ -5293,6 +5450,7 @@ public class MainActivity extends Activity {
             ivSettingsPreviewIcon.setVisibility(View.VISIBLE);
             ivSettingsPreviewIcon.setImageDrawable(null);
         }
+        syncThemePreviewToPortraitStrip();
         final int gen = ++themeGalleryPreviewGen;
         new Thread(new Runnable() {
             @Override
@@ -5309,6 +5467,8 @@ public class MainActivity extends Activity {
                         } else {
                             ivSettingsPreviewIcon.setVisibility(View.GONE);
                         }
+                        // Cover arrived — refresh strip icon so portrait lower pane shows art.
+                        syncThemePreviewToPortraitStrip();
                     }
                 });
             }
@@ -5318,7 +5478,7 @@ public class MainActivity extends Activity {
     private void removeInstalledTheme(final ThemeManager.ThemeEntry theme) {
         if (theme == null || theme.folderName == null) return;
         if (ThemeManager.isBuiltInDefault(theme)) return;
-        if (!ThemeDownloader.deleteInstalledTheme(theme.folderName)) return;
+        if (!ThemeDownloader.deleteInstalledTheme(MainActivity.this, theme.folderName)) return;
         ActiveThemeEngine.loadThemes(this);
         Toast.makeText(this, getString(R.string.theme_removed, theme.name), Toast.LENGTH_SHORT).show();
         rebuildThemeBrowserRows();
@@ -5425,22 +5585,24 @@ public class MainActivity extends Activity {
     }
 
     private void prepareThemeGalleryPreviewPane() {
-        if (isFullWidthMenus || settingsPreviewPane == null) return;
-        settingsPreviewPane.setVisibility(View.VISIBLE);
+        // Portrait: widgets stay filled for strip mirror even though right pane stays GONE.
+        if (!themeSecondaryPaneActive() || tvSettingsPreviewTitle == null) return;
+        if (!isFullWidthMenus && settingsPreviewPane != null) {
+            settingsPreviewPane.setVisibility(View.VISIBLE);
+        }
         if (storagePieView != null) storagePieView.setVisibility(View.GONE);
         if (ivSettingsPreviewIcon != null) {
             ivSettingsPreviewIcon.setVisibility(View.GONE);
             ivSettingsPreviewIcon.setImageDrawable(null);
         }
-        if (tvSettingsPreviewTitle != null) {
-            tvSettingsPreviewTitle.setVisibility(View.VISIBLE);
-            tvSettingsPreviewTitle.setText(getString(R.string.theme_themes_title));
-            ThemeManager.applyThemedTextStyle(tvSettingsPreviewTitle, ThemeManager.getTextColorPrimary());
-        }
+        tvSettingsPreviewTitle.setVisibility(View.VISIBLE);
+        tvSettingsPreviewTitle.setText(getString(R.string.theme_themes_title));
+        ThemeManager.applyThemedTextStyle(tvSettingsPreviewTitle, ThemeManager.getTextColorPrimary());
         if (tvSettingsPreviewState != null) {
             applySettingsPreviewStateText(getString(R.string.settings_focus_theme), false);
             ThemeManager.applyThemedTextStyle(tvSettingsPreviewState, ThemeManager.getTextColorSecondary());
         }
+        syncThemePreviewToPortraitStrip();
     }
 
     private boolean handleDebugSettingsBack() {
@@ -6234,11 +6396,13 @@ public class MainActivity extends Activity {
             ivSettingsPreviewIcon.setImageDrawable(null);
             ivSettingsPreviewIcon.setVisibility(View.GONE);
         }
+        // Blank the portrait lower pane so Get More / Back / filters leave no stale theme cover.
+        syncThemePreviewToPortraitStrip();
     }
 
     /** Debounce preview loads while wheel-scrolling — avoids OOM from stacked cover decode threads. */
     private void scheduleThemeRowPreview(final ThemeBrowser.Row row) {
-        if (row == null || isFullWidthMenus) return;
+        if (row == null || !themeSecondaryPaneActive()) return;
         themePreviewHandler.removeCallbacksAndMessages(null);
         themePreviewPending = new Runnable() {
             @Override
@@ -6249,6 +6413,9 @@ public class MainActivity extends Activity {
                     updateInstalledThemePreview(ThemeManager.availableThemes.get(row.themeIndex));
                 } else if (row.catalog != null) {
                     updateThemeGalleryPreview(row.catalog, row.variant);
+                } else {
+                    // No right-pane/strip content for Back, Get More, filter, section, status rows.
+                    clearThemeGalleryPreview();
                 }
             }
         };
@@ -6257,7 +6424,7 @@ public class MainActivity extends Activity {
 
     private void updateThemeGalleryPreview(final ThemeDownloader.CatalogEntry entry,
                                            final ThemeDownloader.ThemeVariant variant) {
-        if (entry == null || isFullWidthMenus || tvSettingsPreviewTitle == null) return;
+        if (entry == null || !themeSecondaryPaneActive() || tvSettingsPreviewTitle == null) return;
         final String title = variant != null ? variant.displayName(entry.name) : entry.name;
         final String author = entry.author != null && !entry.author.isEmpty()
                 ? entry.author : "Unknown author";
@@ -6275,6 +6442,7 @@ public class MainActivity extends Activity {
             ivSettingsPreviewIcon.setVisibility(View.VISIBLE);
             ivSettingsPreviewIcon.setImageDrawable(null);
         }
+        syncThemePreviewToPortraitStrip();
         final int gen = ++themeGalleryPreviewGen;
         final int maxH = themeGalleryCoverMaxPx();
         // #region agent log
@@ -6306,6 +6474,7 @@ public class MainActivity extends Activity {
                         } else {
                             ivSettingsPreviewIcon.setVisibility(View.GONE);
                         }
+                        syncThemePreviewToPortraitStrip();
                     }
                 });
             }
@@ -6338,7 +6507,7 @@ public class MainActivity extends Activity {
                 btn.setSelected(hasFocus);
                 if (hasFocus) {
                     showFastScrollLetter(btn.getText().toString());
-                    if (!isFullWidthMenus) updateThemeGalleryPreview(entry, variant);
+                    if (themeSecondaryPaneActive()) updateThemeGalleryPreview(entry, variant);
                 }
             }
         });
@@ -6478,7 +6647,11 @@ public class MainActivity extends Activity {
                     "activation route", "E", d);
         } catch (Exception ignored) {}
         // #endregion
-        if (isFullWidthMenus) {
+        // 2026-07-15 — Portrait: OK downloads now (lower strip already showed cover).
+        // Was: any full-width → interstitial confirm. Landscape full-width still confirms.
+        // Reversal: if (isFullWidthMenus) showThemeGalleryInterstitial(...);
+        boolean needsInterstitial = isFullWidthMenus && !A5PortraitChrome.usePortraitChrome(this);
+        if (needsInterstitial) {
             showThemeGalleryInterstitial(entry, variant);
         } else if (variant != null) {
             downloadAndApplyThemeVariant(entry, variant);
@@ -8009,6 +8182,7 @@ public class MainActivity extends Activity {
     private static boolean isSettingsFullWidthSubScreen(String key) {
         return SettingsScreens.DEBUG.equals(key)
                 || SettingsScreens.FLOW.equals(key)
+                || SettingsScreens.EQ.equals(key)
                 || SettingsScreens.XPOSED_MODULES.equals(key)
                 || SettingsScreens.XPOSED_MODULE_DETAIL.equals(key);
     }
@@ -9628,6 +9802,8 @@ public class MainActivity extends Activity {
         try {
             if (playback.isPodcastActive() && podcastIjkPlayer != null) {
                 playing = podcastIjkPlayer.isPlaying();
+            } else if (isMusicIjkActive()) {
+                playing = musicIjkPlayer.isPlaying();
             } else {
                 playing = mediaPlayer != null && mediaPlayer.isPlaying();
             }
@@ -10906,7 +11082,9 @@ public class MainActivity extends Activity {
         // 2026-07-14 — Y1/Y2 portrait experiment: track next→Back; track prev→PP; NP wheel→skip.
         // Layman: upright — side skip buttons leave / play-pause; dial still scrolls menus.
         // Was: Y2 105/106 treated as wheel → track buttons scrolled lists. Reversal: drop block.
-        if (event != null && !DeviceFeatures.isA5() && Y1PortraitExperiment.isEnabled(this)) {
+        // 2026-07-15 — Skip remap while forced-landscape video session (side keys stay skip/scrub).
+        if (event != null && !DeviceFeatures.isA5() && Y1PortraitExperiment.isEnabled(this)
+                && !LandscapeOrientationGuard.isForceLandscapeVideoSession()) {
             boolean npWheelSkip = currentScreenState == STATE_PLAYER
                     && !themedContextMenuOwnsKeys();
             // #region agent log
@@ -10917,6 +11095,7 @@ public class MainActivity extends Activity {
                     d.put("rawCode", event.getKeyCode());
                     d.put("scan", event.getScanCode());
                     d.put("screen", currentScreenState);
+                    d.put("wifiKeyboard", currentScreenState == STATE_WIFI_KEYBOARD);
                     d.put("npWheelSkip", npWheelSkip);
                     d.put("mode", Y1PortraitExperiment.mode(this));
                     d.put("rightHanded", Y1PortraitExperiment.isRightHanded(this));
@@ -10932,6 +11111,9 @@ public class MainActivity extends Activity {
                     KeyEvent peek = Y1PortraitInputKeys.remapEvent(this, event, npWheelSkip);
                     d.put("mappedCode", peek != null ? peek.getKeyCode() : -1);
                     d.put("mappedScan", peek != null ? peek.getScanCode() : -1);
+                    // 2026-07-15 — Session 1f0248: prove side keys remap on keyboard → dismiss/enter.
+                    Debug1f0248Log.log(this, "MainActivity.dispatchKeyEvent",
+                            "Y1 portrait remap gate", "H-A,H-B,H-C", d);
                     Debug210a10Log.log(this, "MainActivity.dispatchKeyEvent",
                             "Y1 portrait remap gate", "H-B,H-C,H-D", d);
                 } catch (Exception ignored) {}
@@ -10989,7 +11171,8 @@ public class MainActivity extends Activity {
             // Reversal: boolean np = currentScreenState == STATE_PLAYER only.
             boolean npFaceSkip = shouldA5NpFaceRemap(currentScreenState == STATE_PLAYER,
                     themedContextMenuOwnsKeys(), playerScrubCursorActive);
-            if (A5InputKeys.needsRemap(this, event, npFaceSkip)) {
+            if (A5InputKeys.needsRemap(this, event, npFaceSkip)
+                    && !LandscapeOrientationGuard.isForceLandscapeVideoSession()) {
                 // 2026-07-11 — Emulator Esc/right-click/DEL already mean previous-menu Back.
                 // Do not remap KEYCODE_BACK → DPAD_CENTER on AVDs (Esc would become OK).
                 if (!(EmulatorInputMap.isEmulator() && event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
@@ -13538,6 +13721,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void handleKeyboardMediaDel(boolean vibrate) {
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("runId", "pre-fix");
+            d.put("vibrate", vibrate);
+            d.put("purpose", keyboardPurpose);
+            d.put("len", typedPassword != null ? typedPassword.length() : -1);
+            d.put("portraitOn", Y1PortraitExperiment.isEnabled(this));
+            d.put("mode", Y1PortraitExperiment.mode(this));
+            Debug1f0248Log.log(this, "MainActivity.handleKeyboardMediaDel",
+                    "keyboard delete fired", "H-E", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (vibrate) clickFeedback();
         if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) {
             applySoulseekUsernameDel();
@@ -15117,6 +15313,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (listThemes == null) return;
         int w = isFullWidthMenus && screenWidthPx > 0
                 ? screenWidthPx : settingsMenuWidthPx;
+        // 2026-07-15 — Portrait strip: host bottomMargin already reserves stripH — MATCH_PARENT
+        // so absolute screenHeight sizing cannot paint over the lower pane.
+        // Reversal: always use absolute h = screenHeightPx - statusH under full-width.
+        boolean portraitStrip = A5PortraitChrome.usePortraitChrome(this)
+                && !settingsBrowseFullWidth
+                && (settingsSubScreenKey == null
+                || SettingsScreens.allowsPortraitPreviewStrip(settingsSubScreenKey));
+        if (portraitStrip) {
+            FrameLayout.LayoutParams themesLp = new FrameLayout.LayoutParams(w,
+                    FrameLayout.LayoutParams.MATCH_PARENT);
+            listThemes.setLayoutParams(themesLp);
+            return;
+        }
         int statusH = (int) getResources().getDimension(R.dimen.y1_status_bar_height);
         boolean settingsPad = ThemeManager.isMenuItemPaddingEnabled(prefs, true);
         int top = settingsPad ? statusH : Math.max(0, statusH - 1);
@@ -15838,6 +16047,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (RowKeys.REPEAT.equals(rowKey)) return getRepeatModeText(repeatMode);
         if (RowKeys.EQ.equals(rowKey)) return eqPresetStateText();
         if (RowKeys.BUTTON_SOUND.equals(rowKey)) return stateOnOff(isSoundEffectEnabled);
+        if (RowKeys.HEARING_SAFETY.equals(rowKey)) {
+            // 2026-07-15 — On/Off for Solar 80% headphone cap (default Off = full range).
+            return stateOnOff(HearingSafetyVolume.isEnabled(this));
+        }
         if (RowKeys.BUTTON_VIBRATE.equals(rowKey)) return stateOnOff(isVibrationEnabled);
         if (RowKeys.SCREEN_OFF_CTRL.equals(rowKey)) return stateOnOff(isScreenOffControlEnabled);
         if (RowKeys.Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) return stateOnOff(y2HoldOkToSleep);
@@ -16089,6 +16302,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (SettingsScreens.VIDEO.equals(settingsSubScreenKey) && mediaSuite != null) {
             if (MediaSuiteHost.ROW_VIDEO_SLEEP.equals(rowKey)) {
                 return stateOnOff(mediaSuite.isSleepDuringPlaybackEnabled());
+            }
+            if (MediaSuiteHost.ROW_VIDEO_CROP.equals(rowKey)) {
+                return mediaSuite.videoCropModeLabel();
             }
         }
         // ponytail: Reach blurb only in Reach settings sub-panes — home preview uses appReach icon
@@ -16582,6 +16798,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (RowKeys.Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) {
             stateText = getString(R.string.settings_preview_y2_hold_ok_to_sleep);
+        }
+        if (RowKeys.HEARING_SAFETY.equals(rowKey)) {
+            // 2026-07-15 — Preview copy for headphone 80% cap vs full-volume bypass.
+            stateText = getString(R.string.settings_preview_hearing_safety) + "\n\n"
+                    + (stateText != null ? stateText : "");
         }
         if (RowKeys.A5_MENU_NAV.equals(rowKey)) {
             boolean face = A5NavigationMode.isFaceNav(this);
@@ -17446,6 +17667,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 d.put("focusFitm", foc != null && foc.isFocusableInTouchMode());
                 DebugF0e28cLog.log(this, "MainActivity.handleBrowserScrollWheelKeyDown",
                         "browse pre-super wheel", "H-C,H-E,H-TOUCH,H-EMPTY", d);
+                // Session 701426 — correlate wheel move with live-refresh focus loss.
+                Debug701426Log.log(this, "MainActivity.handleBrowserScrollWheelKeyDown",
+                        "wheel on browse results", "D", d);
             } catch (Exception ignored) {}
         }
         // #endregion
@@ -17559,10 +17783,34 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (containerBrowserItems == null) return;
+        // #region agent log
+        View focBeforeEnsure = getCurrentFocus();
+        // #endregion
         for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
             View row = containerBrowserItems.getChildAt(i);
             if (row != null && row.getVisibility() == View.VISIBLE && row.isFocusable() && row.isEnabled()) {
                 row.requestFocus();
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("runId", "pre-fix");
+                    d.put("reseedIdx", i);
+                    d.put("children", containerBrowserItems.getChildCount());
+                    d.put("beforeText", focBeforeEnsure instanceof android.widget.TextView
+                            ? String.valueOf(((android.widget.TextView) focBeforeEnsure).getText()) : "");
+                    d.put("beforeTag", focBeforeEnsure != null && focBeforeEnsure.getTag() != null
+                            ? focBeforeEnsure.getTag().getClass().getSimpleName() : "null");
+                    d.put("afterText", row instanceof android.widget.TextView
+                            ? String.valueOf(((android.widget.TextView) row).getText()) : "");
+                    d.put("afterTag", row.getTag() != null
+                            ? row.getTag().getClass().getSimpleName() : "null");
+                    d.put("getMusic", getMusicFromEntryPoint);
+                    d.put("soulseekUi", soulseekUiMode);
+                    d.put("searching", getMusicSearchInProgress || soulseekSearchInProgress);
+                    Debug701426Log.log(this, "MainActivity.ensureBrowserListFocus",
+                            "reseeded browse focus to first focusable", "D", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 return;
             }
         }
@@ -21285,7 +21533,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         // Kernel mass_storage without LUN still blocks SD — tear down and unlock.
-        if (UsbMassStorageController.isKernelMassStorageMode()) {
+        // 2026-07-15 — Skip when user turned UMS on this session (bind may still be racing).
+        if (UsbMassStorageController.isKernelMassStorageMode()
+                && !UsbMassStorageController.isUserSessionActive()) {
             final Context app = getApplicationContext();
             new Thread(new Runnable() {
                 @Override
@@ -21411,14 +21661,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** Pause/stop players when USB mass-storage lock engages — queue stays on disk for later. */
     private void stopActivePlaybackForUsbStorage() {
         try {
-            if (mediaPlayer != null && mediaPlayer.isPlaying()) {
-                mediaPlayer.pause();
-            }
-        } catch (Exception ignored) {}
-        try {
-            if (podcastIjkPlayer != null && podcastIjkPlayer.isPlaying()) {
-                podcastIjkPlayer.pause();
-            }
+            pauseActiveAudio();
         } catch (Exception ignored) {}
         if (mediaSuite != null && playback.isRadioActive()) {
             try {
@@ -22340,11 +22583,27 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return true;
     }
 
-    /** Play/Pause long-hold — open Flow from home, library, or Now Playing. */
+    /** Play/Pause long-hold — A–Z jump on song lists; else open Flow from home/library/NP. */
     private void triggerGlobalPpFlowHoldIfEligible() {
-        if (globalPpLongFlowHandled || !isFlowEnabled() || currentScreenState == STATE_FLOW) return;
+        if (globalPpLongFlowHandled || currentScreenState == STATE_FLOW) return;
         if (globalPpKeyDownAt <= 0) return;
         if (System.currentTimeMillis() - globalPpKeyDownAt < FLOW_LAUNCH_HOLD_MS) return;
+        // 2026-07-15 — Song lists: long PP jumps to the next letter section (alphabet search).
+        if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_VIRTUAL_SONGS
+                && listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE) {
+            int current = listVirtualSongs.getSelectedItemPosition();
+            if (current < 0) current = 0;
+            int target = wheelSectionIndex.jumpTarget(current, 1);
+            if (target >= 0 && target != current) {
+                listVirtualSongs.setSelection(target);
+                String letter = wheelSectionIndex.letterAtPosition(target);
+                if (letter != null) showFastScrollLetter(letter);
+            }
+            globalPpLongFlowHandled = true;
+            clickFeedback();
+            return;
+        }
+        if (!isFlowEnabled()) return;
         if (currentScreenState == STATE_PLAYER) {
             returnToFlowFromNowPlaying();
         } else if (isNpToFlowHandoffEligible()) {
@@ -23230,8 +23489,48 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     }
                 });
             }
+            // 2026-07-15 — Skip ±30s + sleep timer for podcast/audiobook sessions.
+            if (playback.isPodcastActive() || isAudiobookPlaybackActive()) {
+                addContextAction(getString(R.string.skip_back_30), new Runnable() {
+                    @Override
+                    public void run() {
+                        skipActiveAudioByMs(-30000);
+                    }
+                });
+                addContextAction(getString(R.string.skip_fwd_30), new Runnable() {
+                    @Override
+                    public void run() {
+                        skipActiveAudioByMs(30000);
+                    }
+                });
+                addContextAction(getString(R.string.sleep_timer_label, sleepTimer.label()), new Runnable() {
+                    @Override
+                    public void run() {
+                        cycleSleepTimer();
+                        dismissThemedContextMenu();
+                    }
+                });
+            }
+            if (isAudiobookPlaybackActive()) {
+                addContextAction(getString(R.string.audiobook_chapters), new Runnable() {
+                    @Override
+                    public void run() {
+                        showAudiobookChapterPicker();
+                    }
+                });
+            }
         }
         if (currentScreenState == STATE_PLAYER && playback.isMusicActive()) {
+            // 2026-07-15 — Flow opens the album carousel scrolled to the playing cover (same as PP-hold).
+            // Was: NP menu had lyrics/visualizer only; Flow was PP-hold only.
+            if (isFlowEnabled()) {
+                addContextAction(getString(R.string.flow_open), new Runnable() {
+                    @Override
+                    public void run() {
+                        returnToFlowFromNowPlaying();
+                    }
+                });
+            }
             addContextAction(getString(R.string.context_action_show_lyrics), null,
                     stateOnOff(npOverlay != null && npOverlay.isLyricsShowing()), new Runnable() {
                 @Override
@@ -23277,7 +23576,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     }
                 });
             }
-            addFlowSectionContextAction(FlowMode.PLAYLIST, flowPlaylistFocusKey(localPl, deezerPl));
+            // 2026-07-15 — No Flow on playlist rows; Flow is the on-device album cover rack only.
+            // Was: Open in Flow → FlowMode.PLAYLIST. Reversal: restore addFlowSectionContextAction(PLAYLIST, …).
         }
         if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_DEEZER_PLAYLIST
                 && deezerPlaylistView != null) {
@@ -23474,6 +23774,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 });
             }
         }
+        // 2026-07-15 — Album-list Save for native Navidrome/Plex/Jellyfin browse (unused *_download_album).
+        addRemoteBrowseAlbumDownloadContextActions();
         if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_VIRTUAL_SONGS) {
             final File audio = virtualFocusedAudioFile();
             if ("PLAYLIST".equals(virtualQueryType)) {
@@ -23550,7 +23852,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     });
                 }
             }
-            if (!"PLAYLIST".equals(virtualQueryType)) {
+            if (!"PLAYLIST".equals(virtualQueryType) && !"RECENT".equals(virtualQueryType)) {
+                // 2026-07-15 — Hide sort cycle on Recently Added so lib_song_sort stays untouched.
                 addContextAction(getString(R.string.library_sort_label, librarySortLabel()), new Runnable() {
                     @Override
                     public void run() {
@@ -23569,8 +23872,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     }
                 });
             }
-            addFlowSectionContextAction(FlowMode.ARTIST,
-                    artistName != null ? ArtistNames.matchKey(artistName) : null);
+            // 2026-07-15 — No Flow on artist rows; album covers only (open Flow from an album or track).
+            // Was: Open in Flow → FlowMode.ARTIST. Reversal: restore addFlowSectionContextAction(ARTIST, …).
         }
         if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_ALBUMS) {
             final String albumName = focusedCategoryName();
@@ -23675,6 +23978,28 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     ? FlowCatalog.podcastMatchKey(podcastSelected.feedUrl) : null;
             addFlowSectionContextAction(FlowMode.PODCAST, focus);
         }
+        if (currentScreenState == STATE_PODCASTS && podcastUiMode == PODCAST_UI_EPISODES
+                && podcastSelected != null) {
+            // 2026-07-15 — Follow / unfollow from episode list.
+            final OpenRssClient.Podcast show = podcastSelected;
+            if (PodcastSubscriptions.isFollowed(this, show.feedUrl)) {
+                addContextAction(getString(R.string.podcasts_unfollow), new Runnable() {
+                    @Override
+                    public void run() {
+                        PodcastSubscriptions.unfollow(MainActivity.this, show.feedUrl);
+                        Toast.makeText(MainActivity.this, R.string.podcasts_unfollowed, Toast.LENGTH_SHORT).show();
+                    }
+                });
+            } else {
+                addContextAction(getString(R.string.podcasts_follow), new Runnable() {
+                    @Override
+                    public void run() {
+                        PodcastSubscriptions.follow(MainActivity.this, show.feedUrl, show.title, show.artworkUrl);
+                        Toast.makeText(MainActivity.this, R.string.podcasts_followed, Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        }
         if (currentScreenState == STATE_PODCASTS && podcastUiMode == PODCAST_UI_EPISODES) {
             final int idx = podcastEpisodeFocusIndex();
             if (idx >= 0 && idx < podcastEpisodes.size()) {
@@ -23709,11 +24034,47 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         @Override
                         public void run() {
                             PodcastResumeStore.clear(getApplicationContext(), rk);
-                            Toast.makeText(MainActivity.this, getString(R.string.context_action_mark_played),
+                            Toast.makeText(MainActivity.this, getString(R.string.podcast_started_over),
                                     Toast.LENGTH_SHORT).show();
                         }
                     });
                 }
+                // 2026-07-15 — Durable played + queue/play-next wiring.
+                final String playKey = rk;
+                if (PodcastPlayedStore.isPlayed(getApplicationContext(), playKey)) {
+                    addContextAction(getString(R.string.podcast_clear_played), new Runnable() {
+                        @Override
+                        public void run() {
+                            PodcastPlayedStore.clearPlayed(getApplicationContext(), playKey);
+                        }
+                    });
+                } else {
+                    addContextAction(getString(R.string.context_action_mark_played), new Runnable() {
+                        @Override
+                        public void run() {
+                            PodcastPlayedStore.markPlayed(getApplicationContext(), playKey);
+                            PodcastResumeStore.clear(getApplicationContext(), playKey);
+                            Toast.makeText(MainActivity.this, R.string.context_action_mark_played,
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
+                addContextAction(getString(R.string.podcast_play_next), new Runnable() {
+                    @Override
+                    public void run() {
+                        String show = podcastSelected != null ? podcastSelected.title : "";
+                        playback.playPodcastAfterCurrent(ep, show, false);
+                        Toast.makeText(MainActivity.this, R.string.podcast_play_next, Toast.LENGTH_SHORT).show();
+                    }
+                });
+                addContextAction(getString(R.string.podcast_add_queue), new Runnable() {
+                    @Override
+                    public void run() {
+                        String show = podcastSelected != null ? podcastSelected.title : "";
+                        playback.queuePodcastAfterCurrent(ep, show, false);
+                        Toast.makeText(MainActivity.this, R.string.podcast_add_queue, Toast.LENGTH_SHORT).show();
+                    }
+                });
             }
         }
         if (currentScreenState == STATE_PODCASTS && podcastUiMode == PODCAST_UI_SAVED
@@ -23930,6 +24291,36 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
     }
 
+    /**
+     * 2026-07-15 — Dismiss in-app + WM overlay shells when going to sleep.
+     * Layman: close quick menu / USB prompt so sleep never leaves a stuck sheet on wake.
+     * Was: performScreenSleep only dismissed ThemedContextMenu; SCREEN_OFF left menus up.
+     * Reversal: call dismissThemedContextMenu() alone without overlay/USB session dismiss.
+     */
+    private void dismissOverlaysAndUsbPromptForScreenSleep(String reason) {
+        boolean usbPrompt = isUsbEnablePromptShowing() || usbEnablePromptSession
+                || isUsbEnablePromptTierActive();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("reason", reason != null ? reason : "");
+            d.put("usbPrompt", usbPrompt);
+            d.put("menuShowing", themedContextMenu != null && themedContextMenu.isShowing());
+            android.util.Log.i("SolarDebugD74b0d",
+                    "{\"sessionId\":\"d74b0d\",\"runId\":\"post-fix\",\"hypothesisId\":\"E\","
+                            + "\"location\":\"MainActivity.dismissOverlaysAndUsbPromptForScreenSleep\","
+                            + "\"message\":\"sleep dismiss\",\"data\":" + d.toString()
+                            + ",\"timestamp\":" + System.currentTimeMillis() + "}");
+        } catch (Exception ignored) {}
+        // #endregion
+        dismissThemedContextMenu();
+        UsbStorageOverlayReceiver.dismissCompanionShell(this);
+        if (usbPrompt) {
+            // Sleep while USB connect prompt is up = user dismissed this plug session.
+            UsbHostSessionPolicy.markUserDismissed(getApplicationContext());
+        }
+    }
+
     /** Screen off — root power key only (Y1); shared by hold-center and context menu. */
     private void performScreenSleep(boolean feedback) {
         if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER
@@ -23938,7 +24329,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (feedback) clickFeedback();
-        dismissThemedContextMenu();
+        // 2026-07-15 — Dismiss before keyevent so sleep is not race-dependent on SCREEN_OFF alone.
+        dismissOverlaysAndUsbPromptForScreenSleep("performScreenSleep");
         if (trySuScreenOff()) {
             return;
         }
@@ -23989,9 +24381,166 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void markCurrentPodcastPlayed() {
+        // 2026-07-15 — Persist played + clear resume.
+        PodcastPlayedStore.markPlayed(getApplicationContext(), podcastResumeKey);
         PodcastResumeStore.clear(getApplicationContext(), podcastResumeKey);
         podcastPendingResumeMs = 0;
         Toast.makeText(this, getString(R.string.context_action_mark_played), Toast.LENGTH_SHORT).show();
+    }
+
+    /** 2026-07-15 — Seek relative for podcast/audiobook long-form listening. */
+    private void skipActiveAudioByMs(int deltaMs) {
+        int pos = activeAudioPositionMs();
+        int dur = activeAudioDurationMs();
+        int next = pos + deltaMs;
+        if (next < 0) next = 0;
+        if (dur > 0 && next > dur) next = dur;
+        seekActiveAudio(next);
+        if (playback.isPodcastActive()) refreshPodcastTimeUi();
+        updatePlayerUI();
+    }
+
+    private final com.solar.launcher.playback.SleepTimer sleepTimer = new com.solar.launcher.playback.SleepTimer();
+
+    private void ensureSleepTimerWired() {
+        sleepTimer.setListener(new com.solar.launcher.playback.SleepTimer.Listener() {
+            @Override
+            public void onSleepFire(boolean endOfEpisodeOnly) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        pauseActiveAudio();
+                        isPausedByHand = true;
+                        updatePlayerUI();
+                        Toast.makeText(MainActivity.this, R.string.sleep_timer_fired, Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        });
+    }
+
+    private void cycleSleepTimer() {
+        ensureSleepTimerWired();
+        int m = sleepTimer.getMode();
+        if (m == com.solar.launcher.playback.SleepTimer.OFF) {
+            sleepTimer.arm(com.solar.launcher.playback.SleepTimer.MIN_15);
+        } else if (m == com.solar.launcher.playback.SleepTimer.MIN_15) {
+            sleepTimer.arm(com.solar.launcher.playback.SleepTimer.MIN_30);
+        } else if (m == com.solar.launcher.playback.SleepTimer.MIN_30) {
+            sleepTimer.arm(com.solar.launcher.playback.SleepTimer.MIN_45);
+        } else if (m == com.solar.launcher.playback.SleepTimer.MIN_45) {
+            sleepTimer.arm(com.solar.launcher.playback.SleepTimer.END_OF_EPISODE);
+        } else {
+            sleepTimer.cancel();
+        }
+        Toast.makeText(this, getString(R.string.sleep_timer_set, sleepTimer.label()), Toast.LENGTH_SHORT).show();
+    }
+
+    /** 2026-07-15 — True when current music queue item lives under Audiobooks/. */
+    private boolean isAudiobookPlaybackActive() {
+        if (!playback.isMusicActive() || playback.musicPlaylist().isEmpty()) return false;
+        File f = playback.musicPlaylist().get(playback.musicIndex());
+        return com.solar.launcher.audiobook.AudiobookLibrary.isUnderAudiobookRoot(f);
+    }
+
+    private java.util.List<com.solar.launcher.audiobook.Mp4ChapterParser.Chapter> audiobookChapters
+            = new java.util.ArrayList<com.solar.launcher.audiobook.Mp4ChapterParser.Chapter>();
+    private int audiobookChapterIndex;
+
+    /** 2026-07-15 — Load embedded or multi-file chapters for the current audiobook track. */
+    private void refreshAudiobookChaptersForTrack(File track) {
+        audiobookChapters.clear();
+        audiobookChapterIndex = 0;
+        if (track == null || !com.solar.launcher.audiobook.AudiobookLibrary.isUnderAudiobookRoot(track)) {
+            return;
+        }
+        audiobookChapters.addAll(com.solar.launcher.audiobook.AudiobookLibrary.resolveChapters(track));
+    }
+
+    private void showAudiobookChapterPicker() {
+        if (audiobookChapters.isEmpty() && !playback.musicPlaylist().isEmpty()) {
+            refreshAudiobookChaptersForTrack(playback.musicPlaylist().get(playback.musicIndex()));
+        }
+        if (audiobookChapters.isEmpty()) {
+            Toast.makeText(this, R.string.audiobook_no_chapters, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // 2026-07-15 — Rebuild context sheet as a chapter list (same show path as hold menu).
+        contextMenuLabels.clear();
+        contextMenuIconKeys.clear();
+        contextMenuStateTexts.clear();
+        contextMenuHeaders.clear();
+        contextMenuActions.clear();
+        contextMenuKeepOpen.clear();
+        for (int i = 0; i < audiobookChapters.size(); i++) {
+            final int idx = i;
+            final com.solar.launcher.audiobook.Mp4ChapterParser.Chapter ch = audiobookChapters.get(i);
+            addContextAction(ch.title, new Runnable() {
+                @Override
+                public void run() {
+                    seekAudiobookChapter(idx);
+                }
+            });
+        }
+        if (themedContextMenu == null) return;
+        String[] labels = contextMenuLabels.toArray(new String[contextMenuLabels.size()]);
+        String[] iconKeys = contextMenuIconKeys.toArray(new String[contextMenuIconKeys.size()]);
+        String[] stateTexts = contextMenuStateTexts.toArray(new String[contextMenuStateTexts.size()]);
+        boolean[] headers = new boolean[contextMenuHeaders.size()];
+        for (int i = 0; i < headers.length; i++) headers[i] = contextMenuHeaders.get(i);
+        ViewGroup root = (ViewGroup) findViewById(android.R.id.content);
+        int margin = (int) (10 * getResources().getDisplayMetrics().density);
+        int panelW = screenWidthPx > margin * 2 ? screenWidthPx - margin * 2 : y1ActiveRowWidthPx();
+        themedContextMenu.show(root, getString(R.string.audiobook_chapters), null, labels, iconKeys,
+                stateTexts, headers, createContextMenuListListener(), y1RowHeightPx, panelW,
+                false, false, null, null);
+        themedContextMenu.focusOptionsList();
+    }
+
+    private void seekAudiobookChapter(int index) {
+        if (index < 0 || index >= audiobookChapters.size()) return;
+        audiobookChapterIndex = index;
+        long start = audiobookChapters.get(index).startMs;
+        // Multi-file mode stores file index in startMs when no embedded chapters.
+        File track = playback.musicPlaylist().isEmpty() ? null
+                : playback.musicPlaylist().get(playback.musicIndex());
+        if (track != null && track.isFile()
+                && (track.getName().toLowerCase(Locale.US).endsWith(".m4b")
+                || track.getName().toLowerCase(Locale.US).endsWith(".m4a"))) {
+            seekActiveAudio((int) start);
+        } else {
+            // Sibling files: startMs is index into book folder — play that file if present.
+            if (track != null && track.getParentFile() != null) {
+                java.util.List<File> files = com.solar.launcher.audiobook.AudiobookLibrary
+                        .chaptersForBook(track.getParentFile());
+                if (index < files.size()) {
+                    int qi = playback.musicPlaylist().indexOf(files.get(index));
+                    if (qi >= 0) {
+                        playback.setMusicIndex(qi);
+                        isPausedByHand = false;
+                        prepareMusicTrack(qi);
+                        return;
+                    }
+                }
+            }
+            seekActiveAudio(0);
+        }
+        updatePlayerUI();
+    }
+
+    private void seekAudiobookChapterRelative(int delta) {
+        if (audiobookChapters.isEmpty() && !playback.musicPlaylist().isEmpty()) {
+            refreshAudiobookChaptersForTrack(playback.musicPlaylist().get(playback.musicIndex()));
+        }
+        if (audiobookChapters.size() < 2) {
+            if (delta > 0) nextTrack();
+            else { /* prev handled by caller */ }
+            return;
+        }
+        int next = audiobookChapterIndex + delta;
+        if (next < 0) next = 0;
+        if (next >= audiobookChapters.size()) next = audiobookChapters.size() - 1;
+        seekAudiobookChapter(next);
     }
 
     private void playCurrentFolderAll() {
@@ -24726,6 +25275,429 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return null;
     }
 
+    /**
+     * 2026-07-15 — Native browse: Save whole album when Albums list is focused.
+     * Uses host Actions.downloadAlbum so the Action wiring is no longer dead code.
+     */
+    private void addRemoteBrowseAlbumDownloadContextActions() {
+        if (currentScreenState == STATE_NAVIDROME && navidromeScreenHost != null
+                && navidromeScreenHost.isAlbumListVisible()) {
+            final com.solar.launcher.navidrome.NavidromeAlbum album = navidromeScreenHost.getFocusedAlbum();
+            if (album == null || album.id == null || album.id.isEmpty()) return;
+            addContextAction(getString(R.string.navidrome_download_album), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.navidrome_wifi_required)) return;
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.navidrome_loading));
+                    NavidromeClient.getInstance().getAlbumSongs(album.id,
+                            new NavidromeClient.Callback<java.util.List<com.solar.launcher.navidrome.NavidromeSong>>() {
+                        @Override public void onSuccess(
+                                java.util.List<com.solar.launcher.navidrome.NavidromeSong> songs) {
+                            setBlockingLoading(false);
+                            com.solar.launcher.navidrome.NavidromeArtist ar =
+                                    new com.solar.launcher.navidrome.NavidromeArtist();
+                            ar.name = album.artist != null ? album.artist : "";
+                            navidromeScreenHostDownloadAlbum(ar, album, songs);
+                        }
+                        @Override public void onError(String message) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        if (currentScreenState == STATE_PLEX && plexScreenHost != null
+                && plexScreenHost.isAlbumListVisible()) {
+            final com.solar.launcher.plex.PlexAlbum album = plexScreenHost.getFocusedAlbum();
+            if (album == null || album.id == null || album.id.isEmpty()) return;
+            addContextAction(getString(R.string.plex_download_album), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.plex_wifi_required)) return;
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.plex_loading));
+                    PlexClient.getInstance().getAlbumSongs(album.id,
+                            new PlexClient.Callback<java.util.List<com.solar.launcher.plex.PlexSong>>() {
+                        @Override public void onSuccess(
+                                java.util.List<com.solar.launcher.plex.PlexSong> songs) {
+                            setBlockingLoading(false);
+                            com.solar.launcher.plex.PlexArtist ar = new com.solar.launcher.plex.PlexArtist();
+                            ar.name = album.artist != null ? album.artist : "";
+                            plexScreenHostDownloadAlbum(ar, album, songs);
+                        }
+                        @Override public void onError(String message) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        if (currentScreenState == STATE_JELLYFIN && jellyfinScreenHost != null
+                && jellyfinScreenHost.isAlbumListVisible()) {
+            final com.solar.launcher.jellyfin.JellyfinAlbum album = jellyfinScreenHost.getFocusedAlbum();
+            if (album == null || album.id == null || album.id.isEmpty()) return;
+            addContextAction(getString(R.string.jellyfin_download_album), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.jellyfin_wifi_required)) return;
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.jellyfin_loading));
+                    com.solar.launcher.jellyfin.JellyfinClient.getInstance().getAlbumSongs(album.id,
+                            new com.solar.launcher.jellyfin.JellyfinClient.Callback<
+                                    java.util.List<com.solar.launcher.jellyfin.JellyfinSong>>() {
+                        @Override public void onSuccess(
+                                java.util.List<com.solar.launcher.jellyfin.JellyfinSong> songs) {
+                            setBlockingLoading(false);
+                            com.solar.launcher.jellyfin.JellyfinArtist ar =
+                                    new com.solar.launcher.jellyfin.JellyfinArtist();
+                            ar.name = album.artist != null ? album.artist : "";
+                            jellyfinScreenHostDownloadAlbum(ar, album, songs);
+                        }
+                        @Override public void onError(String message) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
+        }
+    }
+
+    /** Bridge to host Actions.downloadAlbum without exposing Actions outside wire-up. */
+    private void navidromeScreenHostDownloadAlbum(
+            com.solar.launcher.navidrome.NavidromeArtist ar,
+            com.solar.launcher.navidrome.NavidromeAlbum album,
+            java.util.List<com.solar.launcher.navidrome.NavidromeSong> songs) {
+        NavidromeDownloader.downloadAlbum(this, ar, album, songs, new NavidromeDownloader.Callback() {
+            @Override public void onProgress(int done, int total) {
+                setBlockingLoading(true);
+                setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this,
+                        getString(R.string.navidrome_download_done, saved), Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void plexScreenHostDownloadAlbum(
+            com.solar.launcher.plex.PlexArtist ar,
+            com.solar.launcher.plex.PlexAlbum album,
+            java.util.List<com.solar.launcher.plex.PlexSong> songs) {
+        PlexDownloader.downloadAlbum(this, ar, album, songs, new PlexDownloader.Callback() {
+            @Override public void onProgress(int done, int total) {
+                setBlockingLoading(true);
+                setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this,
+                        getString(R.string.plex_download_done, saved), Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    private void jellyfinScreenHostDownloadAlbum(
+            com.solar.launcher.jellyfin.JellyfinArtist ar,
+            com.solar.launcher.jellyfin.JellyfinAlbum album,
+            java.util.List<com.solar.launcher.jellyfin.JellyfinSong> songs) {
+        com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(
+                this, ar, album, songs,
+                new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
+            @Override public void onProgress(int done, int total) {
+                setBlockingLoading(true);
+                setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this,
+                        getString(R.string.jellyfin_download_done, saved), Toast.LENGTH_SHORT).show();
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * 2026-07-15 — Play/Save for Get Music album containers (Navidrome/Plex/Jellyfin).
+     * Layman: long-press an album row to download the whole album or start playing it.
+     * Had: album kinds had zero context actions; Deezer albums already had Play/Save.
+     */
+    private void addRemoteAlbumSearchContextActions(final MusicSearchEntry entry) {
+        if (entry == null || !entry.isContainer()) return;
+        final int wifiRes;
+        final String playLabel;
+        final String saveLabel;
+        if (entry.kind == MusicSearchEntry.RowKind.NAVIDROME_ALBUM) {
+            wifiRes = R.string.navidrome_wifi_required;
+            playLabel = getString(R.string.context_navidrome_play);
+            saveLabel = getString(R.string.navidrome_download_album);
+        } else if (entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM) {
+            wifiRes = R.string.plex_wifi_required;
+            playLabel = getString(R.string.context_plex_play);
+            saveLabel = getString(R.string.plex_download_album);
+        } else if (entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM) {
+            wifiRes = R.string.jellyfin_wifi_required;
+            playLabel = getString(R.string.context_jellyfin_play);
+            saveLabel = getString(R.string.jellyfin_download_album);
+        } else {
+            return;
+        }
+        addContextAction(playLabel, new Runnable() {
+            @Override public void run() {
+                if (!requireInternet(wifiRes)) return;
+                withRemoteAlbumSongs(entry, new RemoteAlbumSongsReady() {
+                    @Override public void onReady(MusicSearchEntry filled) {
+                        playRemoteAlbumEntry(filled);
+                    }
+                });
+            }
+        });
+        addContextAction(saveLabel, new Runnable() {
+            @Override public void run() {
+                if (!requireInternet(wifiRes)) return;
+                withRemoteAlbumSongs(entry, new RemoteAlbumSongsReady() {
+                    @Override public void onReady(MusicSearchEntry filled) {
+                        downloadRemoteAlbumEntry(filled);
+                    }
+                });
+            }
+        });
+    }
+
+    private interface RemoteAlbumSongsReady {
+        void onReady(MusicSearchEntry filled);
+    }
+
+    /** Fetch album tracks when Get Music children are empty, then continue. */
+    private void withRemoteAlbumSongs(final MusicSearchEntry entry, final RemoteAlbumSongsReady ready) {
+        if (entry == null || ready == null) return;
+        if (entry.children != null && !entry.children.isEmpty()) {
+            ready.onReady(entry);
+            return;
+        }
+        setBlockingLoading(true);
+        int loadRes = R.string.navidrome_loading;
+        if (entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM) loadRes = R.string.plex_loading;
+        else if (entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM) loadRes = R.string.jellyfin_loading;
+        setLoadingOverlayText(getString(loadRes));
+        if (entry.kind == MusicSearchEntry.RowKind.NAVIDROME_ALBUM && entry.navidromeAlbum != null) {
+            final String albumId = entry.navidromeAlbum.id;
+            NavidromeClient.getInstance().getAlbumSongs(albumId,
+                    new NavidromeClient.Callback<java.util.List<com.solar.launcher.navidrome.NavidromeSong>>() {
+                @Override public void onSuccess(java.util.List<com.solar.launcher.navidrome.NavidromeSong> songs) {
+                    setBlockingLoading(false);
+                    ready.onReady(MusicSearchEntry.withChildren(entry, mapNavidromeSongs(songs)));
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM && entry.plexAlbum != null) {
+            PlexClient.getInstance().getAlbumSongs(entry.plexAlbum.id,
+                    new PlexClient.Callback<java.util.List<com.solar.launcher.plex.PlexSong>>() {
+                @Override public void onSuccess(java.util.List<com.solar.launcher.plex.PlexSong> songs) {
+                    setBlockingLoading(false);
+                    ready.onReady(MusicSearchEntry.withChildren(entry, mapPlexSongs(songs)));
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM && entry.jellyfinAlbum != null) {
+            com.solar.launcher.jellyfin.JellyfinClient.getInstance().getAlbumSongs(entry.jellyfinAlbum.id,
+                    new com.solar.launcher.jellyfin.JellyfinClient.Callback<
+                            java.util.List<com.solar.launcher.jellyfin.JellyfinSong>>() {
+                @Override public void onSuccess(
+                        java.util.List<com.solar.launcher.jellyfin.JellyfinSong> songs) {
+                    setBlockingLoading(false);
+                    ready.onReady(MusicSearchEntry.withChildren(entry, mapJellyfinSongs(songs)));
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+            return;
+        }
+        setBlockingLoading(false);
+    }
+
+    private static java.util.List<MusicSearchEntry> mapNavidromeSongs(
+            java.util.List<com.solar.launcher.navidrome.NavidromeSong> songs) {
+        java.util.ArrayList<MusicSearchEntry> out = new java.util.ArrayList<MusicSearchEntry>();
+        if (songs == null) return out;
+        for (int i = 0; i < songs.size(); i++) {
+            out.add(MusicSearchEntry.navidrome(songs.get(i)));
+        }
+        return out;
+    }
+
+    private static java.util.List<MusicSearchEntry> mapPlexSongs(
+            java.util.List<com.solar.launcher.plex.PlexSong> songs) {
+        java.util.ArrayList<MusicSearchEntry> out = new java.util.ArrayList<MusicSearchEntry>();
+        if (songs == null) return out;
+        for (int i = 0; i < songs.size(); i++) {
+            out.add(MusicSearchEntry.plex(songs.get(i)));
+        }
+        return out;
+    }
+
+    private static java.util.List<MusicSearchEntry> mapJellyfinSongs(
+            java.util.List<com.solar.launcher.jellyfin.JellyfinSong> songs) {
+        java.util.ArrayList<MusicSearchEntry> out = new java.util.ArrayList<MusicSearchEntry>();
+        if (songs == null) return out;
+        for (int i = 0; i < songs.size(); i++) {
+            out.add(MusicSearchEntry.jellyfin(songs.get(i)));
+        }
+        return out;
+    }
+
+    private void playRemoteAlbumEntry(MusicSearchEntry entry) {
+        if (entry == null || entry.children == null || entry.children.isEmpty()) return;
+        if (entry.kind == MusicSearchEntry.RowKind.NAVIDROME_ALBUM) {
+            java.util.ArrayList<com.solar.launcher.navidrome.NavidromeSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.navidrome.NavidromeSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).navidromeSong != null) {
+                    songs.add(entry.children.get(i).navidromeSong);
+                }
+            }
+            if (!songs.isEmpty()) playNavidromeSongs(songs, 0);
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM) {
+            java.util.ArrayList<com.solar.launcher.plex.PlexSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.plex.PlexSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).plexSong != null) {
+                    songs.add(entry.children.get(i).plexSong);
+                }
+            }
+            if (!songs.isEmpty()) playPlexSongs(songs, 0);
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM) {
+            java.util.ArrayList<com.solar.launcher.jellyfin.JellyfinSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.jellyfin.JellyfinSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).jellyfinSong != null) {
+                    songs.add(entry.children.get(i).jellyfinSong);
+                }
+            }
+            if (!songs.isEmpty()) playJellyfinSongs(songs, 0);
+        }
+    }
+
+    private void downloadRemoteAlbumEntry(MusicSearchEntry entry) {
+        if (entry == null || entry.children == null || entry.children.isEmpty()) return;
+        if (entry.kind == MusicSearchEntry.RowKind.NAVIDROME_ALBUM && entry.navidromeAlbum != null) {
+            java.util.ArrayList<com.solar.launcher.navidrome.NavidromeSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.navidrome.NavidromeSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).navidromeSong != null) {
+                    songs.add(entry.children.get(i).navidromeSong);
+                }
+            }
+            com.solar.launcher.navidrome.NavidromeArtist ar =
+                    new com.solar.launcher.navidrome.NavidromeArtist();
+            ar.name = entry.navidromeAlbum.artist != null ? entry.navidromeAlbum.artist : "";
+            NavidromeDownloader.downloadAlbum(this, ar, entry.navidromeAlbum, songs,
+                    new NavidromeDownloader.Callback() {
+                @Override public void onProgress(int done, int total) {
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                }
+                @Override public void onComplete(int saved) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.navidrome_download_done, saved), Toast.LENGTH_SHORT).show();
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM && entry.plexAlbum != null) {
+            java.util.ArrayList<com.solar.launcher.plex.PlexSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.plex.PlexSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).plexSong != null) {
+                    songs.add(entry.children.get(i).plexSong);
+                }
+            }
+            com.solar.launcher.plex.PlexArtist ar = new com.solar.launcher.plex.PlexArtist();
+            ar.name = entry.plexAlbum.artist != null ? entry.plexAlbum.artist : "";
+            PlexDownloader.downloadAlbum(this, ar, entry.plexAlbum, songs,
+                    new PlexDownloader.Callback() {
+                @Override public void onProgress(int done, int total) {
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                }
+                @Override public void onComplete(int saved) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.plex_download_done, saved), Toast.LENGTH_SHORT).show();
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+            return;
+        }
+        if (entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM && entry.jellyfinAlbum != null) {
+            java.util.ArrayList<com.solar.launcher.jellyfin.JellyfinSong> songs =
+                    new java.util.ArrayList<com.solar.launcher.jellyfin.JellyfinSong>();
+            for (int i = 0; i < entry.children.size(); i++) {
+                if (entry.children.get(i).jellyfinSong != null) {
+                    songs.add(entry.children.get(i).jellyfinSong);
+                }
+            }
+            com.solar.launcher.jellyfin.JellyfinArtist ar =
+                    new com.solar.launcher.jellyfin.JellyfinArtist();
+            ar.name = entry.jellyfinAlbum.artist != null ? entry.jellyfinAlbum.artist : "";
+            com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(
+                    this, ar, entry.jellyfinAlbum, songs,
+                    new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
+                @Override public void onProgress(int done, int total) {
+                    setBlockingLoading(true);
+                    setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                }
+                @Override public void onComplete(int saved) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.jellyfin_download_done, saved), Toast.LENGTH_SHORT).show();
+                }
+                @Override public void onError(String message) {
+                    setBlockingLoading(false);
+                    Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+    }
+
     /** Context actions for unified Get Music / Reach organized / Deezer result rows. */
     private void addMusicSearchEntryContextActions(final MusicSearchEntry entry) {
         if (entry == null) return;
@@ -24779,6 +25751,48 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     playPlexSongs(java.util.Collections.singletonList(song), 0);
                 }
             });
+            // 2026-07-15 — Get Music Save for Plex (was Play-only; Navidrome already had Save).
+            addContextAction(getString(R.string.context_plex_download), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.plex_wifi_required)) return;
+                    com.solar.launcher.plex.PlexAlbum al = entry.plexAlbum;
+                    if (al == null) {
+                        al = new com.solar.launcher.plex.PlexAlbum();
+                        al.name = song.album != null ? song.album : song.title;
+                        al.artist = song.artist != null ? song.artist : "";
+                    }
+                    com.solar.launcher.plex.PlexArtist ar = new com.solar.launcher.plex.PlexArtist();
+                    ar.name = al.artist;
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("source", "getMusic");
+                        d.put("kind", "track");
+                        com.solar.launcher.debug.Debug2241b1Log.log(
+                                "MainActivity.addMusicSearchEntryContextActions",
+                                "plex save", "C", "post-fix", d);
+                    } catch (Exception ignored) {}
+                    // #endregion
+                    PlexDownloader.downloadAlbum(MainActivity.this, ar, al,
+                            java.util.Collections.singletonList(song),
+                            new PlexDownloader.Callback() {
+                        @Override public void onProgress(int done, int total) {
+                            setBlockingLoading(true);
+                            setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                        }
+                        @Override public void onComplete(int saved) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.plex_download_done, saved),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        @Override public void onError(String message) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
             return;
         }
         if (entry.source == MusicSearchEntry.Source.JELLYFIN && entry.jellyfinSong != null) {
@@ -24789,6 +25803,47 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     playJellyfinSongs(java.util.Collections.singletonList(song), 0);
                 }
             });
+            // 2026-07-15 — Get Music Save for Jellyfin (mirror Navidrome/Plex).
+            addContextAction(getString(R.string.context_jellyfin_download), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.jellyfin_wifi_required)) return;
+                    com.solar.launcher.jellyfin.JellyfinAlbum al = entry.jellyfinAlbum;
+                    if (al == null) {
+                        al = new com.solar.launcher.jellyfin.JellyfinAlbum();
+                        al.name = song.album != null ? song.album : song.title;
+                        al.artist = song.artist != null ? song.artist : "";
+                    }
+                    com.solar.launcher.jellyfin.JellyfinArtist ar =
+                            new com.solar.launcher.jellyfin.JellyfinArtist();
+                    ar.name = al.artist;
+                    com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(
+                            MainActivity.this, ar, al,
+                            java.util.Collections.singletonList(song),
+                            new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
+                        @Override public void onProgress(int done, int total) {
+                            setBlockingLoading(true);
+                            setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                        }
+                        @Override public void onComplete(int saved) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this,
+                                    getString(R.string.jellyfin_download_done, saved),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        @Override public void onError(String message) {
+                            setBlockingLoading(false);
+                            Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+                        }
+                    });
+                }
+            });
+            return;
+        }
+        // 2026-07-15 — Album container Save/Play for Navidrome/Plex/Jellyfin Get Music rows.
+        if (entry.kind == MusicSearchEntry.RowKind.NAVIDROME_ALBUM
+                || entry.kind == MusicSearchEntry.RowKind.PLEX_ALBUM
+                || entry.kind == MusicSearchEntry.RowKind.JELLYFIN_ALBUM) {
+            addRemoteAlbumSearchContextActions(entry);
             return;
         }
         if (entry.kind == MusicSearchEntry.RowKind.DEEZER_ALBUM) {
@@ -25198,6 +26253,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (currentScreenState == STATE_WIFI_KEYBOARD) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("runId", "pre-fix");
+                d.put("purpose", keyboardPurpose);
+                d.put("returnState", keyboardReturnState);
+                d.put("portraitOn", Y1PortraitExperiment.isEnabled(this));
+                d.put("mode", Y1PortraitExperiment.mode(this));
+                d.put("passthrough", Y1PortraitInputKeys.isRemapPassthrough());
+                Debug1f0248Log.log(this, "MainActivity.handleBackShortPress",
+                        "keyboard dismiss via Back", "H-A,H-C", d);
+            } catch (Exception ignored) {}
+            // #endregion
             if (keyboardPurpose == KEYBOARD_SOULSEEK_MSG && keyboardComposeFromContextPm) {
                 restoreSettingsAfterSoulseekAccount();
             } else if (keyboardReturnState == STATE_SETTINGS && keyboardReturnSettingsSubKey != null) {
@@ -25365,7 +26433,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             } else if ("PLAYLIST".equals(virtualQueryType)) {
                                 currentBrowserMode = BROWSER_PLAYLISTS;
                                 buildPlaylistsUI();
-                            } else if (virtualQueryType.equals("ALL")) {
+                            } else if (virtualQueryType.equals("ALL") || "RECENT".equals(virtualQueryType)) {
+                                // 2026-07-15 — Recently Added backs to library root like All Songs.
                                 currentBrowserMode = BROWSER_ROOT;
                                 buildFileBrowserUI();
                             } else if ("GENRE".equals(virtualQueryType)) {
@@ -26076,34 +27145,266 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         });
         containerSettingsItems.addView(btnRepeat);
 
-        final LinearLayout btnEq = createSettingsRow(RowKeys.EQ, R.string.settings_equalizer, false);
+        final LinearLayout btnEq = createSettingsRow(RowKeys.EQ, R.string.settings_equalizer, true);
         btnEq.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 clickFeedback();
-                if (eqPresetNames.size() > 1) {
-                    currentEqPresetIndex = (currentEqPresetIndex + 1) % eqPresetNames.size();
-                    try {
-                        prefs.edit().putInt("eq_preset", currentEqPresetIndex).commit();
-                    } catch (Exception e) {
+                // 2026-07-15 — Open full-screen 10-band EQ (replaced OEM preset cycling).
+                drillSettingsForward(new Runnable() {
+                    @Override
+                    public void run() {
+                        buildEqualizerSettingsUI();
                     }
-                    if (equalizer != null) {
-                        try {
-                            equalizer.usePreset((short) currentEqPresetIndex);
-                        } catch (Exception e) {
-                        }
-                    }
-                    refreshSettingsPreview(RowKeys.EQ);
-                } else {
-                    Toast.makeText(MainActivity.this, getString(R.string.toast_eq_unsupported), Toast.LENGTH_SHORT)
-                            .show();
-                }
+                });
             }
         });
         containerSettingsItems.addView(btnEq);
 
+        // 2026-07-15 — Hearing Safety: Off = full hardware volume; On = Solar 80% cap + warning.
+        // Reversal: remove this row — helper still defaults Off and clears OS EU lock on boot.
+        final LinearLayout btnHearingSafety = createSettingsRow(RowKeys.HEARING_SAFETY,
+                R.string.settings_hearing_safety, false);
+        btnHearingSafety.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean next = !HearingSafetyVolume.isEnabled(MainActivity.this);
+                HearingSafetyVolume.setEnabled(MainActivity.this, next);
+                refreshSettingsPreview(RowKeys.HEARING_SAFETY);
+            }
+        });
+        containerSettingsItems.addView(btnHearingSafety);
+
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
+        }
+    }
+
+    /**
+     * 2026-07-15 — Full-width ten-band EQ: enable, preamp, band gains, load/save/import/A-B.
+     * Layman: bass→treble knobs tuned with the wheel — no side preview pane.
+     * Reversal: restore OEM preset cycling on the Playback EQ row.
+     */
+    private void buildEqualizerSettingsUI() {
+        setSettingsSubScreen(SettingsScreens.EQ);
+        updateStatusBarTitle();
+        settingsBrowseFullWidth = true;
+        applyFullWidthMenusLayout();
+        if (settingsPreviewPane != null) settingsPreviewPane.setVisibility(View.GONE);
+        containerSettingsItems.removeAllViews();
+
+        com.solar.launcher.eq.SolarEqController.get().ensureLoaded(this);
+        final com.solar.launcher.eq.EqBandModel model =
+                new com.solar.launcher.eq.EqBandModel(
+                        com.solar.launcher.eq.SolarEqController.get().getActive());
+
+        Button btnBack = createListButton(getString(R.string.common_cancel_back));
+        styleSecondaryLabel(btnBack);
+        btnBack.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                drillSettingsBack(new Runnable() {
+                    @Override
+                    public void run() {
+                        buildPlaybackSettingsUI();
+                    }
+                });
+            }
+        });
+        containerSettingsItems.addView(btnBack);
+
+        if (!prefs.getBoolean("eq_onboarded", false)) {
+            TextView hint = new TextView(this);
+            hint.setText(getString(R.string.eq_onboard_hint));
+            hint.setTextColor(ThemeManager.getTextColorSecondary());
+            hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 12);
+            hint.setPadding((int) (8 * getResources().getDisplayMetrics().density),
+                    (int) (4 * getResources().getDisplayMetrics().density),
+                    (int) (8 * getResources().getDisplayMetrics().density),
+                    (int) (8 * getResources().getDisplayMetrics().density));
+            containerSettingsItems.addView(hint);
+            try {
+                prefs.edit().putBoolean("eq_onboarded", true).commit();
+            } catch (Exception ignored) {
+            }
+        }
+
+        LinearLayout btnEnable = createSettingsRow("eq.enable",
+                getString(R.string.eq_enabled) + (model.isEnabled() ? " ✓" : " ✗"), true, true);
+        btnEnable.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                model.setEnabled(!model.isEnabled());
+                persistEqAndRebuild(model);
+            }
+        });
+        containerSettingsItems.addView(btnEnable);
+
+        LinearLayout btnPreamp = createSettingsRow("eq.preamp",
+                getString(R.string.eq_preamp, formatEqDb(model.getPreampDb())), true, true);
+        btnPreamp.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                float next = model.getPreampDb() + 1f;
+                if (next > com.solar.launcher.eq.EqBandModel.MAX_PREAMP_DB) {
+                    next = com.solar.launcher.eq.EqBandModel.MIN_PREAMP_DB;
+                }
+                model.setPreampDb(next);
+                persistEqAndRebuild(model);
+            }
+        });
+        containerSettingsItems.addView(btnPreamp);
+
+        for (int i = 0; i < com.solar.launcher.eq.EqBandModel.BAND_COUNT; i++) {
+            final int band = i;
+            String label = getString(R.string.eq_band_row,
+                    com.solar.launcher.eq.EqBandModel.centerLabel(band),
+                    formatEqDb(model.getGainDb(band)));
+            LinearLayout row = createSettingsRow("eq.band." + band, label, true, true);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    float next = model.getGainDb(band) + 1f;
+                    if (next > com.solar.launcher.eq.EqBandModel.MAX_GAIN_DB) {
+                        next = com.solar.launcher.eq.EqBandModel.MIN_GAIN_DB;
+                    }
+                    model.setGainDb(band, next);
+                    persistEqAndRebuild(model);
+                }
+            });
+            containerSettingsItems.addView(row);
+        }
+
+        LinearLayout btnFlat = createSettingsRow("eq.flat", R.string.eq_flat, false);
+        btnFlat.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                model.resetFlat();
+                model.setEnabled(true);
+                persistEqAndRebuild(model);
+            }
+        });
+        containerSettingsItems.addView(btnFlat);
+
+        LinearLayout btnAb = createSettingsRow("eq.ab", R.string.eq_ab_compare, false);
+        btnAb.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                com.solar.launcher.eq.SolarEqController.get().toggleAb(MainActivity.this);
+                buildEqualizerSettingsUI();
+                Toast.makeText(MainActivity.this, R.string.eq_ab_toggled, Toast.LENGTH_SHORT).show();
+            }
+        });
+        containerSettingsItems.addView(btnAb);
+
+        LinearLayout btnSave = createSettingsRow("eq.save", R.string.eq_save_preset, false);
+        btnSave.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                try {
+                    String name = "SolarEQ-" + System.currentTimeMillis();
+                    java.io.File f = com.solar.launcher.eq.EqPresetStore.saveNamedPreset(
+                            MainActivity.this, model, name);
+                    com.solar.launcher.eq.EqPresetStore.setActiveName(MainActivity.this, name);
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.eq_saved, f.getName()), Toast.LENGTH_SHORT).show();
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, R.string.eq_save_failed, Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+        containerSettingsItems.addView(btnSave);
+
+        LinearLayout btnImport = createSettingsRow("eq.import", R.string.eq_import_preset, false);
+        btnImport.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                buildEqImportListUI();
+            }
+        });
+        containerSettingsItems.addView(btnImport);
+
+        if (containerSettingsItems.getChildCount() > 1) {
+            containerSettingsItems.getChildAt(1).requestFocus();
+        }
+    }
+
+    private String formatEqDb(float db) {
+        if (db > 0.05f) return String.format(java.util.Locale.US, "+%.0f dB", db);
+        if (db < -0.05f) return String.format(java.util.Locale.US, "%.0f dB", db);
+        return "0 dB";
+    }
+
+    /** 2026-07-15 — Persist EQ and refresh UI; re-prepare if music is playing. */
+    private void persistEqAndRebuild(com.solar.launcher.eq.EqBandModel model) {
+        com.solar.launcher.eq.SolarEqController.get().setActive(this, model);
+        buildEqualizerSettingsUI();
+        if (!playback.isPodcastActive() && hasMusicPlaybackQueue() && !isPausedByHand) {
+            prepareMusicTrack(playback.musicIndex());
+        }
+    }
+
+    /** 2026-07-15 — Import Rockbox/AutoEQ presets from Solar/EQ, Music/EQ, .rockbox/eqs. */
+    private void buildEqImportListUI() {
+        setSettingsSubScreen(SettingsScreens.EQ);
+        updateStatusBarTitle();
+        settingsBrowseFullWidth = true;
+        applyFullWidthMenusLayout();
+        if (settingsPreviewPane != null) settingsPreviewPane.setVisibility(View.GONE);
+        containerSettingsItems.removeAllViews();
+
+        Button btnBack = createListButton(getString(R.string.common_cancel_back));
+        styleSecondaryLabel(btnBack);
+        btnBack.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                buildEqualizerSettingsUI();
+            }
+        });
+        containerSettingsItems.addView(btnBack);
+
+        java.util.List<java.io.File> files = com.solar.launcher.eq.EqPresetStore.listImportableFiles();
+        if (files.isEmpty()) {
+            containerSettingsItems.addView(
+                    createSettingsRow("eq.import.empty", getString(R.string.eq_import_empty), false, true));
+            return;
+        }
+        for (final java.io.File f : files) {
+            LinearLayout row = createSettingsRow("eq.import." + f.getName(), f.getName(), true, true);
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    clickFeedback();
+                    try {
+                        com.solar.launcher.eq.EqPresetImporter.ParsedPreset parsed =
+                                com.solar.launcher.eq.EqPresetImporter.parseFile(f);
+                        com.solar.launcher.eq.SolarEqController.get().stashForAb();
+                        com.solar.launcher.eq.SolarEqController.get().setActive(
+                                MainActivity.this, parsed.model);
+                        com.solar.launcher.eq.EqPresetStore.setActiveName(
+                                MainActivity.this, parsed.name);
+                        Toast.makeText(MainActivity.this,
+                                getString(R.string.eq_imported, parsed.name), Toast.LENGTH_SHORT).show();
+                        buildEqualizerSettingsUI();
+                        if (!playback.isPodcastActive() && hasMusicPlaybackQueue() && !isPausedByHand) {
+                            prepareMusicTrack(playback.musicIndex());
+                        }
+                    } catch (Exception e) {
+                        Toast.makeText(MainActivity.this, R.string.eq_import_failed, Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+            containerSettingsItems.addView(row);
         }
     }
 
@@ -26410,9 +27711,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         });
         containerSettingsItems.addView(btnStorageMenu);
 
-        if (com.solar.launcher.DeviceFeatures.isY2()
-                || (com.solar.launcher.DeviceFeatures.isA5()
-                && com.solar.launcher.DeviceFeatures.getSecondaryStorageRoot() != null)) {
+        // 2026-07-15 — Primary storage = new-download target only; show on Y1/Y2/A5.
+        // Was: Y2 always, A5 only when secondary mounted. Now: all families (card-absent still useful).
+        {
             LinearLayout btnPrimaryStorage = createSettingsRow(
                     RowKeys.Y2_PRIMARY_STORAGE, R.string.settings_y2_primary_storage, true);
             btnPrimaryStorage.setOnClickListener(new View.OnClickListener() {
@@ -27637,7 +28938,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         containerSettingsItems.addView(row);
     }
 
-    /** Y2 — pick MicroSD vs internal as the default save target for new media. */
+    /** Pick MicroSD vs Internal as the default save target for new media (all families). */
     private void buildY2PrimaryStorageUI() {
         setSettingsSubScreen(SettingsScreens.Y2_PRIMARY_STORAGE);
         updateStatusBarTitle();
@@ -27661,11 +28962,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         containerSettingsItems.addView(btnBack);
 
         final String current = com.solar.launcher.DeviceFeatures.resolvePrimaryMediaPref(this);
+        // 2026-07-15 — MicroSD option greyed when card missing or unhealthy.
         final boolean sdPresent = com.solar.launcher.DeviceFeatures.isMicroSdPresent();
+        // Internal always selectable when a volume exists (even single-volume units).
+        final boolean internalOk = com.solar.launcher.DeviceFeatures.getInternalStorageRoot() != null
+                || !sdPresent
+                || com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot() != null;
         addY2PrimaryMediaOption(RowKeys.Y2_PRIMARY_MICROSD,
                 com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_MICROSD, current, sdPresent);
         addY2PrimaryMediaOption(RowKeys.Y2_PRIMARY_INTERNAL,
-                com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_INTERNAL, current, true);
+                com.solar.launcher.DeviceFeatures.PRIMARY_MEDIA_INTERNAL, current, internalOk);
 
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
@@ -27970,6 +29276,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     clickFeedback();
                     if (MediaSuiteHost.ROW_VIDEO_SLEEP.equals(row.rowKey)) {
                         mediaSuite.toggleSleepDuringPlayback();
+                        buildVideoSettingsUI();
+                        refreshSettingsPreview(row.rowKey);
+                    } else if (MediaSuiteHost.ROW_VIDEO_CROP.equals(row.rowKey)) {
+                        // 2026-07-15 — Letterbox ↔ Crop 4:3 (TV-style zoom on our panel).
+                        mediaSuite.cycleVideoCropMode();
                         buildVideoSettingsUI();
                         refreshSettingsPreview(row.rowKey);
                     }
@@ -33293,8 +34604,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (f == null || !f.isFile())
             return false;
         String name = f.getName().toLowerCase();
+        // 2026-07-15 — Include opus/webm so Piped YouTube saves still index into Songs.
+        // Had: only mp3/m4a/… — .opus under Music/YouTube never appeared for play.
         return name.endsWith(".mp3") || name.endsWith(".flac") || name.endsWith(".wav") || name.endsWith(".ogg")
-                || name.endsWith(".m4a") || name.endsWith(".aac") || name.endsWith(".ape") || name.endsWith(".wma");
+                || name.endsWith(".m4a") || name.endsWith(".m4b") || name.endsWith(".aac")
+                || name.endsWith(".ape") || name.endsWith(".wma")
+                || name.endsWith(".opus") || name.endsWith(".webm");
+    }
+
+    /**
+     * 2026-07-15 — Local files that stock MediaPlayer often can't decode on API 17/19.
+     * Layman: YouTube downloads and opus/webm need the same IJK engine live YouTube uses.
+     */
+    static boolean prefersIjkLocalDecode(File track) {
+        if (track == null) return false;
+        String name = track.getName().toLowerCase(java.util.Locale.US);
+        if (name.endsWith(".opus") || name.endsWith(".webm")) return true;
+        String path = track.getAbsolutePath().toLowerCase(java.util.Locale.US);
+        return path.contains("/youtube/");
     }
 
     private boolean isApkFile(File f) {
@@ -34121,6 +35448,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         : getString(R.string.path_library_playlists);
             case BROWSER_VIRTUAL_SONGS:
                 if ("ALL".equals(virtualQueryType)) return getString(R.string.path_library_all_songs);
+                // 2026-07-15 — Recently Added crumb (same list as All Songs, date-forced).
+                if ("RECENT".equals(virtualQueryType)) return getString(R.string.path_library_recently_added);
                 if ("ARTIST_ALBUM".equals(virtualQueryType)) {
                     return getString(R.string.path_library_artist_album_tracks, virtualQueryArtist, virtualQueryValue);
                 }
@@ -34184,8 +35513,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return s1.length() - s2.length();
     }
 
+    /** 2026-07-15 — Prefs-driven song sort; album lists use albumSongSort. */
     private void sortSongItems(List<SongItem> list, boolean isAlbumContext) {
-        int sortMode = isAlbumContext ? libraryBrowsePrefs.albumSongSort() : libraryBrowsePrefs.songSort();
+        // Reversal: callers that need a one-shot order pass sortOverride on the 3-arg form instead.
+        sortSongItems(list, isAlbumContext, -1);
+    }
+
+    /**
+     * 2026-07-15 — Sort tracks for a virtual song list.
+     * sortOverride &gt;= 0 forces that mode without writing lib_song_sort (Recently Added uses Date added).
+     */
+    private void sortSongItems(List<SongItem> list, boolean isAlbumContext, int sortOverride) {
+        // Layman: pick how to order the list; override wins over the saved preference.
+        int sortMode = sortOverride >= 0 ? sortOverride
+                : (isAlbumContext ? libraryBrowsePrefs.albumSongSort() : libraryBrowsePrefs.songSort());
         final int finalSortMode = sortMode;
         java.util.Collections.sort(list, new java.util.Comparator<SongItem>() {
             @Override
@@ -34475,7 +35816,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         btnFolder.setOnClickListener(v -> {
             clickFeedback();
             currentBrowserMode = BROWSER_FOLDER;
-            rootFolder = com.solar.launcher.audiobook.AudiobookLibrary.getRoot();
+            rootFolder = com.solar.launcher.audiobook.AudiobookLibrary.getRoot(MainActivity.this);
             currentFolder = rootFolder;
             buildFileBrowserUI();
         });
@@ -35033,8 +36374,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 "MainActivity.preparePlexStream", "onError", "D", d);
                         com.solar.launcher.Debug8cf8b0Log.log(
                                 "MainActivity.preparePlexStream", "onError", "D", d);
+                        com.solar.launcher.debug.Debug2241b1Log.log(
+                                "MainActivity.preparePlexStream", "onError toast", "B", "post-fix", d);
                     } catch (Exception ignored) {}
                     // #endregion
+                    // 2026-07-15 — Surface Plex stream failures (was silent return true).
+                    Toast.makeText(MainActivity.this, R.string.plex_stream_fail, Toast.LENGTH_SHORT).show();
                     return true;
                 }
             });
@@ -35056,9 +36401,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     } catch (Exception ignored) {}
                 }
             });
-            // 2026-07-14: QueueItem drops Part.key/container — play always passes null,null today.
+            // 2026-07-15: Pass Part.key/container from queue (was always null,null → transcoder only).
             String streamUrl = com.solar.launcher.plex.PlexClient.getInstance()
-                    .getStreamUrl(item.navidromeSongId, null, null);
+                    .getStreamUrl(item.navidromeSongId, item.plexMediaPartKey, item.plexContainer);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -35066,7 +36411,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 d.put("urlLen", streamUrl != null ? streamUrl.length() : 0);
                 d.put("urlEmpty", streamUrl == null || streamUrl.length() == 0);
                 d.put("usesTranscode", streamUrl != null && streamUrl.contains("transcode"));
-                d.put("partKeyPassedNull", true);
+                d.put("partKeyLen", item.plexMediaPartKey != null ? item.plexMediaPartKey.length() : 0);
+                d.put("container", item.plexContainer != null ? item.plexContainer : "");
                 d.put("clientConfigured",
                         com.solar.launcher.plex.PlexClient.getInstance().isConfigured());
                 // Host only — never log token/query secrets.
@@ -35079,9 +36425,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         "MainActivity.preparePlexStream", "before setDataSource", "D", d);
                 com.solar.launcher.Debug8cf8b0Log.log(
                         "MainActivity.preparePlexStream", "before setDataSource", "C", d);
+                com.solar.launcher.debug.Debug2241b1Log.log(
+                        "MainActivity.preparePlexStream", "stream url built", "A", "post-fix", d);
             } catch (Exception ignored) {}
             probeRemoteStreamHttp(streamUrl, "plex", "D");
             // #endregion
+            if (streamUrl == null || streamUrl.length() == 0) {
+                Toast.makeText(this, R.string.plex_stream_fail, Toast.LENGTH_SHORT).show();
+                return;
+            }
             mediaPlayer.setDataSource(streamUrl);
             mediaPlayer.prepareAsync();
             applyPlexNowPlaying(plexSongFromQueueItem(item));
@@ -35111,6 +36463,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         song.artist = item.navidromeArtist;
         song.album = item.navidromeAlbum;
         song.coverArtId = item.navidromeCoverArtId;
+        // 2026-07-15 — Restore Part meta for any code that rebuilds stream URLs from NP song.
+        song.mediaPartKey = item.plexMediaPartKey;
+        song.container = item.plexContainer;
         return song;
     }
 
@@ -35269,8 +36624,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                         d.put("extra", extra);
                                         com.solar.launcher.Debug8cf8b0Log.log(
                                                 "MainActivity.prepareJellyfinStream", "onError", "B", d);
+                                        com.solar.launcher.debug.Debug2241b1Log.log(
+                                                "MainActivity.prepareJellyfinStream", "onError toast",
+                                                "B", "post-fix", d);
                                     } catch (Exception ignored) {}
                                     // #endregion
+                                    // 2026-07-15 — Surface Jellyfin stream failures (was silent).
+                                    Toast.makeText(MainActivity.this, R.string.jellyfin_stream_fail,
+                                            Toast.LENGTH_SHORT).show();
                                     return true;
                                 }
                             });
@@ -35456,6 +36817,21 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 });
             });
             containerBrowserItems.addView(btnAll);
+
+            // 2026-07-15 — Recently Added = All Songs with forced Date-added sort (prefs untouched).
+            Button btnRecent = createListButton(getString(R.string.browser_recently_added));
+            btnRecent.setOnClickListener(v -> {
+                clickFeedback();
+                drillBrowserForward(new Runnable() {
+                    @Override
+                    public void run() {
+                        currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+                        virtualQueryType = "RECENT";
+                        buildVirtualSongs();
+                    }
+                });
+            });
+            containerBrowserItems.addView(btnRecent);
 
             Button btnGenres = createListButton(getString(R.string.browser_genres));
             btnGenres.setOnClickListener(v -> {
@@ -36335,6 +37711,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 @Override
                 public void onClick(View v) {
                     clickFeedback();
+                    // 2026-07-15 — Audiobook Authors/Books stay in audiobookLibrary (not music browse).
+                    if (isAudiobookLibraryMode) {
+                        virtualQueryType = type;
+                        virtualQueryValue = name;
+                        currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+                        buildAudiobookVirtualSongs();
+                        return;
+                    }
                     if ("ARTIST".equals(type)) {
                         openArtistBrowse(name);
                     } else if ("ARTIST_ALBUM".equals(type)) {
@@ -36887,8 +38271,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private boolean isPodcastMediaFile(File f) {
         if (f == null) return false;
         String p = f.getAbsolutePath();
-        String root = PodcastLibrary.ROOT.getAbsolutePath();
-        return p.equals(root) || p.startsWith(root + File.separator);
+        // 2026-07-15 — Podcasts may live on any browsable volume.
+        for (File root : PodcastLibrary.getPodcastRootsSafe()) {
+            if (root == null) continue;
+            String rootPath = root.getAbsolutePath();
+            if (p.equals(rootPath) || p.startsWith(rootPath + File.separator)) return true;
+        }
+        return false;
     }
 
     private boolean isMusicBrowseContextFile(File f) {
@@ -36974,6 +38363,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
     }
 
+    /** Focused local track for context menus — NP, song lists, folders, favorites. */
     private File focusedMusicTrackForContext() {
         if (currentScreenState == STATE_FLOW && flowScreenHost != null && flowScreenHost.isFlipped()) {
             FlowScreenHost.FlowBackRow row = flowScreenHost.getSelectedBackRow();
@@ -36985,7 +38375,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (i >= 0 && i < q.size()) return q.get(i);
         }
         if (currentScreenState == STATE_BROWSER) {
-            if (currentBrowserMode == BROWSER_VIRTUAL_SONGS) return virtualFocusedAudioFile();
+            // 2026-07-15 — Favorites share the virtual song list UI under BROWSER_FAVORITES.
+            if (currentBrowserMode == BROWSER_VIRTUAL_SONGS
+                    || currentBrowserMode == BROWSER_FAVORITES) {
+                return virtualFocusedAudioFile();
+            }
             if (currentBrowserMode == BROWSER_FOLDER && !isPickingBackground) return browserFocusedAudioFile();
         }
         return null;
@@ -37024,6 +38418,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         openMusicAlbumListing(albumArtist, si.album);
                     }
                 });
+            }
+            // 2026-07-15 — Track menus open album Flow scrolled to this cover (not from NP — that uses handoff).
+            // Was: track context had browse/playlist only. Reversal: drop addFlowAlbumFromTrackContextAction call.
+            if (currentScreenState != STATE_PLAYER && currentScreenState != STATE_FLOW) {
+                addFlowAlbumFromTrackContextAction(si);
             }
         }
         if (si.genre != null && !si.genre.trim().isEmpty() && !"Unknown Genre".equals(si.genre)
@@ -37653,6 +39052,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     // 💡 4. 자체 DB에서 노래를 뽑아 '재활용 엔진'에 밀어넣는 함수
+    /** 2026-07-15 — Virtual song list; RECENT = all tracks forced Date added (does not write lib_song_sort). */
     private void buildVirtualSongs() {
         if (isCustomScanning) {
             showLoadingPopup(); // 🚀 잘 안보이는 텍스트 대신, 대형 스피너 팝업을 띄웁니다!
@@ -37667,7 +39067,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         scrollViewBrowser.setVisibility(View.GONE);
         listVirtualSongs.setVisibility(View.VISIBLE);
 
-        browserStatusTitle = virtualQueryType.equals("ALL") ? getString(R.string.status_library_all_songs) : getString(R.string.status_path, virtualQueryValue);
+        // Layman: status line — All Songs vs Recently Added vs category name.
+        if ("ALL".equals(virtualQueryType)) {
+            browserStatusTitle = getString(R.string.status_library_all_songs);
+        } else if ("RECENT".equals(virtualQueryType)) {
+            browserStatusTitle = getString(R.string.browser_recently_added);
+        } else {
+            browserStatusTitle = getString(R.string.status_path, virtualQueryValue);
+        }
         updateStatusBarTitle();
         updateLibraryBreadcrumb();
 
@@ -37676,7 +39083,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         final List<SongItem> targetSongs = new ArrayList<>();
         for (SongItem song : customLibrary) {
             boolean match = false;
-            if (virtualQueryType.equals("ALL")) match = true;
+            // RECENT mirrors ALL content — full library, then date-sorted below.
+            if (virtualQueryType.equals("ALL") || virtualQueryType.equals("RECENT")) match = true;
             else if (virtualQueryType.equals("ARTIST")
                     && ArtistParser.containsArtist(song.artist, virtualQueryValue)) match = true;
             else if (virtualQueryType.equals("ALBUM") && AlbumNames.equals(song.album, virtualQueryValue)) match = true;
@@ -37689,7 +39097,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (match) targetSongs.add(song);
         }
         boolean isAlbumContext = "ALBUM".equals(virtualQueryType) || "ARTIST_ALBUM".equals(virtualQueryType);
-        sortSongItems(targetSongs, isAlbumContext);
+        // 2026-07-15 — Recently Added forces Date added; All Songs keeps user's lib_song_sort.
+        if ("RECENT".equals(virtualQueryType)) {
+            sortSongItems(targetSongs, false, LibraryBrowsePrefs.SONG_SORT_DATE);
+        } else {
+            sortSongItems(targetSongs, isAlbumContext);
+        }
         for (SongItem s : targetSongs) {
             virtualSongList.add(s.file);
             currentScrollIndexList.add(s.title);
@@ -37713,6 +39126,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
         });
     }
+
     private void buildFolderBrowserUI() {
         folderBrowserEntries.clear();
         currentScrollIndexList.clear();
@@ -37851,13 +39265,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         });
     }
 
-    /** Y2: at a volume root, list the other storage (MicroSD ↔ Internal) as a jump row. */
+    /** At a volume root, list the other storage (MicroSD ↔ Internal) as a jump row. */
     private void appendOtherStorageVolumeEntries() {
-        if (!com.solar.launcher.DeviceFeatures.isY2()
-                || !com.solar.launcher.DeviceFeatures.isStorageVolumeRoot(currentFolder)) {
+        // 2026-07-15 — Was Y2-only; now any family with multiple browsable roots.
+        if (!com.solar.launcher.DeviceFeatures.isStorageVolumeRoot(currentFolder)) {
             return;
         }
-        for (File root : com.solar.launcher.DeviceFeatures.getBrowsableStorageRoots()) {
+        java.util.List<File> browsable = com.solar.launcher.DeviceFeatures.getBrowsableStorageRoots();
+        if (browsable == null || browsable.size() < 2) return;
+        for (File root : browsable) {
             if (root.equals(currentFolder)) continue;
             String label = com.solar.launcher.DeviceFeatures.storageRootLabel(this, root);
             folderBrowserEntries.add(FolderBrowserEntry.storageVolume(root, label));
@@ -38891,6 +40307,17 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         });
         containerBrowserItems.addView(saved);
 
+        // 2026-07-15 — Followed shows (My Shows).
+        Button followed = createListButton(getString(R.string.podcasts_my_shows));
+        followed.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                buildPodcastFollowedShowsUI();
+            }
+        });
+        containerBrowserItems.addView(followed);
+
         if (!ConnectivityHelper.isOnline(this)) {
             if (containerBrowserItems.getChildCount() > 0) containerBrowserItems.getChildAt(0).requestFocus();
             return;
@@ -39170,16 +40597,44 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             Toast.makeText(this, R.string.youtube_already_saved, Toast.LENGTH_SHORT).show();
             return;
         }
+        // 2026-07-15 — Immediate overlay during resolve (was blank until download started).
+        setBlockingLoading(true);
+        setLoadingOverlayText(getString(R.string.youtube_save_resolving));
         YouTubeDownloader.Callback cb = new YouTubeDownloader.Callback() {
-            @Override public void onProgress(int done, int total) {
+            @Override
+            public void onProgress(String phase, int percent, long doneBytes, long totalBytes) {
                 setBlockingLoading(true);
-                setLoadingOverlayText(getString(R.string.youtube_save_progress, done, total));
+                if ("resolve".equals(phase)) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_resolving));
+                    return;
+                }
+                if (percent >= 0) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_pct, percent));
+                } else if (doneBytes > 0L) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_bytes,
+                            formatYoutubeSaveBytes(doneBytes)));
+                } else {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_pct, 0));
+                }
             }
             @Override public void onComplete(java.io.File savedFile) {
                 setBlockingLoading(false);
                 Toast.makeText(MainActivity.this, R.string.youtube_save_done, Toast.LENGTH_SHORT).show();
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("audioOnly", audioOnly);
+                    d.put("name", savedFile != null ? savedFile.getName() : "");
+                    d.put("ext", savedFile != null && savedFile.getName().contains(".")
+                            ? savedFile.getName().substring(savedFile.getName().lastIndexOf('.') + 1) : "");
+                    d.put("len", savedFile != null ? savedFile.length() : 0L);
+                    com.solar.launcher.debug.Debug2241b1Log.log(
+                            "MainActivity.startYouTubeSave", "save complete", "YT1", "post-fix", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                // 2026-07-15 — Force full walk; scan(false) can hit SQLite mtime fast-path and miss new file.
                 if (audioOnly) {
-                    startLibraryScan(false);
+                    startLibraryScan(true);
                 }
             }
             @Override public void onError(String message) {
@@ -39195,6 +40650,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } else {
             YouTubeDownloader.saveVideo(this, video, cb);
         }
+    }
+
+    /** 2026-07-15 — Human size for Save overlay when Content-Length missing. */
+    private static String formatYoutubeSaveBytes(long bytes) {
+        if (bytes < 1024L) return bytes + " B";
+        if (bytes < 1024L * 1024L) return (bytes / 1024L) + " KB";
+        return (bytes / (1024L * 1024L)) + " MB";
     }
 
     private void fetchPodcastShows(final String query) {
@@ -39334,6 +40796,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void appendPodcastShowRow(final OpenRssClient.Podcast p) {
         String sub = p.publisher != null && p.publisher.length() > 0 ? p.publisher : null;
+        if (PodcastSubscriptions.isFollowed(this, p.feedUrl)) {
+            sub = (sub != null ? sub + " · " : "") + getString(R.string.podcasts_following);
+        }
         View.OnFocusChangeListener focus = new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
@@ -39354,6 +40819,44 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (idx >= 0) insertAt = idx;
         }
         containerBrowserItems.addView(row, insertAt);
+    }
+
+    /** 2026-07-15 — List followed feeds as My Shows. */
+    private void buildPodcastFollowedShowsUI() {
+        cancelPodcastEpisodeProbe();
+        podcastUiMode = PODCAST_UI_SHOWS;
+        preparePodcastBrowserChrome();
+        browserStatusTitle = getString(R.string.podcasts_my_shows);
+        updateStatusBarTitle();
+        if (tvBrowserPath != null) tvBrowserPath.setText(getString(R.string.podcasts_my_shows));
+        containerBrowserItems.removeAllViews();
+        podcastProbeStatusRow = null;
+        podcastShows.clear();
+
+        Button back = createListButton(getString(R.string.common_back));
+        back.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                buildPodcastSearchUI();
+            }
+        });
+        containerBrowserItems.addView(back);
+
+        java.util.List<PodcastSubscriptions.Show> followed = PodcastSubscriptions.list(this);
+        if (followed.isEmpty()) {
+            Button empty = createListButton(getString(R.string.podcasts_my_shows_empty));
+            empty.setEnabled(false);
+            containerBrowserItems.addView(empty);
+        } else {
+            for (final PodcastSubscriptions.Show s : followed) {
+                OpenRssClient.Podcast p = new OpenRssClient.Podcast(
+                        s.title, "", s.feedUrl, s.artUrl);
+                podcastShows.add(p);
+                appendPodcastShowRow(p);
+            }
+        }
+        if (containerBrowserItems.getChildCount() > 0) containerBrowserItems.getChildAt(0).requestFocus();
     }
 
     private void removePodcastProbeStatusRow() {
@@ -39706,9 +41209,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             for (int i = 0; i < files.size(); i++) {
                 final int idx = i;
                 final File file = files.get(i);
-                String label = file.getName();
-                int dot = label.lastIndexOf('.');
-                if (dot > 0) label = label.substring(0, dot);
+                // 2026-07-15 — Prefer ID3 episode title when present; basename fall-open.
+                String label = PodcastLibrary.episodeTitleFor(file);
                 final boolean resume = PodcastResumeStore.hasResume(getApplicationContext(),
                         PodcastResumeStore.keyForFile(file));
                 if (resume) {
@@ -39816,7 +41318,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             @Override
             public void run() {
                 try {
-                    soulseekShareIndex.scan(account.username, rootFolder, PodcastLibrary.ROOT,
+                    soulseekShareIndex.scanPodcastRoots(account.username, rootFolder,
+                            PodcastLibrary.getPodcastRootsSafe(),
                             durations, musicFiles);
                     SoulseekClient c = soulseekClient;
                     try {
@@ -40744,6 +42247,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** Rebuild visible result rows from ranked soulseekResults — not arrival order. */
     private void refreshSoulseekVisibleResults(boolean fullRebuild) {
         if (!isSoulseekUiActive() || soulseekUiMode != SOULSEEK_UI_RESULTS) return;
+        // #region agent log
+        View focBefore = getCurrentFocus();
+        int focusedIdxBefore = -1;
+        if (containerBrowserItems != null && focBefore != null) {
+            for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                View row = containerBrowserItems.getChildAt(i);
+                if (row == focBefore || isViewDescendantOf(focBefore, row)) {
+                    focusedIdxBefore = i;
+                    break;
+                }
+            }
+        }
+        // #endregion
         if (!fullRebuild) {
             appendSoulseekResultRowsInner();
             return;
@@ -40757,6 +42273,21 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         for (View v : toRemove) containerBrowserItems.removeView(v);
         soulseekResultUiCount = 0;
         appendSoulseekResultRowsInner();
+        // #region agent log
+        try {
+            View focAfter = getCurrentFocus();
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("runId", "pre-fix");
+            d.put("fullRebuild", true);
+            d.put("removed", toRemove.size());
+            d.put("uiCount", soulseekResultUiCount);
+            d.put("focusIdxBefore", focusedIdxBefore);
+            d.put("focusLost", focBefore != null && (focAfter == null || focAfter != focBefore));
+            d.put("searching", soulseekSearchInProgress);
+            Debug701426Log.log(this, "MainActivity.refreshSoulseekVisibleResults",
+                    "Soulseek full rebuild stripped rows", "A", d);
+        } catch (Exception ignored) {}
+        // #endregion
     }
 
     private int soulseekResultInsertIndex() {
@@ -41211,8 +42742,46 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void refreshGetMusicResultsVisible(boolean fullRebuild) {
         if (!isSoulseekUiActive() || soulseekUiMode != SOULSEEK_UI_RESULTS || !isGetMusicUnifiedUi()) return;
+        // #region agent log
+        View focBefore = getCurrentFocus();
+        int scrollBefore = scrollViewBrowser instanceof android.widget.ScrollView
+                ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
+        int focusedIdxBefore = -1;
+        String focusedKeyBefore = "";
+        if (containerBrowserItems != null && focBefore != null) {
+            for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                View row = containerBrowserItems.getChildAt(i);
+                if (row == focBefore || isViewDescendantOf(focBefore, row)) {
+                    focusedIdxBefore = i;
+                    Object tag = row.getTag();
+                    if (tag instanceof MusicSearchEntry) {
+                        focusedKeyBefore = musicSearchEntryDebugKey((MusicSearchEntry) tag);
+                    } else if (tag instanceof SoulseekClient.Result) {
+                        focusedKeyBefore = soulseekResultKey((SoulseekClient.Result) tag);
+                    } else if (row instanceof android.widget.TextView) {
+                        focusedKeyBefore = String.valueOf(((android.widget.TextView) row).getText());
+                    }
+                    break;
+                }
+            }
+        }
+        // #endregion
         if (!fullRebuild) {
             appendGetMusicResultRowsInner();
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("runId", "pre-fix");
+                d.put("fullRebuild", false);
+                d.put("uiCount", getMusicEntryUiCount);
+                d.put("focusIdxBefore", focusedIdxBefore);
+                d.put("focusKeyBefore", focusedKeyBefore);
+                d.put("scrollY", scrollBefore);
+                d.put("searching", getMusicSearchInProgress);
+                Debug701426Log.log(this, "MainActivity.refreshGetMusicResultsVisible",
+                        "append-only refresh", "A,E", d);
+            } catch (Exception ignored) {}
+            // #endregion
             return;
         }
         java.util.ArrayList<View> toRemove = new java.util.ArrayList<View>();
@@ -41223,6 +42792,55 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         for (View v : toRemove) containerBrowserItems.removeView(v);
         getMusicEntryUiCount = 0;
         appendGetMusicResultRowsInner();
+        // #region agent log
+        try {
+            View focAfter = getCurrentFocus();
+            int focusedIdxAfter = -1;
+            String focusedKeyAfter = "";
+            if (containerBrowserItems != null && focAfter != null) {
+                for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                    View row = containerBrowserItems.getChildAt(i);
+                    if (row == focAfter || isViewDescendantOf(focAfter, row)) {
+                        focusedIdxAfter = i;
+                        Object tag = row.getTag();
+                        if (tag instanceof MusicSearchEntry) {
+                            focusedKeyAfter = musicSearchEntryDebugKey((MusicSearchEntry) tag);
+                        } else if (row instanceof android.widget.TextView) {
+                            focusedKeyAfter = String.valueOf(((android.widget.TextView) row).getText());
+                        }
+                        break;
+                    }
+                }
+            }
+            int scrollAfter = scrollViewBrowser instanceof android.widget.ScrollView
+                    ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("runId", "pre-fix");
+            d.put("fullRebuild", true);
+            d.put("removed", toRemove.size());
+            d.put("uiCount", getMusicEntryUiCount);
+            d.put("children", containerBrowserItems != null ? containerBrowserItems.getChildCount() : -1);
+            d.put("focusIdxBefore", focusedIdxBefore);
+            d.put("focusKeyBefore", focusedKeyBefore);
+            d.put("focusIdxAfter", focusedIdxAfter);
+            d.put("focusKeyAfter", focusedKeyAfter);
+            d.put("focusLost", focBefore != null && (focAfter == null || focAfter != focBefore));
+            d.put("scrollYBefore", scrollBefore);
+            d.put("scrollYAfter", scrollAfter);
+            d.put("searching", getMusicSearchInProgress);
+            Debug701426Log.log(this, "MainActivity.refreshGetMusicResultsVisible",
+                    "full rebuild stripped result rows", "A,B", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    /** 2026-07-15 — Stable-ish debug id for a Get Music row (not for UI). */
+    private static String musicSearchEntryDebugKey(MusicSearchEntry e) {
+        if (e == null) return "";
+        if (e.reach != null) return "r:" + GetMusicSearch.reachResultKey(e.reach);
+        if (e.deezer != null) return "d:" + e.deezer.id;
+        if (e.kind != null) return e.kind.name() + ":" + e.containerLabel;
+        return String.valueOf(e.source);
     }
 
     private void openGetMusicContainer(final MusicSearchEntry container) {
@@ -41472,7 +43090,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             updateReachBrowserHint(R.string.get_music_hint_results);
             appendGetMusicResultRowsInner();
         }
-        if (containerBrowserItems.getChildCount() > 0) containerBrowserItems.getChildAt(0).requestFocus();
+        if (containerBrowserItems.getChildCount() > 0) {
+            // #region agent log
+            try {
+                View foc = getCurrentFocus();
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("runId", "pre-fix");
+                d.put("children", containerBrowserItems.getChildCount());
+                d.put("entries", getMusicEntries.size());
+                d.put("forcingChild0", true);
+                d.put("focusBefore", foc instanceof android.widget.TextView
+                        ? String.valueOf(((android.widget.TextView) foc).getText()) : "");
+                Debug701426Log.log(this, "MainActivity.buildGetMusicResultsUI",
+                        "full UI rebuild forcing Back focus", "C", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            containerBrowserItems.getChildAt(0).requestFocus();
+        }
     }
 
     private void cancelGetMusicSearch() {
@@ -41661,6 +43295,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         // ponytail: hold Reach rows until Deezer tracks land so catalog hits paint first.
         if (getMusicDeezerSearchActive() && !getMusicDeezerTracksReady) return;
         if (getMusicSearchInProgress) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("runId", "pre-fix");
+                d.put("batch", batch.size());
+                d.put("entries", getMusicEntries.size());
+                d.put("uiCount", getMusicEntryUiCount);
+                d.put("deezerReady", getMusicDeezerTracksReady);
+                Debug701426Log.log(this, "MainActivity.flushGetMusicReachBatch",
+                        "Reach batch forcing full rebuild", "B,E", d);
+            } catch (Exception ignored) {}
+            // #endregion
             refreshGetMusicResultsVisible(true);
         }
     }
@@ -44153,7 +45799,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 final MusicLibraryStore store = MusicLibraryStore.getInstance(getApplicationContext());
                 final int pruned = purgeStaleLibraryPaths(store);
                 final java.util.ArrayList<SongItem> additions = new java.util.ArrayList<SongItem>();
-                collectNewLibraryAudio(rootFolder, store, additions, gen);
+                collectNewLibraryAudioFromAllRoots(store, additions, gen);
                 if (libraryScanGen != gen) {
                     abortLibraryScanWorker(gen);
                     return;
@@ -44193,6 +45839,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     /** Collect tracks whose paths are not yet in MusicLibraryStore (new files only). */
+    /** 2026-07-15 — Walk every Music/ volume, not only the preferred save root. */
+    private void collectNewLibraryAudioFromAllRoots(MusicLibraryStore store,
+            java.util.ArrayList<SongItem> out, int gen) {
+        for (File musicRoot : com.solar.launcher.DeviceFeatures.getMusicRoots()) {
+            if (libraryScanGen != gen) return;
+            collectNewLibraryAudio(musicRoot, store, out, gen);
+        }
+    }
+
     private void collectNewLibraryAudio(File folder, MusicLibraryStore store,
             java.util.ArrayList<SongItem> out, int gen) {
         if (libraryScanGen != gen || folder == null) return;
@@ -44782,6 +46437,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         ijk.setOnCompletionListener(new com.solar.launcher.podcast.PodcastIjkPlayer.OnCompletionListener() {
             @Override
             public void onCompletion(com.solar.launcher.podcast.PodcastIjkPlayer mp) {
+                // 2026-07-15 — End-of-episode sleep timer.
+                sleepTimer.onEpisodeComplete();
                 maybeRenamePodcastGrowingCache();
                 if (!playback.isPodcastActive()) return;
                 if (podcastGrowingCacheFile != null && podcastGrowingCacheFile.isFile()) {
@@ -44851,8 +46508,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void savePodcastEpisodeToLibrary(final OpenRssClient.Episode ep) {
         if (podcastSelected == null || ep == null) return;
         if (!requireInternet(R.string.podcasts_wifi_required_stream)) return;
-        final File dest = PodcastLibrary.destFile(this, podcastSelected.title, ep.title, ep.audioUrl);
-        if (dest.isFile() && dest.length() > 0) {
+        final String showTitle = podcastSelected.title;
+        final File dest = PodcastLibrary.destFile(this, showTitle, ep.title, ep.audioUrl);
+        // 2026-07-15 — Already on any Podcasts/ volume (Primary flip / other card), not only dest.
+        File existing = PodcastLibrary.findSaved(showTitle, ep.title, ep.audioUrl);
+        if (existing != null || (dest.isFile() && dest.length() > 0)) {
             Toast.makeText(this, getString(R.string.podcasts_already_saved), Toast.LENGTH_SHORT).show();
             return;
         }
@@ -44878,6 +46538,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             });
                         }
                     });
+                    // 2026-07-15 — Stamp show/episode into the file so scans survive folder moves.
+                    PodcastLibrary.tryEmbedSaveTags(dest, showTitle, ep.title);
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
@@ -45257,6 +46919,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         playback.setMusicIndex(index);
         final File track = playback.musicPlaylist().get(index);
         audiobookPendingResumeMs = com.solar.launcher.audiobook.AudiobookBookmarks.resumeMs(this, track);
+        // 2026-07-15 — Refresh chapter list when preparing an audiobook file.
+        refreshAudiobookChaptersForTrack(track);
         lastAlbumArtBytes = null;
         currentAlbumColor = ThemeManager.getListButtonFocusedBg() | 0xFF000000;
         // 🚀 [추가된 부분] 손상된 파일 방어막: 파일이 없거나 용량이 1KB(1024 bytes) 미만인 껍데기 파일일 경우
@@ -45367,6 +47031,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             } else {
                 clearNowPlayingAlbumLine();
             }
+            // 2026-07-15 — Append hi-res label under album when FLAC advertises rate/bits.
+            try {
+                HiResAudioMeta.Info hi = HiResAudioMeta.read(track);
+                if (hi != null && hi.formatLabel() != null && tvPlayerAlbum != null) {
+                    CharSequence cur = tvPlayerAlbum.getText();
+                    String suffix = hi.formatLabel();
+                    if (cur != null && cur.length() > 0) {
+                        tvPlayerAlbum.setText(cur + " · " + suffix);
+                    } else {
+                        tvPlayerAlbum.setText(suffix);
+                    }
+                }
+            } catch (Exception ignored) {
+            }
             refreshPlayerMarquee();
 
             // 2. 앨범 아트 세팅 및 인터넷 검색
@@ -45414,6 +47092,31 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
 
         try {
+            // 2026-07-15 — Software EQ needs IJK FFmpeg filters; try that first, MediaPlayer fail-open.
+            com.solar.launcher.eq.SolarEqController.get().ensureLoaded(this);
+            if (com.solar.launcher.eq.SolarEqController.get().needsSoftwareEq()) {
+                if (tryPrepareMusicViaIjk(track)) {
+                    return;
+                }
+                // Fall through to MediaPlayer without custom EQ curve.
+            } else if (prefersIjkLocalDecode(track)) {
+                // 2026-07-15 — YouTube/opus/webm: same IJK path live YT uses; MediaPlayer often silent-fails.
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("name", track.getName());
+                    d.put("preferIjk", true);
+                    com.solar.launcher.debug.Debug2241b1Log.log(
+                            "MainActivity.prepareMusicTrack", "ijk for yt/opus", "YT3", "post-fix", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                if (tryPrepareMusicViaIjk(track)) {
+                    return;
+                }
+            } else {
+                releaseMusicIjkPlayer();
+            }
+
             // 🚀 [가장 우아하고 근본적인 해결책]
             // 1. 플레이어를 리셋하기 전에 현재 사용 중인 '오디오 회선 번호(Session ID)'를 기억해 둡니다.
             int previousSessionId = 0;
@@ -45462,6 +47165,21 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         fos.close();
                     } catch (Exception e) {
                     }
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("what", what);
+                        d.put("extra", extra);
+                        d.put("name", track.getName());
+                        d.put("preferIjk", prefersIjkLocalDecode(track));
+                        com.solar.launcher.debug.Debug2241b1Log.log(
+                                "MainActivity.prepareMusicTrack", "mp onError try ijk", "YT3", "post-fix", d);
+                    } catch (Exception ignored) {}
+                    // #endregion
+                    // 2026-07-15 — One-shot IJK retry when stock decoder rejects YT adaptive AAC/etc.
+                    if (!musicUsingIjk && tryPrepareMusicViaIjk(track)) {
+                        return true;
+                    }
                     return true;
                 }
             });
@@ -45480,15 +47198,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 public void onPrepared(MediaPlayer mp) {
                     try {
                         setupVisualizer();
+                        // 2026-07-15 — OEM preset EQ retired for Settings UI; release any leftover session EQ.
                         try {
                             if (equalizer != null) {
                                 try { equalizer.release(); } catch (Exception ignored) {}
                                 equalizer = null;
-                            }
-                            equalizer = new Equalizer(0, mediaPlayer.getAudioSessionId());
-                            equalizer.setEnabled(true);
-                            if (currentEqPresetIndex < equalizer.getNumberOfPresets()) {
-                                equalizer.usePreset((short) currentEqPresetIndex);
                             }
                         } catch (Exception e) {
                         }
@@ -45560,6 +47274,148 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             });
             mediaPlayer.prepareAsync();
         } catch (Throwable e) {
+            tvPlayerTitle.setText("Load Failed: " + track.getName());
+        }
+    }
+
+    /**
+     * 2026-07-15 — Play local track via IJK so FFmpeg af EQ can run; false = caller uses MediaPlayer.
+     * Layman: try the advanced player for EQ; if it fails, the old player still works (no custom EQ).
+     */
+    private boolean tryPrepareMusicViaIjk(final File track) {
+        if (track == null) return false;
+        try {
+            if (mediaPlayer != null) {
+                try {
+                    mediaPlayer.reset();
+                } catch (Exception ignored) {
+                }
+            }
+            if (audioVisualizer != null) {
+                try {
+                    audioVisualizer.setEnabled(false);
+                    audioVisualizer.release();
+                    audioVisualizer = null;
+                } catch (Exception ignored) {
+                }
+            }
+            final com.solar.launcher.podcast.PodcastIjkPlayer ijk = ensureMusicIjkPlayer();
+            musicUsingIjk = true;
+            ijk.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+            ijk.setOnErrorListener(new com.solar.launcher.podcast.PodcastIjkPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(com.solar.launcher.podcast.PodcastIjkPlayer mp, int what, int extra) {
+                    // Fail-open: drop IJK and re-prepare on MediaPlayer without software EQ for this track.
+                    releaseMusicIjkPlayer();
+                    try {
+                        prepareMusicTrackMediaPlayerOnly(track);
+                    } catch (Exception ignored) {
+                    }
+                    return true;
+                }
+            });
+            ijk.setOnPreparedListener(new com.solar.launcher.podcast.PodcastIjkPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(com.solar.launcher.podcast.PodcastIjkPlayer mp) {
+                    try {
+                        tvPlayerTimeTotal.setText(formatTime(mp.getDuration()));
+                        updateMusicTrackCountUi();
+                        if (!isPausedByHand) {
+                            if (audiobookPendingResumeMs > 0) {
+                                try {
+                                    mp.seekTo(audiobookPendingResumeMs);
+                                } catch (Exception ignored) {
+                                }
+                                audiobookPendingResumeMs = 0;
+                            }
+                            mp.start();
+                        }
+                        syncNowPlayingHomeVisibility();
+                        updatePlayerUI();
+                        syncAvrcpTrackInfo(true);
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            ijk.setOnCompletionListener(new com.solar.launcher.podcast.PodcastIjkPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(com.solar.launcher.podcast.PodcastIjkPlayer mp) {
+                    try {
+                        if (repeatMode == 1) {
+                            mp.seekTo(0);
+                            mp.start();
+                        } else if (repeatMode == 2) {
+                            nextTrack();
+                        } else {
+                            if (playback.musicIndex() < playback.musicSlotCount() - 1) {
+                                nextTrack();
+                            } else {
+                                playback.setMusicIndex(0);
+                                prepareMusicTrack(playback.musicIndex());
+                                isPausedByHand = true;
+                                updatePlayerUI();
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            ijk.setDataSource(track);
+            ijk.prepareAsync();
+            return true;
+        } catch (Throwable t) {
+            releaseMusicIjkPlayer();
+            return false;
+        }
+    }
+
+    /** 2026-07-15 — Force MediaPlayer path after IJK EQ failure (no software filter). */
+    private void prepareMusicTrackMediaPlayerOnly(File track) {
+        if (track == null || playback.musicPlaylist().isEmpty()) return;
+        // Temporarily pretend EQ is off for this reopen — caller already released music IJK.
+        try {
+            // Rebuild using the standard prepare by flipping musicUsingIjk off and invoking prepare again.
+            musicUsingIjk = false;
+            // Nudge prepareMusicTrack which will skip IJK when needsSoftwareEq still true —
+            // so disable software gate for one shot via flat apply would break prefs.
+            // Instead inline a minimal MediaPlayer open matching the non-EQ branch.
+            if (mediaPlayer == null) mediaPlayer = new MediaPlayer();
+            else mediaPlayer.reset();
+            mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            try {
+                mediaPlayer.setWakeMode(getApplicationContext(), PowerManager.PARTIAL_WAKE_LOCK);
+            } catch (Exception ignored) {
+            }
+            if (currentFileInputStream != null) {
+                try {
+                    currentFileInputStream.close();
+                } catch (Exception ignored) {
+                }
+            }
+            currentFileInputStream = new java.io.FileInputStream(track);
+            mediaPlayer.setDataSource(currentFileInputStream.getFD());
+            mediaPlayer.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    try {
+                        tvPlayerTimeTotal.setText(formatTime(mp.getDuration()));
+                        if (!isPausedByHand) mp.start();
+                        updatePlayerUI();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            mediaPlayer.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    try {
+                        nextTrack();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            mediaPlayer.prepareAsync();
+        } catch (Throwable t) {
             tvPlayerTitle.setText("Load Failed: " + track.getName());
         }
     }
@@ -46088,6 +47944,22 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 } else {
                     podcastIjkPlayer.start();
                     applyPlaybackSpeed();
+                    isPausedByHand = false;
+                    if (connectedA2dpAddress != null) {
+                        routeAudioToBluetoothA2dp();
+                    }
+                }
+                updatePlayerUI();
+                return;
+            }
+            // 2026-07-15 — Music IJK (software EQ) play/pause.
+            if (isMusicIjkActive()) {
+                if (musicIjkPlayer.isPlaying()) {
+                    saveAudiobookBookmarkIfNeeded();
+                    musicIjkPlayer.pause();
+                    isPausedByHand = true;
+                } else {
+                    musicIjkPlayer.start();
                     isPausedByHand = false;
                     if (connectedA2dpAddress != null) {
                         routeAudioToBluetoothA2dp();
@@ -47584,10 +49456,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 // #region agent log
                 try {
                     org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("runId", "pre-fix");
                     d.put("keyCode", keyCode);
                     d.put("longHandled", keyboardPpLongHandled);
                     d.put("heldMs", keyboardPpDownAt > 0
                             ? System.currentTimeMillis() - keyboardPpDownAt : 0);
+                    d.put("portraitOn", Y1PortraitExperiment.isEnabled(this));
+                    d.put("mode", Y1PortraitExperiment.mode(this));
+                    d.put("passthrough", Y1PortraitInputKeys.isRemapPassthrough());
+                    Debug1f0248Log.log(this, "MainActivity.onKeyUp",
+                            "keyboard pp up → enter", "H-B", d);
                     DebugAgentLog.log(this, "MainActivity.onKeyUp",
                             "keyboard pp up", "H3", d);
                 } catch (Exception ignored) {}
@@ -47810,10 +49688,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             mediaPlayer.release();
             mediaPlayer = null;
         }
-        if (mediaPlayer != null) {
-            mediaPlayer.release();
-            mediaPlayer = null;
-        }
+        // 2026-07-15 — Release IJK music/podcast engines so wake locks don't outlive the Activity.
+        try {
+            releaseMusicIjkPlayer();
+        } catch (Exception ignored) {}
+        try {
+            releasePodcastIjkPlayer();
+        } catch (Exception ignored) {}
 
         // 🚀 [스크린 오프 완벽 제어 4단계] 앱 종료 시 권한 반납
         if (mediaSessionShim != null && android.os.Build.VERSION.SDK_INT >= 21) {
@@ -49493,9 +51374,25 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     public Button mediaCreateListButton(String label) { return createListButton(label); }
 
-    /** 2026-07-06 — Two-line browse row for YouTube results (title + channel/duration). */
+    /**
+     * 2026-07-06 — Two-line browse row for YouTube results (title + channel/duration).
+     * 2026-07-15 — Always build real title+subtitle LinearLayout.
+     * Was: createPodcastListRow collapsed to a Button when full_width_menus=off →
+     * MediaSuiteHost.SimpleListAdapter cast crashed opening YouTube.
+     * Layman: YouTube rows always show title and subtitle lines, even if menus aren't full width.
+     * Reversal: return createPodcastListRow(title, subtitle, null, null) only.
+     */
     public View mediaCreateTwoLineBrowseRow(String title, String subtitle) {
-        return createPodcastListRow(title, subtitle, null, null);
+        final boolean wasFull = isFullWidthMenus;
+        isFullWidthMenus = true;
+        try {
+            String sub = subtitle != null ? subtitle : "";
+            // Empty sub → podcast helper still builds a Button; force a space so we get 2 lines.
+            if (sub.length() == 0) sub = " ";
+            return createPodcastListRow(title, sub, null, null);
+        } finally {
+            isFullWidthMenus = wasFull;
+        }
     }
 
     public boolean mediaRequireInternet(int toastRes) { return requireInternet(toastRes); }
@@ -49510,6 +51407,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     public void mediaStopMusicPlayback() {
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("musicUsingIjk", musicUsingIjk);
+            d.put("hasIjk", musicIjkPlayer != null);
+            com.solar.launcher.debug.SessionDebugLog.log(this, "MainActivity.mediaStopMusicPlayback",
+                    "stop music", "I1", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        // 2026-07-15 — Also tear down software-EQ music IJK so podcasts don't dual-play.
+        try {
+            releaseMusicIjkPlayer();
+        } catch (Exception ignored) {}
         try {
             if (mediaPlayer != null) {
                 if (mediaPlayer.isPlaying()) mediaPlayer.stop();
@@ -51282,6 +53192,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
     }
 
+    /**
+     * 2026-07-15 — Open Flow on the album rack centered on this track's cover.
+     * Layman: jump to the wall of albums and stop on the album for this song.
+     * Technical: FlowMode.ALBUM + catalog-aligned matchKey (dominant artist) via openFlow(direct).
+     * Reversal: remove call sites; album-list Flow rows stay via addFlowSectionContextAction.
+     */
+    private void addFlowAlbumFromTrackContextAction(SongItem si) {
+        if (si == null || !isFlowEnabled()) return;
+        if (si.album == null || si.album.trim().isEmpty() || "Unknown Album".equals(si.album)) return;
+        String artist = si.artist != null ? si.artist : "";
+        List<FlowItem> catalog = flowScreenHost != null
+                ? flowScreenHost.peekSessionCatalog(FlowMode.ALBUM) : null;
+        String focusKey = com.solar.launcher.flow.FlowNowPlayingFocus.catalogAlignedMatchKey(
+                si.album.trim(), artist, catalog);
+        addFlowSectionContextAction(FlowMode.ALBUM, focusKey);
+    }
+
+    /** Open Flow scrolled to a section — albums from lists; tracks use {@link #addFlowAlbumFromTrackContextAction}. */
     private void addFlowSectionContextAction(final FlowMode mode, final String focusKey) {
         if (!isFlowEnabled() || focusKey == null || focusKey.isEmpty()) return;
         addContextAction(getString(R.string.flow_open_section), new Runnable() {
