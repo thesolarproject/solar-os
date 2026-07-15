@@ -2,18 +2,21 @@ package com.solar.launcher;
 
 /**
  * Lightweight UI flags for Xposed / overlay process — {@link #PROP_NOW_PLAYING_SCREEN} tells
- * volume hooks to skip the global volume HUD while Solar Now Playing shows inline transport pulse.
+ * volume hooks to skip the global volume HUD while Solar NP / video shows inline transport pulse.
  */
 public final class SolarUiState {
 
-    /** 1 while {@link MainActivity} {@code STATE_PLAYER} is visible. */
+    /** 1 while music Now Playing or video player is visible (inline volume pulse). */
     public static final String PROP_NOW_PLAYING_SCREEN = "persist.solar.ui.now_playing";
     /** 1 while Solar has an active music/podcast/radio/video session (readable from :overlay). */
     public static final String PROP_PLAYBACK_ACTIVE = "persist.solar.ui.playback_active";
 
     private SolarUiState() {}
 
-    /** MainActivity screen change — NP uses transport pulse, not global volume modal. */
+    /**
+     * 2026-07-15 — MainActivity screen change writes this so VolumePanelHooks / :overlay can skip HUD.
+     * Covers STATE_PLAYER and STATE_VIDEO_PLAYER. Reversal: never call (old dead prop).
+     */
     public static void setNowPlayingScreen(boolean active) {
         RootShell.run("setprop " + PROP_NOW_PLAYING_SCREEN + " " + (active ? "1" : "0"));
     }

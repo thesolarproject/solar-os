@@ -64,6 +64,11 @@ final class SystemServerHooks {
     private static boolean powerRestartFired;
     private static boolean powerTracking;
     private static long powerDownAt;
+    /**
+     * 2026-07-15 — Screen lit when POWER went down (wake vs sleep intent).
+     * Layman: dark at press = wake; lit at press = sleep. UP-time isScreenOn is true after wake.
+     */
+    private static boolean powerScreenOnAtDown = true;
     private static Runnable powerLongRunnable;
     private static Runnable powerRestartRunnable;
     private static Runnable powerRescueArmRunnable;
@@ -432,6 +437,7 @@ final class SystemServerHooks {
         powerRestartFired = false;
         powerTracking = false;
         powerDownAt = 0L;
+        powerScreenOnAtDown = true;
         cachedPowerLongFg = null;
         if (mainHandler != null) {
             mainHandler.removeCallbacks(powerLongRunnable);
@@ -526,6 +532,11 @@ final class SystemServerHooks {
 
         if (action == KeyEvent.ACTION_DOWN) {
             if (event.getRepeatCount() == 0 && !powerTracking) {
+                boolean screenOnDown = readPowerManagerScreenOn(pwmThis);
+                // #region agent log
+                debugD74b0d("C,D", "SystemServerHooks.handlePowerLongPressEvent:DOWN",
+                        "power DOWN arm", 0L, false, screenOnDown, screenOnDown, false);
+                // #endregion
                 armPowerLongPress(pwmThis, fg, ctx);
             }
             return false;
@@ -542,6 +553,7 @@ final class SystemServerHooks {
                 powerTracking = false;
                 cachedPowerLongFg = null;
                 powerDownAt = 0L;
+                powerScreenOnAtDown = true;
                 return true;
             }
             if (powerLongFired || powerRestartFired) {
@@ -550,13 +562,22 @@ final class SystemServerHooks {
             }
             if (powerTracking) {
                 long held = powerDownAt > 0 ? SystemClock.uptimeMillis() - powerDownAt : 0L;
-                if (allowRockboxPowerLongOverlay
-                        && com.solar.input.policy.GlobalInputPolicy.shouldPassthroughPowerTap(held)) {
+                boolean screenOnNow = readPowerManagerScreenOn(pwmThis);
+                boolean forceSleep = allowRockboxPowerLongOverlay
+                        && com.solar.input.policy.GlobalInputPolicy.shouldForcePowerTapSleep(
+                                held, powerScreenOnAtDown);
+                // #region agent log
+                debugD74b0d("A,B,C", "SystemServerHooks.handlePowerLongPressEvent:UP",
+                        "power short-UP decision", held, forceSleep, screenOnNow,
+                        powerScreenOnAtDown, forceSleep);
+                // #endregion
+                if (forceSleep) {
                     triggerGoToSleep(pwmThis);
                 }
                 powerTracking = false;
                 cachedPowerLongFg = null;
                 powerDownAt = 0L;
+                powerScreenOnAtDown = true;
             }
             return false;
         }
@@ -579,6 +600,8 @@ final class SystemServerHooks {
         powerRestartFired = false;
         powerTracking = true;
         powerDownAt = SystemClock.uptimeMillis();
+        // 2026-07-15 — Capture lit/dark at DOWN; UP-time screenOn is true after wake (RC-WAKE).
+        powerScreenOnAtDown = readPowerManagerScreenOn(pwmThis);
         cachedPowerLongFg = fg;
         ensureMainHandler();
         mainHandler.removeCallbacks(powerLongRunnable);
@@ -640,10 +663,18 @@ final class SystemServerHooks {
         }
     }
 
-    /** Y2 short POWER tap — explicit sleep when MTK PWM miss leaves screen on (RC-SLEEP). */
+    /**
+     * 2026-07-15 — Y2 short POWER → goToSleep only for sleep taps (screen was on at DOWN).
+     * Was: always goToSleep on short UP (RC-SLEEP) which re-slept just-woken displays.
+     */
     private static void triggerGoToSleep(Object pwmThis) {
         try {
             Object pm = XposedHelpers.getObjectField(pwmThis, "mPowerManager");
+            boolean screenOn = readPowerManagerScreenOn(pwmThis);
+            // #region agent log
+            debugD74b0d("A,B", "SystemServerHooks.triggerGoToSleep",
+                    "about to goToSleep", -1L, true, screenOn, powerScreenOnAtDown, true);
+            // #endregion
             if (pm != null) {
                 XposedHelpers.callMethod(pm, "goToSleep", SystemClock.uptimeMillis());
                 SolarContextBridge.log("power short-tap goToSleep");
@@ -651,6 +682,51 @@ final class SystemServerHooks {
         } catch (Throwable t) {
             SolarContextBridge.log("goToSleep failed: " + t.getClass().getSimpleName());
         }
+    }
+
+    /** 2026-07-15 — Probe PWM PowerManager.isScreenOn for wake/sleep (API 17/19). */
+    private static boolean readPowerManagerScreenOn(Object pwmThis) {
+        try {
+            Object pm = XposedHelpers.getObjectField(pwmThis, "mPowerManager");
+            if (pm == null) return true;
+            Object on = XposedHelpers.callMethod(pm, "isScreenOn");
+            return on instanceof Boolean ? ((Boolean) on).booleanValue() : true;
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /**
+     * 2026-07-15 — Debug session d74b0d: NDJSON to logcat (+ optional tmp file).
+     * Layman: breadcrumb for wake vs sleep power taps.
+     */
+    private static void debugD74b0d(String hypothesisId, String location, String message,
+            long heldMs, boolean forceSleep, boolean screenOnNow, boolean screenWasOnAtDown,
+            boolean willCallGoToSleep) {
+        try {
+            JSONObject data = new JSONObject();
+            data.put("heldMs", heldMs);
+            data.put("forceSleep", forceSleep);
+            data.put("screenOnNow", screenOnNow);
+            data.put("screenWasOnAtDown", screenWasOnAtDown);
+            data.put("willCallGoToSleep", willCallGoToSleep);
+            data.put("allowRockboxPowerLongOverlay", allowRockboxPowerLongOverlay);
+            JSONObject o = new JSONObject();
+            o.put("sessionId", "d74b0d");
+            o.put("runId", "post-fix");
+            o.put("hypothesisId", hypothesisId);
+            o.put("location", location);
+            o.put("message", message);
+            o.put("data", data);
+            o.put("timestamp", System.currentTimeMillis());
+            String line = o.toString();
+            android.util.Log.i("SolarDebugD74b0d", line);
+            java.io.FileWriter fw = new java.io.FileWriter(
+                    "/data/local/tmp/solar-debug-d74b0d.log", true);
+            fw.write(line);
+            fw.write('\n');
+            fw.close();
+        } catch (Throwable ignored) {}
     }
 
     /** Swallow POWER queue events after long-hold fired until finger lifts. */

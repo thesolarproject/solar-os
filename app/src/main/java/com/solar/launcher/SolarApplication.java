@@ -254,6 +254,16 @@ public class SolarApplication extends Application {
                 ThemeManager.loadAllThemes(SolarApplication.this);
                 ThemeManager.restoreSavedThemeFromPrefs(SolarApplication.this);
                 ThemeManager.ensureActiveThemeOrFallback(SolarApplication.this);
+                // 2026-07-15 — First boot only: seed Aura solarConfig (LCD/3D/status) once.
+                // Was: prefs only after Settings → Apply theme (blank first session).
+                // Now: one-shot unless marked; later boots keep user edits.
+                // Reversal: remove block; theme prefs wait for manual apply again.
+                android.content.SharedPreferences solarPrefs =
+                        getSharedPreferences("SOLAR_SETTINGS", MODE_PRIVATE);
+                if (!solarPrefs.getBoolean("solar_config_seeded_from_theme", false)) {
+                    ThemeManager.applySolarConfigPrefs(SolarApplication.this);
+                    solarPrefs.edit().putBoolean("solar_config_seeded_from_theme", true).commit();
+                }
                 ThemeManager.cacheActiveTheme(SolarApplication.this);
                 ThemeManager.preferInternalCacheForActiveTheme(SolarApplication.this);
                 ThemeManager.warmOverlayThemeCache(SolarApplication.this);
@@ -285,7 +295,7 @@ public class SolarApplication extends Application {
                     // #endregion
                 }
                 LauncherSwitch.ensurePreferredHome(SolarApplication.this);
-                com.solar.launcher.youtube.NotPipePmRegistrar.ensureRegisteredAsync(SolarApplication.this);
+                // 2026-07-15 — YouTube is native Invidious/Piped; no NotPipe PM register.
                 SolarBootPacing.pauseBetweenBootstrapSteps();
                 SolarBootPacing.schedule(SolarApplication.this, 5_000L, new Runnable() {
                     @Override

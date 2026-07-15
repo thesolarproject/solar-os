@@ -152,7 +152,7 @@ public final class RowKeys {
     public static final String BLUETOOTH_PAIRING_PIN = "settings.bluetooth_pairing_pin";
     public static final String BRIGHTNESS = "settings.brightness";
     public static final String STORAGE = "settings.storage";
-    /** Y2 — save new media on internal storage (sdcard0) when on; scans always include both volumes. */
+    /** Legacy — prefer Y2_PRIMARY_STORAGE; scans always include every mounted volume. */
     public static final String Y2_INTERNAL_MEDIA = "settings.y2_internal_media";
     /** Y2 only — long OK sleeps screen instead of opening quick menu (legacy behaviour). */
     public static final String Y2_HOLD_OK_TO_SLEEP = "settings.y2_hold_ok_to_sleep";
@@ -160,7 +160,7 @@ public final class RowKeys {
     public static final String A5_MENU_NAV = "settings.a5_menu_nav";
     /** 2026-07-11 — A5: portrait 240×320 vs landscape 240p-scaled. */
     public static final String A5_ORIENTATION = "settings.a5_orientation";
-    /** Y2 — submenu to pick MicroSD vs internal as primary save target. */
+    /** Pick MicroSD vs Internal as primary save target for new media (all families). */
     public static final String Y2_PRIMARY_STORAGE = "settings.y2_primary_storage";
     public static final String Y2_PRIMARY_MICROSD = "settings.y2_primary.microsd";
     public static final String Y2_PRIMARY_INTERNAL = "settings.y2_primary.internal";
@@ -402,6 +402,7 @@ public final class RowKeys {
         if (MediaSuiteHost.ROW_AUTO_DETECT.equals(rowKey)) return R.string.radio_settings_auto_region;
         if (MediaSuiteHost.ROW_BUFFER_SD.equals(rowKey)) return R.string.radio_settings_buffer_sd;
         if (MediaSuiteHost.ROW_VIDEO_SLEEP.equals(rowKey)) return R.string.video_settings_sleep_during_playback;
+        if (MediaSuiteHost.ROW_VIDEO_CROP.equals(rowKey)) return R.string.video_settings_crop_mode;
         if (HOME_SCREEN.equals(rowKey)) return R.string.home_screen_editor;
         if (SOULSEEK_SEARCH.equals(rowKey)) return R.string.soulseek_search_row;
         if (SOULSEEK_ACCOUNT.equals(rowKey)) return R.string.soulseek_account_row;

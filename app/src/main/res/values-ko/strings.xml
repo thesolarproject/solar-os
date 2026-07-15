@@ -321,6 +321,7 @@
     <string name="home_menu_fm">FM 라디오</string>
     <string name="home_menu_pc_upload">Wi‑Fi 전송</string>
     <string name="home_menu_podcasts">팟캐스트</string>
+    <string name="home_menu_youtube_audio">YouTube 오디오</string>
     <string name="home_menu_soulseek">Reach</string>
     <string name="home_menu_themes">테마</string>
     <string name="home_menu_more">더보기</string>
@@ -405,6 +406,8 @@
     <string name="browser_playlists">📋 재생목록</string>
     <string name="browser_scanning">⏳ 미디어 검색 중…</string>
     <string name="browser_get_more">더 받기</string>
+    <string name="browser_youtube_audio">YouTube 오디오</string>
+    <string name="status_youtube_audio">YouTube 오디오</string>
     <string name="browser_search_library">라이브러리 검색</string>
     <string name="browser_search">검색…</string>
     <string name="keyboard_library_search">라이브러리 검색</string>
@@ -671,6 +674,8 @@
     <string name="context_action_open_reach">Reach</string>
     <string name="context_action_open_apps">앱</string>
     <string name="context_action_lock_screen">화면 잠금</string>
+    <!-- 2026-07-15 — Sleep/Zzz quick chip. -->
+    <string name="context_action_sleep">절전</string>
     <string name="context_go_to_home">홈으로</string>
     <string name="context_go_to_now_playing">지금 재생으로</string>
     <string name="context_shutdown_title">종료할까요?</string>
@@ -680,6 +685,8 @@
     <string name="context_restart_message">기기가 재시작됩니다.</string>
     <string name="context_restart_confirm">재시작</string>
     <string name="context_action_lock_failed">화면을 잠글 수 없습니다</string>
+    <!-- 2026-07-15 — Sleep chip failure. -->
+    <string name="context_action_sleep_failed">화면을 절전할 수 없습니다</string>
     <string name="context_quick_volume">볼륨</string>
     <string name="context_quick_brightness">밝기</string>
     <string name="context_hold_back_hint">뒤로 버튼 길게 눌러 옵션</string>

@@ -50,21 +50,12 @@ public final class SoulseekShareIndex {
         return new SoulseekShareIndex();
     }
 
-    public void scan(String username, File musicRoot, File podcastRoot) {
-        scan(username, musicRoot, podcastRoot, null, null);
-    }
-
-    /** @param cachedDurationSecByPath lower-case absolute path → duration seconds from library cache */
-    public void scan(String username, File musicRoot, File podcastRoot,
-            Map<String, Integer> cachedDurationSecByPath) {
-        scan(username, musicRoot, podcastRoot, cachedDurationSecByPath, null);
-    }
-
     /**
      * @param knownMusicFiles when non-empty, index Music from this list instead of re-walking the tree
      *        (ponytail: avoids a second O(files) filesystem walk after library scan).
+     * @param podcastRoots all Podcasts/ folders to share (multi-volume).
      */
-    public void scan(String username, File musicRoot, File podcastRoot,
+    public void scanPodcastRoots(String username, File musicRoot, java.util.List<File> podcastRoots,
             Map<String, Integer> cachedDurationSecByPath, List<File> knownMusicFiles) {
         List<Entry> newEntries = new ArrayList<Entry>();
         Map<String, File> newByVirtualPath = new HashMap<String, File>();
@@ -82,9 +73,14 @@ public final class SoulseekShareIndex {
                             cachedDurationSecByPath);
                 }
             }
-            if (podcastRoot != null && podcastRoot.isDirectory()) {
-                scanRoot(user, "Podcasts", podcastRoot, podcastRoot, newEntries, newByVirtualPath,
-                        cachedDurationSecByPath);
+            // 2026-07-15 — Share podcasts from every mounted volume.
+            if (podcastRoots != null) {
+                for (File podcastRoot : podcastRoots) {
+                    if (podcastRoot != null && podcastRoot.isDirectory()) {
+                        scanRoot(user, "Podcasts", podcastRoot, podcastRoot, newEntries,
+                                newByVirtualPath, cachedDurationSecByPath);
+                    }
+                }
             }
             for (Entry e : newEntries) {
                 List<Entry> list = newByDir.get(e.dir);
@@ -103,6 +99,27 @@ public final class SoulseekShareIndex {
             byDir.clear();
             byDir.putAll(newByDir);
         }
+    }
+
+    public void scan(String username, File musicRoot, File podcastRoot) {
+        scan(username, musicRoot, podcastRoot, null, null);
+    }
+
+    /** @param cachedDurationSecByPath lower-case absolute path → duration seconds from library cache */
+    public void scan(String username, File musicRoot, File podcastRoot,
+            Map<String, Integer> cachedDurationSecByPath) {
+        scan(username, musicRoot, podcastRoot, cachedDurationSecByPath, null);
+    }
+
+    /**
+     * @param knownMusicFiles when non-empty, index Music from this list instead of re-walking the tree
+     *        (ponytail: avoids a second O(files) filesystem walk after library scan).
+     */
+    public void scan(String username, File musicRoot, File podcastRoot,
+            Map<String, Integer> cachedDurationSecByPath, List<File> knownMusicFiles) {
+        java.util.ArrayList<File> pods = new java.util.ArrayList<File>();
+        if (podcastRoot != null) pods.add(podcastRoot);
+        scanPodcastRoots(username, musicRoot, pods, cachedDurationSecByPath, knownMusicFiles);
     }
 
     private void scanRoot(String user, String libName, File root, File dir,

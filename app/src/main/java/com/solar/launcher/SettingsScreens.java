@@ -200,7 +200,7 @@ public final class SettingsScreens {
                 || HOME.equals(key) || HOME_ARRANGE.equals(key) || HOME_MORE.equals(key)
                 || HOME_MORE_ARRANGE.equals(key) || BACKGROUND.equals(key)
                 || NOW_PLAYING.equals(key) || DATETIME.equals(key) || LANGUAGE.equals(key)
-                || Y2_PRIMARY_STORAGE.equals(key) || EQ.equals(key)
+                || Y2_PRIMARY_STORAGE.equals(key)
                 || REACH.equals(key) || SOULSEEK.equals(key) || SOULSEEK_CONNECTION.equals(key)
                 || DEEZER.equals(key) || DEEZER_ACCOUNT.equals(key) || DEEZER_CONNECTION.equals(key)
                 || NAVIDROME.equals(key) || PLEX.equals(key) || JELLYFIN.equals(key) || RADIO.equals(key)

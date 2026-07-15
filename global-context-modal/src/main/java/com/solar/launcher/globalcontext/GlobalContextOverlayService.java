@@ -1411,14 +1411,22 @@ public final class GlobalContextOverlayService extends Service {
         }
     }
 
-    /** Fire-and-forget root shell (reboot / power key). */
+    /**
+     * 2026-07-15 — Fire-and-forget root shell (reboot / Sleep/Zzz power key).
+     * Was: plain "su" only. Now: try setuid paths first (A5 Solar ROM / Y1).
+     * Reversal: exec new String[]{"su","-c",cmd} only.
+     */
     private static void runRootShell(final String cmd) {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                try {
-                    Runtime.getRuntime().exec(new String[] { "su", "-c", cmd }).waitFor();
-                } catch (Exception ignored) {}
+                String[] sus = new String[] {"/system/xbin/su", "/system/bin/su", "su"};
+                for (int i = 0; i < sus.length; i++) {
+                    try {
+                        Process p = Runtime.getRuntime().exec(new String[] {sus[i], "-c", cmd});
+                        if (p.waitFor() == 0) return;
+                    } catch (Exception ignored) {}
+                }
             }
         }, "ChipHostRoot").start();
     }

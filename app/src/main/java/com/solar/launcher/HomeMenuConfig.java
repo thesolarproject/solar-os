@@ -18,7 +18,12 @@ public final class HomeMenuConfig {
     public static final String PREF_MORE_ENABLED = "home_more_enabled";
     public static final String PREF_HOME_SCHEMA = "home_menu_schema";
 
-    private static final int HOME_SCHEMA = 5;
+    /**
+     * 2026-07-15 — Schema 8: drop youtube_audio home tile (Music → YouTube only).
+     * Schema 7 seeded it; schema 6 made order user-editable.
+     * Was: HOME_SCHEMA=7 with tile on default home. Reversal: HOME_SCHEMA=7 + re-add id to defaults.
+     */
+    private static final int HOME_SCHEMA = 8;
 
     public static final String ID_NOW_PLAYING = "now_playing";
     public static final String ID_MUSIC = "music";
@@ -30,6 +35,11 @@ public final class HomeMenuConfig {
     public static final String ID_PC_UPLOAD = "pc_upload";
     public static final String ID_PODCASTS = "podcasts";
     public static final String ID_SOULSEEK = "soulseek";
+    /**
+     * 2026-07-15 — Legacy home id; schema 8 removes from home. Kept for prefs cleanup / connectivity id.
+     * Was: Music YouTube Audio home shortcut. Reversal: re-add to SOLAR_HOME_EXTRAS + DEFAULT_ORDER.
+     */
+    public static final String ID_YOUTUBE_AUDIO = "youtube_audio";
     public static final String ID_DEEZER = "deezer";
     /** @deprecated migrated to {@link #ID_THEMES} */
     public static final String ID_GET_THEMES = "get_themes";
@@ -56,7 +66,11 @@ public final class HomeMenuConfig {
             ID_NOW_PLAYING, ID_MUSIC, ID_RADIO, ID_BLUETOOTH, ID_SETTINGS,
             ID_PC_UPLOAD, ID_PODCASTS, ID_SOULSEEK);
 
-    /** Fixed home / More menu order — not user-reorderable. */
+    /**
+     * 2026-07-15 — Default catalog sequence + editor listing order.
+     * Was: enforced as the only home display order. Now: seed / fallback; user prefs win.
+     * Reversal: restore normalizeOrder that walks FIXED only.
+     */
     private static final List<String> FIXED_HOME_ORDER;
     static {
         List<String> order = new ArrayList<String>(STOCK_Y1_HOME_ORDER);
@@ -104,8 +118,8 @@ public final class HomeMenuConfig {
     private static final Set<String> OPT_IN = new HashSet<String>(Arrays.asList(
             ID_APPS, ID_THEMES, ID_AUDIOBOOKS));
 
-    private static final Set<String> COMING_SOON = new HashSet<String>(Arrays.asList(
-            ID_AUDIOBOOKS));
+    // 2026-07-15 — Audiobooks shipped; no longer coming-soon gated.
+    private static final Set<String> COMING_SOON = new HashSet<String>();
 
     public static boolean isComingSoon(String id) {
         return id != null && COMING_SOON.contains(migrateId(id));
@@ -136,7 +150,8 @@ public final class HomeMenuConfig {
             saveMoreOrder(prefs, more);
             schema = 4;
         }
-        if (schema < HOME_SCHEMA) {
+        // Schema 5→6: Radio rename + Videos/Photos on (order editable from schema 6).
+        if (schema < 6) {
             List<String> home = new ArrayList<String>(loadHomeOrderIds(prefs));
             List<String> more = new ArrayList<String>(loadMoreOrderIds(prefs));
             int fmIdx = home.indexOf(ID_FM);
@@ -150,6 +165,31 @@ public final class HomeMenuConfig {
             saveMoreOrder(prefs, more);
             setShortcutEnabled(prefs, ID_VIDEOS, true);
             setShortcutEnabled(prefs, ID_PHOTOS, true);
+            schema = 6;
+        }
+        // 2026-07-15 — Schema 7 briefly seeded YouTube Audio on home (superseded by schema 8).
+        if (schema < 7) {
+            List<String> home = new ArrayList<String>(loadHomeOrderIds(prefs));
+            if (!home.contains(ID_YOUTUBE_AUDIO) && !loadMoreOrderIds(prefs).contains(ID_YOUTUBE_AUDIO)) {
+                int afterPodcasts = home.indexOf(ID_PODCASTS);
+                if (afterPodcasts >= 0) {
+                    home.add(afterPodcasts + 1, ID_YOUTUBE_AUDIO);
+                } else {
+                    home.add(ID_YOUTUBE_AUDIO);
+                }
+                saveOrder(prefs, home);
+            }
+            schema = 7;
+        }
+        // 2026-07-15 — Schema 8: Music → YouTube only; strip home youtube_audio tile.
+        // Was: kept tiled after schema 7. Reversal: stop at schema 7 (leave id on home).
+        if (schema < HOME_SCHEMA) {
+            List<String> home = new ArrayList<String>(loadHomeOrderIds(prefs));
+            List<String> more = new ArrayList<String>(loadMoreOrderIds(prefs));
+            home.remove(ID_YOUTUBE_AUDIO);
+            more.remove(ID_YOUTUBE_AUDIO);
+            saveOrder(prefs, home);
+            saveMoreOrder(prefs, more);
             schema = HOME_SCHEMA;
         }
         if (prefs.getInt(PREF_HOME_SCHEMA, 1) < schema) {
@@ -189,6 +229,8 @@ public final class HomeMenuConfig {
             new Entry(ID_RADIO, R.string.home_menu_radio, "fm", R.drawable.radio_circle, "Radio", false),
             new Entry(ID_PC_UPLOAD, R.string.home_menu_pc_upload, null, R.drawable.file_sync, "PC Upload", false),
             new Entry(ID_PODCASTS, R.string.home_menu_podcasts, null, R.drawable.music_list, "Podcasts", false),
+            // Legacy id kept findable for prefs cleanup; not in SOLAR_HOME_EXTRAS / editor.
+            new Entry(ID_YOUTUBE_AUDIO, R.string.home_menu_youtube_audio, null, R.drawable.music_list, "YouTube Audio", false),
             new Entry(ID_SOULSEEK, R.string.home_menu_soulseek, null, R.drawable.music_list, "Get Music", false),
             new Entry(ID_THEMES, R.string.home_menu_themes, "theme", R.drawable.setting_circle, "Themes", false),
             new Entry(ID_VIDEOS, R.string.home_menu_videos, "video", R.drawable.music_list, null, false),
@@ -204,7 +246,7 @@ public final class HomeMenuConfig {
     public static String y1HomeIconFallbackKey(String id) {
         if (id == null) return null;
         id = migrateId(id);
-        if (ID_SOULSEEK.equals(id)) return "music";
+        if (ID_SOULSEEK.equals(id) || ID_YOUTUBE_AUDIO.equals(id)) return "music";
         if (ID_PODCASTS.equals(id) || ID_AUDIOBOOKS.equals(id)) return "audiobooks";
         if (ID_PHOTOS.equals(id)) return "photos";
         return null;
@@ -458,46 +500,75 @@ public final class HomeMenuConfig {
         return new ArrayList<String>(Arrays.asList(raw.split(",")));
     }
 
+    /**
+     * 2026-07-15 — Keep user-chosen order; only drop unknowns / ensure Settings present.
+     * Was: rebuild from FIXED_HOME_ORDER (reordering impossible). Reversal: fixed walk again.
+     */
     static List<String> normalizeOrder(List<String> order) {
-        Set<String> enabled = new HashSet<String>();
+        List<String> out = new ArrayList<String>();
+        Set<String> seen = new HashSet<String>();
         if (order != null) {
             for (String id : order) {
                 if (id == null) continue;
                 id = migrateId(id.trim());
-                if (id.isEmpty() || ID_MORE.equals(id)) continue;
+                if (id.isEmpty() || ID_MORE.equals(id) || seen.contains(id)) continue;
                 if (find(id) == null) continue;
-                enabled.add(id);
+                out.add(id);
+                seen.add(id);
             }
         }
-        if (enabled.isEmpty()) {
+        if (out.isEmpty()) {
             for (String id : parseRawOrder(DEFAULT_ORDER)) {
-                enabled.add(migrateId(id));
+                id = migrateId(id);
+                if (find(id) == null || seen.contains(id)) continue;
+                out.add(id);
+                seen.add(id);
             }
         }
-        enabled.add(ID_SETTINGS);
-        List<String> out = new ArrayList<String>();
-        for (String id : FIXED_HOME_ORDER) {
-            if (enabled.contains(id)) out.add(id);
+        if (!seen.contains(ID_SETTINGS)) {
+            int settingsSlot = FIXED_HOME_ORDER.indexOf(ID_SETTINGS);
+            if (settingsSlot < 0) settingsSlot = out.size();
+            int insertAt = Math.min(settingsSlot, out.size());
+            out.add(insertAt, ID_SETTINGS);
         }
         return out;
     }
 
+    /**
+     * 2026-07-15 — Preserve More-menu user order (same idea as home).
+     * Was: FIXED walk. Reversal: restore FIXED walk.
+     */
     static List<String> normalizeMoreOrder(List<String> order) {
-        Set<String> inMore = new HashSet<String>();
+        List<String> out = new ArrayList<String>();
+        Set<String> seen = new HashSet<String>();
         if (order != null) {
             for (String id : order) {
                 if (id == null) continue;
                 id = migrateId(id.trim());
                 if (id.isEmpty() || ID_MORE.equals(id) || ID_SETTINGS.equals(id)) continue;
-                if (find(id) == null) continue;
-                inMore.add(id);
+                if (find(id) == null || seen.contains(id)) continue;
+                out.add(id);
+                seen.add(id);
             }
         }
-        List<String> out = new ArrayList<String>();
-        for (String id : FIXED_HOME_ORDER) {
-            if (inMore.contains(id)) out.add(id);
-        }
         return out;
+    }
+
+    /**
+     * 2026-07-15 — Swap two enabled home shortcut ids (Settings immovable).
+     * Returns false when move refused.
+     */
+    public static boolean moveHomeShortcut(SharedPreferences prefs, int from, int to) {
+        if (prefs == null || from == to || from < 0 || to < 0) return false;
+        List<String> ids = new ArrayList<String>(loadHomeOrderIds(prefs));
+        if (from >= ids.size() || to >= ids.size()) return false;
+        String fromId = ids.get(from);
+        String toId = ids.get(to);
+        if (ID_SETTINGS.equals(fromId) || ID_SETTINGS.equals(toId)) return false;
+        ids.remove(from);
+        ids.add(to, fromId);
+        saveOrder(prefs, ids);
+        return true;
     }
 
     static String migrateId(String id) {
@@ -506,8 +577,14 @@ public final class HomeMenuConfig {
         return id;
     }
 
-  /** Radio is production on home; Internet radio remains experiment-gated in MediaSuiteHost. */
+    /**
+     * 2026-07-15 — Legacy youtube_audio id still gated if somehow listed; editor no longer shows it.
+     * Radio is production on home; Internet radio remains gated in MediaSuiteHost.
+     */
     private static boolean isHiddenByExperimentGate(String id, SharedPreferences prefs) {
+        if (ID_YOUTUBE_AUDIO.equals(migrateId(id))) {
+            return !com.solar.launcher.youtube.YouTubeExperiment.isEnabled(prefs);
+        }
         return false;
     }
 

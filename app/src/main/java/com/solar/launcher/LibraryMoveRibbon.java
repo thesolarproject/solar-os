@@ -271,6 +271,14 @@ final class LibraryMoveRibbon {
         return row;
     }
 
+    /**
+     * 2026-07-15 — Mover row for touch drag attach ({@link MoveRibbonTouch}).
+     * Layman: the lifted strip the finger slides. Technical: findMoverRow public.
+     */
+    View moverRowForTouch() {
+        return findMoverRow();
+    }
+
     private View findRibbonSlotRow(int ribbonSlot) {
         if (host == null) return null;
         for (int c = 0; c < host.getChildCount(); c++) {

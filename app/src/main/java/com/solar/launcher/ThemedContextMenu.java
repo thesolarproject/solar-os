@@ -109,6 +109,19 @@ public final class ThemedContextMenu {
         boolean onKeyDown(int keyCode, android.view.KeyEvent event);
     }
 
+    /**
+     * 2026-07-15 — Touch reorder bridge for play-queue ribbon (MainActivity / OverlayModalHost).
+     * Layman: finger lifts and drags tracks; wheel/OK still work the same.
+     * Reversal: leave unset — touch does nothing on queue.
+     */
+    public interface QueueTouchMoveListener {
+        void onQueueTouchLift(int index);
+
+        void onQueueTouchStep(int delta);
+
+        void onQueueTouchConfirm();
+    }
+
     private final Context context;
     private FrameLayout overlay;
     private LinearLayout panel;
@@ -130,9 +143,9 @@ public final class ThemedContextMenu {
     private TextView brightnessLabel;
     private int brightnessMax = 255;
     private int brightnessValue = 255;
-  /** Match MainActivity CONTEXT_QUICK_VOLUME_INDEX / CONTEXT_QUICK_BRIGHTNESS_INDEX (home chip at 0). */
-    private int volumeQuickIndex = 7;
-    private int brightnessQuickIndex = 6;
+    /** 2026-07-15 — Match MainActivity CONTEXT_QUICK_VOLUME/BRIGHTNESS (Sleep is index 7). */
+    private int volumeQuickIndex = 6;
+    private int brightnessQuickIndex = 5;
     private int volumeQuickIconRes = R.drawable.ic_volume_mid;
     private int brightnessQuickIconRes = R.drawable.ic_brightness_half;
     private String[] labels;
@@ -154,6 +167,8 @@ public final class ThemedContextMenu {
     private boolean queueMode;
     private QueueRowSpec[] queueRows = new QueueRowSpec[0];
     private int queueMoveFrom = -1;
+    /** 2026-07-15 — Touch lift/step/confirm for queue ribbon. */
+    private QueueTouchMoveListener queueTouchMoveListener;
     private boolean volumeOnlyMode;
     /** Non-interactive status line (e.g. launcher switch in progress) — no list, no slider. */
     private boolean hintOnlyMode;
@@ -1163,6 +1178,32 @@ public final class ThemedContextMenu {
         populateRibbonRow(findRibbonSlotRow(QueueMoveWindow.RIBBON_CENTER), moveIdx);
         populateRibbonRow(findRibbonSlotRow(QueueMoveWindow.RIBBON_BELOW), belowIdx);
         if (itemsScroll != null) itemsScroll.scrollTo(0, 0);
+        attachQueueMoveTouchDrag();
+    }
+
+    /**
+     * 2026-07-15 — Finger-drag the center ribbon slot (OK-hold + wheel unchanged).
+     * Reversal: remove call + queueTouchMoveListener field.
+     */
+    private void attachQueueMoveTouchDrag() {
+        if (queueTouchMoveListener == null || !MoveRibbonTouch.touchReorderEnabled()) return;
+        View center = findRibbonSlotRow(QueueMoveWindow.RIBBON_CENTER);
+        if (center == null) return;
+        final int slotH = queueRowSlotHeight();
+        MoveRibbonTouch.attachActiveDrag(center, slotH, new MoveRibbonTouch.Callbacks() {
+            @Override
+            public void onLift() {}
+
+            @Override
+            public void onStep(int delta) {
+                if (queueTouchMoveListener != null) queueTouchMoveListener.onQueueTouchStep(delta);
+            }
+
+            @Override
+            public void onConfirm() {
+                if (queueTouchMoveListener != null) queueTouchMoveListener.onQueueTouchConfirm();
+            }
+        });
     }
 
     /**
@@ -2310,6 +2351,14 @@ public final class ThemedContextMenu {
         return -1;
     }
 
+    /**
+     * 2026-07-15 — Wire touch reorder for queue (A5); null disables.
+     * Reversal: never call — queue stays OK-hold/wheel only.
+     */
+    public void setQueueTouchMoveListener(QueueTouchMoveListener listener) {
+        queueTouchMoveListener = listener;
+    }
+
     public void setQueueMoveFrom(int moveFrom) {
         int prevMove = queueMoveFrom;
         // #region agent log
@@ -2902,6 +2951,25 @@ public final class ThemedContextMenu {
 
         row.addView(rightSlot);
         attachA5OptionRowTap(row, index);
+        // 2026-07-15 — Touch long-press starts queue move (browse rows only; ribbon slots index -1).
+        if (index >= 0 && queueTouchMoveListener != null && MoveRibbonTouch.touchReorderEnabled()) {
+            final int rowIndex = index;
+            MoveRibbonTouch.attachBrowseLift(row, MoveRibbonTouch.LIFT_HOLD_MS,
+                    new MoveRibbonTouch.Callbacks() {
+                        @Override
+                        public void onLift() {
+                            if (queueTouchMoveListener != null) {
+                                queueTouchMoveListener.onQueueTouchLift(rowIndex);
+                            }
+                        }
+
+                        @Override
+                        public void onStep(int delta) {}
+
+                        @Override
+                        public void onConfirm() {}
+                    });
+        }
         return row;
     }
 

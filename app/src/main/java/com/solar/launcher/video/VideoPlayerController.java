@@ -15,12 +15,14 @@ import tv.danmaku.ijk.media.player.IjkMediaPlayer;
 public final class VideoPlayerController implements SurfaceHolder.Callback,
         IMediaPlayer.OnPreparedListener,
         IMediaPlayer.OnErrorListener,
-        IMediaPlayer.OnCompletionListener {
+        IMediaPlayer.OnCompletionListener,
+        IMediaPlayer.OnVideoSizeChangedListener {
 
     /**
      * 2026-07-14 — Host learns when stream fails or ends (YouTube IJK path).
+     * 2026-07-15 — Also video size for aspect / landscape session.
      * Layman: Solar can toast and leave the player instead of a black stuck screen.
-     * Technical: wraps IJK OnError / OnCompletion; return true from onError to consume.
+     * Technical: wraps IJK OnError / OnCompletion / OnVideoSizeChanged.
      * Reversal: leave listener null — same silent-fail behaviour as pre-harden.
      */
     public interface PlaybackListener {
@@ -29,6 +31,12 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
 
         /** Natural end of stream. */
         void onCompletion();
+
+        /**
+         * 2026-07-15 — Decoded frame size ready (for letterbox/crop + orientation).
+         * Default no-op via empty impl in older anonymous listeners not updating size.
+         */
+        void onVideoSize(int width, int height);
     }
 
     private final IjkMediaPlayer player;
@@ -73,6 +81,17 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         resetForNewSource();
         pendingPath = url;
         player.setDataSource(url);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("urlPrefix", url.length() > 96 ? url.substring(0, 96) : url);
+            d.put("hasHolder", boundHolder != null);
+            d.put("isDirectUrlApi", url.indexOf("/direct_url") >= 0);
+            d.put("isVideoplayback", url.indexOf("videoplayback") >= 0);
+            com.solar.launcher.Debug9d82a5Log.log(null,
+                    "VideoPlayerController.openUrl", "setDataSource", "B", d);
+        } catch (Exception ignored) {}
+        // #endregion
         maybePrepare();
     }
 
@@ -171,6 +190,16 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     public void onPrepared(IMediaPlayer mp) {
         if (released) return;
         prepared = true;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("playWhenReady", playWhenSurfaceReady);
+            d.put("urlPrefix", pendingPath != null && pendingPath.length() > 80
+                    ? pendingPath.substring(0, 80) : pendingPath);
+            com.solar.launcher.Debug9d82a5Log.log(null,
+                    "VideoPlayerController.onPrepared", "prepared ok", "C", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (playWhenSurfaceReady) play();
     }
 
@@ -179,6 +208,19 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         if (released) return true;
         prepared = false;
         playWhenSurfaceReady = false;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("what", what);
+            d.put("extra", extra);
+            d.put("urlPrefix", pendingPath != null && pendingPath.length() > 80
+                    ? pendingPath.substring(0, 80) : pendingPath);
+            d.put("isDirectUrlApi", pendingPath != null
+                    && pendingPath.indexOf("/direct_url") >= 0);
+            com.solar.launcher.Debug9d82a5Log.log(null,
+                    "VideoPlayerController.onError", "ijk decode/net error", "A", d);
+        } catch (Exception ignored) {}
+        // #endregion
         PlaybackListener l = playbackListener;
         if (l != null) {
             l.onError(what, extra);
@@ -193,6 +235,15 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         PlaybackListener l = playbackListener;
         if (l != null) {
             l.onCompletion();
+        }
+    }
+
+    @Override
+    public void onVideoSizeChanged(IMediaPlayer mp, int width, int height, int sarNum, int sarDen) {
+        if (released) return;
+        PlaybackListener l = playbackListener;
+        if (l != null) {
+            l.onVideoSize(width, height);
         }
     }
 
@@ -231,7 +282,25 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     }
 
     private void maybePrepare() {
-        if (released || prepared || pendingPath == null || boundHolder == null) return;
+        if (released || prepared || pendingPath == null || boundHolder == null) {
+            // #region agent log
+            // Only note waits for surface (have URL, no holder yet).
+            if (!released && !prepared && pendingPath != null && boundHolder == null) {
+                try {
+                    com.solar.launcher.Debug9d82a5Log.log(null,
+                            "VideoPlayerController.maybePrepare",
+                            "waiting for surface", "C", null);
+                } catch (Exception ignored) {}
+            }
+            // #endregion
+            return;
+        }
+        // #region agent log
+        try {
+            com.solar.launcher.Debug9d82a5Log.log(null,
+                    "VideoPlayerController.maybePrepare", "prepareAsync", "C", null);
+        } catch (Exception ignored) {}
+        // #endregion
         try {
             player.prepareAsync();
         } catch (IllegalStateException ignored) {}
@@ -253,5 +322,6 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         player.setOnPreparedListener(this);
         player.setOnErrorListener(this);
         player.setOnCompletionListener(this);
+        player.setOnVideoSizeChangedListener(this);
     }
 }

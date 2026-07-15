@@ -41,8 +41,10 @@ public final class ActiveThemeEngine {
     }
 
     public static String jjThemesRoot() {
+        // 2026-07-15 — Prefer new-media root so JJ themes follow Primary storage pref.
         try {
-            File ext = com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot();
+            File ext = com.solar.launcher.DeviceFeatures.getNewMediaRoot(
+                    appContext != null ? appContext : null);
             if (ext != null) {
                 return new File(ext, JJ_THEMES_DIR).getAbsolutePath();
             }
@@ -50,7 +52,8 @@ public final class ActiveThemeEngine {
         if (appContext != null) {
             return new File(appContext.getFilesDir(), JJ_THEMES_DIR).getAbsolutePath();
         }
-        return new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), JJ_THEMES_DIR).getAbsolutePath();
+        return new File(com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot(), JJ_THEMES_DIR)
+                .getAbsolutePath();
     }
 
     public static void loadThemes(Context context) {

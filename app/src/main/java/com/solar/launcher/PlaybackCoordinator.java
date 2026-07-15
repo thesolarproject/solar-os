@@ -332,9 +332,24 @@ public final class PlaybackCoordinator {
         int qStart = 0;
         for (int i = 0; i < order.size(); i++) {
             PlexSong s = order.get(i);
-            items.add(PlayQueue.QueueItem.plex(s.id, s.title, s.artist, s.album, s.coverArtId));
+            // 2026-07-15: Keep Part.key/container so preparePlexStream can direct-play mp3/m4a.
+            items.add(PlayQueue.QueueItem.plex(s.id, s.title, s.artist, s.album, s.coverArtId,
+                    s.mediaPartKey, s.container));
             if (s.id != null && s.id.equals(currentSong.id)) qStart = i;
         }
+        // #region agent log
+        try {
+            PlexSong probe = songs.get(clamped);
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("count", songs.size());
+            d.put("partKeyLen", probe.mediaPartKey != null ? probe.mediaPartKey.length() : 0);
+            d.put("container", probe.container != null ? probe.container : "");
+            d.put("queuePartLen", items.get(qStart).plexMediaPartKey != null
+                    ? items.get(qStart).plexMediaPartKey.length() : 0);
+            com.solar.launcher.debug.Debug2241b1Log.log(
+                    "PlaybackCoordinator.activatePlex", "queue carries part meta", "A", "post-fix", d);
+        } catch (Exception ignored) {}
+        // #endregion
         queue.setAll(items, qStart);
     }
 

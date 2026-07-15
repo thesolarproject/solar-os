@@ -14,8 +14,11 @@ die() { echo "verify-platform-assets: $*" >&2; exit 1; }
 [ -f "$DST/xposed/SolarThemeFont.apk" ] || die "missing SolarThemeFont.apk asset"
 [ -f "$DST/xposed/SolarRockboxIme.apk" ] || die "missing SolarRockboxIme.apk asset"
 [ -f "$DST/xposed/SolarRockboxCompat.apk" ] || die "missing SolarRockboxCompat.apk asset"
-[ -f "$DST/xposed/SolarNotPipeBridge.apk" ] || die "missing SolarNotPipeBridge.apk asset"
-[ -f "$DST/thirdparty/notPipe-0.3.0-release.apk" ] || die "missing notPipe APK asset"
+# 2026-07-15 — Native Solar YouTube; NotPipe + bridge no longer in APK self-heal kit.
+# Was: require SolarNotPipeBridge.apk + notPipe-0.3.0-release.apk (sync now deletes them).
+# A5 ROM may still bake upstream notPipe separately — not an APK platform asset.
+[ ! -f "$DST/xposed/SolarNotPipeBridge.apk" ] || die "stale SolarNotPipeBridge.apk — re-run sync-platform-assets.sh"
+[ ! -f "$DST/thirdparty/notPipe-0.3.0-release.apk" ] || die "stale notPipe APK asset — re-run sync-platform-assets.sh"
 [ -f "$DST/companion/SolarGlobalContextModal.apk" ] || die "missing SolarGlobalContextModal.apk asset"
 [ -f "$DST/companion/SolarHomeHelper.apk" ] || die "missing SolarHomeHelper.apk asset"
 # 2026-07-08 — Companion must ship interactive sole-shell host (not text placeholder only).

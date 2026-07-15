@@ -62,10 +62,17 @@ public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
     @Override public void syncFmTuneScrubUi() { act.syncFmTuneScrubUi(); }
     @Override public void exitToHomeMenu() { act.mediaExitToHomeMenu(); }
 
+    /** 2026-07-15 — Music→YouTube Back lands on Music browser, not Videos. */
+    @Override public void exitYouTubeAudioToMusic() { act.mediaExitYouTubeAudioToMusic(); }
+
     @Override public void openYouTubeSearchKeyboard(String prefill) { act.mediaOpenYouTubeSearchKeyboard(prefill); }
 
     @Override public void requestYouTubeSave(YouTubeVideo video, boolean audioOnly) {
         act.mediaRequestYouTubeSave(video, audioOnly);
+    }
+
+    @Override public void playAudioFileInNowPlaying(java.io.File file) {
+        act.mediaPlayAudioFileInNowPlaying(file);
     }
 
     @Override public View createTwoLineBrowseRow(String title, String subtitle) {

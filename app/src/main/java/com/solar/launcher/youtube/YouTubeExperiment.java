@@ -6,9 +6,9 @@ import android.content.SharedPreferences;
 import com.solar.launcher.media.MediaSuiteHost;
 
 /**
- * 2026-07-14 — YouTube hub kill switch (default on). Off hides Videos → YouTube.
- * Layman: YouTube is on by default; Debug can turn the hub row off for testing.
- * Technical: was experiment default-false; now default-true soft gate on hub + screens.
+ * 2026-07-14 — YouTube kill switch (default on). Off hides Videos → YouTube + Music → YouTube Audio.
+ * Layman: YouTube is on by default; Debug can turn the rows off for testing.
+ * Technical: was experiment default-false; now default-true soft gate on hubs + screens.
  * Reversal: change default in {@link #isEnabled(SharedPreferences)} back to false.
  */
 public final class YouTubeExperiment {

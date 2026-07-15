@@ -43,6 +43,12 @@ public final class PlayQueue {
         public final String navidromeArtist;
         public final String navidromeAlbum;
         public final String navidromeCoverArtId;
+        /**
+         * 2026-07-15: Plex Part.key + container so play can direct-stream; empty for other kinds.
+         * Had: queue omitted these so prepare always hit transcoder. Now: stored through play/resume.
+         */
+        public final String plexMediaPartKey;
+        public final String plexContainer;
 
         private QueueItem(ItemKind kind, File file, OpenRssClient.Episode episode,
                 String podcastShowTitle, boolean podcastFromSaved, String reachMeta,
@@ -51,7 +57,8 @@ public final class PlayQueue {
                 String radioStationUuid, String radioName, String radioUrl,
                 String radioSubtitle, String radioFavicon,
                 String navidromeSongId, String navidromeTitle, String navidromeArtist,
-                String navidromeAlbum, String navidromeCoverArtId) {
+                String navidromeAlbum, String navidromeCoverArtId,
+                String plexMediaPartKey, String plexContainer) {
             this.kind = kind;
             this.file = file;
             this.episode = episode;
@@ -73,11 +80,13 @@ public final class PlayQueue {
             this.navidromeArtist = navidromeArtist != null ? navidromeArtist : "";
             this.navidromeAlbum = navidromeAlbum != null ? navidromeAlbum : "";
             this.navidromeCoverArtId = navidromeCoverArtId != null ? navidromeCoverArtId : "";
+            this.plexMediaPartKey = plexMediaPartKey != null ? plexMediaPartKey : "";
+            this.plexContainer = plexContainer != null ? plexContainer : "";
         }
 
         public static QueueItem music(File f) {
             return new QueueItem(ItemKind.MUSIC_FILE, f, null, "", false, null, null, null, 0,
-                    0, "", "", "", "", "", "", "", "", "", "", "");
+                    0, "", "", "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem reach(File temp, String meta) {
@@ -86,50 +95,61 @@ public final class PlayQueue {
 
         public static QueueItem reach(File temp, String meta, String peerUsername) {
             return new QueueItem(ItemKind.REACH_STREAM, temp, null, "", false, meta, peerUsername,
-                    null, 0, 0, "", "", "", "", "", "", "", "", "", "", "");
+                    null, 0, 0, "", "", "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem deezer(File temp, String meta, long trackId) {
             return new QueueItem(ItemKind.DEEZER_STREAM, temp, null, "", false, null, null, meta,
-                    trackId, 0, "", "", "", "", "", "", "", "", "", "", "");
+                    trackId, 0, "", "", "", "", "", "", "", "", "", "", "", "", "");
         }
 
         /** 2026-07-06: Navidrome HTTP stream row — metadata for Now Playing + AVRCP. */
         public static QueueItem navidrome(String songId, String title, String artist, String album,
                 String coverArtId) {
             return new QueueItem(ItemKind.NAVIDROME_STREAM, null, null, "", false, null, null, null,
-                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId, "", "");
         }
 
-        /** 2026-07-14: Plex HTTP stream — reuses remote meta fields; kind=PLEX_STREAM. */
+        /** 2026-07-14: Plex HTTP stream without Part meta (transcoder path). */
         public static QueueItem plex(String songId, String title, String artist, String album,
                 String coverArtId) {
+            return plex(songId, title, artist, album, coverArtId, "", "");
+        }
+
+        /**
+         * 2026-07-15: Plex stream with Part.key/container for direct MediaPlayer when codec-friendly.
+         * Had: 5-arg factory dropped part meta. Now: prepare can pass part into getStreamUrl.
+         */
+        public static QueueItem plex(String songId, String title, String artist, String album,
+                String coverArtId, String mediaPartKey, String container) {
             return new QueueItem(ItemKind.PLEX_STREAM, null, null, "", false, null, null, null,
-                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId,
+                    mediaPartKey, container);
         }
 
         /** 2026-07-14: Jellyfin HTTP stream — reuses remote meta fields; kind=JELLYFIN_STREAM. */
         public static QueueItem jellyfin(String songId, String title, String artist, String album,
                 String coverArtId) {
             return new QueueItem(ItemKind.JELLYFIN_STREAM, null, null, "", false, null, null, null,
-                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId, "", "");
         }
 
         public static QueueItem podcast(OpenRssClient.Episode ep, String showTitle, boolean fromSaved) {
             return new QueueItem(ItemKind.PODCAST_EPISODE, null, ep, showTitle, fromSaved, null,
-                    null, null, 0, 0, "", "", "", "", "", "", "", "", "", "", "");
+                    null, null, 0, 0, "", "", "", "", "", "", "", "", "", "", "", "", "");
         }
 
         public static QueueItem fmStation(int freqKhz, String label) {
             return new QueueItem(ItemKind.FM_STATION, null, null, "", false, null, null, null, 0,
-                    freqKhz, label, "", "", "", "", "", "", "", "", "", "");
+                    freqKhz, label, "", "", "", "", "",
+                    "", "", "", "", "", "", "");
         }
 
         public static QueueItem internetRadio(String uuid, String name, String url,
                 String subtitle, String favicon) {
             return new QueueItem(ItemKind.INTERNET_RADIO_STATION, null, null, "", false, null,
                     null, null, 0, 0, "", uuid, name, url, subtitle, favicon,
-                    "", "", "", "", "");
+                    "", "", "", "", "", "", "");
         }
 
         /** Display title for stream / radio items. */
