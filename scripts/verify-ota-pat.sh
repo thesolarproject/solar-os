@@ -45,12 +45,15 @@ MARKER=".ci-ota-pat-write-check"
 echo "$(date -u +%s)" > "$MARKER"
 git add "$MARKER"
 git commit -m "CI PAT write preflight [skip ci]" >/dev/null
-if ! git push "https://x-access-token:${PAT}@github.com/${UPDATE_REPO}.git" HEAD:main >/dev/null 2>&1; then
-  echo "::error::SOLAR_GITHUB_PAT cannot push to github.com/${UPDATE_REPO} — needs Contents write on solar-update." >&2
+PUSH_ERR="$(git push "https://x-access-token:${PAT}@github.com/${UPDATE_REPO}.git" HEAD:main 2>&1)" || {
+  echo "::error::SOLAR_GITHUB_PAT cannot push to github.com/${UPDATE_REPO}." >&2
+  echo "::error::Fine-grained PAT needs Repository permissions → Contents: Read and write on ${UPDATE_REPO}." >&2
+  echo "$PUSH_ERR" >&2
   exit 128
-fi
+}
 git rm -f "$MARKER" >/dev/null
 git commit -m "CI PAT write preflight cleanup [skip ci]" >/dev/null
 git push "https://x-access-token:${PAT}@github.com/${UPDATE_REPO}.git" HEAD:main >/dev/null
 
-echo "solar-update PAT preflight OK (read + push verified)"
+echo "solar-update PAT preflight OK (Contents read + write verified on ${UPDATE_REPO})"
+echo "  Note: GitHub Pages admin is separate; configure-solar-update-pages soft-warns if missing."

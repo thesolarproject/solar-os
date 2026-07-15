@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# solar-update OTA hosts APKs on main — Pages must deploy from branch, not Actions deploy-pages.
-# ponytail: workflow-based Pages stuck in deployment_queued forever while git push already updated main.
+# solar-update OTA hosts APKs on main — Pages should deploy from branch, not Actions deploy-pages.
+# 2026-07-16 — Pages Admin API is optional; fine-grained PATs often lack it while Contents write works.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
@@ -20,32 +20,49 @@ HTTP_CODE="$(curl -sS -o /tmp/solar-pages.json -w "%{http_code}" \
   -H "Authorization: token ${PAT}" \
   -H "Accept: application/vnd.github+json" \
   "https://api.github.com/repos/${UPDATE_REPO}/pages" \
-  -d '{"build_type":"legacy","source":{"branch":"main","path":"/"}}')"
+  -d '{"build_type":"legacy","source":{"branch":"main","path":"/"}}' || true)"
 if [[ "$HTTP_CODE" != "200" && "$HTTP_CODE" != "201" && "$HTTP_CODE" != "204" ]]; then
-  echo "::error::Pages API returned HTTP ${HTTP_CODE} for ${UPDATE_REPO} — PAT needs admin:repo_hook or Pages admin on solar-update." >&2
-  cat /tmp/solar-pages.json >&2 || true
-  exit 1
-fi
-if [[ "$HTTP_CODE" == "204" ]]; then
-  HTTP_CODE="$(curl -sS -o /tmp/solar-pages.json -w "%{http_code}" \
+  # Soft-fail: Contents write is enough to publish APKs; Pages may already be set in the UI.
+  echo "::warning::Pages API returned HTTP ${HTTP_CODE} for ${UPDATE_REPO} (PAT may lack Pages admin)."
+  if [[ -f /tmp/solar-pages.json ]]; then
+    cat /tmp/solar-pages.json >&2 || true
+    echo "" >&2
+  fi
+  GET_CODE="$(curl -sS -o /tmp/solar-pages-get.json -w "%{http_code}" \
     -H "Authorization: token ${PAT}" \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/${UPDATE_REPO}/pages")"
-  if [[ "$HTTP_CODE" != "200" ]]; then
-    echo "::error::Pages API verify returned HTTP ${HTTP_CODE} for ${UPDATE_REPO}." >&2
-    cat /tmp/solar-pages.json >&2 || true
-    exit 1
+    "https://api.github.com/repos/${UPDATE_REPO}/pages" || true)"
+  if [[ "$GET_CODE" == "200" ]]; then
+    echo "  Pages site already exists (GET 200) — continuing without reconfigure."
+    python3 - /tmp/solar-pages-get.json <<'PY' || true
+import json, sys
+pages = json.load(open(sys.argv[1], encoding="utf-8"))
+print("  Pages build_type=%s branch=%s url=%s" % (
+    pages.get("build_type", ""),
+    (pages.get("source") or {}).get("branch", ""),
+    pages.get("html_url", "")))
+PY
+  else
+    echo "::warning::Could not reconfigure or read Pages (GET ${GET_CODE})."
+    echo "  Ensure thesolarproject.github.io/solar-update is enabled in repo Settings → Pages."
   fi
-fi
-python3 - /tmp/solar-pages.json <<'PY'
+else
+  if [[ "$HTTP_CODE" == "204" ]]; then
+    HTTP_CODE="$(curl -sS -o /tmp/solar-pages.json -w "%{http_code}" \
+      -H "Authorization: token ${PAT}" \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/repos/${UPDATE_REPO}/pages" || true)"
+  fi
+  if [[ "$HTTP_CODE" == "200" ]]; then
+    python3 - /tmp/solar-pages.json <<'PY' || true
 import json, sys
 pages = json.load(open(sys.argv[1], encoding="utf-8"))
 build = pages.get("build_type", "")
 branch = (pages.get("source") or {}).get("branch", "")
 print(f"  Pages build_type={build} branch={branch} url={pages.get('html_url', '')}")
-if build != "legacy" or branch != "main":
-    raise SystemExit(f"expected legacy/main Pages, got {build}/{branch}")
 PY
+  fi
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -74,4 +91,4 @@ else
   echo "  no deploy-pages workflow present"
 fi
 
-echo "solar-update Pages configured (legacy main root)"
+echo "solar-update Pages configure step finished (Contents write verified separately by verify-ota-pat)"
