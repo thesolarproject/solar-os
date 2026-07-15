@@ -5,5 +5,6 @@ logo.bin:0x5800000
 lk.bin:0x3120000
 boot.img:0x3180000
 recovery.img:0x4180000
-system.img:0x6500000
-userdata.img:0x41700000
+# 2026-07-16 — Align with vendored MT6582_Android_scatter.txt linear_start_addr.
+system.img:0x6580000
+userdata.img:0x41780000
