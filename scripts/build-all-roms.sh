@@ -82,11 +82,19 @@ A5_URL="https://github.com/y1-community/a5-ata-rom/releases/download/0.1/rom_a5.
 url_ok() { curl -fsSIL -o /dev/null "\$1" 2>/dev/null; }
 
 # Echoes: local | url | required | skip  (always exit 0 so set -e is safe)
+# SOLAR_*_BASE_ZIP may be a local path or a URL (CI vars); only real files count as local.
 rom_base_src() {
     local url="\$1" local_zip="\$2" require="\$3"
     if [ -n "\$local_zip" ] && [ -f "\$local_zip" ]; then
         echo "local"
         return 0
+    fi
+    # If override is a URL, prefer it when reachable.
+    if [ -n "\$local_zip" ] && [[ "\$local_zip" == http://* || "\$local_zip" == https://* ]]; then
+        if url_ok "\$local_zip"; then
+            echo "url"
+            return 0
+        fi
     fi
     if url_ok "\$url"; then
         echo "url"

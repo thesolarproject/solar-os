@@ -1162,7 +1162,8 @@ else
     download_solar_apk "$STAGING_APK"
 fi
 
-# 2026-07-15 — Local override skips curl (Y1/A5 ATA releases may 404 until public).
+# 2026-07-16 — SOLAR_*_BASE_ZIP may be a local path OR a URL (CI vars often set the public URL).
+# Only treat existing files as local copies; URLs fall through to curl (default BASE_URL or override).
 LOCAL_BASE_ZIP="${SOLAR_ROM_BASE_ZIP:-}"
 case "$TYPE" in
     a)  [ -n "${SOLAR_Y1A_BASE_ZIP:-}" ] && LOCAL_BASE_ZIP="$SOLAR_Y1A_BASE_ZIP" ;;
@@ -1170,11 +1171,17 @@ case "$TYPE" in
     y2) [ -n "${SOLAR_Y2_BASE_ZIP:-}" ] && LOCAL_BASE_ZIP="$SOLAR_Y2_BASE_ZIP" ;;
     a5) [ -n "${SOLAR_A5_BASE_ZIP:-}" ] && LOCAL_BASE_ZIP="$SOLAR_A5_BASE_ZIP" ;;
 esac
-if [ -n "$LOCAL_BASE_ZIP" ]; then
-    [ -f "$LOCAL_BASE_ZIP" ] || die "SOLAR_*_BASE_ZIP not readable: $LOCAL_BASE_ZIP"
+if [ -n "$LOCAL_BASE_ZIP" ] && [ -f "$LOCAL_BASE_ZIP" ]; then
     echo "==> Using local type-${TYPE} base firmware: $LOCAL_BASE_ZIP"
     cp "$LOCAL_BASE_ZIP" "$BASE_DIR/rom.zip"
+elif [ -n "$LOCAL_BASE_ZIP" ] && [[ "$LOCAL_BASE_ZIP" == http://* || "$LOCAL_BASE_ZIP" == https://* ]]; then
+    echo "==> Downloading type-${TYPE} base firmware from SOLAR_*_BASE_ZIP URL"
+    curl -fsSL -o "$BASE_DIR/rom.zip" "$LOCAL_BASE_ZIP" \
+        || die "SOLAR_*_BASE_ZIP URL not readable: $LOCAL_BASE_ZIP"
 else
+    if [ -n "$LOCAL_BASE_ZIP" ]; then
+        echo "==> Ignoring non-file SOLAR_*_BASE_ZIP ($LOCAL_BASE_ZIP); using default URL"
+    fi
     echo "==> Downloading type-${TYPE} base firmware"
     curl -fsSL -o "$BASE_DIR/rom.zip" "$BASE_URL"
 fi
