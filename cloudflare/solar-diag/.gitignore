@@ -1,6 +1,7 @@
 node_modules/
 .wrangler/
 .dev.vars
+.dev.vars.local
 *.log
 .DS_Store
 
@@ -8,3 +9,6 @@ node_modules/
 README.md
 SETUP.md
 *.md
+
+.dev.vars.local
+package-lock.json
