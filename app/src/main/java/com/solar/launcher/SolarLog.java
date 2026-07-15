@@ -11,8 +11,8 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * 2026-07-16 — App-wide error/crash logs under {@code solar/logs} on every volume + app-private.
- * Mirrored like themes (MMC/internal + MicroSD). Rotates at 512KB; also mirrors to logcat.
+ * 2026-07-16 — App-wide error/crash logs under preferred {@code solar/logs} (app-private first).
+ * Hot path: single-directory append (no dual-SD mirror per line). Crash still multi-mirrors once.
  */
 public final class SolarLog {
 
@@ -21,7 +21,7 @@ public final class SolarLog {
     public static final String LOG_DIR = SolarLogPaths.LEGACY_LOG_DIR;
     private static final String CRASH_FILE = "crash.log";
     private static final String ERROR_FILE = "error.log";
-    private static final long MAX_BYTES = 512 * 1024;
+    private static final long MAX_BYTES = 256 * 1024;
     private static final Object LOCK = new Object();
     private static volatile android.content.Context appCtx;
 
@@ -59,13 +59,13 @@ public final class SolarLog {
         } else {
             Log.e(tag, message);
         }
-        append(ERROR_FILE, formatLine("ERROR", tag, message, t));
-        // 2026-07-15 — Feed feature trail so diag bundles are dense with use-case history.
-        trailFeature("ERROR", tag, message);
+        appendPrimary(ERROR_FILE, formatLine("ERROR", tag, message, t));
+        // Memory ring only — no second disk write storm on every error.
+        trailFeatureRingOnly("ERROR", tag, message);
     }
 
     /**
-     * 2026-07-15 — Same as {@link #e} without feature-trail re-entry (used by SolarDiagFeatureLog).
+     * Same as {@link #e} without feature-trail re-entry (used by SolarDiagFeatureLog).
      */
     public static void eQuiet(String tag, String message, Throwable t) {
         message = scrub(message);
@@ -74,14 +74,21 @@ public final class SolarLog {
         } else {
             Log.e(tag, message);
         }
-        append(ERROR_FILE, formatLine("ERROR", tag, message, t));
+        appendPrimary(ERROR_FILE, formatLine("ERROR", tag, message, t));
     }
 
     public static void w(String tag, String message) {
         message = scrub(message);
         Log.w(tag, message);
-        append(ERROR_FILE, formatLine("WARN", tag, message, null));
-        trailFeature("WARN", tag, message);
+        appendPrimary(ERROR_FILE, formatLine("WARN", tag, message, null));
+        // WARN: logcat + error.log only — no feature-disk trail (hot path on devices).
+    }
+
+    /** WARN without feature trail and without recursive trails (storage probe, etc.). */
+    public static void wQuiet(String tag, String message) {
+        message = scrub(message);
+        Log.w(tag, message);
+        appendPrimary(ERROR_FILE, formatLine("WARN", tag, message, null));
     }
 
     public static void i(String tag, String message) {
@@ -89,7 +96,7 @@ public final class SolarLog {
         Log.i(tag, message);
     }
 
-    private static void trailFeature(String level, String tag, String message) {
+    private static void trailFeatureRingOnly(String level, String tag, String message) {
         try {
             com.solar.launcher.diag.SolarDiagFeatureLog.trailFromSolarLog(level, tag, message);
         } catch (Throwable ignored) {}
@@ -103,9 +110,10 @@ public final class SolarLog {
             String body = sw.toString();
             Log.e("SolarCrash", scrub(body));
             String header = "\n--- CRASH " + ts() + " thread=" + thread.getName() + " ---\n";
-            append(CRASH_FILE, header + body);
-            append(ERROR_FILE, header + body);
-            trailFeature("ERROR", "crash", "uncaught " + e.getClass().getSimpleName()
+            // Crash: mirror once to all volumes so UMS/card-loss still has a copy.
+            appendMirrored(CRASH_FILE, header + body);
+            appendPrimary(ERROR_FILE, header + body);
+            trailFeatureRingOnly("ERROR", "crash", "uncaught " + e.getClass().getSimpleName()
                     + " thread=" + thread.getName());
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -137,28 +145,42 @@ public final class SolarLog {
         return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(new Date());
     }
 
-    private static void append(String fileName, String text) {
+    private static void appendPrimary(String fileName, String text) {
         text = scrub(text);
         synchronized (LOCK) {
             try {
-                SolarLogPaths.appendMirrored(appCtx, fileName, text, MAX_BYTES);
+                SolarLogPaths.appendPrimary(appCtx, fileName, text, MAX_BYTES);
             } catch (Exception ex) {
                 Log.w(TAG, "append failed: " + ex.getMessage());
             }
         }
     }
 
-    /**
-     * 2026-07-16 — Write a pre-formatted line to a log file on all mirrored roots (no extra scrub).
-     * Used for storage health lines that must not recurse through feature trails.
-     */
-    public static void appendMirroredRaw(android.content.Context context, String fileName,
+    private static void appendMirrored(String fileName, String text) {
+        text = scrub(text);
+        synchronized (LOCK) {
+            try {
+                SolarLogPaths.appendMirrored(appCtx, fileName, text, MAX_BYTES);
+            } catch (Exception ex) {
+                Log.w(TAG, "append mirror failed: " + ex.getMessage());
+            }
+        }
+    }
+
+    /** Preferred-dir append without feature trails (storage probe, etc.). */
+    public static void appendPrimaryRaw(android.content.Context context, String fileName,
             String text, long maxBytes) {
         updateContext(context);
         if (text == null) return;
         synchronized (LOCK) {
-            SolarLogPaths.appendMirrored(appCtx, fileName, text, maxBytes > 0 ? maxBytes : MAX_BYTES);
+            SolarLogPaths.appendPrimary(appCtx, fileName, text, maxBytes > 0 ? maxBytes : MAX_BYTES);
         }
+    }
+
+    /** @deprecated use {@link #appendPrimaryRaw} — name kept for older call sites */
+    public static void appendMirroredRaw(android.content.Context context, String fileName,
+            String text, long maxBytes) {
+        appendPrimaryRaw(context, fileName, text, maxBytes);
     }
 
     static String formatStorageLine(String severity, File path, long total, long free) {

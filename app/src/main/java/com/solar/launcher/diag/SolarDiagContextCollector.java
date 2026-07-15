@@ -69,24 +69,68 @@ public final class SolarDiagContextCollector {
 
     /**
      * Rich environment text (network, geo, sensors, BT, Wi‑Fi).
-     * Passwords scrubbed elsewhere; SSIDs/IPs/geo kept for operational value.
+     * Prefer {@link #collectEnvironmentLight} for routine/background ships.
      */
     public static String collectEnvironment(Context context) {
-        StringBuilder sb = new StringBuilder(8192);
+        return collectEnvironment(context, true);
+    }
+
+    /**
+     * Light snapshot for routine/background uploads — no sensor wait, no Wi‑Fi scan dump.
+     * Full detail reserved for developer remote pull / crash.
+     */
+    public static String collectEnvironmentLight(Context context) {
+        return collectEnvironment(context, false);
+    }
+
+    private static String collectEnvironment(Context context, boolean full) {
+        StringBuilder sb = new StringBuilder(full ? 8192 : 2048);
         sb.append("=== Solar diagnostic environment ===\n");
+        sb.append("detail: ").append(full ? "full" : "light").append('\n');
         sb.append("time_ms: ").append(System.currentTimeMillis()).append('\n');
         sb.append("time_iso: ").append(new java.util.Date().toString()).append('\n');
         appendBuild(sb);
         appendApp(sb, context);
         appendNetwork(sb, context);
-        appendWifi(sb, context);
-        appendBluetooth(sb);
-        appendLocation(sb, context);
-        appendSensors(sb, context);
-        appendStorage(sb);
-        appendProc(sb);
-        appendPrefsKeys(sb, context);
+        if (full) {
+            appendWifi(sb, context);
+            appendBluetooth(sb);
+            appendLocation(sb, context);
+            appendSensors(sb, context);
+            appendProc(sb);
+            appendPrefsKeys(sb, context);
+        } else {
+            appendWifiLight(sb, context);
+            appendStorage(sb);
+        }
+        if (full) appendStorage(sb);
         return sb.toString();
+    }
+
+    /** Connected SSID/RSSI only — no scan results / configured network dump. */
+    private static void appendWifiLight(StringBuilder sb, Context context) {
+        sb.append("\n--- wifi (light) ---\n");
+        if (context == null) {
+            sb.append("context: null\n");
+            return;
+        }
+        try {
+            android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager)
+                    context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wm == null) {
+                sb.append("wifi_manager: null\n");
+                return;
+            }
+            sb.append("wifi_enabled: ").append(wm.isWifiEnabled()).append('\n');
+            android.net.wifi.WifiInfo info = wm.getConnectionInfo();
+            if (info != null) {
+                String ssid = com.solar.launcher.WifiScanFilter.displayableConnectedSsid(info.getSSID());
+                sb.append("connected_ssid: ").append(ssid != null ? ssid : "").append('\n');
+                sb.append("rssi: ").append(info.getRssi()).append('\n');
+            }
+        } catch (Exception e) {
+            sb.append("wifi_error: ").append(e.getMessage()).append('\n');
+        }
     }
 
     /** Account/ARL fields for shared-ARL triage (included only in diagnostic uploads). */

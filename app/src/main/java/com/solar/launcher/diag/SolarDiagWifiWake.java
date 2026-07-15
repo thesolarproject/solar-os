@@ -9,15 +9,16 @@ import com.solar.launcher.ConnectivityHelper;
 import com.solar.launcher.WifiSleepPolicy;
 
 /**
- * 2026-07-16 — Briefly re-enable Wi‑Fi for diagnostic uploads if sleep turned it off.
- * Throttled (45 min normal / 5 min remote pull). Restores off only if sleep policy had disabled it.
+ * 2026-07-16 — Optional Wi‑Fi re-enable for diagnostic uploads.
+ * Default path never wakes the radio (avoids radio thrash). Remote pull may wake, throttled.
  */
 public final class SolarDiagWifiWake {
     private static final String PREF_LAST_WAKE_MS = "solar_diag_last_wifi_wake_ms";
-    private static final long MIN_WAKE_INTERVAL_MS = 45L * 60L * 1000L;
-    private static final long MIN_WAKE_INTERVAL_REMOTE_MS = 5L * 60L * 1000L;
-    private static final long ONLINE_WAIT_MS = 25_000L;
-    private static final long ONLINE_POLL_MS = 1500L;
+    /** Non-remote: never auto-wake Wi‑Fi (was 45 min — still too chatty on sleepers). */
+    private static final long MIN_WAKE_INTERVAL_MS = Long.MAX_VALUE / 4;
+    private static final long MIN_WAKE_INTERVAL_REMOTE_MS = 15L * 60L * 1000L;
+    private static final long ONLINE_WAIT_MS = 12_000L;
+    private static final long ONLINE_POLL_MS = 2000L;
 
     public static final class Session {
         public final boolean weEnabledWifi;
@@ -31,7 +32,10 @@ public final class SolarDiagWifiWake {
 
     private SolarDiagWifiWake() {}
 
-    /** Ensure online if possible. @param remotePull shorter throttle for developer remote pull. */
+    /**
+     * Ensure online if already connected. Only remote_pull may re-enable Wi‑Fi.
+     * Routine/crash shipping waits for natural connectivity.
+     */
     public static Session ensureOnlineForShip(Context context, SharedPreferences prefs,
             boolean remotePull) {
         if (context == null) return new Session(false, false);
@@ -39,13 +43,15 @@ public final class SolarDiagWifiWake {
         if (ConnectivityHelper.isOnline(app)) {
             return new Session(false, true);
         }
+        // 2026-07-16 — Never toggle Wi‑Fi for background diagnostics (performance / battery).
+        if (!remotePull) {
+            return new Session(false, false);
+        }
         long now = System.currentTimeMillis();
-        long minInterval = remotePull ? MIN_WAKE_INTERVAL_REMOTE_MS : MIN_WAKE_INTERVAL_MS;
+        long minInterval = MIN_WAKE_INTERVAL_REMOTE_MS;
         if (prefs != null) {
             long last = prefs.getLong(PREF_LAST_WAKE_MS, 0L);
             if (last > 0 && now - last < minInterval) {
-                SolarDiagFeatureLog.event("diag", "wifi_wake_throttled remaining_ms="
-                        + (minInterval - (now - last)));
                 return new Session(false, ConnectivityHelper.isOnline(app));
             }
         }

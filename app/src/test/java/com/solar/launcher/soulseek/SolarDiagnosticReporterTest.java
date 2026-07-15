@@ -41,14 +41,18 @@ public class SolarDiagnosticReporterTest {
 
   @Test
   public void priorityStartupSourceLabels() {
-    if (!SolarDiagnosticReporter.isPriorityStartupSource("Android/logcat.txt")) {
-      throw new AssertionError("logcat");
+    // 2026-07-16 — Startup priority is crash/error/storage only (performance).
+    if (!SolarDiagnosticReporter.isPriorityStartupSource("SolarLog/crash.log")) {
+      throw new AssertionError("crash.log");
     }
-    if (!SolarDiagnosticReporter.isPriorityStartupSource("Solar/debug-843b96.log")) {
-      throw new AssertionError("debug session log");
+    if (!SolarDiagnosticReporter.isPriorityStartupSource("SolarLog/error.log")) {
+      throw new AssertionError("error.log");
     }
-    if (!SolarDiagnosticReporter.isPriorityStartupSource("Features/reach.log")) {
-      throw new AssertionError("feature log priority");
+    if (SolarDiagnosticReporter.isPriorityStartupSource("Android/logcat.txt")) {
+      throw new AssertionError("logcat should not force startup ship");
+    }
+    if (SolarDiagnosticReporter.isPriorityStartupSource("Features/reach.log")) {
+      throw new AssertionError("feature logs should not force startup ship");
     }
   }
 

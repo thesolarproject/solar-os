@@ -29,22 +29,28 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 2026-07-16 — Collects crash/error/feature logs and ships them to the solar-diag worker.
- * Rate-limited; uses SolarHttp (TLS 1.2). Remote pull via Soulseek command from developer accounts.
+ * 2026-07-16 — Ships crash/error logs to the solar-diag worker (TLS 1.2).
+ * Tuned for calm device load: rare background ships, light bundles, no Wi‑Fi thrash.
+ * Developer remote pull still gets a full packet.
  */
 public final class SolarDiagnosticReporter {
     public static final String PREF_DIAG_AUTO_REPORT = "solar_diag_auto_report";
     public static final String PREF_DIAG_SENT_MANIFEST = "solar_diag_sent_manifest";
     public static final String PREF_FEATURE_COOLDOWN = "solar_diag_feature_cooldown";
 
-    private static final long MIN_SCAN_INTERVAL_MS = 5L * 60L * 1000L;
-    private static final long MIN_RECONNECT_INTERVAL_MS = 5L * 60L * 1000L;
-    private static final long SESSION_RETRY_MS = 120_000L;
-    private static final long FEATURE_ERROR_COOLDOWN_MS = 45L * 60L * 1000L;
-    private static final int LOGCAT_LINES = 400;
-    private static final int MAX_FILE_BYTES = 256 * 1024;
-    private static final int MAX_TOTAL_BYTES = 1200 * 1024;
-    private static final long[] BOOT_RETRY_MS = {3000L, 15000L, 60000L, 180000L};
+    /** Routine scan at most once per 45 minutes when already online. */
+    private static final long MIN_SCAN_INTERVAL_MS = 45L * 60L * 1000L;
+    private static final long MIN_RECONNECT_INTERVAL_MS = 30L * 60L * 1000L;
+    private static final long SESSION_RETRY_MS = 15L * 60L * 1000L;
+    private static final long FEATURE_ERROR_COOLDOWN_MS = 3L * 60L * 60L * 1000L;
+    private static final int LOGCAT_LINES = 80;
+    private static final int LOGCAT_LINES_FULL = 250;
+    private static final int MAX_FILE_BYTES = 96 * 1024;
+    private static final int MAX_FILE_BYTES_FULL = 192 * 1024;
+    private static final int MAX_TOTAL_BYTES = 400 * 1024;
+    private static final int MAX_TOTAL_BYTES_FULL = 900 * 1024;
+    /** Single delayed boot attempt — only if a recent crash exists. */
+    private static final long[] BOOT_RETRY_MS = {90_000L, 300_000L};
 
     public enum ScanMode {
         STARTUP,
@@ -101,30 +107,10 @@ public final class SolarDiagnosticReporter {
             if (last != null && now - last < FEATURE_ERROR_COOLDOWN_MS) return;
             featureCooldown.put(key, now);
         }
+        // 2026-07-16 — Feature errors only log locally; no immediate HTTPS/Wi‑Fi work.
+        // Background ship happens on calm ROUTINE/STARTUP schedules only.
         if (context == null) return;
-        final Context app = context.getApplicationContext();
-        final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
-        if (!isEnabled(prefs) && !hasRecentCrashLog()) return;
-        final String feat = key;
-        final String summary = message != null ? message : "";
-        final String errDetail = t != null
-                ? (t.getClass().getSimpleName() + ": " + (t.getMessage() != null ? t.getMessage() : ""))
-                : summary;
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    SolarDiagWifiWake.Session wake =
-                            SolarDiagWifiWake.ensureOnlineForShip(app, prefs, false);
-                    try {
-                        if (!wake.online && !ConnectivityHelper.isOnline(app)) return;
-                        runFeatureErrorShip(app, prefs, feat, errDetail);
-                    } finally {
-                        SolarDiagWifiWake.restoreAfterShip(app, prefs, wake);
-                    }
-                } catch (Exception ignored) {}
-            }
-        }, "SolarDiagFeatureErr").start();
+        SolarDiagFeatureLog.event("diag", "feature_error queued " + key);
     }
 
     public static void onProcessStart(final Context context) {
@@ -133,17 +119,23 @@ public final class SolarDiagnosticReporter {
         final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         SolarDiagFeatureLog.event("app", "process_start sdk=" + Build.VERSION.SDK_INT
                 + " model=" + Build.MODEL);
-        scheduleBootScan(app, prefs);
+        // Only schedule boot ship when a crash log exists — avoids empty wake-ups every boot.
+        if (hasRecentCrashLog()) {
+            scheduleBootScan(app, prefs);
+        }
     }
 
     public static void onReachInternetAvailable(final Context context, final SharedPreferences prefs) {
         if (context == null) return;
+        if (!isBackgroundShippingAllowed(prefs)) return;
         if (!firstInternetScanDone) {
             firstInternetScanDone = true;
-            startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null);
+            // First online: only if crash pending; otherwise wait for routine interval.
+            if (hasRecentCrashLog()) {
+                startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null);
+            }
             return;
         }
-        if (!isBackgroundShippingAllowed(prefs)) return;
         scheduleIfNeeded(context, prefs);
     }
 
@@ -151,6 +143,8 @@ public final class SolarDiagnosticReporter {
         if (!isBackgroundShippingAllowed(prefs) || context == null) return;
         long now = System.currentTimeMillis();
         if (now - lastScanMs < MIN_RECONNECT_INTERVAL_MS) return;
+        // Wi‑Fi bounce: do not ship unless there is something crash-priority to send.
+        if (!hasRecentCrashLog()) return;
         scheduleIfNeeded(context, prefs);
     }
 
@@ -229,27 +223,28 @@ public final class SolarDiagnosticReporter {
         }
 
         boolean remote = mode == ScanMode.REMOTE_PULL;
+        boolean full = remote || mode == ScanMode.SUPPORT_OPEN
+                || (mode == ScanMode.STARTUP && hasRecentCrashLog());
         SolarDiagWifiWake.Session wake =
                 SolarDiagWifiWake.ensureOnlineForShip(context, prefs, remote);
         try {
             if (!wake.online && !ConnectivityHelper.isOnline(context)) {
-                SolarDiagFeatureLog.warn("diag", "offline after wifi_wake mode=" + mode.name());
                 if (callback != null) callback.onComplete(false, 0, "", "offline");
                 if (mode != ScanMode.REMOTE_PULL) {
                     scheduleSessionRetry(context, prefs, mode);
                 }
                 return;
             }
-            runScanOnline(context, prefs, mode, replyToDev, callback);
+            runScanOnline(context, prefs, mode, replyToDev, callback, full);
         } finally {
             SolarDiagWifiWake.restoreAfterShip(context, prefs, wake);
         }
     }
 
     private static void runScanOnline(Context context, SharedPreferences prefs, ScanMode mode,
-            String replyToDev, RemotePullCallback callback) {
+            String replyToDev, RemotePullCallback callback, boolean full) {
         SoulseekAccount main = SoulseekAccount.load(prefs, context);
-        List<LogSource> sources = collectSources(context, prefs);
+        List<LogSource> sources = collectSources(context, prefs, full);
         JSONObject manifest = loadManifest(prefs);
         JSONObject updated = new JSONObject();
         try {
@@ -260,10 +255,14 @@ public final class SolarDiagnosticReporter {
             }
         } catch (Exception ignored) {}
 
+        int maxTotal = full ? MAX_TOTAL_BYTES_FULL : MAX_TOTAL_BYTES;
+        int maxFile = full ? MAX_FILE_BYTES_FULL : MAX_FILE_BYTES;
         List<SolarDiagClient.FilePart> parts = new ArrayList<SolarDiagClient.FilePart>();
-        int budget = MAX_TOTAL_BYTES;
+        int budget = maxTotal;
 
-        String env = SolarDiagContextCollector.collectEnvironment(context);
+        String env = full
+                ? SolarDiagContextCollector.collectEnvironment(context)
+                : SolarDiagContextCollector.collectEnvironmentLight(context);
         parts.add(new SolarDiagClient.FilePart("Diag/environment.txt", env));
         budget -= env.length();
         String account = SolarDiagContextCollector.collectAccountContext(context, prefs);
@@ -282,7 +281,7 @@ public final class SolarDiagnosticReporter {
             long mtime = src.file.lastModified();
             String key = src.file.getAbsolutePath();
             if (!forceAll && !shouldShipSource(src.label, manifest, key, mtime, mode)) continue;
-            int cap = Math.min(MAX_FILE_BYTES, Math.max(0, budget));
+            int cap = Math.min(maxFile, Math.max(0, budget));
             if (cap < 1024) break;
             String content;
             try {
@@ -345,44 +344,6 @@ public final class SolarDiagnosticReporter {
         }
     }
 
-    private static void runFeatureErrorShip(Context context, SharedPreferences prefs,
-            String feature, String summary) {
-        if (!SolarDiagClient.isConfigured()) return;
-        List<SolarDiagClient.FilePart> parts = new ArrayList<SolarDiagClient.FilePart>();
-        parts.add(new SolarDiagClient.FilePart("Diag/environment.txt",
-                SolarDiagContextCollector.collectEnvironment(context)));
-        parts.add(new SolarDiagClient.FilePart("Diag/account-context.txt",
-                SolarDiagContextCollector.collectAccountContext(context, prefs)));
-        String ring = SolarDiagFeatureLog.dumpRing();
-        if (ring != null && !ring.isEmpty()) {
-            parts.add(new SolarDiagClient.FilePart("Diag/feature-ring.txt", ring));
-        }
-        File preferred = SolarLogPaths.preferredLogDir(context);
-        File err = new File(preferred, "error.log");
-        if (err.isFile()) {
-            try {
-                parts.add(new SolarDiagClient.FilePart("SolarLog/error.log",
-                        SolarLog.scrub(context, readFileTail(err, MAX_FILE_BYTES))));
-            } catch (Exception ignored) {}
-        }
-        File crash = new File(preferred, "crash.log");
-        if (crash.isFile()) {
-            try {
-                parts.add(new SolarDiagClient.FilePart("SolarLog/crash.log",
-                        SolarLog.scrub(context, readFileTail(crash, MAX_FILE_BYTES))));
-            } catch (Exception ignored) {}
-        }
-        File storage = new File(preferred, "storage.log");
-        if (storage.isFile()) {
-            try {
-                parts.add(new SolarDiagClient.FilePart("SolarLog/storage.log",
-                        SolarLog.scrub(context, readFileTail(storage, MAX_FILE_BYTES))));
-            } catch (Exception ignored) {}
-        }
-        JSONObject device = SolarDiagContextCollector.deviceJson(context);
-        SolarDiagClient.submit("error", feature, "error", null, device, summary, null, parts);
-    }
-
     private static void sendDiagConfirmation(String replyToDev, SolarDiagClient.Result result) {
         try {
             SoulseekClient client = null;
@@ -411,13 +372,11 @@ public final class SolarDiagnosticReporter {
     }
 
     private static boolean hasRecentCrashLog() {
-        long window = 7L * 24L * 60L * 60L * 1000L;
+        long window = 48L * 60L * 60L * 1000L; // 48h — recent enough to care, not forever
         long now = System.currentTimeMillis();
-        for (File dir : SolarLogPaths.logDirs(null)) {
-            File crash = new File(dir, "crash.log");
-            if (crash.isFile() && now - crash.lastModified() < window) return true;
-        }
-        return false;
+        File dir = SolarLogPaths.preferredLogDir(null);
+        File crash = new File(dir, "crash.log");
+        return crash.isFile() && now - crash.lastModified() < window;
     }
 
     static boolean shouldShipSource(String label, JSONObject manifest, String path, long mtime,
@@ -430,11 +389,9 @@ public final class SolarDiagnosticReporter {
     static boolean isPriorityStartupSource(String label) {
         if (label == null) return false;
         String lower = label.toLowerCase(Locale.US);
+        // Keep startup priority tight — crash/error only (not full logcat every boot).
         if (lower.contains("crash.log") || lower.contains("error.log")) return true;
-        if (lower.contains("logcat") || lower.contains("snapshot")) return true;
-        if (lower.startsWith("solar/debug-")) return true;
-        if (lower.startsWith("features/") || lower.contains("feature")) return true;
-        if (lower.startsWith("diag/")) return true;
+        if (lower.contains("storage.log")) return true;
         return false;
     }
 
@@ -502,37 +459,40 @@ public final class SolarDiagnosticReporter {
     }
 
     static List<LogSource> collectSources(Context context) {
-        return collectSources(context, null);
+        return collectSources(context, null, false);
     }
 
     static List<LogSource> collectSources(Context context, SharedPreferences prefs) {
+        return collectSources(context, prefs, false);
+    }
+
+    static List<LogSource> collectSources(Context context, SharedPreferences prefs, boolean full) {
         List<LogSource> out = new ArrayList<LogSource>();
-        // 2026-07-16 — Canonical mirrored solar/logs only (plus one-shot snapshots).
-        // Avoid scattering new files; still collect any leftover debug-* under solar/ for old builds.
-        int vol = 0;
-        for (File logDir : SolarLogPaths.logDirs(context)) {
-            String prefix = "SolarLog" + (vol == 0 ? "" : "/vol" + vol);
-            addIfFile(out, prefix + "/crash.log", new File(logDir, "crash.log"));
-            addIfFile(out, prefix + "/crash.log.old", new File(logDir, "crash.log.old"));
-            addIfFile(out, prefix + "/error.log", new File(logDir, "error.log"));
-            addIfFile(out, prefix + "/error.log.old", new File(logDir, "error.log.old"));
-            addIfFile(out, prefix + "/storage.log", new File(logDir, "storage.log"));
-            addLogTree(new File(logDir, "features"), out, prefix + "/features");
-            addDebugLogs(logDir, out);
-            // Legacy agent debug files nested under solar/ only (not volume root clutter).
-            File solarRoot = logDir.getParentFile();
-            if (solarRoot != null) addDebugLogs(solarRoot, out);
-            vol++;
-        }
-        for (File root : DeviceFeatures.getStorageRoots()) {
-            if (root == null) continue;
-            collectRockboxLogs(new File(root, ".rockbox"), out, "Rockbox/" + root.getName());
-        }
-        addDeviceSnapshot(out);
-        addLogcatSnapshot(out);
-        if (context != null) {
-            addIfFile(out, "Platform/prep.log",
-                    new File(context.getFilesDir(), "platform-prep.log"));
+        // Preferred log dir first (app-private) — avoid walking every volume on light ships.
+        File preferred = SolarLogPaths.preferredLogDir(context);
+        addIfFile(out, "SolarLog/crash.log", new File(preferred, "crash.log"));
+        addIfFile(out, "SolarLog/error.log", new File(preferred, "error.log"));
+        addIfFile(out, "SolarLog/storage.log", new File(preferred, "storage.log"));
+        addLogTree(new File(preferred, "features"), out, "SolarLog/features");
+        if (full) {
+            addIfFile(out, "SolarLog/crash.log.old", new File(preferred, "crash.log.old"));
+            addIfFile(out, "SolarLog/error.log.old", new File(preferred, "error.log.old"));
+            int vol = 1;
+            for (File logDir : SolarLogPaths.logDirs(context)) {
+                if (logDir.getAbsolutePath().equals(preferred.getAbsolutePath())) continue;
+                String prefix = "SolarLog/vol" + vol;
+                addIfFile(out, prefix + "/crash.log", new File(logDir, "crash.log"));
+                addIfFile(out, prefix + "/error.log", new File(logDir, "error.log"));
+                vol++;
+            }
+            for (File root : DeviceFeatures.getStorageRoots()) {
+                if (root == null) continue;
+                collectRockboxLogs(new File(root, ".rockbox"), out, "Rockbox/" + root.getName());
+            }
+            addDeviceSnapshot(out);
+            addLogcatSnapshot(out, LOGCAT_LINES_FULL);
+        } else {
+            addLogcatSnapshot(out, LOGCAT_LINES);
         }
         return out;
     }
@@ -605,10 +565,10 @@ public final class SolarDiagnosticReporter {
         } catch (Exception ignored) {}
     }
 
-    private static void addLogcatSnapshot(List<LogSource> out) {
+    private static void addLogcatSnapshot(List<LogSource> out, int lines) {
         try {
             Process p = Runtime.getRuntime().exec(new String[] {
-                    "logcat", "-d", "-t", String.valueOf(LOGCAT_LINES)
+                    "logcat", "-d", "-t", String.valueOf(lines > 0 ? lines : LOGCAT_LINES)
             });
             BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
             StringBuilder sb = new StringBuilder();

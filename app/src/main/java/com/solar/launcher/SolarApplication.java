@@ -163,15 +163,27 @@ public class SolarApplication extends Application {
         SolarImeDismiss.recoverOnBoot(this);
         SolarImeBootstrap.ensureDefaultIme(this);
         SolarLog.scrubExistingLogs(this);
-        // 2026-07-16 — Feature trail + MicroSD capacity probe + optional diagnostic boot scan.
+        // 2026-07-16 — Lightweight diag init; heavy MicroSD probe deferred off the boot path.
         try {
             com.solar.launcher.diag.SolarDiagFeatureLog.init(this);
             com.solar.launcher.diag.SolarDiagFeatureLog.event("app",
                     "bootstrap family=" + DeviceFeatures.deviceFamily()
                             + " sdk=" + android.os.Build.VERSION.SDK_INT);
-            SolarLogPaths.probeMicroSdCapacityAndLog(this);
         } catch (Throwable ignored) {}
         SolarDiagnosticReporter.onProcessStart(this);
+        // Storage capacity check after UI is up (6h cooldown inside probe).
+        final android.content.Context app = this;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(45_000L);
+                } catch (InterruptedException ignored) {}
+                try {
+                    SolarLogPaths.probeMicroSdCapacityAndLog(app);
+                } catch (Throwable ignored) {}
+            }
+        }, "SolarStorageProbe").start();
         HearingSafetyVolume.syncFromPrefs(this);
         LargeFontAccessibilitySuppressor.ensureNormalFontScale(this);
         GraphicsPerformancePolicy.ensureAsync(this);

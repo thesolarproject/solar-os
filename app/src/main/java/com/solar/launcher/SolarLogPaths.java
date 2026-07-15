@@ -8,9 +8,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 2026-07-16 — Canonical Solar log layout on every mounted volume (and app-private storage).
- * Layman: keep logs in one tidy folder tree, mirrored like themes so a missing card still has a copy.
- * Path: {@code <volume>/solar/logs/…} plus {@code filesDir/solar/logs/} (UMS-safe).
+ * 2026-07-16 — Canonical Solar log layout (app-private + optional volume mirrors).
+ * Hot path writes only to the preferred dir (app-private first) to avoid dual-SD I/O stalls.
+ * Full mirror is for crashes / explicit flush / diagnostic ship — not every log line.
  */
 public final class SolarLogPaths {
     public static final String REL_ROOT = "solar";
@@ -21,9 +21,17 @@ public final class SolarLogPaths {
 
     /**
      * MicroSD total capacity below this may indicate a bad card/partition (not “disk full”).
-     * 0.5 GiB — real cards are almost always multi‑GB; Y1 often shows ~0.4 GB when the slot fails.
      */
     public static final long MICROSD_CAPACITY_WARN_BYTES = 512L * 1024L * 1024L;
+
+    private static final long DIRS_CACHE_TTL_MS = 60_000L;
+    private static final long PROBE_COOLDOWN_MS = 6L * 60L * 60L * 1000L; // 6h
+
+    private static volatile List<File> cachedLogDirs;
+    private static volatile long cachedLogDirsAt;
+    private static volatile File cachedPreferred;
+    private static volatile long cachedPreferredAt;
+    private static volatile long lastMicroSdProbeMs;
 
     private SolarLogPaths() {}
 
@@ -40,29 +48,53 @@ public final class SolarLogPaths {
     }
 
     /**
-     * Every place Solar should keep logs — app-private first, then each healthy user volume.
-     * Mirrors theme dual-storage: MMC/internal + MicroSD when both exist.
+     * Every place Solar may keep logs — app-private first, then each healthy user volume.
+     * Cached ~60s so hot-path logging does not re-probe storage every line.
      */
     public static List<File> logDirs(Context ctx) {
+        long now = System.currentTimeMillis();
+        List<File> hit = cachedLogDirs;
+        if (hit != null && now - cachedLogDirsAt < DIRS_CACHE_TTL_MS) {
+            return hit;
+        }
         List<File> dirs = new ArrayList<File>();
         addUnique(dirs, appPrivateLogDir(ctx));
-        for (File root : DeviceFeatures.getStorageRoots()) {
-            if (root == null) continue;
-            addUnique(dirs, new File(root, REL_LOGS));
-        }
-        // Fail-open legacy path if roots were empty/stub.
+        try {
+            for (File root : DeviceFeatures.getStorageRoots()) {
+                if (root == null) continue;
+                addUnique(dirs, new File(root, REL_LOGS));
+            }
+        } catch (Throwable ignored) {}
         addUnique(dirs, new File(LEGACY_LOG_DIR));
+        cachedLogDirs = dirs;
+        cachedLogDirsAt = now;
         return dirs;
     }
 
-    /** Preferred writable log directory (private first, then volumes). */
+    /** Preferred writable log directory — app-private when possible (fast, UMS-safe). */
     public static File preferredLogDir(Context ctx) {
-        for (File dir : logDirs(ctx)) {
-            if (ensureWritableDir(dir)) return dir;
+        long now = System.currentTimeMillis();
+        File hit = cachedPreferred;
+        if (hit != null && now - cachedPreferredAt < DIRS_CACHE_TTL_MS && hit.isDirectory()) {
+            return hit;
         }
-        File fallback = appPrivateLogDir(ctx);
-        ensureWritableDir(fallback);
-        return fallback;
+        File priv = appPrivateLogDir(ctx);
+        if (ensureWritableDir(priv)) {
+            cachedPreferred = priv;
+            cachedPreferredAt = now;
+            return priv;
+        }
+        for (File dir : logDirs(ctx)) {
+            if (ensureWritableDir(dir)) {
+                cachedPreferred = dir;
+                cachedPreferredAt = now;
+                return dir;
+            }
+        }
+        ensureWritableDir(priv);
+        cachedPreferred = priv;
+        cachedPreferredAt = now;
+        return priv;
     }
 
     public static File preferredFeatureLogDir(Context ctx) {
@@ -73,58 +105,43 @@ public final class SolarLogPaths {
     }
 
     /**
-     * Append one line (or block) to the same relative file under every log root.
-     * Rotates each file independently when larger than maxBytes.
+     * Hot path: append to preferred dir only (no multi-volume walk).
+     * 2026-07-16 — Stops dual-SD write storms that stalled Y1/Y2 UI.
+     */
+    public static void appendPrimary(Context ctx, String fileName, String text, long maxBytes) {
+        if (fileName == null || fileName.isEmpty() || text == null) return;
+        byte[] bytes = toBytes(text);
+        if (bytes == null) return;
+        File dir = preferredLogDir(ctx);
+        writeOne(dir, fileName, bytes, maxBytes);
+    }
+
+    /**
+     * Full mirror to all log roots — use sparingly (crash, storage health, pre-ship flush).
      */
     public static void appendMirrored(Context ctx, String fileName, String text, long maxBytes) {
         if (fileName == null || fileName.isEmpty() || text == null) return;
-        byte[] bytes;
-        try {
-            bytes = (text.endsWith("\n") ? text : text + "\n").getBytes("UTF-8");
-        } catch (Exception e) {
-            return;
-        }
+        byte[] bytes = toBytes(text);
+        if (bytes == null) return;
         for (File dir : logDirs(ctx)) {
-            if (!ensureWritableDir(dir)) continue;
-            File log = new File(dir, fileName);
-            try {
-                if (maxBytes > 0 && log.isFile() && log.length() > maxBytes) {
-                    File rotated = new File(dir, fileName + ".old");
-                    //noinspection ResultOfMethodCallIgnored
-                    log.renameTo(rotated);
-                }
-                FileOutputStream fos = new FileOutputStream(log, true);
-                fos.write(bytes);
-                fos.close();
-            } catch (Exception ignored) {}
+            writeOne(dir, fileName, bytes, maxBytes);
         }
     }
 
-    /** Append under {@code features/<safeName>.log} on every log root. */
-    public static void appendFeatureMirrored(Context ctx, String featureFileName, String text,
+    /** Feature log hot path — preferred features/ only. */
+    public static void appendFeaturePrimary(Context ctx, String featureFileName, String text,
             long maxBytes) {
         if (featureFileName == null || featureFileName.isEmpty() || text == null) return;
-        byte[] bytes;
-        try {
-            bytes = (text.endsWith("\n") ? text : text + "\n").getBytes("UTF-8");
-        } catch (Exception e) {
-            return;
-        }
-        for (File logDir : logDirs(ctx)) {
-            File features = new File(logDir, "features");
-            if (!ensureWritableDir(features)) continue;
-            File log = new File(features, featureFileName);
-            try {
-                if (maxBytes > 0 && log.isFile() && log.length() > maxBytes) {
-                    File rotated = new File(features, featureFileName + ".old");
-                    //noinspection ResultOfMethodCallIgnored
-                    log.renameTo(rotated);
-                }
-                FileOutputStream fos = new FileOutputStream(log, true);
-                fos.write(bytes);
-                fos.close();
-            } catch (Exception ignored) {}
-        }
+        byte[] bytes = toBytes(text);
+        if (bytes == null) return;
+        File features = preferredFeatureLogDir(ctx);
+        writeOne(features, featureFileName, bytes, maxBytes);
+    }
+
+    /** @deprecated prefer {@link #appendFeaturePrimary} on hot paths */
+    public static void appendFeatureMirrored(Context ctx, String featureFileName, String text,
+            long maxBytes) {
+        appendFeaturePrimary(ctx, featureFileName, text, maxBytes);
     }
 
     public static boolean ensureWritableDir(File dir) {
@@ -138,12 +155,15 @@ public final class SolarLogPaths {
     }
 
     /**
-     * Probe MicroSD total capacity (not free space). Sub‑512 MB totals often mean a failed
-     * card/partition on Y1; log as a warning. Lower severity wording on A5/Y2 (user-swappable card).
-     *
+     * Probe MicroSD total capacity at most once every 6 hours (background-safe).
      * @return true when a capacity anomaly was logged
      */
     public static boolean probeMicroSdCapacityAndLog(Context ctx) {
+        long now = System.currentTimeMillis();
+        if (lastMicroSdProbeMs > 0 && now - lastMicroSdProbeMs < PROBE_COOLDOWN_MS) {
+            return false;
+        }
+        lastMicroSdProbeMs = now;
         File micro = resolveMicroSdProbeRoot();
         if (micro == null) return false;
         long total;
@@ -152,29 +172,26 @@ public final class SolarLogPaths {
             total = micro.getTotalSpace();
             free = micro.getUsableSpace();
         } catch (Exception e) {
-            SolarLog.w("Storage", "MicroSD probe failed path=" + micro.getAbsolutePath()
-                    + " err=" + e.getMessage());
             return false;
         }
         if (total <= 0L) {
-            SolarLog.w("Storage", "MicroSD total capacity unreadable path="
+            SolarLog.wQuiet("Storage", "MicroSD total capacity unreadable path="
                     + micro.getAbsolutePath() + " free=" + free);
             return true;
         }
         if (total >= MICROSD_CAPACITY_WARN_BYTES) {
             return false;
         }
-        // Total capacity tiny — not “almost full” (that would be free << total with large total).
         String family = DeviceFeatures.deviceFamily();
         String severity = DeviceFeatures.isY1() ? "Y1_ALERT" : "NOTE";
-        SolarLog.w("Storage", severity
+        SolarLog.wQuiet("Storage", severity
                 + " MicroSD total capacity " + formatBytes(total)
                 + " < 512MB (possible card/partition failure; free=" + formatBytes(free)
                 + ") path=" + micro.getAbsolutePath()
                 + " family=" + family);
         try {
-            SolarLog.appendMirroredRaw(ctx, "storage.log",
-                    SolarLog.formatStorageLine(severity, micro, total, free), 256 * 1024);
+            SolarLog.appendPrimaryRaw(ctx, "storage.log",
+                    SolarLog.formatStorageLine(severity, micro, total, free), 128 * 1024);
         } catch (Throwable ignored) {}
         return true;
     }
@@ -190,7 +207,6 @@ public final class SolarLogPaths {
         return null;
     }
 
-    /** Unit-testable: capacity anomaly when total is positive and under the 512 MB floor. */
     public static boolean isSuspiciousMicroSdCapacity(long totalBytes) {
         return totalBytes > 0L && totalBytes < MICROSD_CAPACITY_WARN_BYTES;
     }
@@ -203,6 +219,29 @@ public final class SolarLogPaths {
             return String.format(java.util.Locale.US, "%.1fMB", bytes / (1024.0 * 1024.0));
         }
         return String.format(java.util.Locale.US, "%.2fGB", bytes / (1024.0 * 1024.0 * 1024.0));
+    }
+
+    private static byte[] toBytes(String text) {
+        try {
+            return (text.endsWith("\n") ? text : text + "\n").getBytes("UTF-8");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static void writeOne(File dir, String fileName, byte[] bytes, long maxBytes) {
+        if (dir == null || !ensureWritableDir(dir)) return;
+        File log = new File(dir, fileName);
+        try {
+            if (maxBytes > 0 && log.isFile() && log.length() > maxBytes) {
+                File rotated = new File(dir, fileName + ".old");
+                //noinspection ResultOfMethodCallIgnored
+                log.renameTo(rotated);
+            }
+            FileOutputStream fos = new FileOutputStream(log, true);
+            fos.write(bytes);
+            fos.close();
+        } catch (Exception ignored) {}
     }
 
     private static void addUnique(List<File> dirs, File dir) {
