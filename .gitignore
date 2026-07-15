@@ -66,3 +66,4 @@ build/
 # Cloudflare worker local setup/readme docs (ops only)
 cloudflare/**/README.md
 cloudflare/**/SETUP.md
+local.solar-diag.properties
