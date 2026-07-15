@@ -11,7 +11,6 @@ import com.solar.launcher.SolarLogPaths;
 import com.solar.launcher.diag.SolarDiagClient;
 import com.solar.launcher.diag.SolarDiagContextCollector;
 import com.solar.launcher.diag.SolarDiagFeatureLog;
-import com.solar.launcher.diag.SolarDiagWifiWake;
 
 import org.json.JSONObject;
 
@@ -225,20 +224,19 @@ public final class SolarDiagnosticReporter {
         boolean remote = mode == ScanMode.REMOTE_PULL;
         boolean full = remote || mode == ScanMode.SUPPORT_OPEN
                 || (mode == ScanMode.STARTUP && hasRecentCrashLog());
-        SolarDiagWifiWake.Session wake =
-                SolarDiagWifiWake.ensureOnlineForShip(context, prefs, remote);
-        try {
-            if (!wake.online && !ConnectivityHelper.isOnline(context)) {
-                if (callback != null) callback.onComplete(false, 0, "", "offline");
-                if (mode != ScanMode.REMOTE_PULL) {
-                    scheduleSessionRetry(context, prefs, mode);
-                }
-                return;
+        // Never toggle Wi‑Fi: remote pull only runs after a Soulseek PM (already online);
+        // crash/routine wait for natural connectivity and retry later if offline.
+        if (!ConnectivityHelper.isOnline(context)) {
+            if (callback != null) callback.onComplete(false, 0, "", "offline");
+            if (mode != ScanMode.REMOTE_PULL) {
+                scheduleSessionRetry(context, prefs, mode);
+            } else {
+                SolarDiagFeatureLog.warn("diag",
+                        "remote_pull offline — unexpected after Soulseek PM; reply will fail ship");
             }
-            runScanOnline(context, prefs, mode, replyToDev, callback, full);
-        } finally {
-            SolarDiagWifiWake.restoreAfterShip(context, prefs, wake);
+            return;
         }
+        runScanOnline(context, prefs, mode, replyToDev, callback, full);
     }
 
     private static void runScanOnline(Context context, SharedPreferences prefs, ScanMode mode,
