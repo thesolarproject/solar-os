@@ -48059,6 +48059,39 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 syncAvrcpTrackInfo(false);
                 return;
             }
+            if (isMusicIjkActive()) {
+                boolean playing = false;
+                try {
+                    playing = musicIjkPlayer.isPlaying();
+                } catch (Exception ignored) {}
+                if (playing) {
+                    if (ivAlbumArt != null) ivAlbumArt.setAlpha(1.0f);
+                    if (ivAlbumArt3d != null) ivAlbumArt3d.setAlpha(1.0f);
+                    ivPauseOverlay.setVisibility(View.GONE);
+                    progressHandler.post(updateProgressTask);
+                    if (mediaSessionShim != null && android.os.Build.VERSION.SDK_INT >= 21) {
+                        mediaSessionShim.getClass().getMethod("setPlaying", int.class)
+                                .invoke(mediaSessionShim, musicIjkPlayer.getCurrentPosition());
+                    }
+                } else {
+                    if (ivAlbumArt != null) ivAlbumArt.setAlpha(0.4f);
+                    if (ivAlbumArt3d != null) ivAlbumArt3d.setAlpha(0.4f);
+                    ivPauseOverlay.setVisibility(View.VISIBLE);
+                    progressHandler.removeCallbacks(updateProgressTask);
+                    if (mediaSessionShim != null && android.os.Build.VERSION.SDK_INT >= 21) {
+                        int pos = 0;
+                        try {
+                            pos = musicIjkPlayer.getCurrentPosition();
+                        } catch (Exception ignored) {}
+                        mediaSessionShim.getClass().getMethod("setPaused", int.class).invoke(mediaSessionShim, pos);
+                    }
+                }
+                updatePlayerStatusIndicators();
+                updatePlaybackStatusIcon();
+                if (npOverlay != null && npOverlay.isVisualizerShowing()) syncVisualizerMetadata();
+                syncAvrcpTrackInfo(false);
+                return;
+            }
             if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                 if (ivAlbumArt != null) ivAlbumArt.setAlpha(1.0f);
                 if (ivAlbumArt3d != null) ivAlbumArt3d.setAlpha(1.0f);

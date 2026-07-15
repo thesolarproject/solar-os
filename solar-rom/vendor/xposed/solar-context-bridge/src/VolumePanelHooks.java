@@ -262,13 +262,21 @@ final class VolumePanelHooks {
         });
     }
 
+    private static long lastShowTime = 0;
+    private static final int THROTTLE_MS = 200;
+
     /** Debounced start of passive Solar volume overlay (Rockbox / third-party apps). */
     private static void scheduleVolumeOverlay() {
         if (isInternalVolumeAdjust()) return;
         if (isSolarNowPlayingScreen()) return;
-        Context ctx = SystemServerHooks.currentContext();
+        long now = System.currentTimeMillis();
         volumeHandler().removeCallbacks(SHOW_OVERLAY);
-        volumeHandler().post(SHOW_OVERLAY);
+        if (now - lastShowTime > THROTTLE_MS) {
+            volumeHandler().post(SHOW_OVERLAY);
+            lastShowTime = now;
+        } else {
+            volumeHandler().postDelayed(SHOW_OVERLAY, THROTTLE_MS - (now - lastShowTime));
+        }
     }
 
     private static volatile Class<?> sSystemPropertiesClass;
