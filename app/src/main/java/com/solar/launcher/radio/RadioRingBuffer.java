@@ -2,6 +2,8 @@ package com.solar.launcher.radio;
 
 import android.content.Context;
 
+import com.solar.launcher.DeviceFeatures;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
@@ -9,6 +11,7 @@ import java.io.RandomAccessFile;
 /**
  * TiVo-style rolling capture — 30 minutes of stream audio in a circular file.
  * ponytail: 128 kbps CBR estimate for ms timeline; upgrade to codec timestamps if drift matters.
+ * 2026-07-15 — SD buffer path follows Primary storage pref via getNewMediaRoot.
  */
 public final class RadioRingBuffer {
   public static final long MAX_BUFFER_MS = 30L * 60L * 1000L;
@@ -17,8 +20,6 @@ public final class RadioRingBuffer {
 
   private static final int BYTES_PER_MS = (NOMINAL_KBPS * 1000) / (8 * 1000);
   private static final long MAX_BYTES = MAX_BUFFER_MS * BYTES_PER_MS;
-  private static final String SD_DIR = com.solar.launcher.DeviceFeatures.getPrimaryStorageRoot()
-          .getAbsolutePath() + "/RadioBuffer";
   private static final String FILE_NAME = "live.ts";
 
   private final File file;
@@ -55,15 +56,17 @@ public final class RadioRingBuffer {
   }
 
   public static File resolveDir(Context ctx, boolean preferSd) {
+    // 2026-07-15 — Prefer new-media volume when buffering on “SD”; else app-private.
     if (preferSd) {
-      File sd = new File(SD_DIR);
+      File media = DeviceFeatures.getNewMediaRoot(ctx);
+      File sd = new File(media, "RadioBuffer");
       if (sd.isDirectory() || sd.mkdirs()) return sd;
     }
     if (ctx != null) {
       File internal = new File(ctx.getFilesDir(), "RadioBuffer");
       if (internal.isDirectory() || internal.mkdirs()) return internal;
     }
-    File fallback = new File(SD_DIR);
+    File fallback = new File(DeviceFeatures.getPrimaryStorageRoot(), "RadioBuffer");
     if (!fallback.isDirectory()) fallback.mkdirs();
     return fallback;
   }

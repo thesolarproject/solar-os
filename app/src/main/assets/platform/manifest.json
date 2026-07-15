@@ -1,5 +1,5 @@
 {
-  "prepVersion": 17,
+  "prepVersion": 18,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",
@@ -31,7 +31,7 @@
       "required": true,
       "device": "y1",
       "versionCode": 1,
-      "sha256": "442d77e941e6dbe2e148eeca9b3bb7518e6aec675f463ac2e9872e093c1b75a0"
+      "sha256": "177a746bb974f4cabe111dd9570245289939dd17d356362bd5a7c7ee3d516b36"
     },
     {
       "pkg": "com.solar.launcher.xposed.bridge.y2",
@@ -40,7 +40,7 @@
       "required": true,
       "device": "y2",
       "versionCode": 1,
-      "sha256": "01d30e647ac85ddbc36bfffa68da02906d9a4fc5d614b7049f74d5725c2fb9a2"
+      "sha256": "e4deda5eb17619e5ed24d046c3e51fbafb6efd5efd8d4e5a4599805aa900b2f2"
     },
     {
       "pkg": "com.solar.launcher.xposed.themefont",
@@ -68,24 +68,6 @@
       "device": "y2",
       "versionCode": 1,
       "sha256": "f43d3022efdeb88e4429d9e483a8b10516c0795b901ec0bff6e251ae9c2b19a1"
-    },
-    {
-      "pkg": "com.solar.launcher.xposed.notpipe",
-      "asset": "xposed/SolarNotPipeBridge.apk",
-      "systemApk": "/system/app/SolarNotPipeBridge.apk",
-      "required": true,
-      "device": "both",
-      "versionCode": 3,
-      "sha256": "4c2817701bea430bd9e0cc11421b7bf843005f572f3bb2037fdd948ae948fac8"
-    },
-    {
-      "pkg": "io.github.gohoski.notpipe",
-      "asset": "thirdparty/notPipe-0.3.0-release.apk",
-      "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
-      "required": true,
-      "device": "both",
-      "versionCode": 9,
-      "sha256": "891f705801d009734fe3baf5b12026009cc88d8ff6c87c6234947d0e867ce642"
     },
     {
       "pkg": "com.solar.launcher.globalcontext",
@@ -124,7 +106,7 @@
       "systemApk": "/system/app/org.rockbox.apk",
       "device": "y2",
       "versionCode": 1,
-      "sha256": "7aa6c2913462600ce1c9c14881d1d50fc827939585ef795aee6c15ddaefeccb5"
+      "sha256": "9d32baab231a9970a54ba0cb90c051b9446e3e9501c41c6bc294ed64c22b81f2"
     },
     "systemLib": {
       "asset": "rockbox/librockbox-system.so",
@@ -151,6 +133,18 @@
       "pkg": "com.solar.launcher.xposed.bridge.y2",
       "device": "y1",
       "reason": "wrong-family bridge on Y1"
+    },
+    {
+      "systemApk": "/system/app/SolarNotPipeBridge.apk",
+      "pkg": "com.solar.launcher.xposed.notpipe",
+      "device": "both",
+      "reason": "native Solar YouTube replaces NotPipe IPC bridge"
+    },
+    {
+      "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
+      "pkg": "io.github.gohoski.notpipe",
+      "device": "both",
+      "reason": "native Solar YouTube; A5 ROM touch NotPipe skipped in cleaner"
     }
   ]
 }

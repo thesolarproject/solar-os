@@ -39,10 +39,11 @@ public class YouTubeExperimentTest {
 
     @Test
     public void qualityFallbackLadder() {
-        if (!"360".equals(NotPipeClient.fallbackVideoQuality("480"))) {
+        // 2026-07-15 — Native YouTubeClient owns quality ladder (was NotPipeClient).
+        if (!"360".equals(YouTubeClient.fallbackVideoQuality("480"))) {
             throw new AssertionError("480 should fall back to 360");
         }
-        if (NotPipeClient.fallbackVideoQuality("360") != null) {
+        if (YouTubeClient.fallbackVideoQuality("360") != null) {
             throw new AssertionError("360 should have no further fallback");
         }
     }

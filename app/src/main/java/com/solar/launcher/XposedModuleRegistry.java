@@ -36,7 +36,6 @@ public final class XposedModuleRegistry {
     private static final String PKG_THEME_FONT = "com.solar.launcher.xposed.themefont";
     private static final String PKG_ROCKBOX_IME = "com.solar.launcher.xposed.rockbox.ime";
     private static final String PKG_ROCKBOX_COMPAT = "com.solar.launcher.xposed.rockbox.compat";
-    private static final String PKG_NOTPIPE_BRIDGE = "com.solar.launcher.xposed.notpipe";
     private static final String PKG_POWERMENU_TEST = "com.solar.launcher.xposed.powermenu";
 
     private XposedModuleRegistry() {}
@@ -75,12 +74,7 @@ public final class XposedModuleRegistry {
                     R.string.settings_debug_xposed_rockbox_compat_disable_warning,
                     false));
         }
-        out.add(new Entry(
-                PKG_NOTPIPE_BRIDGE,
-                R.string.settings_debug_xposed_notpipe_bridge,
-                true,
-                R.string.settings_debug_xposed_notpipe_bridge_disable_warning,
-                false));
+        // 2026-07-15 — NotPipe bridge removed; YouTube is native in Solar.
         out.add(new Entry(
                 PKG_POWERMENU_TEST,
                 R.string.settings_debug_xposed_powermenu_test,
@@ -96,7 +90,6 @@ public final class XposedModuleRegistry {
         pkgs.add(bridgePackageForDevice());
         pkgs.add(PKG_THEME_FONT);
         pkgs.add(PKG_ROCKBOX_IME);
-        pkgs.add(PKG_NOTPIPE_BRIDGE);
         if (DeviceFeatures.isY2()) {
             pkgs.add(PKG_ROCKBOX_COMPAT);
         }
@@ -111,7 +104,7 @@ public final class XposedModuleRegistry {
         if (PKG_THEME_FONT.equals(pkg)) return "/system/app/SolarThemeFont.apk";
         if (PKG_ROCKBOX_IME.equals(pkg)) return "/system/app/SolarRockboxIme.apk";
         if (PKG_ROCKBOX_COMPAT.equals(pkg)) return "/system/app/SolarRockboxCompat.apk";
-        if (PKG_NOTPIPE_BRIDGE.equals(pkg)) return "/system/app/SolarNotPipeBridge.apk";
+        // 2026-07-15 — A5 ROM may still ship unmodified NotPipe (not an Xposed module).
         if ("io.github.gohoski.notpipe".equals(pkg)) return "/system/app/io.github.gohoski.notpipe.apk";
         if ("com.solar.launcher.globalcontext".equals(pkg)) return "/system/app/SolarGlobalContextModal.apk";
         return null;
@@ -125,7 +118,6 @@ public final class XposedModuleRegistry {
         if (apkPath.endsWith("SolarThemeFont.apk")) return PKG_THEME_FONT;
         if (apkPath.endsWith("SolarRockboxIme.apk")) return PKG_ROCKBOX_IME;
         if (apkPath.endsWith("SolarRockboxCompat.apk")) return PKG_ROCKBOX_COMPAT;
-        if (apkPath.endsWith("SolarNotPipeBridge.apk")) return PKG_NOTPIPE_BRIDGE;
         if (apkPath.endsWith("io.github.gohoski.notpipe.apk")) return "io.github.gohoski.notpipe";
         if (apkPath.endsWith("SolarGlobalContextModal.apk")) return "com.solar.launcher.globalcontext";
         return null;

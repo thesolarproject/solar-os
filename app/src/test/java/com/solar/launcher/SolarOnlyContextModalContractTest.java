@@ -15,8 +15,12 @@ import static org.junit.Assert.assertTrue;
  */
 public final class SolarOnlyContextModalContractTest {
 
+    /**
+     * 2026-07-15 — POLICY_REV 23 keeps Solar-only POWER modal + Back-home; adds screen-on-at-DOWN sleep gate.
+     * Was: assertEquals(22). Reversal: expect 22 if force-sleep gate is reverted.
+     */
     @Test
-    public void policyRevTwentyTwoSolarOnlyPowerAndBackHome() throws Exception {
+    public void policyRevSolarOnlyPowerAndBackHome() throws Exception {
         // H1: Y2 POWER Solar-only
         assertTrue(GlobalInputPolicy.shouldOfferPowerLongModal("com.solar.launcher", true));
         assertFalse(GlobalInputPolicy.shouldOfferPowerLongModal("com.android.settings", true));
@@ -27,7 +31,10 @@ public final class SolarOnlyContextModalContractTest {
                 "com.android.settings", false, false));
         assertFalse(GlobalInputPolicy.shouldLaunchSolarOnBackLong(
                 "org.rockbox", false, false));
-        assertEquals(22, GlobalInputPolicy.POLICY_REV);
+        assertEquals(23, GlobalInputPolicy.POLICY_REV);
+        // H4: short POWER sleeps only when lit at DOWN (wake must not re-sleep).
+        assertTrue(GlobalInputPolicy.shouldForcePowerTapSleep(100L, true));
+        assertFalse(GlobalInputPolicy.shouldForcePowerTapSleep(100L, false));
 
         // #region agent log
         JSONObject d = new JSONObject();

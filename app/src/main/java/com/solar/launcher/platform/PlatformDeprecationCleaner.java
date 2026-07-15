@@ -40,6 +40,13 @@ public final class PlatformDeprecationCleaner {
         boolean y2 = DeviceFeatures.isY2();
         int removed = 0;
         for (DeprecatedEntry d : manifest.deprecatedForDevice(y2)) {
+            // 2026-07-15 — A5 ROM keeps unmodified NotPipe for touch; never wipe that APK.
+            // Layman: touch A5 users still get the NotPipe app from their ROM.
+            // Reversal: remove isA5 skip — A5 OTA would uninstall NotPipe like Y1/Y2.
+            if (DeviceFeatures.isA5()
+                    && "io.github.gohoski.notpipe".equals(d.pkg)) {
+                continue;
+            }
             if (d.systemApk != null && !d.systemApk.isEmpty()) {
                 if (removeSystemApk(d.systemApk, d.pkg)) {
                     removed++;

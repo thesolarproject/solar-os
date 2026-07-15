@@ -75,11 +75,13 @@ public final class ConnectivityHelper {
         return null;
     }
 
-    /** Needs routable internet before showing a home shortcut (Reach only; Themes works offline). */
+    /** Needs routable internet before showing a home shortcut (Reach / YouTube Audio; Themes offline OK). */
     public static boolean itemNeedsInternetForDiscovery(String id) {
         if (id == null) return false;
         id = HomeMenuConfig.migrateIdStatic(id);
-        return HomeMenuConfig.ID_SOULSEEK.equals(id);
+        // 2026-07-15 — YouTube Audio mirrors Get Music: hide offline.
+        return HomeMenuConfig.ID_SOULSEEK.equals(id)
+                || HomeMenuConfig.ID_YOUTUBE_AUDIO.equals(id);
     }
 
     /** Set by MainActivity when Reach login fails on an online network. */

@@ -26,6 +26,7 @@ import com.solar.launcher.theme.ThemeManager;
 import com.solar.launcher.DebugAgentLog;
 import com.solar.launcher.DebugF9ef0bLog;
 import com.solar.launcher.FocusScrollHelper;
+import com.solar.launcher.MoveRibbonTouch;
 import com.solar.launcher.PlayQueue;
 import com.solar.launcher.PlaybackCoordinator;
 import com.solar.launcher.R;
@@ -48,12 +49,12 @@ import com.solar.launcher.radio.net.InternetRadioPlayer;
 import com.solar.launcher.radio.net.RadioBrowserClient;
 import com.solar.launcher.video.VideoLibrary;
 import com.solar.launcher.video.VideoPlayerController;
-import com.solar.launcher.youtube.NotPipeClient;
-import com.solar.launcher.youtube.NotPipePmRegistrar;
-import com.solar.launcher.youtube.NotPipeProcessWake;
+import com.solar.launcher.youtube.YouTubeClient;
 import com.solar.launcher.youtube.YouTubeComment;
+import com.solar.launcher.youtube.YouTubeDownloader;
 import com.solar.launcher.youtube.YouTubeRecentSearches;
 import com.solar.launcher.youtube.YouTubeResultJson;
+import com.solar.launcher.youtube.YouTubeSavePaths;
 import com.solar.launcher.youtube.YouTubeVideo;
 
 import java.io.File;
@@ -100,13 +101,23 @@ public final class MediaSuiteHost {
     public static final int RADIO_FM_SETTINGS = 8;
     public static final int RADIO_FM_SAVED_CHANNELS = 9;
 
-    /** First FM recordings folder that exists, else primary volume default. */
+    /**
+     * FM recordings dir for new captures — prefers Primary storage pref volume.
+     * 2026-07-15 — Was first existing folder / hardcoded sdcard0; now getNewMediaRoot first.
+     */
     public static File fmRecordingsDir() {
+        // null ctx still applies smart default (MicroSD if healthy, else Internal).
+        File preferred = new File(com.solar.launcher.DeviceFeatures.getNewMediaRoot(null),
+                "FM Recordings");
+        if (!preferred.exists()) preferred.mkdirs();
+        if (preferred.isDirectory()) return preferred;
         for (File dir : com.solar.launcher.DeviceFeatures.getFmRecordingRoots()) {
             if (dir.isDirectory()) return dir;
         }
         java.util.List<File> roots = com.solar.launcher.DeviceFeatures.getFmRecordingRoots();
-        return roots.isEmpty() ? new File("/storage/sdcard0/FM Recordings") : roots.get(0);
+        return roots.isEmpty()
+                ? preferred
+                : roots.get(0);
     }
 
     private static final int NET_PAGE_SIZE = 40;
@@ -116,6 +127,8 @@ public final class MediaSuiteHost {
     public static final String ROW_AUTO_DETECT = "radio.auto_detect";
     public static final String ROW_BUFFER_SD = "radio.buffer_sd";
     public static final String ROW_VIDEO_SLEEP = "video.sleep_during_playback";
+    /** 2026-07-15 — Letterbox vs crop-to-4:3 preference row. */
+    public static final String ROW_VIDEO_CROP = "video.crop_mode";
 
     /** Now-playing scrub state — read/written by MainActivity wheel handlers. */
     public RadioScrubMode radioScrubMode = RadioScrubMode.NONE;
@@ -178,11 +191,23 @@ public final class MediaSuiteHost {
         /** Leave media browse and return to Solar home menu (MainActivity STATE_MENU). */
         void exitToHomeMenu();
 
+        /**
+         * 2026-07-15 — Leave Music→YouTube browse back to Music hub (STATE_BROWSER).
+         * Was: Back always went to Videos hub. Reversal: changeScreen(STATE_VIDEO_HUB) always.
+         */
+        void exitYouTubeAudioToMusic();
+
         /** Open wheel keyboard for YouTube search — result delivered via {@link #onYouTubeSearchSubmitted}. */
         void openYouTubeSearchKeyboard(String prefill);
 
         /** Save YouTube stream via downloader (video or audio-only). */
         void requestYouTubeSave(YouTubeVideo video, boolean audioOnly);
+
+        /**
+         * 2026-07-15 — Play a local audio file in music Now Playing (YouTube Audio path).
+         * Layman: open the song player with this file. Technical: playTrackList singleton.
+         */
+        void playAudioFileInNowPlaying(java.io.File file);
 
         /** Title + subtitle row for virtual browse lists (YouTube, podcasts pattern). */
         View createTwoLineBrowseRow(String title, String subtitle);
@@ -270,6 +295,11 @@ public final class MediaSuiteHost {
     private String youtubePendingSearch;
     private String youtubeNowPlayingTitle;
     private String youtubeNowPlayingId;
+    /**
+     * 2026-07-15 — True when opened from Music hub / home YouTube Audio (music NP, not video).
+     * Was: always video path from Videos hub. Reversal: force false; Play always video.
+     */
+    private boolean youtubeAudioMode;
     /** Focused video on detail/comments screen (Solar-only; notPipe never shown). */
     private YouTubeVideo youtubeDetailVideo;
     private final List<YouTubeComment> youtubeComments = new ArrayList<YouTubeComment>();
@@ -523,6 +553,7 @@ public final class MediaSuiteHost {
                 break;
             case STATE_VIDEO_PLAYER:
                 showVideoPlayerLayer(true);
+                beginVideoForceLandscapeSession();
                 startVideoPlayback();
                 break;
             case STATE_PHOTOS:
@@ -557,6 +588,7 @@ public final class MediaSuiteHost {
                 releaseVideoPlayer();
                 showVideoPlayerLayer(false);
                 onVideoPlaybackStopped();
+                endVideoForceLandscapeSession();
                 break;
             case STATE_PHOTO_VIEWER:
                 showPhotoViewerLayer(false);
@@ -640,19 +672,7 @@ public final class MediaSuiteHost {
                     cancelVideoScrub();
                     return true;
                 }
-                releaseVideoPlayer();
-                showVideoPlayerLayer(false);
-                if (videoPlaybackYoutube) {
-                    videoPlaybackYoutube = false;
-                    // Prefer detail (comments) if we opened play from there.
-                    if (youtubeDetailVideo != null) {
-                        host.changeScreen(STATE_YOUTUBE_DETAIL);
-                    } else {
-                        host.changeScreen(STATE_YOUTUBE_BROWSE);
-                    }
-                } else {
-                    host.changeScreen(STATE_VIDEOS);
-                }
+                leaveVideoPlayerToBrowse();
                 return true;
             case STATE_YOUTUBE_DETAIL:
                 youtubeDetailVideo = null;
@@ -660,7 +680,12 @@ public final class MediaSuiteHost {
                 host.changeScreen(STATE_YOUTUBE_BROWSE);
                 return true;
             case STATE_YOUTUBE_BROWSE:
-                host.changeScreen(STATE_VIDEO_HUB);
+                // 2026-07-15 — Music entry returns to Music hub; Videos entry to video hub.
+                if (youtubeAudioMode) {
+                    host.exitYouTubeAudioToMusic();
+                } else {
+                    host.changeScreen(STATE_VIDEO_HUB);
+                }
                 return true;
             case STATE_VIDEOS:
                 if (videoBrowseFolder == null) {
@@ -2492,32 +2517,40 @@ public final class MediaSuiteHost {
     // --- Video hub + YouTube ---
 
     /**
-     * Open Solar YouTube browse immediately — notPipe stays headless backend only.
-     * Layman: user never sees notPipe; wake + probe happen under Solar.
-     * 2026-07-14 — Clearer toast when APK missing vs bridge cold (platform prep / reboot).
+     * 2026-07-15 — Open Solar YouTube browse (native Invidious/Piped backends).
+     * Layman: go straight into Solar’s YouTube list; no NotPipe app needed.
+     * Was: wake NotPipe + probe bridge. Now: native YouTubeClient soft probe.
+     * Reversal: restore NotPipePmRegistrar + openYouTubeAfterNotPipeReady.
      */
-    private void openYouTubeAfterNotPipeReady() {
-        final boolean pmInstalled = NotPipeClient.isNotPipeInstalled(host.context());
-        if (!pmInstalled) {
-            Toast.makeText(host.context(), R.string.youtube_needs_platform_prep,
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
-        NotPipeProcessWake.ensureAwake(host.context());
-        // Enter Solar UI first — never wait on probe in the video hub (avoids notPipe flash).
+    private void openYouTubeBrowse() {
+        youtubeAudioMode = false;
+        openYouTubeBrowseInternal();
+    }
+
+    /**
+     * 2026-07-15 — Music hub / home tile entry: same browse UI, audio plays in music Now Playing.
+     * Layman: YouTube as songs, not videos. Technical: youtubeAudioMode + resolveAudioStream.
+     * Reversal: call openYouTubeBrowse() (video mode).
+     */
+    public void openYouTubeAudioBrowse() {
+        youtubeAudioMode = true;
+        openYouTubeBrowseInternal();
+    }
+
+    private void openYouTubeBrowseInternal() {
         host.changeScreen(STATE_YOUTUBE_BROWSE);
         final int probeGen = ++youtubeLoadGen;
-        NotPipeClient.getInstance(host.context()).probe(new NotPipeClient.Callback() {
+        YouTubeClient.getInstance(host.context()).probe(new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
-                // Backend ready — popular load already triggered by browse enter.
+                // Backend pool ready — popular load already triggered by browse enter.
             }
 
             @Override
             public void onError(String message) {
                 if (probeGen != youtubeLoadGen) return;
                 // Soft fail: browse can still retry popular/search; toast once.
-                Toast.makeText(host.context(), R.string.youtube_bridge_not_ready,
+                Toast.makeText(host.context(), R.string.youtube_backend_not_ready,
                         Toast.LENGTH_LONG).show();
             }
         });
@@ -2543,19 +2576,7 @@ public final class MediaSuiteHost {
                 @Override
                 public void run() {
                     if (!host.requireInternet(R.string.toast_internet_required)) return;
-                    // 2026-07-06 — PM may lag /system bake; register from asset before gate.
-                    new Thread(new Runnable() {
-                        @Override
-                        public void run() {
-                            NotPipePmRegistrar.ensureRegisteredBlocking(host.context());
-                            host.runOnUiThread(new Runnable() {
-                                @Override
-                                public void run() {
-                                    openYouTubeAfterNotPipeReady();
-                                }
-                            });
-                        }
-                    }, "YouTubeNotPipeGate").start();
+                    openYouTubeBrowse();
                 }
             });
         }
@@ -2585,6 +2606,7 @@ public final class MediaSuiteHost {
             host.setBrowserStatusTitle(host.getString(R.string.status_youtube_results,
                     youtubePendingSearch));
         } else {
+            // Music audio mode and Videos mode share the "YouTube" status label.
             host.setBrowserStatusTitle(host.getString(R.string.status_youtube));
         }
     }
@@ -2786,8 +2808,13 @@ public final class MediaSuiteHost {
                 break;
             case YoutubeDetailRow.KIND_PLAY:
                 // 2026-07-14 — Ignore re-taps while resolve is already running.
+                // 2026-07-15 — Audio mode → music Now Playing; Videos hub stays video IJK.
                 if (youtubeDetailVideo != null && !youtubeResolvingStream) {
-                    playYouTubeVideo(youtubeDetailVideo);
+                    if (youtubeAudioMode) {
+                        playYouTubeAudio(youtubeDetailVideo);
+                    } else {
+                        playYouTubeVideo(youtubeDetailVideo);
+                    }
                 }
                 break;
             case YoutubeDetailRow.KIND_SAVE_VIDEO:
@@ -2822,7 +2849,7 @@ public final class MediaSuiteHost {
             rebuildYouTubeDetailRows();
             if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
         }
-        NotPipeClient.getInstance(host.context()).fetchComments(videoId, new NotPipeClient.Callback() {
+        YouTubeClient.getInstance(host.context()).fetchComments(videoId, new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
                 if (gen != youtubeCommentsGen) return;
@@ -2857,7 +2884,7 @@ public final class MediaSuiteHost {
         youtubeLoading = true;
         final int gen = ++youtubeLoadGen;
         buildYouTubeBrowseUi();
-        NotPipeClient.getInstance(host.context()).fetchPopular(new NotPipeClient.Callback() {
+        YouTubeClient.getInstance(host.context()).fetchPopular(new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
                 if (gen != youtubeLoadGen) return;
@@ -2892,7 +2919,7 @@ public final class MediaSuiteHost {
         updateYouTubeStatusPath();
         rebuildYouTubeVirtualRows();
         if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        NotPipeClient.getInstance(host.context()).search(query, new NotPipeClient.Callback() {
+        YouTubeClient.getInstance(host.context()).search(query, new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
                 if (gen != youtubeLoadGen) return;
@@ -2922,14 +2949,72 @@ public final class MediaSuiteHost {
     }
 
     /**
-     * Solar-native playback — resolve stream via notPipe bridge, play in Solar IJK player.
-     * 2026-07-14 — Quality ladder + detail loading UX (was muting browse list incorrectly).
-     * Layman: ask notPipe for a playable link, try lower quality if the first fails.
+     * Solar-native playback — resolve stream via YouTubeClient, play in Solar IJK player.
+     * 2026-07-15 — Was notPipe bridge IPC; now native Invidious/Piped/YtApiLegacy.
+     * Layman: ask Solar’s backends for a playable link; try lower quality if the first fails.
      * Reversal: single resolveStream(id) then openUrl with no fallback.
      */
     private void playYouTubeVideo(final YouTubeVideo video) {
         if (video == null || video.id.isEmpty()) return;
-        playYouTubeVideoAtQuality(video, NotPipeClient.preferredVideoQuality(), false);
+        playYouTubeVideoAtQuality(video, YouTubeClient.preferredVideoQuality(), false);
+    }
+
+    /**
+     * 2026-07-15 — Music YouTube Audio: resolve/save audio → music STATE_PLAYER (not video IJK).
+     * Layman: download the soundtrack and play it like a normal song.
+     * Technical: YouTubeDownloader.saveAudio (uses resolveAudioStream) then playTrackList.
+     * Reversal: playYouTubeVideo; Files remain on disk under Music/YouTube.
+     */
+    private void playYouTubeAudio(final YouTubeVideo video) {
+        if (video == null || video.id == null || video.id.isEmpty()) return;
+        youtubeNowPlayingTitle = video.title;
+        youtubeNowPlayingId = video.id;
+        final int gen = ++youtubeLoadGen;
+        youtubeResolvingStream = true;
+        if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
+            youtubeLoading = true;
+            rebuildYouTubeVirtualRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        } else if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
+            rebuildYouTubeDetailRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        }
+        File existing = YouTubeSavePaths.findSavedAudio(host.context(), video);
+        if (existing != null && existing.length() > 1024L) {
+            youtubeResolvingStream = false;
+            youtubeLoading = false;
+            clearYouTubeResolveUi();
+            host.playAudioFileInNowPlaying(existing);
+            return;
+        }
+        YouTubeDownloader.saveAudio(host.context(), video, new YouTubeDownloader.Callback() {
+            @Override
+            public void onProgress(String phase, int percent, long doneBytes, long totalBytes) {
+                // Browse/detail already shows resolving row via youtubeResolvingStream.
+            }
+
+            @Override
+            public void onComplete(final File savedFile) {
+                if (gen != youtubeLoadGen) return;
+                youtubeResolvingStream = false;
+                youtubeLoading = false;
+                clearYouTubeResolveUi();
+                if (savedFile != null && savedFile.isFile()) {
+                    host.playAudioFileInNowPlaying(savedFile);
+                } else {
+                    toastYouTubePlayError(null);
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                if (gen != youtubeLoadGen) return;
+                youtubeResolvingStream = false;
+                youtubeLoading = false;
+                clearYouTubeResolveUi();
+                toastYouTubePlayError(message);
+            }
+        });
     }
 
     /**
@@ -2953,8 +3038,8 @@ public final class MediaSuiteHost {
             rebuildYouTubeDetailRows();
             if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
         }
-        NotPipeClient.getInstance(host.context()).resolveStream(video.id, quality,
-                new NotPipeClient.Callback() {
+        YouTubeClient.getInstance(host.context()).resolveStream(video.id, quality,
+                new YouTubeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
                 if (gen != youtubeLoadGen) return;
@@ -2965,8 +3050,22 @@ public final class MediaSuiteHost {
                 } catch (Exception e) {
                     youtubeStreamUrl = null;
                 }
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("quality", quality != null ? quality : "");
+                    d.put("fromIjkFallback", fromIjkFallback);
+                    d.put("urlPrefix", youtubeStreamUrl != null && youtubeStreamUrl.length() > 96
+                            ? youtubeStreamUrl.substring(0, 96) : youtubeStreamUrl);
+                    d.put("emptyUrl", youtubeStreamUrl == null || youtubeStreamUrl.isEmpty());
+                    d.put("isDirectUrlApi", youtubeStreamUrl != null
+                            && youtubeStreamUrl.indexOf("/direct_url") >= 0);
+                    com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                            "MediaSuiteHost.resolve.onSuccess", "ui has stream url", "C", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
-                    String next = NotPipeClient.fallbackVideoQuality(quality);
+                    String next = YouTubeClient.fallbackVideoQuality(quality);
                     if (next != null) {
                         playYouTubeVideoAtQuality(video, next, fromIjkFallback);
                         return;
@@ -2985,7 +3084,16 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
-                String next = NotPipeClient.fallbackVideoQuality(quality);
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("quality", quality != null ? quality : "");
+                    d.put("message", message != null ? message : "");
+                    com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                            "MediaSuiteHost.resolve.onError", "resolve failed", "A", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                String next = YouTubeClient.fallbackVideoQuality(quality);
                 if (next != null) {
                     playYouTubeVideoAtQuality(video, next, fromIjkFallback);
                     return;
@@ -3064,7 +3172,12 @@ public final class MediaSuiteHost {
 
     /** Context action — play a YouTube row without OK tap. */
     public void playYouTubeFromContext(YouTubeVideo video) {
-        playYouTubeVideo(video);
+        // 2026-07-15 — Audio mode from Music hub keeps context Play on music NP.
+        if (youtubeAudioMode) {
+            playYouTubeAudio(video);
+        } else {
+            playYouTubeVideo(video);
+        }
     }
 
     /** Context — open detail/comments for a browse row. */
@@ -3353,6 +3466,143 @@ public final class MediaSuiteHost {
         videoProgressHandler.removeCallbacks(videoProgressTick);
     }
 
+    /**
+     * 2026-07-15 — Exit video player the same way Back does.
+     * Layman: leave the watching screen and go back to the list.
+     */
+    private void leaveVideoPlayerToBrowse() {
+        boolean wasYt = videoPlaybackYoutube;
+        releaseVideoPlayer();
+        showVideoPlayerLayer(false);
+        endVideoForceLandscapeSession();
+        if (wasYt) {
+            videoPlaybackYoutube = false;
+            if (youtubeDetailVideo != null) {
+                host.changeScreen(STATE_YOUTUBE_DETAIL);
+            } else {
+                host.changeScreen(STATE_YOUTUBE_BROWSE);
+            }
+        } else {
+            host.changeScreen(STATE_VIDEOS);
+        }
+    }
+
+    /**
+     * 2026-07-15 — Natural end with nothing next → leave player (no wrap).
+     * Layman: when the clip finishes and there is no later file, go back.
+     * Was: freeze on last frame until Back.
+     */
+    private void handleVideoPlaybackEnded() {
+        if (videoPlaybackYoutube) {
+            leaveVideoPlayerToBrowse();
+            return;
+        }
+        if (videoFiles.isEmpty() || videoIndex < 0) {
+            leaveVideoPlayerToBrowse();
+            return;
+        }
+        if (videoIndex + 1 < videoFiles.size()) {
+            videoIndex = videoIndex + 1;
+            pulseVideoTransport();
+            startVideoPlayback();
+            return;
+        }
+        leaveVideoPlayerToBrowse();
+    }
+
+    /**
+     * 2026-07-15 — Force landscape for non-portrait video on A5 / portrait experiment.
+     * Layman: turn the device on its side to watch wide videos.
+     */
+    private void beginVideoForceLandscapeSession() {
+        com.solar.launcher.LandscapeOrientationGuard.setForceLandscapeVideoSession(true);
+        applyOrientationGuard();
+    }
+
+    /** 2026-07-15 — Clear forced landscape when leaving the player. */
+    private void endVideoForceLandscapeSession() {
+        com.solar.launcher.LandscapeOrientationGuard.setForceLandscapeVideoSession(false);
+        applyOrientationGuard();
+    }
+
+    /** 2026-07-15 — Re-run activity orientation after video session flag flips. */
+    private void applyOrientationGuard() {
+        Context ctx = host.context();
+        if (ctx instanceof Activity) {
+            com.solar.launcher.LandscapeOrientationGuard.enforceForDevice((Activity) ctx);
+        }
+    }
+
+    /**
+     * 2026-07-15 — After decode size known: letterbox/crop surface; drop force if source is tall.
+     */
+    private void onVideoDecodedSize(int width, int height) {
+        if (videoSurface != null && width > 0 && height > 0) {
+            videoSurface.setVideoSize(width, height);
+            videoSurface.setAspectRatio(
+                    com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
+        }
+        boolean portraitSource = height > width;
+        if (portraitSource) {
+            if (com.solar.launcher.LandscapeOrientationGuard.isForceLandscapeVideoSession()) {
+                com.solar.launcher.LandscapeOrientationGuard.setForceLandscapeVideoSession(false);
+                applyOrientationGuard();
+            }
+        } else if (host.getCurrentScreenState() == STATE_VIDEO_PLAYER) {
+            if (!com.solar.launcher.LandscapeOrientationGuard.isForceLandscapeVideoSession()) {
+                com.solar.launcher.LandscapeOrientationGuard.setForceLandscapeVideoSession(true);
+                applyOrientationGuard();
+            }
+        }
+    }
+
+    /** Apply crop pref + shared completion/size listener for local + YouTube players. */
+    private VideoPlayerController.PlaybackListener videoPlaybackListener() {
+        return new VideoPlayerController.PlaybackListener() {
+            @Override
+            public void onError(int what, int extra) {
+                if (!videoPlaybackYoutube) return;
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("what", what);
+                    d.put("extra", extra);
+                    d.put("quality", youtubeStreamQuality != null ? youtubeStreamQuality : "");
+                    com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                            "MediaSuiteHost.videoListener.onError", "ijk error → fallback",
+                            "E", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleYoutubeIjkError();
+                    }
+                });
+            }
+
+            @Override
+            public void onCompletion() {
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleVideoPlaybackEnded();
+                    }
+                });
+            }
+
+            @Override
+            public void onVideoSize(final int width, final int height) {
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        onVideoDecodedSize(width, height);
+                    }
+                });
+            }
+        };
+    }
+
     private void startVideoPlayback() {
         if (videoPlaybackYoutube) {
             startYoutubeStreamPlayback();
@@ -3371,9 +3621,12 @@ public final class MediaSuiteHost {
             return;
         }
         videoSurface = new SurfaceRenderView(host.context());
+        videoSurface.setAspectRatio(
+                com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
         surfaceHost.addView(videoSurface, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         videoController = new VideoPlayerController();
+        videoController.setPlaybackListener(videoPlaybackListener());
         videoController.attachHolder(videoSurface.getHolder());
         try {
             videoController.open(videoFiles.get(videoIndex));
@@ -3387,10 +3640,22 @@ public final class MediaSuiteHost {
     }
 
     /**
-     * Solar IJK player — HTTP URL from notPipe RESOLVE_STREAM IPC.
+     * Solar IJK player — HTTP URL from native YouTubeClient resolveStream.
      * 2026-07-14 — OnError retries next quality or leaves player with toast (was silent black screen).
+     * 2026-07-15 — Letterbox/crop + EOF leave when nothing follows.
      */
     private void startYoutubeStreamPlayback() {
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("hasUrl", youtubeStreamUrl != null && youtubeStreamUrl.length() > 0);
+            d.put("urlPrefix", youtubeStreamUrl != null && youtubeStreamUrl.length() > 96
+                    ? youtubeStreamUrl.substring(0, 96) : youtubeStreamUrl);
+            d.put("quality", youtubeStreamQuality != null ? youtubeStreamQuality : "");
+            com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                    "MediaSuiteHost.startYoutubeStreamPlayback", "enter player", "C", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
             Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
             leaveYouTubePlayerOnError();
@@ -3400,30 +3665,23 @@ public final class MediaSuiteHost {
         releaseVideoPlayer();
         FrameLayout surfaceHost = host.findViewById(R.id.video_surface_host);
         if (surfaceHost == null) {
+            // #region agent log
+            try {
+                com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                        "MediaSuiteHost.startYoutubeStreamPlayback",
+                        "missing video_surface_host", "C", null);
+            } catch (Exception ignored) {}
+            // #endregion
             Toast.makeText(host.context(), R.string.video_play_error, Toast.LENGTH_SHORT).show();
             return;
         }
         videoSurface = new SurfaceRenderView(host.context());
+        videoSurface.setAspectRatio(
+                com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
         surfaceHost.addView(videoSurface, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         videoController = new VideoPlayerController();
-        // 2026-07-14 — Wire error → quality fallback or back to detail/browse.
-        videoController.setPlaybackListener(new VideoPlayerController.PlaybackListener() {
-            @Override
-            public void onError(int what, int extra) {
-                host.runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        handleYoutubeIjkError();
-                    }
-                });
-            }
-
-            @Override
-            public void onCompletion() {
-                // Natural end — stay on player; user presses Back (same as local files).
-            }
-        });
+        videoController.setPlaybackListener(videoPlaybackListener());
         videoController.attachHolder(videoSurface.getHolder());
         try {
             videoController.openUrl(youtubeStreamUrl);
@@ -3431,6 +3689,16 @@ public final class MediaSuiteHost {
             startVideoProgressUpdates();
             updateVideoProgressUi(0);
         } catch (Exception e) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("ex", e.getClass().getSimpleName());
+                d.put("msg", e.getMessage() != null ? e.getMessage() : "");
+                com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                        "MediaSuiteHost.startYoutubeStreamPlayback",
+                        "openUrl threw", "B", d);
+            } catch (Exception ignored) {}
+            // #endregion
             toastYouTubePlayError(null);
             leaveYouTubePlayerOnError();
         }
@@ -3443,7 +3711,7 @@ public final class MediaSuiteHost {
     private void handleYoutubeIjkError() {
         if (!videoPlaybackYoutube) return;
         if (youtubeIjkFallbackPending) return;
-        final String next = NotPipeClient.fallbackVideoQuality(youtubeStreamQuality);
+        final String next = YouTubeClient.fallbackVideoQuality(youtubeStreamQuality);
         if (next != null && youtubeNowPlayingId != null && youtubeNowPlayingId.length() > 0) {
             youtubeIjkFallbackPending = true;
             final YouTubeVideo retry = new YouTubeVideo(youtubeNowPlayingId,
@@ -3473,6 +3741,7 @@ public final class MediaSuiteHost {
         youtubeStreamUrl = null;
         youtubeResolvingStream = false;
         releaseVideoPlayer();
+        endVideoForceLandscapeSession();
         if (youtubeDetailVideo != null
                 && youtubeNowPlayingId != null
                 && youtubeNowPlayingId.equals(youtubeDetailVideo.id)) {
@@ -3507,9 +3776,17 @@ public final class MediaSuiteHost {
         host.setStatusBarVisible(true);
     }
 
-    /** Short-press prev/next file while playing video. */
+    /**
+     * 2026-07-15 — Short Prev/Next: flip file list, or ±5s seek when streaming (YouTube).
+     * Was: empty videoFiles return only — YT short press was a silent no-op.
+     * Reversal: restore early return when videoFiles.isEmpty().
+     */
     public void seekVideoFile(boolean next) {
-        if (videoFiles.isEmpty()) return;
+        if (videoFiles.isEmpty()) {
+            // Stream-only session (YouTube): treat short side press like one scrub step.
+            seekVideoMs(next ? 5000L : -5000L);
+            return;
+        }
         videoIndex = next ? videoIndex + 1 : videoIndex - 1;
         if (videoIndex < 0) videoIndex = videoFiles.size() - 1;
         if (videoIndex >= videoFiles.size()) videoIndex = 0;
@@ -3670,6 +3947,8 @@ public final class MediaSuiteHost {
     public List<SettingsRow> buildVideoSettingsRows() {
         List<SettingsRow> rows = new ArrayList<SettingsRow>();
         rows.add(new SettingsRow(ROW_VIDEO_SLEEP, R.string.video_settings_sleep_during_playback, false));
+        // 2026-07-15 — Letterbox (default) vs crop-to-fill for 4:3 panels.
+        rows.add(new SettingsRow(ROW_VIDEO_CROP, R.string.video_settings_crop_mode, false));
         return rows;
     }
 
@@ -3684,6 +3963,16 @@ public final class MediaSuiteHost {
         return com.solar.launcher.video.VideoSettings.getSleepDuringPlayback(host.context());
     }
 
+    /** 2026-07-15 — Cycle letterbox ↔ crop 4:3; returns new mode key. */
+    public String cycleVideoCropMode() {
+        return com.solar.launcher.video.VideoSettings.cycleCropMode(host.context());
+    }
+
+    /** Short label for settings state column. */
+    public String videoCropModeLabel() {
+        return com.solar.launcher.video.VideoSettings.cropModeLabel(host.context());
+    }
+
     public List<SettingsRow> buildFmBandSettingsRows() {
         List<SettingsRow> rows = new ArrayList<SettingsRow>();
         for (String region : FM_BAND_REGIONS) {
@@ -3692,7 +3981,13 @@ public final class MediaSuiteHost {
         return rows;
     }
 
+    /**
+     * User picked a band in Settings — remember it and stop auto-detect.
+     * 2026-07-15 — Clearing auto-detect keeps manual choice when getFmBandRegion honors locale.
+     * Reversal: set region only (old); auto-detect stayed on and overwrote dial limits.
+     */
     public void applyFmBandRegion(String region) {
+        RadioSettings.setAutoDetectRegion(host.context(), false);
         RadioSettings.setFmBandRegion(host.context(), region);
         radioTuneFreqKhz = currentFmPlan().clampKhz(radioTuneFreqKhz);
     }
@@ -3707,7 +4002,9 @@ public final class MediaSuiteHost {
         boolean next = !RadioSettings.getAutoDetectRegion(ctx);
         RadioSettings.setAutoDetectRegion(ctx, next);
         if (next) {
-            applyFmBandRegion(RadioSettings.detectFmBandFromLocale(ctx));
+            // Cache detected band without clearing auto-detect (applyFmBandRegion turns it off).
+            RadioSettings.setFmBandRegion(ctx, RadioSettings.detectFmBandFromLocale(ctx));
+            radioTuneFreqKhz = currentFmPlan().clampKhz(radioTuneFreqKhz);
         }
         return next;
     }
@@ -3884,7 +4181,38 @@ public final class MediaSuiteHost {
                     tvTitle.setText(title);
                     tvSub.setText(subtitle);
                 } else {
-                    row = (android.widget.LinearLayout) host.createTwoLineBrowseRow(title, subtitle);
+                    // 2026-07-15 — Guard cast: createTwoLineBrowseRow must be LinearLayout
+                    // (used to return Button when full_width_menus off → crash).
+                    View created = host.createTwoLineBrowseRow(title, subtitle);
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("createdClass", created != null
+                                ? created.getClass().getName() : "null");
+                        d.put("isLinear", created instanceof android.widget.LinearLayout);
+                        com.solar.launcher.Debug9d82a5Log.log(host.context(),
+                                "SimpleListAdapter.getView", "two-line create", "F", d);
+                    } catch (Exception ignored) {}
+                    // #endregion
+                    if (!(created instanceof android.widget.LinearLayout)
+                            || ((android.widget.LinearLayout) created).getChildCount() < 2) {
+                        // Safe degrade: single Button with title (never ClassCast).
+                        Button btn = host.createListButton(title);
+                        btn.setLayoutParams(new ListView.LayoutParams(
+                                rowWidth, host.y1RowHeightPx()));
+                        btn.setEnabled(!statusRow);
+                        if (!statusRow) {
+                            btn.setOnClickListener(new View.OnClickListener() {
+                                @Override
+                                public void onClick(View v) {
+                                    host.clickFeedback();
+                                    handler.onClick(position);
+                                }
+                            });
+                        }
+                        return btn;
+                    }
+                    row = (android.widget.LinearLayout) created;
                     row.setTag("solar_two_line_row");
                     tvTitle = (android.widget.TextView) row.getChildAt(0);
                     tvSub = (android.widget.TextView) row.getChildAt(1);
@@ -3904,6 +4232,7 @@ public final class MediaSuiteHost {
                     });
                     row.setFocusable(true);
                     row.setEnabled(true);
+                    attachFmPresetTouchReorder(row, position);
                 }
                 return row;
             }
@@ -3926,13 +4255,78 @@ public final class MediaSuiteHost {
                     handler.onClick(position);
                 }
             });
+            if (!statusRow) attachFmPresetTouchReorder(btn, position);
             return btn;
         }
     }
 
+    /**
+     * 2026-07-15 — Touch long-press / drag for FM preset reorder (OK-hold unchanged).
+     * Reversal: no-op method body.
+     */
+    private void attachFmPresetTouchReorder(final View row, final int virtualPosition) {
+        if (row == null || !isFmPresetListActive() || virtualPosition <= 0) return;
+        if (!MoveRibbonTouch.touchReorderEnabled()) return;
+        final int dataIdx = fmPresetDataIndexFromVirtualPosition(virtualPosition);
+        if (dataIdx < 0) return;
+        if (fmPresetMoveFrom >= 0 && dataIdx == fmPresetMoveFrom) {
+            MoveRibbonTouch.attachActiveDrag(row, host.y1RowHeightPx() + 2,
+                    new MoveRibbonTouch.Callbacks() {
+                        @Override
+                        public void onLift() {}
+
+                        @Override
+                        public void onStep(int delta) {
+                            handleFmPresetMoveWheel(delta);
+                        }
+
+                        @Override
+                        public void onConfirm() {
+                            confirmFmPresetMove();
+                        }
+                    });
+            return;
+        }
+        if (fmPresetMoveFrom >= 0) return;
+        MoveRibbonTouch.attachBrowseLift(row, MoveRibbonTouch.LIFT_HOLD_MS,
+                new MoveRibbonTouch.Callbacks() {
+                    @Override
+                    public void onLift() {
+                        beginFmPresetMove(dataIdx);
+                        host.clickFeedback();
+                    }
+
+                    @Override
+                    public void onStep(int delta) {}
+
+                    @Override
+                    public void onConfirm() {}
+                });
+    }
+
     // --- Utility ---
 
+    private String lastFmBandDebugKey = "";
+
     private FmBandPlan currentFmPlan() {
+        // #region agent log
+        try {
+            android.content.Context c = host.context();
+            boolean auto = RadioSettings.getAutoDetectRegion(c);
+            String effective = RadioSettings.getFmBandRegion(c);
+            String detected = RadioSettings.detectFmBandFromLocale(c);
+            String key = auto + "|" + effective + "|" + detected;
+            if (!key.equals(lastFmBandDebugKey)) {
+                lastFmBandDebugKey = key;
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("auto", auto);
+                d.put("effective", effective);
+                d.put("detected", detected);
+                com.solar.launcher.debug.SessionDebugLog.log(c, "MediaSuiteHost.currentFmPlan",
+                        "band resolve", "F2", d);
+            }
+        } catch (Exception ignored) {}
+        // #endregion
         return FmBandPlan.fromRegionCode(RadioSettings.getFmBandRegion(host.context()));
     }
 

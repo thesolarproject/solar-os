@@ -200,15 +200,14 @@ public final class SolarOverlayService extends Service {
             }
             return START_NOT_STICKY;
         }
-        // Solar Now Playing — transport bar shows level; skip global volume HUD entirely.
+        // 2026-07-15 — NP/video: skip new volume HUD unless a modal shell is already up (then replace).
+        // Was: tearDown + skip even when context modal open. Reversal: always early-out on NP.
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_VOLUME.equals(action)
-                && SolarUiState.isNowPlayingScreen()) {
-            if (overlayRoot != null) {
-                tearDownOverlay();
-            }
+                && SolarUiState.isNowPlayingScreen()
+                && overlayRoot == null) {
             return START_NOT_STICKY;
         }
-        // Passive volume overlay already up — refresh slider level, keep Rockbox focused.
+        // Passive volume / open context shell — refresh or morph to compact volume (keep Rockbox focused).
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_VOLUME.equals(action)
                 && overlayRoot != null && modalHost != null) {
             modalHost.refreshVolumeSlider();

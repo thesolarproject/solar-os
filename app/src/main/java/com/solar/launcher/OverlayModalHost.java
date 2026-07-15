@@ -21,16 +21,22 @@ import java.util.List;
  */
 public final class OverlayModalHost {
 
-    /** Quick-bar chip indices — keep aligned with MainActivity CONTEXT_QUICK_* constants. */
+    /**
+     * 2026-07-15 — Quick-bar indices (Sleep rightmost after Volume).
+     * Was: Lock at 1, Volume at 7. Now: Home/Wi‑Fi/BT/Power/NP/Brightness/Volume/Sleep.
+     * Reversal: restore QUICK_LOCK=1 and QUICK_VOLUME=7.
+     * Keep aligned with MainActivity CONTEXT_QUICK_* constants.
+     */
     private static final int QUICK_HOME = 0;
-    private static final int QUICK_LOCK = 1;
-    private static final int QUICK_WIFI = 2;
-    private static final int QUICK_BT = 3;
-    private static final int QUICK_POWER = 4;
+    private static final int QUICK_WIFI = 1;
+    private static final int QUICK_BT = 2;
+    private static final int QUICK_POWER = 3;
     /** Queue slot — Now Playing over third-party; hidden over Rockbox / when idle. */
-    private static final int QUICK_NOW_PLAYING = 5;
-    private static final int QUICK_BRIGHTNESS = 6;
-    private static final int QUICK_VOLUME = 7;
+    private static final int QUICK_NOW_PLAYING = 4;
+    private static final int QUICK_BRIGHTNESS = 5;
+    private static final int QUICK_VOLUME = 6;
+    /** Sleep/Zzz — right end on Y1/A5 (hidden on Y2). */
+    private static final int QUICK_SLEEP = 7;
     private static final int VOLUME_DISMISS_MS = 1400;
     /** 2026-07-07 — Passive toast HUD — maps from Toast.LENGTH_SHORT / LENGTH_LONG. */
     private static final int TOAST_DISMISS_SHORT_MS = 2000;
@@ -186,6 +192,26 @@ public final class OverlayModalHost {
             }
         });
         menu.setMediaSliderQuickIndices(QUICK_VOLUME, QUICK_BRIGHTNESS);
+        // 2026-07-15 — Touch queue reorder (OK-hold + wheel unchanged).
+        menu.setQueueTouchMoveListener(new ThemedContextMenu.QueueTouchMoveListener() {
+            @Override
+            public void onQueueTouchLift(int index) {
+                if (queueMoveFrom >= 0) return;
+                queueFocusIndex = index;
+                handleOverlayQueueActivate(true);
+            }
+
+            @Override
+            public void onQueueTouchStep(int delta) {
+                if (queueMoveFrom < 0 || delta == 0) return;
+                moveOverlayQueueFocus(delta);
+            }
+
+            @Override
+            public void onQueueTouchConfirm() {
+                if (queueMoveFrom >= 0) handleOverlayQueueActivate(false);
+            }
+        });
         float density = context.getResources().getDisplayMetrics().density;
         int screenW = context.getResources().getDisplayMetrics().widthPixels;
         int margin = (int) (10 * density);
@@ -254,7 +280,11 @@ public final class OverlayModalHost {
         scheduleVolumeDismiss();
     }
 
-    /** Passive volume HUD — sync slider after another hardware volume step. */
+    /**
+     * Passive volume HUD — sync, or morph an open context shell into compact volume.
+     * 2026-07-15 — Was: power/queue/Wi‑Fi kept full tiers (in-place slider only).
+     * Reversal: restore in-place updateVolumeSlider for powerTierVisible branch.
+     */
     public void refreshVolumeSlider() {
         int max = MediaVolumeControl.getDisplayMaxVolume(context);
         int cur = MediaVolumeControl.getMediaDisplayVolume(context);
@@ -263,21 +293,12 @@ public final class OverlayModalHost {
             scheduleVolumeDismiss();
             return;
         }
-        // Interactive global modal (power / queue / Wi‑Fi) — update chip/slider in place; never tear down.
-        if (powerTierVisible || mediaSlidersActive || queueTierVisible || simpleNetworkTier) {
+        // Media slider strip already visible (volume+brightness from quick chips) — sync in place.
+        if (mediaSlidersActive) {
             menu.updateVolumeSlider(cur, max);
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("power", powerTierVisible);
-                d.put("mediaSliders", mediaSlidersActive);
-                d.put("queue", queueTierVisible);
-                DebugInputLog.log("OverlayModalHost.refreshVolumeSlider",
-                        "in-place volume sync", "H-VOL", d);
-            } catch (Exception ignored) {}
-            // #endregion
             return;
         }
+        // Power / queue / network / any other shell → clear activity, show compact volume only.
         showVolumeMode(false);
     }
 
@@ -988,11 +1009,11 @@ public final class OverlayModalHost {
         } catch (Exception ignored) {}
         // #endregion
         MediaVolumeControl.adjustMedia(context, up);
+        // 2026-07-15 — Any open context shell → replace with compact volume (not in-place chip sync).
+        // Was: power/queue/network kept full tiers and only moved the slider. Reversal: restore elif sync.
         if (volumeOnlyVisible || mediaSlidersActive) {
             MediaVolumeControl.syncVolumeSliderUi(context, menu);
             if (volumeOnlyVisible) scheduleVolumeDismiss();
-        } else if (powerTierVisible || queueTierVisible || simpleNetworkTier) {
-            MediaVolumeControl.syncVolumeSliderUi(context, menu);
         } else {
             showVolumeMode(false);
         }
@@ -1807,10 +1828,6 @@ public final class OverlayModalHost {
                         dismissListener.onDismissOverlay();
                         launchPreferredHome();
                         break;
-                    case QUICK_LOCK:
-                        dismissListener.onDismissOverlay();
-                        PowerActions.screenSleep(context);
-                        break;
                     case QUICK_WIFI:
                         showOverlayWifiTier();
                         break;
@@ -1829,6 +1846,11 @@ public final class OverlayModalHost {
                         break;
                     case QUICK_VOLUME:
                         showOverlayMediaSliders(QUICK_VOLUME);
+                        break;
+                    case QUICK_SLEEP:
+                        // 2026-07-15 — Right-end Zzz sleep (was Lock at index 1).
+                        dismissListener.onDismissOverlay();
+                        PowerActions.screenSleep(context);
                         break;
                     case QUICK_POWER:
                         // 2026-07-08 — APP_MENU / dialog quick bar used to no-op Power; launchers never appeared.
@@ -1869,10 +1891,6 @@ public final class OverlayModalHost {
                         dismissListener.onDismissOverlay();
                         launchPreferredHome();
                         break;
-                    case QUICK_LOCK:
-                        dismissListener.onDismissOverlay();
-                        PowerActions.screenSleep(context);
-                        break;
                     case QUICK_WIFI:
                         showOverlayWifiTier();
                         break;
@@ -1891,6 +1909,11 @@ public final class OverlayModalHost {
                         break;
                     case QUICK_VOLUME:
                         showOverlayMediaSliders(QUICK_VOLUME);
+                        break;
+                    case QUICK_SLEEP:
+                        // 2026-07-15 — Right-end Zzz sleep (was Lock at index 1).
+                        dismissListener.onDismissOverlay();
+                        PowerActions.screenSleep(context);
                         break;
                     case QUICK_POWER:
                         refreshPowerTier(true);
@@ -1962,19 +1985,20 @@ public final class OverlayModalHost {
         int volIcon = ThemedContextMenu.volumeIconResForLevel(volCur, volMax);
         int brightIcon = ThemedContextMenu.brightnessIconResForLevel(
                 SystemBrightnessControl.read(context), SystemBrightnessControl.MAX);
-        boolean rooted = DeviceFeatures.canRunRootShell();
-        // 2026-07-11 — A5 locks/volume via overlay (no dedicated hard buttons off NP).
-        boolean showVolLock = DeviceFeatures.showsOverlayVolumeLockChips();
+        // 2026-07-15 — Power chip: hasRootAccess (ROM expects su), not canRunRootShell (A5 RootShell skips).
+        // Was: canRunRootShell() hid Power on A5. Reversal: restore canRunRootShell gate.
+        boolean rooted = DeviceFeatures.hasRootAccess();
+        // 2026-07-11 — A5 volume/sleep via overlay (no dedicated hard buttons off NP).
+        boolean showVolSleep = DeviceFeatures.showsOverlayVolumeLockChips();
         boolean rockboxFg = OverlayForegroundGuard.isRockboxSnapshottedForeground();
         if (!rockboxFg) {
             rockboxFg = LauncherSwitch.isRockboxForeground(context);
         }
         boolean showNowPlaying = isNowPlayingChipVisible(rockboxFg, SolarUiState.isPlaybackActive());
+        // 2026-07-15 — Order ends Volume then Sleep/Zzz (was Lock near left).
         return new ThemedContextMenu.QuickItem[] {
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_home,
                     context.getString(R.string.context_go_to_home), true),
-            new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock,
-                    context.getString(R.string.context_action_lock_screen), showVolLock),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_wifi,
                     context.getString(R.string.context_tier_wifi), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_bluetooth,
@@ -1986,7 +2010,9 @@ public final class OverlayModalHost {
             new ThemedContextMenu.QuickItem(null, brightIcon,
                     context.getString(R.string.context_quick_brightness), true),
             new ThemedContextMenu.QuickItem(null, volIcon,
-                    context.getString(R.string.context_quick_volume), showVolLock)
+                    context.getString(R.string.context_quick_volume), showVolSleep),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_zzz,
+                    context.getString(R.string.context_action_sleep), showVolSleep)
         };
     }
 

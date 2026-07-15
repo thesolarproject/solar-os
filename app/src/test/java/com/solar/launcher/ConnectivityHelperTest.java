@@ -4,9 +4,13 @@ import org.junit.Test;
 
 public class ConnectivityHelperTest {
     @Test
-    public void itemNeedsInternetForDiscovery_reachOnly() {
+    public void itemNeedsInternetForDiscovery_reachAndYoutubeAudio() {
         if (!ConnectivityHelper.itemNeedsInternetForDiscovery(HomeMenuConfig.ID_SOULSEEK)) {
             throw new AssertionError("reach");
+        }
+        // 2026-07-15 — YouTube Audio home tile hides offline like Get Music.
+        if (!ConnectivityHelper.itemNeedsInternetForDiscovery(HomeMenuConfig.ID_YOUTUBE_AUDIO)) {
+            throw new AssertionError("youtube_audio");
         }
         if (ConnectivityHelper.itemNeedsInternetForDiscovery(HomeMenuConfig.ID_THEMES)) {
             throw new AssertionError("themes works offline");
@@ -29,6 +33,9 @@ public class ConnectivityHelperTest {
         }
         if (!ConnectivityHelper.itemNeedsInternet(HomeMenuConfig.ID_SOULSEEK)) {
             throw new AssertionError("reach");
+        }
+        if (!ConnectivityHelper.itemNeedsInternet(HomeMenuConfig.ID_YOUTUBE_AUDIO)) {
+            throw new AssertionError("youtube_audio");
         }
     }
 

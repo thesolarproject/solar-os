@@ -23,7 +23,17 @@ public final class RadioSettings {
     return ctx.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
   }
 
+  /**
+   * Effective FM band region for tuning.
+   * 2026-07-15 — When auto-detect is on (default), use SIM/locale band; stored value is ignored
+   * until the user turns auto-detect off or picks a band manually.
+   * Layman: Radio follows your country by default so EU/JP dials aren't stuck on US limits.
+   * Reversal: always return stored pref (old: default US even while auto-detect claimed on).
+   */
   public static String getFmBandRegion(Context ctx) {
+    if (getAutoDetectRegion(ctx)) {
+      return normalizeRegion(detectFmBandFromLocale(ctx));
+    }
     return normalizeRegion(prefs(ctx).getString(PREF_FM_BAND_REGION, DEFAULT_REGION));
   }
 

@@ -38,6 +38,7 @@ public class HomeMenuConfigTest {
     public void defaultOrder_matchesY1StockLayout() {
         prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, true).commit();
         List<HomeMenuConfig.Entry> visible = HomeMenuConfig.loadVisible(prefs);
+        // 2026-07-15 — schema 8 dropped youtube_audio home tile (back to 8).
         if (visible.size() != 8) throw new AssertionError("default size " + visible.size());
         if (!HomeMenuConfig.ID_NOW_PLAYING.equals(visible.get(0).id)) {
             throw new AssertionError("now playing position");
@@ -54,25 +55,31 @@ public class HomeMenuConfigTest {
         if (!HomeMenuConfig.ID_SETTINGS.equals(visible.get(4).id)) {
             throw new AssertionError("settings position");
         }
+        for (HomeMenuConfig.Entry e : visible) {
+            if (HomeMenuConfig.ID_YOUTUBE_AUDIO.equals(e.id)) {
+                throw new AssertionError("youtube_audio must not be on home after schema 8");
+            }
+        }
     }
 
     @Test
-    public void migrateHomePrefs_renormalizesStockOrder() {
+    public void migrateHomePrefs_fmToRadioAndRemovesYoutubeAudioTile() {
+        // 2026-07-15 — Order is user-editable; migrate maps FM→Radio then schema 8 strips youtube_audio.
         HomeMenuConfig.saveOrder(prefs, Arrays.asList(
                 HomeMenuConfig.ID_SOULSEEK, HomeMenuConfig.ID_FM, HomeMenuConfig.ID_MUSIC));
         HomeMenuConfig.migrateHomePrefsIfNeeded(prefs);
         List<String> home = HomeMenuConfig.loadHomeOrderIds(prefs);
-        if (!HomeMenuConfig.ID_MUSIC.equals(home.get(0))) {
-            throw new AssertionError("music should lead stock block");
-        }
         if (!home.contains(HomeMenuConfig.ID_RADIO)) {
             throw new AssertionError("radio should be present after fm migrate");
         }
-        if (home.indexOf(HomeMenuConfig.ID_RADIO) <= home.indexOf(HomeMenuConfig.ID_MUSIC)) {
-            throw new AssertionError("radio should follow music");
+        if (home.contains(HomeMenuConfig.ID_FM)) {
+            throw new AssertionError("legacy fm id should be gone");
         }
-        if (!HomeMenuConfig.ID_SOULSEEK.equals(home.get(home.size() - 1))) {
-            throw new AssertionError("solar extras trail");
+        if (home.contains(HomeMenuConfig.ID_YOUTUBE_AUDIO)) {
+            throw new AssertionError("youtube_audio removed on schema 8");
+        }
+        if (!HomeMenuConfig.ID_SOULSEEK.equals(home.get(0))) {
+            throw new AssertionError("user order preserved (soulseek first)");
         }
     }
 
@@ -104,15 +111,49 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void normalizeOrder_enforcesFixedLayout() {
+    public void normalizeOrder_preservesUserLayout() {
+        // 2026-07-15 — Schema 6+: user order wins (was FIXED_HOME_ORDER rewrite).
         HomeMenuConfig.saveOrder(prefs, Arrays.asList(
                 HomeMenuConfig.ID_SOULSEEK, HomeMenuConfig.ID_MUSIC, HomeMenuConfig.ID_SETTINGS));
         List<String> home = HomeMenuConfig.loadHomeOrderIds(prefs);
-        if (!HomeMenuConfig.ID_MUSIC.equals(home.get(0))) {
-            throw new AssertionError("music should lead in fixed order");
+        if (!HomeMenuConfig.ID_SOULSEEK.equals(home.get(0))) {
+            throw new AssertionError("soulseek should stay first");
         }
-        if (!HomeMenuConfig.ID_SOULSEEK.equals(home.get(home.size() - 1))) {
-            throw new AssertionError("soulseek should trail solar extras");
+        if (!HomeMenuConfig.ID_MUSIC.equals(home.get(1))) {
+            throw new AssertionError("music second");
+        }
+        if (!home.contains(HomeMenuConfig.ID_SETTINGS)) {
+            throw new AssertionError("settings forced when missing");
+        }
+    }
+
+    @Test
+    public void moveHomeShortcut_swapsAndBlocksSettings() {
+        HomeMenuConfig.saveOrder(prefs, Arrays.asList(
+                HomeMenuConfig.ID_MUSIC, HomeMenuConfig.ID_PODCASTS, HomeMenuConfig.ID_SETTINGS));
+        if (!HomeMenuConfig.moveHomeShortcut(prefs, 0, 1)) {
+            throw new AssertionError("music↔podcasts should move");
+        }
+        List<String> home = HomeMenuConfig.loadHomeOrderIds(prefs);
+        if (!HomeMenuConfig.ID_PODCASTS.equals(home.get(0))
+                || !HomeMenuConfig.ID_MUSIC.equals(home.get(1))) {
+            throw new AssertionError("swap failed");
+        }
+        if (HomeMenuConfig.moveHomeShortcut(prefs, 0, 2)) {
+            throw new AssertionError("settings partner blocked");
+        }
+    }
+
+    @Test
+    public void youtubeAudio_legacyIdFindableNotInEditor() {
+        // 2026-07-15 — Catalog keeps id for prefs cleanup; schema 8 dropped it from editor extras.
+        if (HomeMenuConfig.find(HomeMenuConfig.ID_YOUTUBE_AUDIO) == null) {
+            throw new AssertionError("catalog missing youtube_audio");
+        }
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries()) {
+            if (HomeMenuConfig.ID_YOUTUBE_AUDIO.equals(e.id)) {
+                throw new AssertionError("editor must not list youtube_audio after schema 8");
+            }
         }
     }
 
@@ -300,7 +341,8 @@ public class HomeMenuConfigTest {
     @Test
     public void editorCatalogEntries_followFixedOrder() {
         List<HomeMenuConfig.Entry> editor = HomeMenuConfig.loadEditorCatalogEntries();
-        if (editor.size() < 11) throw new AssertionError("catalog too small");
+        // 2026-07-15 — schema 8 dropped youtube_audio from SOLAR_HOME_EXTRAS.
+        if (editor.size() < 11) throw new AssertionError("catalog too small " + editor.size());
         if (!HomeMenuConfig.ID_AUDIOBOOKS.equals(editor.get(3).id)) {
             throw new AssertionError("audiobooks slot in editor");
         }

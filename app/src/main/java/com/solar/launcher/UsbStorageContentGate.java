@@ -5,8 +5,9 @@ import java.util.List;
 
 /**
  * USB mass-storage volume availability — gates library UI when SD paths are unmounted (2026-07-05).
+ * 2026-07-15 — Gate only when every browsable volume is gone; Internal-only devices stay usable.
  * Layman: while the PC has the card, Solar warns you to unplug before browsing folders or hides
- * tracks on volumes the computer still owns.
+ * tracks on volumes the computer still owns — but keeps working if Internal Storage is free.
  * Tech: {@code listFiles()==null} on a storage root means vold unshared that volume for UMS.
  * Reversal: drop gate rows and use {@link MainActivity#isUsbMassStorageUiLocked()} only if redundant.
  */
@@ -36,11 +37,11 @@ public final class UsbStorageContentGate {
         return false;
     }
 
-    /** Y1 or Y2 with every user volume unmounted — show disconnect-only gate like folder browser. */
+    /**
+     * True when every user volume is unmounted — show disconnect-only gate.
+     * 2026-07-15 — Was Y1-primary-only (bricked no-card / Internal-only). Now: all families.
+     */
     public static boolean shouldGateEntireScreen() {
-        if (DeviceFeatures.isY1()) {
-            return isVolumeUnavailable(DeviceFeatures.getPrimaryStorageRoot());
-        }
         List<File> roots = DeviceFeatures.getStorageRoots();
         if (roots.isEmpty()) return true;
         for (File root : roots) {
@@ -49,9 +50,8 @@ public final class UsbStorageContentGate {
         return true;
     }
 
-    /** Y2 dual storage — one volume still readable while the other is exported to the PC. */
+    /** Dual storage — one volume still readable while the other is exported to the PC. */
     public static boolean shouldShowPartialBanner() {
-        if (!DeviceFeatures.isY2()) return false;
         boolean anyAvail = false;
         boolean anyUnavail = false;
         for (File root : DeviceFeatures.getStorageRoots()) {
@@ -62,18 +62,19 @@ public final class UsbStorageContentGate {
     }
 
     /** Test hook — partial banner from explicit root availability flags. */
-    static boolean shouldShowPartialBannerForTest(boolean y2, boolean primaryAvail,
+    static boolean shouldShowPartialBannerForTest(boolean dualCapable, boolean primaryAvail,
             boolean secondaryAvail) {
-        if (!y2) return false;
+        if (!dualCapable) return false;
         if (primaryAvail && !secondaryAvail) return true;
         if (!primaryAvail && secondaryAvail) return true;
         return false;
     }
 
-    /** Test hook — full gate when Y1 primary down or Y2 both down. */
+    /** Test hook — full gate only when every simulated volume is down. */
     static boolean shouldGateEntireScreenForTest(boolean y1, boolean primaryAvail,
             boolean secondaryAvail) {
-        if (y1) return !primaryAvail;
-        return !primaryAvail && !secondaryAvail;
+        // 2026-07-15 — Y1 with Internal up must not full-gate (secondaryAvail true → no gate).
+        if (primaryAvail || secondaryAvail) return false;
+        return true;
     }
 }

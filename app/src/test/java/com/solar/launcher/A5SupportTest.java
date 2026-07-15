@@ -38,7 +38,21 @@ public class A5SupportTest {
         if (!DeviceFeatures.isA5()) throw new AssertionError("expected isA5");
         if (!DeviceFeatures.hasTouchscreen()) throw new AssertionError("A5 touchscreen");
         if (!DeviceFeatures.showsOverlayVolumeLockChips()) {
-            throw new AssertionError("A5 needs overlay vol/lock chips");
+            throw new AssertionError("A5 needs overlay vol/sleep chips");
+        }
+        // 2026-07-15 — Power chip visible via hasRootAccess (overlay used to hide via canRunRootShell).
+        if (!DeviceFeatures.hasRootAccess()) {
+            throw new AssertionError("A5 Solar ROM expects root for Power chip");
+        }
+        DeviceFeatures.setCachedFamilyForTest("a5");
+        if (!MainActivity.isContextQuickSleepChipVisibleForTest()) {
+            throw new AssertionError("A5 needs Sleep/Zzz chip");
+        }
+        if (!MainActivity.isContextQuickPowerChipVisibleForTest()) {
+            throw new AssertionError("A5 needs Power chip");
+        }
+        if (MainActivity.contextQuickSleepChipIndexForTest() != 7) {
+            throw new AssertionError("Sleep must be rightmost index 7");
         }
     }
 

@@ -19,15 +19,40 @@ public final class LandscapeOrientationGuard {
 
     private static final int MIN_LANDSCAPE_WIDTH_PX = 400;
 
+    /**
+     * 2026-07-15 — While true, video playback owns landscape lock (portrait experiment / A5 tall ignored).
+     * Layman: watching sideways video? turn the player to match; Solar follows.
+     * Reversal: leave false; video stays upright under portrait experiment.
+     */
+    private static volatile boolean forceLandscapeVideoSession;
+
     private LandscapeOrientationGuard() {}
 
     /**
+     * 2026-07-15 — Enter/exit forced-landscape video watching.
+     * Callers: MediaSuiteHost on player enter/exit; size callback may clear if source is portrait.
+     */
+    public static void setForceLandscapeVideoSession(boolean on) {
+        forceLandscapeVideoSession = on;
+    }
+
+    /** True while video UI forced the panel sideways. */
+    public static boolean isForceLandscapeVideoSession() {
+        return forceLandscapeVideoSession;
+    }
+
+    /**
      * 2026-07-11 / 2026-07-14 — Apply device-appropriate orientation lock.
+     * 2026-07-15 — Forced video session wins over portrait experiment / A5 portrait.
      * Y1/Y2: landscape, or portrait when {@link Y1PortraitExperiment} is On.
      * A5: portrait or landscape from {@link A5NavigationMode}.
      */
     public static void enforceForDevice(Activity activity) {
         if (activity == null) return;
+        if (forceLandscapeVideoSession) {
+            enforceForcedLandscape(activity);
+            return;
+        }
         if (DeviceFeatures.isA5()) {
             enforceA5Orientation(activity);
             return;
@@ -37,6 +62,19 @@ public final class LandscapeOrientationGuard {
             return;
         }
         enforceLandscape(activity);
+    }
+
+    /**
+     * 2026-07-15 — Hard landscape for landscape-source video on tall UI.
+     * Layman: ignore portrait prefs while this clip plays.
+     * Tech: SCREEN_ORIENTATION_LANDSCAPE + clear stuck user_rotation.
+     */
+    public static void enforceForcedLandscape(Activity activity) {
+        if (activity == null) return;
+        try {
+            restoreSystemRotation(activity);
+            activity.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+        } catch (Exception ignored) {}
     }
 
     /**
@@ -93,6 +131,11 @@ public final class LandscapeOrientationGuard {
     /** Force this activity to landscape — call onCreate/onResume (Y1/Y2). */
     public static void enforceLandscape(Activity activity) {
         if (activity == null) return;
+        // 2026-07-15 — Video session landscape wins even when called as enforceLandscape.
+        if (forceLandscapeVideoSession) {
+            enforceForcedLandscape(activity);
+            return;
+        }
         if (DeviceFeatures.isA5()) {
             enforceA5Orientation(activity);
             return;
@@ -147,6 +190,11 @@ public final class LandscapeOrientationGuard {
     /** Re-apply locked orientation when an external app twisted the panel. */
     public static void recoverIfPortrait(Activity activity) {
         if (activity == null) return;
+        // 2026-07-15 — Stay sideways while watching landscape video.
+        if (forceLandscapeVideoSession) {
+            enforceForcedLandscape(activity);
+            return;
+        }
         // 2026-07-11 — A5 may be portrait intentionally or via sensor; re-enforce pref.
         if (DeviceFeatures.isA5()) {
             enforceA5Orientation(activity);

@@ -62,6 +62,15 @@ public class Y2InputRoutingTest {
                 false, true, false, false));
     }
 
+    /** 2026-07-15 — YouTube / video player must scrub even with no music queue. */
+    @Test
+    public void shouldRouteSkipOnVideoPlayerWithoutQueue() {
+        assertTrue(MainActivity.shouldRouteMediaSkipKeysForTest(
+                false, STATE_VIDEO_PLAYER, STATE_FLOW, STATE_WIFI_KEYBOARD,
+                STATE_PLAYER, STATE_VIDEO_PLAYER,
+                false, false, false, false));
+    }
+
     @Test
     public void shouldRouteSkipOnNowPlaying() {
         assertTrue(MainActivity.shouldRouteMediaSkipKeysForTest(

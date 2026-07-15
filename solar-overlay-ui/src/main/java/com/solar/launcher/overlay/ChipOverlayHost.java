@@ -25,14 +25,18 @@ import java.util.List;
  */
 public final class ChipOverlayHost {
 
+    /**
+     * 2026-07-15 — Sleep rightmost after Volume (match MainActivity / OverlayModalHost).
+     * Was: Lock=1, Volume=7. Reversal: restore Lock=1 and Volume=7.
+     */
     public static final int QUICK_HOME = 0;
-    public static final int QUICK_LOCK = 1;
-    public static final int QUICK_WIFI = 2;
-    public static final int QUICK_BT = 3;
-    public static final int QUICK_POWER = 4;
-    public static final int QUICK_NOW_PLAYING = 5;
-    public static final int QUICK_BRIGHTNESS = 6;
-    public static final int QUICK_VOLUME = 7;
+    public static final int QUICK_WIFI = 1;
+    public static final int QUICK_BT = 2;
+    public static final int QUICK_POWER = 3;
+    public static final int QUICK_NOW_PLAYING = 4;
+    public static final int QUICK_BRIGHTNESS = 5;
+    public static final int QUICK_VOLUME = 6;
+    public static final int QUICK_SLEEP = 7;
 
     private static final int VOLUME_DISMISS_MS = 1400;
     private static final int BRIGHTNESS_MAX = 255;
@@ -422,10 +426,6 @@ public final class ChipOverlayHost {
                         actions.launchHome();
                         actions.dismissOverlay(true);
                         break;
-                    case QUICK_LOCK:
-                        actions.screenSleep();
-                        actions.dismissOverlay(true);
-                        break;
                     case QUICK_WIFI:
                         openWifiTier();
                         break;
@@ -444,6 +444,11 @@ public final class ChipOverlayHost {
                         break;
                     case QUICK_VOLUME:
                         openVolumeSlider();
+                        break;
+                    case QUICK_SLEEP:
+                        // 2026-07-15 — Right-end Zzz (was Lock at index 1).
+                        actions.screenSleep();
+                        actions.dismissOverlay(true);
                         break;
                     default:
                         break;
@@ -633,12 +638,11 @@ public final class ChipOverlayHost {
         int volMax = am != null ? am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 15;
         int volCur = am != null ? am.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
         int bright = readBrightness();
-        boolean y1 = isY1();
+        // 2026-07-15 — Y1-like (incl. A5) show Volume + right-end Sleep; Y2 hides both.
+        boolean showVolSleep = isY1();
         return new ChipContextMenu.QuickItem[] {
                 new ChipContextMenu.QuickItem(R.drawable.ic_home,
                         str(R.string.context_go_to_home), true),
-                new ChipContextMenu.QuickItem(R.drawable.ic_lock,
-                        str(R.string.context_action_lock_screen), y1),
                 new ChipContextMenu.QuickItem(R.drawable.ic_wifi,
                         str(R.string.context_tier_wifi), true),
                 new ChipContextMenu.QuickItem(R.drawable.ic_bluetooth,
@@ -652,7 +656,9 @@ public final class ChipOverlayHost {
                         str(R.string.context_quick_brightness), true),
                 new ChipContextMenu.QuickItem(
                         ChipContextMenu.volumeIconResForLevel(volCur, volMax),
-                        str(R.string.context_quick_volume), y1)
+                        str(R.string.context_quick_volume), showVolSleep),
+                new ChipContextMenu.QuickItem(R.drawable.ic_zzz,
+                        str(R.string.context_action_sleep), showVolSleep)
         };
     }
 

@@ -311,10 +311,18 @@ public class ThemeDownloader {
         }
     }
 
-    /** Remove installed theme folder (not Default). */
+    /** Remove installed theme from Internal + MicroSD + filesDir (not Default). */
     public static boolean deleteInstalledTheme(String folderName) {
+        return deleteInstalledTheme(null, folderName);
+    }
+
+    /** 2026-07-15 — Triple-copy delete when Context available. */
+    public static boolean deleteInstalledTheme(android.content.Context ctx, String folderName) {
         if (folderName == null || folderName.isEmpty()) return false;
         if (ThemeManager.BUILTIN_DEFAULT_FOLDER.equalsIgnoreCase(folderName)) return false;
+        if (ctx != null) {
+            return ThemeManager.deleteThemeEverywhere(ctx, folderName);
+        }
         File dir = new File(ThemeManager.themesRoot(), folderName);
         if (!dir.isDirectory()) return false;
         deleteRecursive(dir);

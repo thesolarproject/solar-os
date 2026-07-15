@@ -2,9 +2,13 @@
 
 Input on Solar OS is **layered, not monolithic**. A shared policy JAR defines hold timings and who may intercept keys; Xposed hooks in `system_server` are tier 1 for **Solar-only** quick menus + HOLD BACK → Solar; volume OSD and rescue remain system-wide; root evdev is tier 3 miss-gate.
 
-**Source of truth:** `solar-rom/vendor/global-input-policy/GlobalInputPolicy.java` (`POLICY_REV` **22**) — compiled into bridge, companion, Solar, and daemon.
+**Source of truth:** `solar-rom/vendor/global-input-policy/GlobalInputPolicy.java` (`POLICY_REV` **23**) — compiled into bridge, companion, Solar, and daemon.
 
 **2026-07-14 product contract:** context / power quick menus open **only while Solar is foreground** (in-app `ThemedContextMenu`). Outside Solar on Y2, POWER hold shows the **stock Android power menu**. HOLD BACK outside Solar **launches Solar Home** (no WM quick shell). Volume OSD + 10s rescue unchanged.
+
+**2026-07-15 (POLICY_REV 23):** Y2 short POWER force-`goToSleep` only when the screen was **on at POWER DOWN** (`shouldForcePowerTapSleep`). UP-time `isScreenOn` is already true after a wake, so a wake tap must not call `goToSleep`. Sleep also dismisses in-app / WM overlays and treats an open USB connect prompt as dismissed.
+
+**2026-07-15 volume HUD (Y2 / A5):** On music Now Playing or video playback, hardware volume keys adjust level and pulse the transport bar only — **no** compact volume overlay. Exception: if an in-app or global context modal is open, volume **clears that modal activity** and shows the compact volume bar instead (`VolumeHudPolicy`, `SolarUiState.persist.solar.ui.now_playing`).
 
 ---
 
@@ -35,7 +39,7 @@ Only one tier owns a concern at a time. Lower tiers arm on **miss** only.
 
 | Constant | ms | Use |
 |----------|-----|-----|
-| `POWER_TAP_MAX_MS` | 380 | Y2 short power → sleep |
+| `POWER_TAP_MAX_MS` | 380 | Y2 short power → sleep when screen was on at DOWN |
 | `GLOBAL_MODAL_HOLD_MS` | 420 | Third-party BACK → return to Solar; Solar POWER → in-app menu |
 | `NAV_OWNED_LAUNCHER_MODAL_HOLD_MS` | 300 | Rockbox/JJ passthrough ceiling; JJ BACK-long modal |
 | `SOLAR_BACK_CONTEXT_HOLD_MS` | 420 | Solar in-app BACK menu |
@@ -88,7 +92,8 @@ Rockbox remains special for **BACK** (passthrough). Y2 POWER outside Solar no lo
 | `sys.solar.handoff.active` | `ExternalInputHandoff` | Wheel→DPAD inject active |
 | `sys.solar.handoff.jj` | `ExternalInputHandoff` + root switch/boot scripts | JJ/stock horizontal wheel shim |
 | `persist.solar.home.target` | `LauncherPreference`, rescue | Effective HOME |
-| `sys.solar.input.policy_rev` | Boot | Policy JAR version sanity (`22` = Solar-only POWER menu + BACK→Solar) |
+| `persist.solar.ui.now_playing` | `SolarUiState` via MainActivity | `1` = NP/video visible — VolumePanelHooks / `:overlay` skip new volume HUD |
+| `sys.solar.input.policy_rev` | Boot | Policy JAR version sanity (`23` = short POWER sleep only when screen on at DOWN) |
 
 **Rule:** Xposed and root tiers are read-only consumers of IME/overlay props except where documented.
 
@@ -139,15 +144,19 @@ One WM window (`TYPE_SYSTEM_ERROR`) owns all system-facing menus. USB enable/loc
 
 ---
 
-## Y1 vs Y2
+## Y1 vs Y2 vs A5
 
-| | Y1 | Y2 |
-|---|----|----|
-| Modal trigger | BACK long | BACK or POWER long |
-| Rockbox modal | BACK never | POWER yes |
-| Volume chip in overlay | Yes | Hidden |
-| INJECT_EVENTS handoff | Often works | Usually root daemon path |
-| Bridge APK | `SolarContextBridgeY1` | `SolarContextBridgeY2` |
+| | Y1 | Y2 | A5 |
+|---|----|----|-----|
+| Modal trigger | BACK long | BACK or POWER long | (touch / companion) |
+| Rockbox modal | BACK never | POWER yes | N/A (no Rockbox) |
+| Single-press screen sleep | OK hold ~300ms (`centerHoldShouldSleep`; suppressed during queue/playlist/FM move) | Short POWER when screen was on at DOWN (`shouldForcePowerTapSleep`) | Overlay Sleep/Zzz chip (side button stays Back) |
+| Screen wake | OK DOWN nudge / system | Stock short POWER (no Solar `goToSleep` when dark at DOWN) | System / Zzz cycle |
+| Volume chip in overlay | Yes | Hidden | Yes |
+| Sleep/Zzz chip (rightmost after Volume) | Yes | Hidden | Yes |
+| Power chip (Restart / Shut down) | When rooted | When rooted | When rooted (`hasRootAccess`; silent su, not RootShell) |
+| INJECT_EVENTS handoff | Often works | Usually root daemon path | Touch-first |
+| Bridge APK | `SolarContextBridgeY1` | `SolarContextBridgeY2` | Y1 bridge on A5 ROM |
 
 ---
 

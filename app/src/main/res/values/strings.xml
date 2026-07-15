@@ -452,6 +452,7 @@
     <string name="home_menu_radio">Radio</string>
     <string name="home_menu_pc_upload">Wi‑Fi Transfer</string>
     <string name="home_menu_podcasts">Podcasts</string>
+    <string name="home_menu_youtube_audio">YouTube Audio</string>
     <string name="home_menu_soulseek">Get Music</string>
     <string name="home_menu_deezer">Deezer</string>
     <string name="home_menu_themes">Themes</string>
@@ -1256,6 +1257,8 @@
     <string name="context_action_open_reach">Get Music</string>
     <string name="context_action_open_apps">Open Apps</string>
     <string name="context_action_lock_screen">Lock Screen</string>
+    <!-- 2026-07-15 — Right-end Sleep/Zzz chip label (replaces Lock in quick bar). -->
+    <string name="context_action_sleep">Sleep</string>
     <string name="context_go_to_home">Go to Home</string>
     <string name="context_go_to_now_playing">Go to Now Playing</string>
     <string name="context_quick_volume">Volume</string>
@@ -1317,6 +1320,8 @@
     <string name="platform_prep_continuing_soon">Continuing to Solar shortly…</string>
     <string name="platform_prep_modules_ready">Hook modules installed and enabled. Restart once to activate them.</string>
     <string name="context_action_lock_failed">Could not lock screen</string>
+    <!-- 2026-07-15 — Sleep chip failure (same idea as lock_failed). -->
+    <string name="context_action_sleep_failed">Could not sleep screen</string>
     <string name="podcasts_saved_on_device">Saved on device</string>
     <string name="podcasts_resume_badge">[Resume]</string>
     <string name="podcasts_empty_saved">No saved episodes on SD card.</string>
@@ -1443,7 +1448,7 @@
     <string name="settings_debug_radio_experiment">Radio (FM + Internet experiment)</string>
     <string name="settings_debug_radio_experiment_hint">Off by default. Enables the Radio home tile, FM tuner, and Internet radio browse.</string>
     <string name="settings_debug_youtube_experiment">YouTube</string>
-    <string name="settings_debug_youtube_experiment_hint">On by default. Off hides Videos → YouTube. Uses Solar’s built-in Invidious/Piped clients (needs Wi‑Fi).</string>
+    <string name="settings_debug_youtube_experiment_hint">On by default. Off hides Videos → YouTube and Music → YouTube. Uses Solar’s built-in Invidious/Piped clients (needs Wi‑Fi).</string>
     <string name="settings_debug_usb_mass_storage_experiment">USB mass storage (Y2 experiment)</string>
     <string name="settings_debug_usb_mass_storage_experiment_hint">Unavailable — Y2 uses MTP only. USB disk mode is not supported on this Android 4.4.2 build.</string>
     <string name="settings_usb_mass_storage_unavailable">USB mass storage is not available on this device. Y2 uses MTP for PC file transfer.</string>
@@ -1571,6 +1576,7 @@
     <string name="status_videos">Videos</string>
     <string name="status_video_player">Video</string>
     <string name="status_youtube">YouTube</string>
+    <string name="status_youtube_audio">YouTube Audio</string>
     <string name="status_youtube_results">YouTube: %1$s</string>
     <string name="status_photos">Photos</string>
     <string name="status_photo_viewer">Photo</string>
@@ -1660,6 +1666,7 @@
     <string name="video_play_error">Could not play video.</string>
     <string name="video_my_videos_row">My Videos</string>
     <string name="video_youtube_row">YouTube</string>
+    <string name="browser_youtube_audio">YouTube Audio</string>
     <string name="youtube_search_row">Search YouTube</string>
     <string name="youtube_search_title">Search YouTube</string>
     <string name="youtube_search_hint">Title, channel, or topic</string>

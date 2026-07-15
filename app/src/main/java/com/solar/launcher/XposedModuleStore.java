@@ -292,10 +292,6 @@ public final class XposedModuleStore {
                 && new File("/system/app/SolarRockboxCompat.apk").isFile()) {
             return "/system/app/SolarRockboxCompat.apk";
         }
-        if ("com.solar.launcher.xposed.notpipe".equals(pkg)
-                && new File("/system/app/SolarNotPipeBridge.apk").isFile()) {
-            return "/system/app/SolarNotPipeBridge.apk";
-        }
         if ("com.solar.launcher.xposed.bridge.y2".equals(pkg)
                 && new File("/system/app/SolarContextBridge.apk").isFile()) {
             return "/system/app/SolarContextBridge.apk";
@@ -319,9 +315,6 @@ public final class XposedModuleStore {
         }
         if ("com.solar.launcher.xposed.rockbox.compat".equals(pkg)) {
             return PlatformAssetExtractor.cachedModuleApkPath(ctx, "xposed/SolarRockboxCompat.apk");
-        }
-        if ("com.solar.launcher.xposed.notpipe".equals(pkg)) {
-            return PlatformAssetExtractor.cachedModuleApkPath(ctx, "xposed/SolarNotPipeBridge.apk");
         }
         return null;
     }

@@ -28,6 +28,16 @@ public class SolarWebServer extends Thread {
         this.rootFolder = rootFolder;
     }
 
+    /** Audiobooks folder for Wi‑Fi Transfer — follows Primary storage pref. */
+    private File audiobooksUploadRoot() {
+        File base = context != null
+                ? DeviceFeatures.getNewMediaRoot(context)
+                : DeviceFeatures.getPrimaryStorageRoot();
+        File ab = new File(base, "Audiobooks");
+        if (!ab.exists()) ab.mkdirs();
+        return ab;
+    }
+
     public void run() {
         com.solar.launcher.net.TlsHelper.init(context);
         try {
@@ -138,6 +148,10 @@ public class SolarWebServer extends Thread {
                             }
                         }
                     }
+                    // 2026-07-15 — Audiobooks upload target follows Primary storage pref.
+                    File abRoot = audiobooksUploadRoot();
+                    if (!abRoot.exists()) abRoot.mkdirs();
+                    foldersHtml.append("<option value=\"AUDIOBOOKS\">📚 Audiobooks</option>");
 
                     String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>" +
                             "<title>Solar Music Server</title><style>" +
@@ -147,6 +161,7 @@ public class SolarWebServer extends Thread {
                             ".box{background:#222; padding:20px; border-radius:10px; margin:10px auto; max-width:400px;}" +
                             "</style></head><body>" +
                             "<h2>🎧 Solar Wireless Upload</h2>" +
+                            "<p><a href='/browse' style='color:#0ff'>Browse &amp; download files →</a></p>" +
                             "<p><a href='/deezer' style='color:#0ff'>Deezer account setup →</a></p>" +
                             "<p><a href='/navidrome' style='color:#0ff'>Navidrome server setup →</a></p>" +
                             "<p><a href='/plex' style='color:#0ff'>Plex server setup →</a></p>" +
@@ -157,7 +172,7 @@ public class SolarWebServer extends Thread {
                             "<button onclick='createFolder()'>Create</button></div>" +
                             "<div class='box'><h3>2. Upload Music</h3>" +
                             "<select id='tFolder'>" + foldersHtml.toString() + "</select>" +
-                            "<input type='file' id='fInput' multiple accept='.mp3,.flac,.wav,.ogg,.m4a,.aac,.ape,.wma,.jpg,.png'>" +
+                            "<input type='file' id='fInput' multiple accept='.mp3,.flac,.wav,.ogg,.m4a,.m4b,.aac,.ape,.wma,.jpg,.png'>" +
                             "<button onclick='uploadAll()'>Upload All</button>" +
                             "<div id='status' style='margin-top:10px; color:#0f0;'></div></div>" +
                             "<script>" +
@@ -418,7 +433,24 @@ public class SolarWebServer extends Thread {
                         if (p.startsWith("name=")) name = URLDecoder.decode(p.substring(5), "UTF-8");
                     }
 
-                    File targetDir = folder.equals("ROOT") ? rootFolder : new File(rootFolder, folder);
+                    File targetDir;
+                    if ("ROOT".equals(folder)) {
+                        targetDir = rootFolder;
+                    } else if ("AUDIOBOOKS".equals(folder)) {
+                        targetDir = audiobooksUploadRoot();
+                    } else {
+                        targetDir = SolarWebPaths.resolveUnder(rootFolder, folder);
+                    }
+                    if (targetDir == null) {
+                        os.write("HTTP/1.1 400 Bad Request\r\n\r\n".getBytes("UTF-8"));
+                        return;
+                    }
+                    String safeName = SolarWebPaths.safeUploadName(name);
+                    if (safeName == null) {
+                        os.write("HTTP/1.1 400 Bad Request\r\n\r\n".getBytes("UTF-8"));
+                        return;
+                    }
+                    name = safeName;
                     if (!targetDir.exists()) {
                         targetDir.mkdirs();
                         targetDir.setReadable(true, false);
@@ -445,6 +477,11 @@ public class SolarWebServer extends Thread {
 
                     String response = "HTTP/1.1 200 OK\r\n\r\nOK";
                     os.write(response.getBytes("UTF-8"));
+                } else if (method.equals("GET") && (path.equals("/browse") || path.startsWith("/browse?"))) {
+                    // 2026-07-15 — PC download/browse listing under Music (and sibling Audiobooks).
+                    writeBrowsePage(os, path);
+                } else if (method.equals("GET") && path.startsWith("/download?")) {
+                    writeDownload(os, path);
                 } else {
                     // #region agent log
                     try {
@@ -483,6 +520,127 @@ public class SolarWebServer extends Thread {
                 total += n;
             }
             return buf;
+        }
+
+        /** 2026-07-15 — HTML directory listing with download links (Music / Audiobooks). */
+        private void writeBrowsePage(OutputStream os, String path) throws Exception {
+            String dirParam = "";
+            int q = path.indexOf("dir=");
+            if (q >= 0) {
+                dirParam = URLDecoder.decode(path.substring(q + 4), "UTF-8");
+                int amp = dirParam.indexOf('&');
+                if (amp >= 0) dirParam = dirParam.substring(0, amp);
+            }
+            File abRoot = audiobooksUploadRoot();
+            File base;
+            boolean underAb = false;
+            if ("AUDIOBOOKS".equals(dirParam) || dirParam.startsWith("AUDIOBOOKS/")) {
+                base = SolarWebPaths.resolveAudiobooks(abRoot, dirParam);
+                underAb = true;
+            } else if (dirParam.length() > 0) {
+                base = SolarWebPaths.resolveUnder(rootFolder, dirParam);
+            } else {
+                base = rootFolder;
+            }
+            if (base == null || !base.isDirectory()) {
+                base = rootFolder;
+                underAb = false;
+            }
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("dirParam", dirParam);
+                d.put("base", base.getAbsolutePath());
+                d.put("underAb", underAb);
+                com.solar.launcher.debug.SessionDebugLog.log(context, "SolarWebServer.writeBrowsePage",
+                        "browse resolve", "W1", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            StringBuilder list = new StringBuilder();
+            File[] kids = base.listFiles();
+            if (kids != null) {
+                for (File f : kids) {
+                    String rel;
+                    if (underAb) {
+                        String rest = f.getAbsolutePath().substring(abRoot.getAbsolutePath().length());
+                        if (rest.startsWith("/")) rest = rest.substring(1);
+                        rel = "AUDIOBOOKS" + (rest.isEmpty() ? "" : "/" + rest);
+                    } else {
+                        String rootPath = rootFolder.getAbsolutePath();
+                        rel = f.getAbsolutePath().startsWith(rootPath)
+                                ? f.getAbsolutePath().substring(rootPath.length())
+                                : f.getName();
+                        if (rel.startsWith("/")) rel = rel.substring(1);
+                    }
+                    if (f.isDirectory()) {
+                        list.append("<li>📁 <a href='/browse?dir=")
+                                .append(java.net.URLEncoder.encode(rel, "UTF-8"))
+                                .append("'>").append(htmlEscape(f.getName())).append("</a></li>");
+                    } else {
+                        list.append("<li>🎵 <a href='/download?path=")
+                                .append(java.net.URLEncoder.encode(rel, "UTF-8"))
+                                .append("'>").append(htmlEscape(f.getName())).append("</a></li>");
+                    }
+                }
+            }
+            String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><title>Browse</title>"
+                    + "<style>body{font-family:sans-serif;background:#111;color:#fff;padding:20px}"
+                    + "a{color:#0ff}</style></head><body>"
+                    + "<h2>Browse &amp; download</h2>"
+                    + "<p><a href='/browse'>Music</a> · <a href='/browse?dir=AUDIOBOOKS'>Audiobooks</a>"
+                    + " · <a href='/'>← Upload</a></p><ul>"
+                    + list + "</ul></body></html>";
+            byte[] body = html.getBytes("UTF-8");
+            os.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: "
+                    + body.length + "\r\n\r\n").getBytes("UTF-8"));
+            os.write(body);
+        }
+
+        /** 2026-07-15 — Stream a file from Music or Audiobooks to the PC (no whole-file RAM load). */
+        private void writeDownload(OutputStream os, String path) throws Exception {
+            String fileParam = "";
+            int q = path.indexOf("path=");
+            if (q >= 0) {
+                fileParam = URLDecoder.decode(path.substring(q + 5), "UTF-8");
+                int amp = fileParam.indexOf('&');
+                if (amp >= 0) fileParam = fileParam.substring(0, amp);
+            }
+            File abRoot = audiobooksUploadRoot();
+            File f;
+            if (fileParam.startsWith("AUDIOBOOKS/") || "AUDIOBOOKS".equals(fileParam)) {
+                f = SolarWebPaths.resolveAudiobooks(abRoot, fileParam);
+            } else {
+                f = SolarWebPaths.resolveUnder(rootFolder, fileParam);
+            }
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("fileParam", fileParam);
+                d.put("ok", f != null && f.isFile());
+                d.put("len", f != null ? f.length() : -1);
+                com.solar.launcher.debug.SessionDebugLog.log(context, "SolarWebServer.writeDownload",
+                        "download resolve", "W2", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            if (f == null || !f.isFile()) {
+                os.write("HTTP/1.1 404 Not Found\r\n\r\n".getBytes("UTF-8"));
+                return;
+            }
+            long len = f.length();
+            String header = "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+                    + "Content-Disposition: attachment; filename=\"" + f.getName().replace("\"", "") + "\"\r\n"
+                    + "Content-Length: " + len + "\r\n\r\n";
+            os.write(header.getBytes("UTF-8"));
+            java.io.FileInputStream fis = new java.io.FileInputStream(f);
+            try {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = fis.read(buf)) >= 0) {
+                    os.write(buf, 0, n);
+                }
+            } finally {
+                fis.close();
+            }
         }
 
         private String formValue(String body, String key) {

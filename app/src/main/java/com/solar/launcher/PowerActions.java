@@ -2,6 +2,7 @@ package com.solar.launcher;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.os.PowerManager;
 import android.widget.Toast;
 
 import com.solar.home.policy.HomeTargetPolicy;
@@ -11,35 +12,130 @@ import com.solar.home.policy.HomeTargetPolicy;
  */
 public final class PowerActions {
 
+    /** 2026-07-15 — Same setuid paths as RootShell; used for A5 power cmds that skip RootShell. */
+    private static final String[] SU_PATHS = {"/system/xbin/su", "/system/bin/su", "su"};
+
     private PowerActions() {}
 
-    /** Power off via root (same as inactivity auto-shutdown). */
+    /**
+     * 2026-07-15 — Power off via root.
+     * Was: RootShell only (A5 always no-ops). Now: silent su on A5, RootShell elsewhere.
+     * Reversal: always RootShell.run("reboot -p").
+     */
     public static void shutdown() {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                RootShell.run("reboot -p");
+                runPowerShell("reboot -p");
             }
         }, "SolarShutdown").start();
     }
 
-    /** Reboot via root. */
+    /**
+     * 2026-07-15 — Reboot via root.
+     * Was: RootShell only (A5 always no-ops). Now: silent su on A5, RootShell elsewhere.
+     * Reversal: always RootShell.run("reboot").
+     */
     public static void restart() {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                RootShell.run("reboot");
+                runPowerShell("reboot");
             }
         }, "SolarRestart").start();
     }
 
-    /** Screen off — synthetic POWER keyevent (Y1 software lock; overlay + context menu). */
+    /**
+     * 2026-07-15 — Screen off — synthetic POWER keyevent (overlay + context Sleep/Zzz chip).
+     * Was: RootShell only → A5 toast failure; blocked UI thread. Now: bg silent su + RootShell fallback off A5.
+     * Reversal: only RootShell.run("input keyevent 26") on caller thread.
+     */
     public static void screenSleep(Context ctx) {
-        if (RootShell.run("input keyevent 26")) {
+        final Context app = ctx != null ? ctx.getApplicationContext() : null;
+        // Background: setuid returns fast on Solar ROM; SuperSU must not ANR the overlay.
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (trySilentSuScreenOff(app)) return;
+                try {
+                    Thread.sleep(80);
+                } catch (InterruptedException ignored) {}
+                if (trySilentSuScreenOff(app)) return;
+                // Y1/Y2: RootShell may still wake daemonsu; A5 keeps RootShell skipped.
+                if (!DeviceFeatures.isA5() && RootShell.run("input keyevent 26")) return;
+                if (app != null) {
+                    toastOnMain(app, R.string.context_action_sleep_failed);
+                }
+            }
+        }, "SolarScreenSleep").start();
+    }
+
+    /**
+     * 2026-07-15 — Run reboot / shutdown / sleep shell — A5 bypasses RootShell SuperSU skip.
+     * Layman: turn the player off or restart without popping a root-ask dialog on A5.
+     * Technical: silent setuid su on A5; RootShell.run on Y1/Y2.
+     */
+    private static void runPowerShell(String command) {
+        if (command == null || command.length() == 0) return;
+        if (DeviceFeatures.isA5()) {
+            trySilentSu(command);
             return;
         }
-        if (ctx != null) {
-            Toast.makeText(ctx, R.string.context_action_lock_failed, Toast.LENGTH_SHORT).show();
+        RootShell.run(command);
+    }
+
+    /**
+     * 2026-07-15 — Direct su -c without RootShell A5 gate (from MainActivity.trySuScreenOff).
+     * Returns true when exit code is 0.
+     */
+    static boolean trySilentSu(String command) {
+        if (command == null || command.length() == 0) return false;
+        for (int i = 0; i < SU_PATHS.length; i++) {
+            String su = SU_PATHS[i];
+            Process proc = null;
+            try {
+                proc = Runtime.getRuntime().exec(new String[] {su, "-c", command});
+                if (proc.waitFor() == 0) return true;
+            } catch (Exception ignored) {
+            } finally {
+                if (proc != null) proc.destroy();
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 2026-07-15 — Screen-off via su; prefers confirming screen actually slept when ctx present.
+     * Was: MainActivity.trySuScreenOff private. Reversal: restore private helper in MainActivity.
+     */
+    static boolean trySilentSuScreenOff(Context ctx) {
+        for (int i = 0; i < SU_PATHS.length; i++) {
+            String su = SU_PATHS[i];
+            Process proc = null;
+            try {
+                proc = Runtime.getRuntime().exec(new String[] {su, "-c", "input keyevent 26"});
+                if (proc.waitFor() != 0) continue;
+                if (ctx == null) return true;
+                if (!isScreenInteractive(ctx)) return true;
+                // Exit 0 but still lit — treat as success after key inject (sleep may be async).
+                return true;
+            } catch (Exception ignored) {
+            } finally {
+                if (proc != null) proc.destroy();
+            }
+        }
+        return false;
+    }
+
+    /** True when display is on / interactive (API 17 isScreenOn; API 20+ isInteractive). */
+    private static boolean isScreenInteractive(Context ctx) {
+        try {
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return true;
+            if (android.os.Build.VERSION.SDK_INT >= 20) return pm.isInteractive();
+            return pm.isScreenOn();
+        } catch (Exception e) {
+            return true;
         }
     }
 

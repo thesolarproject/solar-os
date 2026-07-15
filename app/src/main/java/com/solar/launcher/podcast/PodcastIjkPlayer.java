@@ -92,8 +92,24 @@ public final class PodcastIjkPlayer {
     }
 
     public PodcastIjkPlayer() {
+        this(true);
+    }
+
+    /**
+     * 2026-07-15 — Optional Solar EQ filter graph on IJK (music or podcast).
+     * Layman: same player core, with or without our ten-band EQ wired in.
+     * Reversal: use no-arg ctor / applyEq=false for un-EQed IJK.
+     */
+    public PodcastIjkPlayer(boolean applyEq) {
         player = SolarIjkPlayerFactory.create();
         applyPodcastPlayerOptions(player);
+        // 2026-07-15 — Attach software EQ before setDataSource when curve is non-flat.
+        if (applyEq) {
+            try {
+                com.solar.launcher.eq.SolarEqController.get().applyToIjk(player);
+            } catch (Exception ignored) {
+            }
+        }
         player.setOnPreparedListener(new IMediaPlayer.OnPreparedListener() {
             @Override
             public void onPrepared(IMediaPlayer mp) {
@@ -217,6 +233,11 @@ public final class PodcastIjkPlayer {
             player.reset();
             SolarIjkPlayerFactory.applyY1Options(player);
             applyPodcastPlayerOptions(player);
+            // 2026-07-15 — Re-apply EQ filter after reset (options cleared with player state).
+            try {
+                com.solar.launcher.eq.SolarEqController.get().applyToIjk(player);
+            } catch (Exception ignored) {
+            }
             player.setOnPreparedListener(new IMediaPlayer.OnPreparedListener() {
                 @Override
                 public void onPrepared(IMediaPlayer mp) {

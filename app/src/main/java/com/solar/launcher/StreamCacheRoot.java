@@ -4,7 +4,7 @@ import android.content.Context;
 
 import java.io.File;
 
-/** Reach/Deezer/podcast stream temps — prefer app cache, fall back to SD when internal is tight. */
+/** Reach/Deezer/podcast stream temps — prefer app cache, fall back to media volume when internal is tight. */
 public final class StreamCacheRoot {
     /** ponytail: 32 MiB free on internal — upgrade to StatFs if devices report wrong */
     private static final long MIN_INTERNAL_FREE_BYTES = 32L * 1024L * 1024L;
@@ -12,11 +12,12 @@ public final class StreamCacheRoot {
     private StreamCacheRoot() {}
 
     public static File resolve(Context ctx) {
-        if (ctx == null) return DeviceFeatures.getPrimaryStorageRoot();
+        if (ctx == null) return DeviceFeatures.getNewMediaRoot(null);
         File internal = ctx.getCacheDir();
         if (hasSpace(internal, MIN_INTERNAL_FREE_BYTES)) return internal;
-        File sd = new File(DeviceFeatures.getPrimaryStorageRoot(),
-                "Android/data/" + ctx.getPackageName() + "/cache");
+        // 2026-07-15 — Overflow to Primary storage pref volume, not always MicroSD.
+        File media = DeviceFeatures.getNewMediaRoot(ctx);
+        File sd = new File(media, "Android/data/" + ctx.getPackageName() + "/cache");
         if (!sd.isDirectory()) sd.mkdirs();
         if (sd.isDirectory() && hasSpace(sd, MIN_INTERNAL_FREE_BYTES)) return sd;
         return internal != null ? internal : sd;

@@ -26,6 +26,16 @@ public final class UsbMassStorageController {
     private static final String ENABLE_DATA = "/data/data/solar-enable-ums.sh";
     private static final String DISABLE_DATA = "/data/data/solar-disable-ums.sh";
 
+    /**
+     * 2026-07-15 — User armed UMS this host session (Turn on / auto-connect).
+     * Layman: after you choose disk mode, do not silently tear it down.
+     * Tech: sysprop + volatile so USB re-enum disconnects skip {@code disableIfExported}.
+     * Reversal: clear callers; Unauthorized guard may treat mid-enable mass_storage as stale again.
+     */
+    public static final String SYSPROP_USER_SESSION = "sys.solar.ums.session";
+    private static volatile boolean sUserSessionActive = false;
+    private static volatile long sEnableArmedAtElapsedMs = 0L;
+
     private UsbMassStorageController() {}
 
     /** Enable USB mass storage (verified LUN bind) as root — Y2 gated on experiment (2026-07-05). */
@@ -71,12 +81,18 @@ public final class UsbMassStorageController {
             d.put("caller", caller);
             d.put("autoConnect", context != null && UsbStorageSessionFlags.isAutoConnectEnabled(context));
             d.put("a5", DeviceFeatures.isA5());
-            d.put("rootCanRun", !DeviceFeatures.isA5());
+            d.put("rootCanRun", DeviceFeatures.canRunRootShell());
             Debug266f21Log.log(context, "UsbMassStorageController.enable", "permitted", "H1,H4", d);
             Debug1fc727Log.log(context, "UsbMassStorageController.enable", "permitted→toggle", "H1,H3", d);
         } catch (Exception ignored) {}
         // #endregion
+        // 2026-07-15 — Arm before setprop so USB_STATE re-enum cannot tear LUN mid-enable.
+        markUserSessionActive();
         boolean ok = runUmsToggle(context, true);
+        if (!ok) {
+            // Failed enable — drop session so Unauthorized can still clear stuck mass_storage.
+            clearUserSession();
+        }
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
@@ -86,10 +102,60 @@ public final class UsbMassStorageController {
             d.put("kernelUms", isKernelMassStorageMode());
             d.put("usbConfig", readSysUsbConfig());
             d.put("a5", DeviceFeatures.isA5());
+            d.put("userSession", isUserSessionActive());
             Debug1fc727Log.log(context, "UsbMassStorageController.enable", "toggle done", "H1,H3", d);
         } catch (Exception ignored) {}
         // #endregion
         return ok;
+    }
+
+    /**
+     * 2026-07-15 — Remember user asked for disk mode (survives USB re-enum disconnect blip).
+     * Layman: Turn on sticks until Turn Off or real unplug.
+     */
+    public static void markUserSessionActive() {
+        sUserSessionActive = true;
+        sEnableArmedAtElapsedMs = android.os.SystemClock.elapsedRealtime();
+        writeSysprop(SYSPROP_USER_SESSION, "1");
+    }
+
+    /** Drop user UMS session — Turn Off, sustained unplug, or failed enable. */
+    public static void clearUserSession() {
+        sUserSessionActive = false;
+        sEnableArmedAtElapsedMs = 0L;
+        writeSysprop(SYSPROP_USER_SESSION, "0");
+    }
+
+    /**
+     * True when user/auto armed UMS so transient USB_STATE disconnect must not disable.
+     * Layman: we are intentionally in (or entering) disk mode.
+     */
+    public static boolean isUserSessionActive() {
+        if (sUserSessionActive) return true;
+        return "1".equals(readSysUsbConfigProp(SYSPROP_USER_SESSION));
+    }
+
+    /** Test hook — grace window without Android clock (2026-07-15). */
+    static boolean isWithinDisconnectGraceForTest(boolean sessionActive,
+            long armedAtElapsedMs, long nowElapsedMs, long graceMs) {
+        if (!sessionActive || graceMs <= 0L) return false;
+        if (armedAtElapsedMs <= 0L) return false;
+        return (nowElapsedMs - armedAtElapsedMs) < graceMs;
+    }
+
+    /** Grace after arm/enable — disconnects inside this window are USB re-enum, not unplug. */
+    public static final long DISCONNECT_REENUM_GRACE_MS = 4000L;
+
+    /**
+     * True when a disconnect should skip {@code disableIfExported} (re-enum during enable).
+     * Layman: flipping into disk mode briefly looks like unplug — do not turn disk mode off.
+     */
+    public static boolean shouldIgnoreDisconnectDisable() {
+        if (!isUserSessionActive()) return false;
+        long armed = sEnableArmedAtElapsedMs;
+        if (armed <= 0L) return false;
+        long age = android.os.SystemClock.elapsedRealtime() - armed;
+        return age < DISCONNECT_REENUM_GRACE_MS;
     }
 
     /** User tapped Turn on / overlay confirm, or auto-connect pref is explicitly on. */
@@ -126,8 +192,13 @@ public final class UsbMassStorageController {
     /** Disable USB mass storage and return to MTP+adb — always allowed so Y2 can recover stock MTP. */
     public static boolean disable(Context context) {
         if (context == null) return false;
-        if (!isKernelMassStorageMode()) return true;
-        return runUmsToggle(context, false);
+        if (!isKernelMassStorageMode()) {
+            clearUserSession();
+            return true;
+        }
+        boolean ok = runUmsToggle(context, false);
+        clearUserSession();
+        return ok;
     }
 
     /**
@@ -319,22 +390,37 @@ public final class UsbMassStorageController {
     }
     // #endregion
 
-    /** Read {@code sys.usb.config} for debug session b6af9f. */
-    private static String readSysUsbConfig() {
-        try {
-            Class<?> sp = Class.forName("android.os.SystemProperties");
-            Object v = sp.getMethod("get", String.class, String.class).invoke(null, "sys.usb.config", "");
-            return v != null ? v.toString() : "";
-        } catch (Throwable t) {
-            return "";
-        }
-    }
-
     /** True when {@code sys.usb.config} or kernel functions include mass_storage (2026-07-05). */
     static boolean isKernelMassStorageMode() {
         String config = readSysUsbConfig();
         if (config.contains("mass_storage")) return true;
         return readSysfsFirstLine("/sys/class/android_usb/android0/functions").contains("mass_storage");
+    }
+
+    /** Read {@code sys.usb.config} via SystemProperties (no getprop fork). */
+    private static String readSysUsbConfig() {
+        return readSysUsbConfigProp("sys.usb.config");
+    }
+
+    /** Read any sysprop via reflection; empty on miss. */
+    private static String readSysUsbConfigProp(String key) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class).invoke(null, key, "");
+            return v != null ? v.toString().trim() : "";
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** Best-effort SystemProperties.set (A5/Y1 without su for short flags). */
+    private static void writeSysprop(String key, String val) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            sp.getMethod("set", String.class, String.class).invoke(null, key, val);
+            return;
+        } catch (Throwable ignored) {}
+        RootShell.runAsync("setprop " + key + " " + val);
     }
 
     private static String readSysfsFirstLine(String path) {

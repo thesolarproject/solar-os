@@ -11,7 +11,7 @@ public interface ChipHostActions {
     /** Open preferred HOME (Solar / Rockbox / stock). */
     void launchHome();
 
-    /** Put display to sleep (Y1 Lock chip). */
+    /** 2026-07-15 — Put display to sleep (Y1/A5 right-end Sleep/Zzz chip). Was: Lock chip. */
     void screenSleep();
 
     /** Soft reboot via root. */

@@ -31,25 +31,8 @@ build_if_missing "$VENDOR/solar-context-bridge/SolarContextBridgeY2.apk" "build-
 build_if_missing "$VENDOR/solar-theme-font/SolarThemeFont.apk" "build-theme-font-apk.sh"
 build_if_missing "$VENDOR/solar-rockbox-ime/SolarRockboxIme.apk" "build-rockbox-xposed-apks.sh"
 build_if_missing "$VENDOR/solar-rockbox-compat/SolarRockboxCompat.apk" "build-rockbox-xposed-apks.sh"
-build_if_missing "$VENDOR/solar-notpipe-bridge/SolarNotPipeBridge.apk" "build-notpipe-bridge-apk.sh"
-
-# 2026-07-06 — notPipe YouTube client APK (third-party; pinned v0.3.0).
-# 2026-07-14 — Prefer Solarized APK (WakeService + SolarCmdReceiver); never overwrite with upstream minify.
-chmod +x "$SCRIPT_DIR/fetch-notpipe-apk.sh"
-NOTPIPE_CACHE="$("$SCRIPT_DIR/fetch-notpipe-apk.sh")"
-NOTPIPE_UPSTREAM_CACHE="$NOTPIPE_CACHE/notPipe-0.3.0-release.apk"
-NOTPIPE_SOLAR_REF="$ROOT/reference/NotPipe reference/notPipe-0.3.0-release.apk"
-NOTPIPE_SRC=""
-if [ -f "$NOTPIPE_SOLAR_REF" ] && python3 -c "import zipfile,sys;z=zipfile.ZipFile(sys.argv[1]);d=z.read('classes.dex');sys.exit(0 if b'SolarWakeService' in d and b'SolarCmdReceiver' in d else 1)" "$NOTPIPE_SOLAR_REF" 2>/dev/null; then
-    NOTPIPE_SRC="$NOTPIPE_SOLAR_REF"
-    echo "==> Using Solarized notPipe reference: $NOTPIPE_SRC"
-elif [ -x "$SCRIPT_DIR/build-notpipe-solar-apk.sh" ]; then
-    echo "==> Building Solarized notPipe APK (WakeService + SolarCmdReceiver)"
-    "$SCRIPT_DIR/build-notpipe-solar-apk.sh"
-    NOTPIPE_SRC="$NOTPIPE_SOLAR_REF"
-fi
-[ -f "$NOTPIPE_SRC" ] || NOTPIPE_SRC="$NOTPIPE_UPSTREAM_CACHE"
-[ -f "$NOTPIPE_SRC" ] || die "missing notPipe APK — fetch/build failed"
+# 2026-07-15 — YouTube is native in Solar APK; notPipe + SolarNotPipeBridge no longer bundled.
+# A5 ROM still bakes upstream notPipe via build-rom.sh install_notpipe_system (touch UI).
 
 # 2026-07-05 — Companion global context modal APK (Phase 1); bundled for platform self-heal.
 COMPANION_APK="$ROOT/global-context-modal/build/outputs/apk/debug/global-context-modal-debug.apk"
@@ -143,8 +126,8 @@ cp "$VENDOR/solar-context-bridge/SolarContextBridgeY2.apk" "$DST/xposed/SolarCon
 cp "$VENDOR/solar-theme-font/SolarThemeFont.apk" "$DST/xposed/SolarThemeFont.apk"
 cp "$VENDOR/solar-rockbox-ime/SolarRockboxIme.apk" "$DST/xposed/SolarRockboxIme.apk"
 cp "$VENDOR/solar-rockbox-compat/SolarRockboxCompat.apk" "$DST/xposed/SolarRockboxCompat.apk"
-cp "$VENDOR/solar-notpipe-bridge/SolarNotPipeBridge.apk" "$DST/xposed/SolarNotPipeBridge.apk"
-cp "$NOTPIPE_SRC" "$DST/thirdparty/notPipe-0.3.0-release.apk"
+# 2026-07-15 — Drop legacy NotPipe self-heal assets if a previous sync left them.
+rm -f "$DST/xposed/SolarNotPipeBridge.apk" "$DST/thirdparty/notPipe-0.3.0-release.apk"
 cp "$COMPANION_APK" "$DST/companion/SolarGlobalContextModal.apk"
 cp "$HELPER_APK" "$DST/companion/SolarHomeHelper.apk"
 cp "$INIT_SRC" "$DST/init/99XposedInit.sh"
@@ -197,8 +180,6 @@ Y2_VC="$(apk_version_code "$DST/xposed/SolarContextBridgeY2.apk")"
 TF_VC="$(apk_version_code "$DST/xposed/SolarThemeFont.apk")"
 RB_IME_VC="$(apk_version_code "$DST/xposed/SolarRockboxIme.apk")"
 RB_COMPAT_VC="$(apk_version_code "$DST/xposed/SolarRockboxCompat.apk")"
-NP_BRIDGE_VC="$(apk_version_code "$DST/xposed/SolarNotPipeBridge.apk")"
-NOTPIPE_VC="$(apk_version_code "$DST/thirdparty/notPipe-0.3.0-release.apk")"
 GC_VC="$(apk_version_code "$DST/companion/SolarGlobalContextModal.apk")"
 HELPER_VC="$(apk_version_code "$DST/companion/SolarHomeHelper.apk")"
 RB_Y1_VC="$(apk_version_code "$DST/rockbox/org.rockbox-y1.apk")"
@@ -210,7 +191,7 @@ RB_LIB_SHA="$(sha256_file "$DST/rockbox/librockbox-system.so")"
 # manifest.json — parsed by PlatformPrepManifest.java at runtime.
 cat > "$DST/manifest.json" <<EOF
 {
-  "prepVersion": 17,
+  "prepVersion": 18,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",
@@ -281,24 +262,6 @@ cat > "$DST/manifest.json" <<EOF
       "sha256": "$(sha256_file "$DST/xposed/SolarRockboxCompat.apk")"
     },
     {
-      "pkg": "com.solar.launcher.xposed.notpipe",
-      "asset": "xposed/SolarNotPipeBridge.apk",
-      "systemApk": "/system/app/SolarNotPipeBridge.apk",
-      "required": true,
-      "device": "both",
-      "versionCode": ${NP_BRIDGE_VC:-1},
-      "sha256": "$(sha256_file "$DST/xposed/SolarNotPipeBridge.apk")"
-    },
-    {
-      "pkg": "io.github.gohoski.notpipe",
-      "asset": "thirdparty/notPipe-0.3.0-release.apk",
-      "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
-      "required": true,
-      "device": "both",
-      "versionCode": ${NOTPIPE_VC:-1},
-      "sha256": "$(sha256_file "$DST/thirdparty/notPipe-0.3.0-release.apk")"
-    },
-    {
       "pkg": "com.solar.launcher.globalcontext",
       "asset": "companion/SolarGlobalContextModal.apk",
       "systemApk": "/system/app/SolarGlobalContextModal.apk",
@@ -362,6 +325,18 @@ cat > "$DST/manifest.json" <<EOF
       "pkg": "com.solar.launcher.xposed.bridge.y2",
       "device": "y1",
       "reason": "wrong-family bridge on Y1"
+    },
+    {
+      "systemApk": "/system/app/SolarNotPipeBridge.apk",
+      "pkg": "com.solar.launcher.xposed.notpipe",
+      "device": "both",
+      "reason": "native Solar YouTube replaces NotPipe IPC bridge"
+    },
+    {
+      "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
+      "pkg": "io.github.gohoski.notpipe",
+      "device": "both",
+      "reason": "native Solar YouTube; A5 ROM touch NotPipe skipped in cleaner"
     }
   ]
 }

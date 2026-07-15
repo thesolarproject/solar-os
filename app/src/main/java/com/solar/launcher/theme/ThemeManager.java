@@ -97,8 +97,21 @@ public class ThemeManager {
     /** User pref: dithered LCD-style album art tinted to theme font colour. */
     private static boolean nowPlayingLcdArtEnabled = false;
 
-    /** Active theme assets live in app-private storage — survives MicroSD export and slow mounts. */
+    /**
+     * Canonical public Themes/ install root.
+     * 2026-07-15 — Prefer public Internal Storage Themes/; else MicroSD Themes/; else filesDir.
+     * Was: always filesDir (UMS-safe but ignored public Internal as load root).
+     * Reversal: return internalThemesDir(ctx) unconditionally.
+     */
     public static String resolveThemesRoot(Context ctx) {
+        File internalPublic = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+        if (internalPublic != null) {
+            return internalPublic.getAbsolutePath();
+        }
+        File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
+        if (micro != null) {
+            return micro.getAbsolutePath();
+        }
         if (ctx != null) {
             return internalThemesDir(ctx).getAbsolutePath();
         }
@@ -110,8 +123,8 @@ public class ThemeManager {
     }
 
     /**
-     * Ensures themes root exists and is writable; falls back to app filesDir when SD is missing.
-     * ponytail: downloadTheme mkdirs failed on Y1 when /storage/sdcard0/Themes was absent.
+     * Ensures themes root exists and is writable; falls back to filesDir UMS cache when public fails.
+     * 2026-07-15 — Also kicks bidirectional Internal↔MicroSD Themes sync when both volumes exist.
      */
     public static boolean ensureThemesRootReady(Context ctx) {
         Context app = ctx != null ? ctx.getApplicationContext() : assetContext;
@@ -122,6 +135,7 @@ public class ThemeManager {
         File root = new File(themesRootPath);
         if (root.isDirectory() && root.canWrite()) {
             new File(root, ".cache/covers").mkdirs();
+            syncPublicThemesBidirectional(app);
             return true;
         }
         if (!root.mkdirs() || !root.canWrite()) {
@@ -131,13 +145,102 @@ public class ThemeManager {
             if (!root.mkdirs() && !root.isDirectory()) return false;
         }
         new File(root, ".cache/covers").mkdirs();
+        syncPublicThemesBidirectional(app);
         return root.canWrite();
     }
 
-    /** Asset-only theme for first paint — no SD scan or Default folder copy on cold start. */
+    /**
+     * Bidirectional copy of theme folders between public Internal and MicroSD Themes/.
+     * 2026-07-15 — Missing/newer folders propagate either way; Default seeded copies allowed.
+     * Layman: keep both cards' Themes folders in step so either volume can fail safely.
+     */
+    public static void syncPublicThemesBidirectional(Context ctx) {
+        File internal = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+        File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
+        if (internal == null || micro == null) return;
+        if (!internal.exists()) internal.mkdirs();
+        if (!micro.exists()) micro.mkdirs();
+        if (!internal.isDirectory() || !micro.isDirectory()) return;
+        syncThemeLibraryOneWay(internal, micro);
+        syncThemeLibraryOneWay(micro, internal);
+    }
+
+    /** Copy theme folders from srcRoot → destRoot when missing or older at dest. */
+    private static void syncThemeLibraryOneWay(File srcRoot, File destRoot) {
+        File[] kids = srcRoot.listFiles();
+        if (kids == null) return;
+        for (File src : kids) {
+            if (!src.isDirectory() || src.getName().startsWith(".")) continue;
+            if (!new File(src, "config.json").isFile()) continue;
+            File dest = new File(destRoot, src.getName());
+            File destCfg = new File(dest, "config.json");
+            if (destCfg.isFile() && destCfg.length() > 0
+                    && src.lastModified() <= dest.lastModified()) {
+                continue;
+            }
+            try {
+                if (!dest.exists()) dest.mkdirs();
+                copyDirectory(src, dest);
+            } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Delete a theme from public Internal, MicroSD, and filesDir UMS cache.
+     * 2026-07-15 — Context-menu Remove must clear the triple-copy, not just themesRoot().
+     */
+    public static boolean deleteThemeEverywhere(Context ctx, String folderName) {
+        if (folderName == null || folderName.isEmpty()) return false;
+        if (BUILTIN_DEFAULT_FOLDER.equalsIgnoreCase(folderName)) return false;
+        boolean any = false;
+        File internal = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+        if (internal != null) any |= deleteThemeFolder(new File(internal, folderName));
+        File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
+        if (micro != null) any |= deleteThemeFolder(new File(micro, folderName));
+        if (ctx != null) {
+            any |= deleteThemeFolder(new File(internalThemesDir(ctx), folderName));
+        }
+        // Also drop install root copy if distinct.
+        any |= deleteThemeFolder(new File(themesRootPath, folderName));
+        return any;
+    }
+
+    private static boolean deleteThemeFolder(File dir) {
+        if (dir == null || !dir.isDirectory()) return false;
+        try {
+            deleteRecursive(dir);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Recursively delete a directory tree (theme Remove / prune). */
+    private static void deleteRecursive(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (File k : kids) deleteRecursive(k);
+            }
+        }
+        f.delete();
+    }
+
+    /**
+     * 2026-07-15 — Asset-only Aura for first paint before disk seed finishes.
+     * Was: load bundledFallback JSON only (availableThemes stayed empty → stub home icons).
+     * Now: also park Aura in availableThemes so Music_YS / chrome decode on cold start.
+     * Reversal: drop availableThemes seed; first frame used empty homePageConfig stub again.
+     */
     public static void ensureFastStartupTheme(Context ctx) {
         if (ctx != null) assetContext = ctx.getApplicationContext();
         ensureBundledFallback(ctx);
+        // Park asset:// Aura so getCurrentTheme() is never an empty homePageConfig stub.
+        if (bundledFallback != null && availableThemes.isEmpty()) {
+            availableThemes.add(bundledFallback);
+            currentThemeIndex = 0;
+        }
         if (PATH_THEMES.equals(themesRootPath)) {
             ensureThemesRootReady(ctx);
         }
@@ -192,28 +295,39 @@ public class ThemeManager {
     }
 
     /**
-     * Sync active theme SD → internal MMC and point the in-memory entry at the internal copy.
+     * Sync active theme → filesDir UMS cache and point the in-memory entry at that cache.
+     * 2026-07-15 — Source is public Themes (Internal preferred); filesDir survives eject/UMS.
      * ponytail: call on theme apply, boot, and before UMS so USB lock screen keeps the user's theme.
      */
     public static void cacheActiveTheme(Context ctx) {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         assetContext = app;
+        // Keep public volumes in step before caching the active theme.
+        syncPublicThemesBidirectional(app);
         ThemeEntry active = getCurrentTheme();
         if (active == null || active == bundledFallback || active.folderPath.startsWith("asset://")) {
             finishThemeCachePipeline(app);
             return;
         }
         File cacheDir = new File(internalThemesDir(app), active.folderName);
-        // Already on internal MMC — nothing to copy from MicroSD.
+        // Already on filesDir UMS cache — still refresh sidecars.
         if (active.folderPath.startsWith(app.getFilesDir().getAbsolutePath())) {
             finishThemeCachePipeline(app);
             return;
         }
         File sourceDir = new File(active.folderPath);
+        if (!sourceDir.isDirectory()) {
+            // Prefer public Internal copy of the same folder name when available.
+            File pub = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+            if (pub != null) {
+                File alt = new File(pub, active.folderName);
+                if (new File(alt, "config.json").isFile()) sourceDir = alt;
+            }
+        }
         if (!sourceDir.isDirectory()) return;
         File cachedCfg = new File(cacheDir, "config.json");
-        // Skip full tree copy when internal cache is already up to date.
+        // Skip full tree copy when filesDir cache is already up to date.
         if (cachedCfg.isFile() && cachedCfg.length() > 0
                 && sourceDir.lastModified() <= cacheDir.lastModified()) {
             switchThemeEntryToInternal(app, active, cacheDir);
@@ -702,7 +816,12 @@ public class ThemeManager {
         return blockSdcardThemeAssets;
     }
 
-    /** Extract bundled Default → themes root; load in-memory fallback if copy fails. */
+    /**
+     * 2026-07-15 — Extract bundled Aura → themes root; refresh cover/Music after asset fixes.
+     * Was: only fill missing/empty files (stale Spotify cover_YS.png stayed forever).
+     * Now: always overwrite known Aura gallery/preview files from APK assets on seed.
+     * Reversal: remove refreshBundledAuraShowcaseAssets; keep copy-missing-only behaviour.
+     */
     public static void ensureBundledDefault(Context ctx) {
         assetContext = ctx.getApplicationContext();
         ensureThemesRootReady(ctx);
@@ -719,8 +838,31 @@ public class ThemeManager {
                 syncBundledThemeBlocks(ctx, dest);
                 copyMissingBundledAssets(ctx, dest);
             }
+            // Push fresh cover + Music even when Default already existed (OTA / first-boot seed).
+            refreshBundledAuraShowcaseAssets(ctx, dest);
         } catch (Exception ignored) {}
         ensureBundledFallback(ctx);
+    }
+
+    /**
+     * 2026-07-15 — Overwrite Aura gallery cover + Music icon from bundled assets.
+     * Was: leave existing cover_YS.png on disk (Spotify placeholder / stale Music palette PNG).
+     * Now: always copy APK copies so Theme gallery + home preview match Solar branding.
+     * Reversal: delete method + call; disk files stop updating on seed.
+     */
+    private static void refreshBundledAuraShowcaseAssets(Context ctx, File destDir) {
+        if (ctx == null || destDir == null) return;
+        // cover = theme gallery thumbnail; Music = home right-pane for Music row.
+        String[] names = {"cover_YS.png", "Music_YS.png"};
+        for (String name : names) {
+            try {
+                File out = new File(destDir, name);
+                copyAsset(ctx.getAssets(), BUNDLED_ASSET_DIR + "/" + name, out);
+            } catch (Exception ignored) {}
+        }
+        // Drop cached bitmaps so next paint reloads the replaced files.
+        bitmapCache.clear();
+        scaledRowBitmapCache.clear();
     }
 
     /** Copy solarConfig assets + keys into an existing Default folder (legacy Circular installs). */
@@ -2318,8 +2460,10 @@ public class ThemeManager {
     }
 
     /**
-     * Home shortcut icon from the active theme only: {@code solarConfig.app*} →
-     * {@code homePageConfig} (stock or explicit Solar fallback). No drawable or cross-theme assets.
+     * 2026-07-15 — Home shortcut icon from the active theme only.
+     * Was: solarConfig.app* → homePageConfig → null (cold stub showed no Music / wrong preview).
+     * Now: same chain, then bundled Aura Music_YS when Default theme still lacks a decode.
+     * Reversal: remove bundled Music_YS arm; null again when disk/asset miss.
      */
     public static Bitmap getHomeMenuIcon(Context context, HomeMenuConfig.Entry entry) {
         if (context == null || entry == null) return null;
@@ -2341,7 +2485,14 @@ public class ThemeManager {
             if (stock != null) return stock;
         }
         String fallbackKey = HomeMenuConfig.y1HomeIconFallbackKey(entry.id);
-        if (fallbackKey != null) return getThemeHomeBitmap(fallbackKey);
+        if (fallbackKey != null) {
+            Bitmap fb = getThemeHomeBitmap(fallbackKey);
+            if (fb != null) return fb;
+        }
+        // Cold-start / partial seed: never leave Music on stock drawable placeholder.
+        if (HomeMenuConfig.ID_MUSIC.equals(entry.id) && isBuiltInDefault(getCurrentTheme())) {
+            return decodeBundledThemeAsset("Music_YS.png", 0);
+        }
         return null;
     }
 
@@ -2597,17 +2748,17 @@ public class ThemeManager {
         return getThemeBitmap(path);
     }
 
+    /**
+     * 2026-07-15 — Theme gallery / installed-theme preview cover.
+     * Was: disk-only decodeFile (asset:// Aura + missing SD → null / blank gallery).
+     * Now: same decodeThemeBitmapForEntry path as home icons (asset + bundled fallback).
+     * Reversal: restore resolveThemeAssetFile + decodeFile only.
+     */
     public static Bitmap getThemeCover(ThemeEntry entry) {
         if (entry == null) return null;
-        String path = entry.root.optString("themeCover", "");
+        String path = entry.root.optString("themeCover", "").trim();
         if (path.isEmpty()) return null;
-        File f = resolveThemeAssetFile(entry.folderPath, path);
-        if (f == null) return null;
-        try {
-            return BitmapFactory.decodeFile(f.getAbsolutePath());
-        } catch (Exception e) {
-            return null;
-        }
+        return decodeThemeBitmapForEntry(entry, path, 0);
     }
 
     public static Drawable getItemRowBackgroundScaled(android.content.res.Resources res, boolean selected, int widthPx, int heightPx) {

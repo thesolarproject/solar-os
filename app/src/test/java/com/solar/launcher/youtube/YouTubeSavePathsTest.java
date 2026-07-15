@@ -3,8 +3,11 @@ package com.solar.launcher.youtube;
 import org.junit.Test;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class YouTubeSavePathsTest {
@@ -28,5 +31,21 @@ public class YouTubeSavePathsTest {
         String safe = YouTubeSavePaths.safeName("a/b:c*d?\"<>|");
         assertTrue(!safe.contains("/"));
         assertTrue(!safe.contains(":"));
+    }
+
+    /** 2026-07-15 — Basename match used by multi-root findSaved*. */
+    @Test
+    public void matchInDir_findsPrefixedFile() throws IOException {
+        File dir = File.createTempFile("yt-dir", "");
+        assertTrue(dir.delete());
+        assertTrue(dir.mkdir());
+        File hit = new File(dir, "Cool Clip.mp4");
+        FileOutputStream out = new FileOutputStream(hit);
+        byte[] pad = new byte[2048];
+        out.write(pad);
+        out.close();
+        File found = YouTubeSavePaths.matchInDirForTest(dir, "Cool Clip");
+        assertNotNull(found);
+        assertEquals(hit.getAbsolutePath(), found.getAbsolutePath());
     }
 }

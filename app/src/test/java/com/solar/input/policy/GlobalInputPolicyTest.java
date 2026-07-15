@@ -16,6 +16,19 @@ public class GlobalInputPolicyTest {
         assertFalse(GlobalInputPolicy.shouldPassthroughPowerTap(400L));
     }
 
+    /**
+     * 2026-07-15 — Force-sleep uses screen-on at POWER DOWN (UP-time is always lit after wake).
+     * Layman: dark press = wake (no force sleep); lit press = sleep.
+     */
+    @Test
+    public void forcePowerTapSleepRequiresScreenOnAtDown() {
+        assertTrue(GlobalInputPolicy.shouldForcePowerTapSleep(100L, true));
+        assertTrue(GlobalInputPolicy.shouldForcePowerTapSleep(379L, true));
+        assertFalse(GlobalInputPolicy.shouldForcePowerTapSleep(100L, false));
+        assertFalse(GlobalInputPolicy.shouldForcePowerTapSleep(400L, true));
+        assertFalse(GlobalInputPolicy.shouldForcePowerTapSleep(400L, false));
+    }
+
     @Test
     public void y2PowerModalIncludesSolarHome() {
         assertTrue(GlobalInputPolicy.shouldOfferPowerLongModal(
@@ -74,7 +87,7 @@ public class GlobalInputPolicyTest {
         assertEquals(7000L, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
         assertEquals(10000L, GlobalInputPolicy.RESCUE_EXECUTE_MS);
         assertEquals(10000L, GlobalInputPolicy.RESCUE_HOLD_MS);
-        assertEquals(22, GlobalInputPolicy.POLICY_REV);
+        assertEquals(23, GlobalInputPolicy.POLICY_REV);
     }
 
     @Test

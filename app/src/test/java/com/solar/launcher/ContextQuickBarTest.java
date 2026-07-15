@@ -6,7 +6,7 @@ import org.junit.Test;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** Quick access menu chip visibility — Y2 hides Volume/Lock (hardware buttons). */
+/** Quick access menu chip visibility — Y2 hides Volume/Sleep (hardware buttons). */
 public class ContextQuickBarTest {
 
     @After
@@ -15,19 +15,34 @@ public class ContextQuickBarTest {
     }
 
     @Test
-    public void y1ShowsVolumeAndLockChips() {
+    public void y1ShowsVolumeAndSleepChips() {
         DeviceFeatures.setCachedFamilyForTest("y1");
         assertTrue(MainActivity.isContextQuickVolumeChipVisibleForTest());
-        assertTrue(MainActivity.isContextQuickLockChipVisibleForTest());
+        assertTrue(MainActivity.isContextQuickSleepChipVisibleForTest());
         assertTrue(MainActivity.isContextQuickPowerChipVisibleForTest());
     }
 
     @Test
-    public void y2HidesVolumeAndLockChipsButKeepsPower() {
+    public void y2HidesVolumeAndSleepChipsButKeepsPower() {
         DeviceFeatures.setCachedFamilyForTest("y2");
         assertFalse(MainActivity.isContextQuickVolumeChipVisibleForTest());
-        assertFalse(MainActivity.isContextQuickLockChipVisibleForTest());
+        assertFalse(MainActivity.isContextQuickSleepChipVisibleForTest());
         assertTrue(MainActivity.isContextQuickPowerChipVisibleForTest());
+    }
+
+    /**
+     * 2026-07-15 — Sleep/Zzz is rightmost after Volume (was Lock at index 1).
+     * Reversal: expect sleepIndex == 1 and volumeIndex == 7.
+     */
+    @Test
+    public void sleepChipIsRightOfVolume() {
+        int volumeIndex = MainActivity.contextQuickVolumeChipIndexForTest();
+        int sleepIndex = MainActivity.contextQuickSleepChipIndexForTest();
+        if (volumeIndex != 6) throw new AssertionError("volume index expected 6 got " + volumeIndex);
+        if (sleepIndex != 7) throw new AssertionError("sleep index expected 7 got " + sleepIndex);
+        if (sleepIndex != volumeIndex + 1) {
+            throw new AssertionError("sleep must be immediately after volume");
+        }
     }
 
     /**

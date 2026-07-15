@@ -90,6 +90,9 @@ public final class SolarLog {
                 d.put("stack", body.length() > 2000 ? scrub(body.substring(0, 2000)) : scrub(body));
                 DebugSessionLog.log("SolarLog.logCrash", "uncaught", "H1", d);
                 DebugB8b871Log.log(null, "SolarLog.logCrash", "uncaught", "H-E", d);
+                // #region agent log
+                Debug9d82a5Log.log(appCtx, "SolarLog.logCrash", "uncaught", "F", d);
+                // #endregion
             } catch (Exception ignoredDbg) {}
         } catch (Exception ignored) {}
     }

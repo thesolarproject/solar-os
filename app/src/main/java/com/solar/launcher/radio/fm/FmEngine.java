@@ -505,6 +505,32 @@ public final class FmEngine {
     if (ok) {
       currentFreqMhz = mhz;
       powerUp = true;
+      // 2026-07-15 — Service path must start the FM audio pump (native path already does).
+      // Layman: without this, the dial says tuned but you hear silence.
+      try {
+        audioRouter.start();
+      } catch (Throwable t) {
+        lastError = "FM audio start failed: " + t.getMessage();
+        // #region agent log
+        try {
+          org.json.JSONObject d = new org.json.JSONObject();
+          d.put("err", String.valueOf(t.getMessage()));
+          d.put("mhz", mhz);
+          com.solar.launcher.debug.SessionDebugLog.log(appCtx, "FmEngine.playStationViaService",
+              "audioRouter.start failed", "F1", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        return false;
+      }
+      // #region agent log
+      try {
+        org.json.JSONObject d = new org.json.JSONObject();
+        d.put("mhz", mhz);
+        d.put("useService", true);
+        com.solar.launcher.debug.SessionDebugLog.log(appCtx, "FmEngine.playStationViaService",
+            "service tune + audio start", "F1", d);
+      } catch (Exception ignored) {}
+      // #endregion
     }
     return ok;
   }

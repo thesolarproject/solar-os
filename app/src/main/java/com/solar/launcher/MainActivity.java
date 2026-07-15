@@ -523,6 +523,11 @@ public class MainActivity extends Activity {
     private boolean webServerStartedForDeezerSetup = false;
     private int homeScreenEditorMenuFocusIndex = 11;
     private int homeScreenEditorFocusIndex = 1;
+    /** 2026-07-15 — Home Screen editor strip reorder (MoveStripController). */
+    private MoveStripController homeEditorMoveStrip;
+    private LinearLayout homeEditorMoveHost;
+    private int homeEditorMoveFrom = -1;
+    private java.util.ArrayList<String> homeEditorMoveIds;
     private int homeScreenOrderFocusIndex = 1;
     private int playlistMoveFrom = -1;
     private int playlistMovePickIndex = -1;
@@ -1157,14 +1162,19 @@ public class MainActivity extends Activity {
     /** Blocks Back while a non-interactive please-wait overlay is up (Rockbox switch). */
     private boolean contextMenuBlockingHint = false;
     private static final int VOLUME_CONTEXT_DISMISS_MS = 2000;
+    /**
+     * 2026-07-15 — Quick chips: Sleep/Zzz is rightmost after Volume (Y1/A5).
+     * Was: Lock=1, Volume=7. Now: Home/Wi‑Fi/BT/Power/Queue/Brightness/Volume/Sleep.
+     * Reversal: restore LOCK=1 and VOLUME=7 order.
+     */
     private static final int CONTEXT_QUICK_HOME_INDEX = 0;
-    private static final int CONTEXT_QUICK_LOCK_INDEX = 1;
-    private static final int CONTEXT_QUICK_WIFI_INDEX = 2;
-    private static final int CONTEXT_QUICK_BT_INDEX = 3;
-    private static final int CONTEXT_QUICK_POWER_INDEX = 4;
-    private static final int CONTEXT_QUICK_QUEUE_INDEX = 5;
-    private static final int CONTEXT_QUICK_BRIGHTNESS_INDEX = 6;
-    private static final int CONTEXT_QUICK_VOLUME_INDEX = 7;
+    private static final int CONTEXT_QUICK_WIFI_INDEX = 1;
+    private static final int CONTEXT_QUICK_BT_INDEX = 2;
+    private static final int CONTEXT_QUICK_POWER_INDEX = 3;
+    private static final int CONTEXT_QUICK_QUEUE_INDEX = 4;
+    private static final int CONTEXT_QUICK_BRIGHTNESS_INDEX = 5;
+    private static final int CONTEXT_QUICK_VOLUME_INDEX = 6;
+    private static final int CONTEXT_QUICK_SLEEP_INDEX = 7;
     private static final String CONTEXT_NAV_ROOT = "root";
     private String contextMenuVolumeReturnTier;
     private boolean contextMenuInQueueTier = false;
@@ -2709,6 +2719,36 @@ public class MainActivity extends Activity {
                 return handleThemedContextMenuKeyDown(keyCode, event);
             }
         });
+        // 2026-07-15 — Touch lift/drag for play queue ribbon (OK-hold + wheel unchanged).
+        themedContextMenu.setQueueTouchMoveListener(new ThemedContextMenu.QueueTouchMoveListener() {
+            @Override
+            public void onQueueTouchLift(int index) {
+                if (!contextMenuInQueueTier || contextQueueMoveFrom >= 0) return;
+                if (!canPickContextQueueMoveFrom(index)) return;
+                contextQueueFocusIndex = index;
+                handleContextQueueCenterActivate(true);
+            }
+
+            @Override
+            public void onQueueTouchStep(int delta) {
+                if (!contextMenuInQueueTier || contextQueueMoveFrom < 0 || delta == 0) return;
+                if (themedContextMenu != null && themedContextMenu.isQueueMoveRibbonAnimating()) return;
+                if (!contextQueueMoveWheelFilter.accept()) return;
+                int size = contextQueueEditPlaylist
+                        ? playlistEditTracks.size()
+                        : playback.unifiedQueue().size();
+                int newIdx = QueueMoveWindow.nextMoveIndex(contextQueueMoveFrom, delta, size);
+                if (newIdx != contextQueueMoveFrom) {
+                    applyContextQueueMove(contextQueueMoveFrom, newIdx);
+                    clickFeedback();
+                }
+            }
+
+            @Override
+            public void onQueueTouchConfirm() {
+                if (contextQueueMoveFrom >= 0) confirmContextQueueMove();
+            }
+        });
         usbFocusHelper = new Y1UsbFocusHelper(this, new Y1UsbFocusHelper.UsbListener() {
             private long lastUsbEventTime = 0;
             private boolean lastHandledState = false;
@@ -2844,17 +2884,21 @@ public class MainActivity extends Activity {
                 routeUsbHostInterceptUi(false);
             }
         });
+        // 2026-07-15 — Letter HUD: was 50sp/80dp solid fill; now selectitem chrome (~1.75× menu).
+        // Reversal: restore 50sp TextSize + 80dp box + setBackgroundColor in showFastScrollLetter.
         tvFastScrollLetter = new TextView(this);
-        tvFastScrollLetter.setTextSize(50); // 글자 크기를 아주 큼직하게!
+        float menuSp = getResources().getDimension(R.dimen.y1_menu_text_size)
+                / getResources().getDisplayMetrics().scaledDensity;
+        float letterSp = Math.max(24f, Math.min(36f, menuSp * 1.75f));
+        tvFastScrollLetter.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, letterSp);
         tvFastScrollLetter.setGravity(android.view.Gravity.CENTER);
         tvFastScrollLetter.setVisibility(View.GONE);
-
+        float letterDensity = getResources().getDisplayMetrics().density;
+        int letterBoxPx = (int) (56 * letterDensity);
         android.widget.FrameLayout.LayoutParams flp = new android.widget.FrameLayout.LayoutParams(
-                (int)(80 * getResources().getDisplayMetrics().density), // 가로 80dp
-                (int)(80 * getResources().getDisplayMetrics().density)  // 세로 80dp
-        );
-        flp.gravity = android.view.Gravity.CENTER_VERTICAL | android.view.Gravity.RIGHT; // 오른쪽 가운데 정렬
-        flp.rightMargin = (int)(30 * getResources().getDisplayMetrics().density); // 오른쪽에서 30dp 띄움
+                letterBoxPx, letterBoxPx);
+        flp.gravity = android.view.Gravity.CENTER_VERTICAL | android.view.Gravity.RIGHT;
+        flp.rightMargin = (int) (24 * letterDensity);
         root.addView(tvFastScrollLetter, flp);
 
         startInactivityMonitor();
@@ -4035,7 +4079,38 @@ public class MainActivity extends Activity {
         if (tvFastScrollLetter != null) tvFastScrollLetter.setVisibility(View.GONE);
     }
 
+    /**
+     * 2026-07-15 — Letter bubble only on alpha/numeric name-sorted catalogs (see FastScrollLetterPolicy).
+     */
+    private boolean isFastScrollLetterEligible() {
+        boolean themeGallery = currentScreenState == STATE_SETTINGS && isThemeListActive();
+        boolean serverBrowse = currentScreenState == STATE_NAVIDROME
+                || currentScreenState == STATE_PLEX
+                || currentScreenState == STATE_JELLYFIN
+                || currentScreenState == STATE_DEEZER;
+        boolean mediaBrowse = currentScreenState == STATE_PODCASTS
+                || currentScreenState == MediaSuiteHost.STATE_VIDEOS
+                || currentScreenState == MediaSuiteHost.STATE_VIDEO_HUB;
+        int artistSort = libraryBrowsePrefs != null
+                ? libraryBrowsePrefs.artistSort() : LibraryBrowsePrefs.ARTIST_SORT_NAME;
+        int songSort = libraryBrowsePrefs != null
+                ? libraryBrowsePrefs.songSort() : LibraryBrowsePrefs.SONG_SORT_TITLE;
+        int albumRackSort = libraryBrowsePrefs != null
+                ? libraryBrowsePrefs.albumRackSort() : LibraryBrowsePrefs.ALBUM_RACK_SORT_TITLE;
+        int albumSongSort = libraryBrowsePrefs != null
+                ? libraryBrowsePrefs.albumSongSort() : LibraryBrowsePrefs.SONG_SORT_ALBUM;
+        return FastScrollLetterPolicy.isEligible(
+                currentScreenState, currentBrowserMode, virtualQueryType,
+                artistSort, songSort, albumRackSort, albumSongSort,
+                themeGallery, serverBrowse, mediaBrowse);
+    }
+
     private void showFastScrollLetter(String rawText) {
+        // 2026-07-15 — Gate + selectitem chrome. Was always-on solid focused fill @ 50sp.
+        if (!isFastScrollLetterEligible()) {
+            hideFastScrollLetter();
+            return;
+        }
         if (tvFastScrollLetter == null || rawText == null) {
             hideFastScrollLetter();
             return;
@@ -4050,9 +4125,26 @@ public class MainActivity extends Activity {
         String firstChar = WheelSectionIndex.normalize(clean);
         if (firstChar.isEmpty()) firstChar = "#";
         tvFastScrollLetter.setText(firstChar);
-        int bgColor = ThemeManager.getListButtonFocusedBg();
-        tvFastScrollLetter.setBackgroundColor((bgColor & 0xFFFFFF) | 0xDD000000);
-        tvFastScrollLetter.setTextColor(ThemeManager.getListButtonFocusedTextColor());
+        int boxW = tvFastScrollLetter.getLayoutParams() != null
+                ? tvFastScrollLetter.getLayoutParams().width : 0;
+        int boxH = tvFastScrollLetter.getLayoutParams() != null
+                ? tvFastScrollLetter.getLayoutParams().height : 0;
+        if (boxW <= 0) boxW = (int) (56 * getResources().getDisplayMetrics().density);
+        if (boxH <= 0) boxH = boxW;
+        android.graphics.drawable.Drawable selBg = ThemeManager.getItemRowBackgroundScaled(
+                getResources(), true, boxW, boxH);
+        if (selBg != null) {
+            tvFastScrollLetter.setBackground(selBg);
+        } else {
+            // Fallback: old solid selection fill when theme has no selectitem PNG.
+            int bgColor = ThemeManager.getListButtonFocusedBg();
+            tvFastScrollLetter.setBackgroundColor((bgColor & 0xFFFFFF) | 0xDD000000);
+        }
+        int textColor = ThemeManager.getItemTextColorSelected();
+        if (ThemeManager.getCustomFont() != null) {
+            tvFastScrollLetter.setTypeface(ThemeManager.getCustomFont());
+        }
+        ThemeManager.applyThemedTextStyle(tvFastScrollLetter, textColor);
         tvFastScrollLetter.setVisibility(View.VISIBLE);
         if (android.os.SystemClock.elapsedRealtimeNanos() >= suppressOverlayHapticUntilNanos) {
             wheelDetentFeedback(true);
@@ -8187,11 +8279,18 @@ public class MainActivity extends Activity {
                 || SettingsScreens.XPOSED_MODULE_DETAIL.equals(key);
     }
 
+    /**
+     * 2026-07-15 — Force full-width list chrome for Reach + media suite catalogs.
+     * Layman: big lists (YouTube, radio, videos) use the whole screen, not a skinny left column.
+     * Was: Soulseek/Deezer/settings keys only — YouTube detail left an empty dual-pane right side.
+     * Reversal: drop MediaSuiteHost.isMediaSuiteState from the OR.
+     */
     private void applyReachBrowseLayoutMode() {
         settingsBrowseFullWidth = isReachBrowseScreen(settingsSubScreenKey)
                 || isSettingsFullWidthSubScreen(settingsSubScreenKey)
                 || currentScreenState == STATE_DEEZER
-                || currentScreenState == STATE_SOULSEEK;
+                || currentScreenState == STATE_SOULSEEK
+                || MediaSuiteHost.isMediaSuiteState(currentScreenState);
         applyFullWidthMenusLayout();
     }
 
@@ -10331,6 +10430,10 @@ public class MainActivity extends Activity {
             clearThemeGalleryPreview();
         }
         currentScreenState = state;
+        // 2026-07-15 — Tell Xposed / :overlay to skip global volume HUD on NP/video (inline pulse).
+        // Was: SolarUiState prop never written. Reversal: delete this setNowPlayingScreen call.
+        SolarUiState.setNowPlayingScreen(VolumeHudPolicy.isInlineVolumeScreen(state,
+                STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER));
         refreshBlockingOverlayVisible();
         scheduleSoulseekSharePolicyRefresh();
         layoutMainMenu.setVisibility(state == STATE_MENU ? View.VISIBLE : View.GONE);
@@ -10636,9 +10739,11 @@ public class MainActivity extends Activity {
                 jellyfinScreenHost.open();
             }
         }
+        // 2026-07-15 — Media suite (YouTube/radio/videos/photos) also needs host width on enter.
         if (state == STATE_BROWSER || state == STATE_SOULSEEK || state == STATE_DEEZER
                 || state == STATE_PODCASTS || state == STATE_APPS || state == STATE_MORE
-                || state == STATE_NAVIDROME || state == STATE_PLEX || state == STATE_JELLYFIN) {
+                || state == STATE_NAVIDROME || state == STATE_PLEX || state == STATE_JELLYFIN
+                || MediaSuiteHost.isMediaSuiteState(state)) {
             applyPodcastBrowserLayout();
         }
         refreshBrowserPathBreadcrumb();
@@ -10906,6 +11011,11 @@ public class MainActivity extends Activity {
                 && currentScreenState != STATE_PLAYER) {
             if (currentScreenState == STATE_SETTINGS && SettingsScreens.HOME.equals(settingsSubScreenKey)) {
                 if (System.currentTimeMillis() < suppressListClickUntil) return;
+                // 2026-07-15 — Short OK confirms home strip place.
+                if (homeEditorMoveFrom >= 0) {
+                    endHomeEditorMove(true);
+                    return;
+                }
                 // ponytail: API 17 may lag requestFocus — fall back to tracked editor index.
                 View row = getCurrentFocus();
                 if ((row == null || !row.isFocusable()) && containerSettingsItems != null) {
@@ -11271,12 +11381,28 @@ public class MainActivity extends Activity {
             return true;
         }
         // 2026-07-11 — Post-remap volume (NP edges / emulator / family pin) → Solar volume HUD.
+        // 2026-07-15 — Y2/A5 on NP/video: transport pulse only; if a context modal is open, replace
+        // it with the compact volume bar (in-app or global shell).
+        // Was: always showPlayerVolumeContextOverlay. Reversal: drop VolumeHudPolicy gate.
         if (event != null && shouldUseSolarVolumeHud()
                 && (Y1InputKeys.isVolumeUpKey(event.getKeyCode())
                 || Y1InputKeys.isVolumeDownKey(event.getKeyCode()))) {
             if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                final boolean hwVolDevice = DeviceFeatures.isY2() || DeviceFeatures.isA5()
+                        || EmulatorInputMap.isEmulator();
+                final boolean inlineVol = VolumeHudPolicy.isInlineVolumeScreen(currentScreenState,
+                        STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER);
+                final boolean inAppModal = themedContextMenuOwnsKeys();
+                final boolean globalModal = shouldRouteKeysToGlobalChipOverlay();
+                final boolean showHud = VolumeHudPolicy.shouldShowCompactVolumeHud(
+                        hwVolDevice, inlineVol, inAppModal || globalModal);
                 adjustVolume(Y1InputKeys.isVolumeUpKey(event.getKeyCode()));
-                showPlayerVolumeContextOverlay();
+                if (globalModal && showHud) {
+                    // Morph open global shell → compact volume (clears power/queue/Wi‑Fi activity).
+                    requestGlobalCompactVolumeOverlay();
+                } else if (showHud) {
+                    showPlayerVolumeContextOverlay();
+                }
                 clickFeedback();
             }
             return true;
@@ -15380,11 +15506,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         boolean plexDual = plexDualPaneActive();
         boolean jellyfinDual = jellyfinDualPaneActive();
         boolean dual = podcastDual || appsDual || navidromeDual || plexDual || jellyfinDual;
+        // 2026-07-15 — Media suite catalogs always widen (no cover preview on those states).
+        boolean mediaSuiteWide = MediaSuiteHost.isMediaSuiteState(currentScreenState);
         boolean wideBrowser = isFullWidthMenus
                 || currentScreenState == STATE_BROWSER
                 || currentScreenState == STATE_SOULSEEK
                 || currentScreenState == STATE_DEEZER
                 || currentScreenState == STATE_USB_STORAGE
+                || mediaSuiteWide
                 || (currentScreenState == STATE_NAVIDROME && !navidromeDual)
                 || (currentScreenState == STATE_PLEX && !plexDual)
                 || (currentScreenState == STATE_JELLYFIN && !jellyfinDual)
@@ -15403,7 +15532,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (!isFullWidthMenus && (currentScreenState == STATE_PODCASTS
                     || currentScreenState == STATE_BROWSER || currentScreenState == STATE_SOULSEEK
                     || currentScreenState == STATE_DEEZER || currentScreenState == STATE_USB_STORAGE
-                    || currentScreenState == STATE_NAVIDROME || currentScreenState == STATE_PLEX || currentScreenState == STATE_JELLYFIN)) {
+                    || currentScreenState == STATE_NAVIDROME || currentScreenState == STATE_PLEX
+                    || currentScreenState == STATE_JELLYFIN
+                    || mediaSuiteWide)) {
                 listRowWidthPx = (int) (getResources().getDisplayMetrics().density * (
                         getResources().getDimension(R.dimen.y1_screen_width) / getResources().getDisplayMetrics().density - 20));
                 if (screenWidthPx > 0) {
@@ -16891,6 +17022,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (mediaSuite != null && mediaSuite.isFmPresetMoveActive()) return true;
         if (playlistMoveTutorialShowing) return true;
         if (isPlaylistBrowseContext()) return true;
+        // 2026-07-15 — Home editor strip move.
+        if (homeEditorMoveFrom >= 0) return true;
         if (canScheduleCenterMovePick() && heldMs < CENTER_MOVE_HOLD_MS + 80) return true;
         return false;
     }
@@ -16906,9 +17039,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     /**
-     * Center hold should sleep — Y1 always; Y2 only when hold-OK-to-sleep pref is on; A5 never.
-     * 2026-07-14 — A5 middle hold is context/move, not sleep (was Y1 fall-through).
-     * Reversal: drop isA5 early return so A5 slept like Y1.
+     * 2026-07-15 — Center hold sleep: Y1 default (~300ms); Y2 only if hold-OK-to-sleep pref; A5 never.
+     * Layman: on Y1, hold the middle button to dim the screen — unless you are rearranging a list.
+     * Technical: suppressCenterSleepForReorder wins; Y2 uses hardware POWER short-press for sleep.
+     * Was: Y1 fall-through could sleep A5. Reversal: drop isA5 early return.
      */
     private boolean centerHoldShouldSleep(long heldMs) {
         if (suppressCenterSleepForReorder(heldMs)) return false;
@@ -16949,6 +17083,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (isVirtualPlaylistView()) return playlistMoveFrom < 0 && !playlistMoveTutorialShowing;
         if (isPlaylistBrowseContext()) return playlistMoveFrom < 0 && !playlistMoveTutorialShowing;
+        // 2026-07-15 — Home Screen editor reorder lift.
+        if (currentScreenState == STATE_SETTINGS && SettingsScreens.HOME.equals(settingsSubScreenKey)
+                && homeEditorMoveFrom < 0) {
+            return focusedHomeEditorShortcutId() != null;
+        }
         return false;
     }
 
@@ -16964,7 +17103,31 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (isPlaylistBrowseContext()) {
             handlePlaylistListCenterActivate(true);
+            return;
         }
+        if (currentScreenState == STATE_SETTINGS && SettingsScreens.HOME.equals(settingsSubScreenKey)
+                && homeEditorMoveFrom < 0) {
+            String id = focusedHomeEditorShortcutId();
+            if (id != null) beginHomeEditorMove(id);
+        }
+    }
+
+    /**
+     * 2026-07-15 — Home editor focused shortcut id (null for Back / headers / Settings / off).
+     */
+    private String focusedHomeEditorShortcutId() {
+        if (containerSettingsItems == null) return null;
+        View focused = getCurrentFocus();
+        if (focused == null) return null;
+        Object tag = focused.getTag();
+        if (!(tag instanceof String)) return null;
+        String key = (String) tag;
+        final String prefix = "home.shortcut.";
+        if (!key.startsWith(prefix)) return null;
+        String id = key.substring(prefix.length());
+        if (HomeMenuConfig.ID_SETTINGS.equals(id)) return null;
+        if (!HomeMenuConfig.isVisible(prefs, id)) return null;
+        return id;
     }
 
     /** Center/OK hold ~0.3s — sleep while pressed or on release after threshold. */
@@ -17354,6 +17517,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /** Wheel up/down in settings lists — walks {@link #containerSettingsItems} rows directly. */
     private boolean moveSettingsListFocus(int delta) {
+        // 2026-07-15 — Home editor strip owns the wheel while moving.
+        if (homeEditorMoveFrom >= 0 && SettingsScreens.HOME.equals(settingsSubScreenKey)) {
+            stepHomeEditorMove(delta);
+            return true;
+        }
         // #region agent log
         if (isConversationThreadActive()) {
             try {
@@ -17952,19 +18120,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         int volIcon = ThemedContextMenu.volumeIconResForLevel(volCur, volMax);
         int brightIcon = ThemedContextMenu.brightnessIconResForLevel(currentSystemBrightness, 255);
         boolean rooted = DeviceFeatures.hasRootAccess();
-        // 2026-07-14 — A5 has no dedicated hard volume; show vol/lock chips like Y1.
+        // 2026-07-14 — A5 has no dedicated hard volume; show vol/sleep chips like Y1.
         // Was: isY1() only (A5 chips vanished). Now: showsOverlayVolumeLockChips().
         // Reversal: boolean y1 = DeviceFeatures.isY1();
-        boolean showVolLock = DeviceFeatures.showsOverlayVolumeLockChips();
+        boolean showVolSleep = DeviceFeatures.showsOverlayVolumeLockChips();
+        // 2026-07-15 — Sleep/Zzz rightmost after Volume (was Lock at index 1).
         return new ThemedContextMenu.QuickItem[] {
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_home, getString(R.string.context_go_to_home), true),
-            new ThemedContextMenu.QuickItem(null, R.drawable.ic_lock, getString(R.string.context_action_lock_screen), showVolLock),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_wifi, getString(R.string.context_tier_wifi), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_bluetooth, getString(R.string.home_menu_bluetooth), true),
             new ThemedContextMenu.QuickItem(null, R.drawable.ic_power, getString(R.string.context_quick_power), rooted),
             new ThemedContextMenu.QuickItem(null, endIcon, endLabel, true),
             new ThemedContextMenu.QuickItem(null, brightIcon, getString(R.string.context_quick_brightness), true),
-            new ThemedContextMenu.QuickItem(null, volIcon, getString(R.string.context_quick_volume), showVolLock)
+            new ThemedContextMenu.QuickItem(null, volIcon, getString(R.string.context_quick_volume), showVolSleep),
+            new ThemedContextMenu.QuickItem(null, R.drawable.ic_zzz, getString(R.string.context_action_sleep), showVolSleep)
         };
     }
 
@@ -18048,8 +18217,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
         }
         if (usbEnablePromptSession || isUsbEnablePromptTierActive()) {
+            // 2026-07-15 — Sleep moved to right end (was LOCK_INDEX).
             if (index != CONTEXT_QUICK_VOLUME_INDEX && index != CONTEXT_QUICK_BRIGHTNESS_INDEX
-                    && index != CONTEXT_QUICK_HOME_INDEX && index != CONTEXT_QUICK_LOCK_INDEX) {
+                    && index != CONTEXT_QUICK_HOME_INDEX && index != CONTEXT_QUICK_SLEEP_INDEX) {
                 return;
             }
         }
@@ -18062,11 +18232,6 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         switch (index) {
             case CONTEXT_QUICK_HOME_INDEX:
                 goToHomeFromContextQuickBar();
-                break;
-            case CONTEXT_QUICK_LOCK_INDEX:
-                suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
-                dismissThemedContextMenu();
-                performScreenSleep(true);
                 break;
             case CONTEXT_QUICK_WIFI_INDEX:
                 openContextNetworkTab("wifi", CONTEXT_QUICK_WIFI_INDEX);
@@ -18097,6 +18262,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 themedContextMenu.setQuickReturnIndex(CONTEXT_QUICK_VOLUME_INDEX);
                 showContextMediaSliders(CONTEXT_QUICK_VOLUME_INDEX);
                 contextMenuInVolumeSlider = true;
+                break;
+            case CONTEXT_QUICK_SLEEP_INDEX:
+                // 2026-07-15 — Right-end Zzz sleep (was Lock chip at index 1).
+                suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
+                dismissThemedContextMenu();
+                performScreenSleep(true);
                 break;
             default:
                 break;
@@ -18431,6 +18602,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     getString(R.string.context_quick_volume), max, cur, y1RowHeightPx, panelW);
         }
         scheduleVolumeContextDismiss();
+    }
+
+    /**
+     * 2026-07-15 — Ask the live WM overlay shell to morph into compact volume.
+     * Layman: swap the big context menu for the small volume bar.
+     * Technical: SHOW_OVERLAY_VOLUME → SolarOverlayService.refreshVolumeSlider / companion showVolumeTier.
+     * Reversal: remove call site; leave global modal painted.
+     */
+    private void requestGlobalCompactVolumeOverlay() {
+        try {
+            Intent vol = new Intent(OverlayTriggers.ACTION_SHOW_OVERLAY_VOLUME);
+            vol.setComponent(com.solar.launcher.overlay.OverlayShellRouter.overlayComponent());
+            startService(vol);
+        } catch (Exception ignored) {}
     }
 
     private void scheduleVolumeContextDismiss() {
@@ -21746,6 +21931,34 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         playlistMoveOverlay.addView(playlistMoveScroll, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         playlistMoveRibbon.enter(playlistMoveFrom, playlistMoveEnterBrowseSlot, playlistMoveEnterPadTop);
+        // 2026-07-15 — Touch drag on mover (wheel/OK-hold paths unchanged).
+        attachPlaylistMoveTouchDrag();
+    }
+
+    /**
+     * 2026-07-15 — Drag the lifted playlist ribbon strip with a finger (Spotify-queue feel).
+     * Was: wheel/OK only. Reversal: remove MoveRibbonTouch.attachActiveDrag call.
+     */
+    private void attachPlaylistMoveTouchDrag() {
+        if (playlistMoveRibbon == null || !MoveRibbonTouch.touchReorderEnabled()) return;
+        final View mover = playlistMoveRibbon.moverRowForTouch();
+        if (mover == null) return;
+        final int slotH = y1LibraryRowHeightPx + 2;
+        MoveRibbonTouch.attachActiveDrag(mover, slotH, new MoveRibbonTouch.Callbacks() {
+            @Override
+            public void onLift() {}
+
+            @Override
+            public void onStep(int delta) {
+                if (delta == 0 || !isPlaylistMoveActive()) return;
+                handlePlaylistMoveWheel(delta);
+            }
+
+            @Override
+            public void onConfirm() {
+                if (isPlaylistMoveActive()) confirmPlaylistMove();
+            }
+        });
     }
 
     private void hidePlaylistMoveStripUi() {
@@ -22588,9 +22801,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (globalPpLongFlowHandled || currentScreenState == STATE_FLOW) return;
         if (globalPpKeyDownAt <= 0) return;
         if (System.currentTimeMillis() - globalPpKeyDownAt < FLOW_LAUNCH_HOLD_MS) return;
-        // 2026-07-15 — Song lists: long PP jumps to the next letter section (alphabet search).
+        // 2026-07-15 — Song lists: long PP jumps to next letter only when list is title-sorted.
         if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_VIRTUAL_SONGS
-                && listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE) {
+                && listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE
+                && isFastScrollLetterEligible()) {
             int current = listVirtualSongs.getSelectedItemPosition();
             if (current < 0) current = 0;
             int target = wheelSectionIndex.jumpTarget(current, 1);
@@ -24322,6 +24536,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     /** Screen off — root power key only (Y1); shared by hold-center and context menu. */
+    /**
+     * 2026-07-15 — Sleep from in-app quick bar / holds — shared PowerActions path.
+     * Was: local trySuScreenOff. Now: PowerActions.screenSleep (A5 + Y1/Y2).
+     * Reversal: restore trySuScreenOff body below and call it here.
+     */
     private void performScreenSleep(boolean feedback) {
         if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER
                 && !com.solar.launcher.video.VideoSettings.getSleepDuringPlayback(this)) {
@@ -24331,14 +24550,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (feedback) clickFeedback();
         // 2026-07-15 — Dismiss before keyevent so sleep is not race-dependent on SCREEN_OFF alone.
         dismissOverlaysAndUsbPromptForScreenSleep("performScreenSleep");
-        if (trySuScreenOff()) {
-            return;
-        }
-        try { Thread.sleep(80); } catch (InterruptedException ignored) {}
-        if (trySuScreenOff()) {
-            return;
-        }
-        Toast.makeText(this, getString(R.string.context_action_lock_failed), Toast.LENGTH_SHORT).show();
+        PowerActions.screenSleep(this);
     }
 
     private boolean isScreenInteractive() {
@@ -24349,18 +24561,6 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } catch (Exception e) {
             return true;
         }
-    }
-
-    /** ponytail: Y1 system APK is not android.uid.system — root power key is the fast path */
-    private boolean trySuScreenOff() {
-        for (String su : new String[] {"/system/xbin/su", "su"}) {
-            try {
-                Process p = Runtime.getRuntime().exec(new String[] {su, "-c", "input keyevent 26"});
-                if (p.waitFor() != 0) continue;
-                if (!isScreenInteractive()) return true;
-            } catch (Exception ignored) {}
-        }
-        return false;
     }
 
     private void restartCurrentPodcast() {
@@ -34320,6 +34520,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void onHomeShortcutEditorClick(final HomeMenuConfig.Entry entry) {
         if (entry.required) return;
+        if (homeEditorMoveFrom >= 0) return;
         clickFeedback();
         boolean on = HomeMenuConfig.isShortcutEnabled(prefs, entry.id);
         HomeMenuConfig.setShortcutEnabled(prefs, entry.id, !on);
@@ -34334,23 +34535,139 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         buildHomeScreenEditorUI();
     }
 
+    /**
+     * 2026-07-15 — Enter home shortcut strip reorder (OK-hold / touch long-press).
+     * Reversal: no-op; editor stays On/Off only.
+     */
+    private void beginHomeEditorMove(String shortcutId) {
+        if (shortcutId == null || HomeMenuConfig.ID_SETTINGS.equals(shortcutId)) return;
+        List<String> ids = HomeMenuConfig.loadHomeOrderIds(prefs);
+        int pick = ids.indexOf(shortcutId);
+        if (pick < 0) return;
+        homeEditorMoveIds = new java.util.ArrayList<String>(ids);
+        homeEditorMoveFrom = pick;
+        clickFeedback();
+        buildHomeScreenEditorUI();
+    }
+
+    private void endHomeEditorMove(boolean confirm) {
+        if (homeEditorMoveStrip != null) {
+            homeEditorMoveStrip.teardown();
+            homeEditorMoveStrip = null;
+        }
+        homeEditorMoveHost = null;
+        if (confirm && homeEditorMoveIds != null && homeEditorMoveFrom >= 0) {
+            HomeMenuConfig.saveOrder(prefs, homeEditorMoveIds);
+            buildHomeMenu();
+        }
+        homeEditorMoveIds = null;
+        homeEditorMoveFrom = -1;
+        buildHomeScreenEditorUI();
+    }
+
+    /** 2026-07-15 — Wheel / touch step while home editor strip is active (±1 slot). */
+    private void stepHomeEditorMove(int delta) {
+        if (homeEditorMoveStrip == null || homeEditorMoveIds == null || delta == 0) return;
+        if (homeEditorMoveStrip.isAnimating()) return;
+        final int from = homeEditorMoveFrom;
+        final int to = from + (delta < 0 ? -1 : 1);
+        if (to < 0 || to >= homeEditorMoveIds.size()) return;
+        String fromId = homeEditorMoveIds.get(from);
+        String toId = homeEditorMoveIds.get(to);
+        if (HomeMenuConfig.ID_SETTINGS.equals(fromId) || HomeMenuConfig.ID_SETTINGS.equals(toId)) {
+            return;
+        }
+        homeEditorMoveStrip.animateStep(from, to, new Runnable() {
+            @Override
+            public void run() {
+                java.util.Collections.swap(homeEditorMoveIds, from, to);
+                homeEditorMoveFrom = to;
+            }
+        });
+        clickFeedback();
+    }
+
     private void buildHomeScreenEditorUI() {
         setSettingsSubScreen(SettingsScreens.HOME);
         updateStatusBarTitle();
         containerSettingsItems.removeAllViews();
         final int targetFocusIndex = homeScreenEditorFocusIndex;
 
-        Button btnBack = createListButton(getString(R.string.common_cancel_back));
+        Button btnBack = createListButton(homeEditorMoveFrom >= 0
+                ? getString(R.string.common_cancel_back)
+                : getString(R.string.common_cancel_back));
         styleSecondaryLabel(btnBack);
         btnBack.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 clickFeedback();
+                if (homeEditorMoveFrom >= 0) {
+                    endHomeEditorMove(false);
+                    return;
+                }
                 lastSettingsFocusIndex = homeScreenEditorMenuFocusIndex;
                 returnToSettingsParent();
             }
         });
         containerSettingsItems.addView(btnBack);
+
+        // 2026-07-15 — Move mode: paper-strip reorder of enabled home tiles.
+        if (homeEditorMoveFrom >= 0 && homeEditorMoveIds != null) {
+            createCategoryHeader(getString(R.string.home_screen_move_mode));
+            homeEditorMoveHost = new LinearLayout(this);
+            homeEditorMoveHost.setOrientation(LinearLayout.VERTICAL);
+            containerSettingsItems.addView(homeEditorMoveHost);
+            homeEditorMoveStrip = new MoveStripController(homeEditorMoveHost,
+                    new MoveStripController.Adapter() {
+                        @Override
+                        public View createRow() {
+                            return MoveRibbonRows.createMenuMoveRow(MainActivity.this,
+                                    y1RowHeightPx, y1ActiveRowWidthPx());
+                        }
+
+                        @Override
+                        public void bindRow(View row, int dataIndex, boolean moving,
+                                boolean confirming) {
+                            if (!(row instanceof FrameLayout)) return;
+                            String id = homeEditorMoveIds.get(dataIndex);
+                            HomeMenuConfig.Entry e = HomeMenuConfig.find(id);
+                            String label = e != null ? getString(e.labelResId) : id;
+                            MoveRibbonRows.bindMenuMoveRow(MainActivity.this, (FrameLayout) row,
+                                    label, moving, moving || confirming,
+                                    y1ActiveRowWidthPx(), y1RowHeightPx);
+                            if (moving && MoveRibbonTouch.touchReorderEnabled()) {
+                                MoveRibbonTouch.attachActiveDrag(row, y1RowHeightPx + 2,
+                                        new MoveRibbonTouch.Callbacks() {
+                                            @Override
+                                            public void onLift() {}
+
+                                            @Override
+                                            public void onStep(int delta) {
+                                                stepHomeEditorMove(delta);
+                                            }
+
+                                            @Override
+                                            public void onConfirm() {
+                                                endHomeEditorMove(true);
+                                            }
+                                        });
+                            }
+                        }
+
+                        @Override
+                        public int itemCount() {
+                            return homeEditorMoveIds.size();
+                        }
+
+                        @Override
+                        public int rowSlotHeight() {
+                            return y1RowHeightPx + 2;
+                        }
+                    });
+            homeEditorMoveStrip.enter(homeEditorMoveFrom);
+            restoreHomeScreenEditorFocus(1);
+            return;
+        }
 
         createCategoryHeader(getString(R.string.home_screen_shortcuts));
 
@@ -34365,6 +34682,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         onHomeShortcutEditorClick(entry);
                     }
                 });
+                // 2026-07-15 — Touch long-press starts home tile reorder.
+                if (HomeMenuConfig.isVisible(prefs, entry.id)
+                        && MoveRibbonTouch.touchReorderEnabled()) {
+                    final String sid = entry.id;
+                    MoveRibbonTouch.attachBrowseLift(row, CENTER_MOVE_HOLD_MS,
+                            new MoveRibbonTouch.Callbacks() {
+                                @Override
+                                public void onLift() {
+                                    beginHomeEditorMove(sid);
+                                }
+
+                                @Override
+                                public void onStep(int delta) {}
+
+                                @Override
+                                public void onConfirm() {}
+                            });
+                }
             } else {
                 // Required shortcuts (Settings) cannot toggle off — keep them out of wheel order.
                 row.setFocusable(false);
@@ -36902,6 +37237,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             });
             if (isFlowEnabled()) {
                 containerBrowserItems.addView(btnFlow);
+            }
+
+            // 2026-07-15 — Music hub YouTube (audio → music NP); Videos → YouTube stays video.
+            // Was: labeled "YouTube Audio". Reversal: R.string.browser_youtube_audio.
+            if (com.solar.launcher.youtube.YouTubeExperiment.isEnabled(prefs)
+                    && hasInternetConnection()) {
+                Button btnYtAudio = createListButton(getString(R.string.video_youtube_row));
+                btnYtAudio.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        clickFeedback();
+                        if (!requireInternet(R.string.toast_internet_required)) return;
+                        if (mediaSuite != null) {
+                            mediaSuite.openYouTubeAudioBrowse();
+                        }
+                    }
+                });
+                containerBrowserItems.addView(btnYtAudio);
             }
 
             if (NavidromePrefs.isConfigured(prefs)) {
@@ -40586,6 +40939,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** MediaSuiteHost adapter — save from detail list actions. */
     public void mediaRequestYouTubeSave(YouTubeVideo video, boolean audioOnly) {
         startYouTubeSave(video, audioOnly);
+    }
+
+    /**
+     * 2026-07-15 — YouTube Audio: open music Now Playing with a local file.
+     * Layman: play the saved track like any song. Technical: playTrackList singleton → STATE_PLAYER.
+     * Reversal: remove call site; file stays on disk.
+     */
+    public void mediaPlayAudioFileInNowPlaying(File file) {
+        if (file == null || !file.isFile()) return;
+        playTrackList(java.util.Collections.singletonList(file), 0, null);
     }
 
     private void startYouTubeSave(final YouTubeVideo video, final boolean audioOnly) {
@@ -48077,9 +48440,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return Y1InputKeys.isPlayPauseKey(keyCode);
     }
 
+    /**
+     * 2026-07-15 — Queue present and a music/podcast decode path is live.
+     * Was: mediaPlayer/podcast only (YT/EQ IJK scrub looked idle). Now includes musicIjk.
+     * Reversal: drop isMusicIjkActive() from the OR.
+     */
     private boolean hasActiveMediaPlayback() {
         if (!playback.hasAnyQueue()) return false;
-        return mediaPlayer != null || podcastIjkPlayer != null;
+        return mediaPlayer != null || podcastIjkPlayer != null || isMusicIjkActive();
     }
 
     /** Y2 side keys = track prev/next; route whenever a queue exists, not only on Now Playing. */
@@ -48097,16 +48465,22 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 playback.isPodcastActive());
     }
 
+    /**
+     * 2026-07-15 — Video player routes skip keys even with an empty music queue (YT streams).
+     * Was: !hasQueue always false — cold YouTube video never got hold FF/RW.
+     * Reversal: restore opening `if (!hasQueue) return false;` before video exception.
+     */
     static boolean shouldRouteMediaSkipKeysForTest(
             boolean hasQueue, int screenState, int stateFlow, int stateWifiKeyboard,
             int statePlayer, int stateVideoPlayer,
             boolean hasActivePlayback, boolean musicActive, boolean radioActive,
             boolean podcastActive) {
+        // YT / local video: scrub even if no track queue was ever loaded.
+        if (screenState == stateVideoPlayer) return true;
         if (!hasQueue) return false;
         if (screenState == stateFlow) return false;
         if (screenState == stateWifiKeyboard) return true;
         return screenState == statePlayer
-                || screenState == stateVideoPlayer
                 || hasActivePlayback
                 || musicActive
                 || radioActive
@@ -48131,16 +48505,39 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return DeviceFeatures.showsOverlayVolumeLockChips();
     }
 
-    /** Mirrors buildContextQuickBar() — Lock chip on Y1/A5 (Y2 has hardware sleep). */
-    static boolean isContextQuickLockChipVisibleForTest() {
+    /**
+     * 2026-07-15 — Sleep/Zzz chip on Y1/A5 (Y2 has hardware sleep).
+     * Was: isContextQuickLockChipVisibleForTest (same gate). Reversal: rename back to Lock.
+     */
+    static boolean isContextQuickSleepChipVisibleForTest() {
         return DeviceFeatures.showsOverlayVolumeLockChips();
     }
 
-    /** Power chip follows root availability on both Y1 and Y2 Solar ROMs. */
+    /** @deprecated 2026-07-15 — Use {@link #isContextQuickSleepChipVisibleForTest()}. */
+    static boolean isContextQuickLockChipVisibleForTest() {
+        return isContextQuickSleepChipVisibleForTest();
+    }
+
+    /** Power chip follows root availability on Solar ROMs (Y1/Y2/A5). */
     static boolean isContextQuickPowerChipVisibleForTest() {
         return DeviceFeatures.hasRootAccess();
     }
 
+    /** 2026-07-15 — Sleep is rightmost quick chip (index 7 after Volume at 6). */
+    static int contextQuickSleepChipIndexForTest() {
+        return CONTEXT_QUICK_SLEEP_INDEX;
+    }
+
+    /** 2026-07-15 — Volume sits immediately before Sleep. */
+    static int contextQuickVolumeChipIndexForTest() {
+        return CONTEXT_QUICK_VOLUME_INDEX;
+    }
+
+    /**
+     * 2026-07-15 — Duration for NP fine scrub / hold seek (podcast, Reach, music IJK, MediaPlayer).
+     * Was: MediaPlayer only after podcast — YT/EQ IJK tracks reported 0 and scrub never armed.
+     * Reversal: drop isMusicIjkActive branch; ask mediaPlayer only.
+     */
     private int playbackDurationForScrub() {
         if (playback.isPodcastActive()) {
             int est = podcastResumeDurationForSave();
@@ -48155,6 +48552,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (reachPartialPlaybackStarted && reachGrowingCacheFile != null) {
             int est = reachGrowingDisplayDurationMs();
             if (est > 0) return est;
+        }
+        // YouTube audio / software-EQ music: same IJK path as seekActiveAudio.
+        if (isMusicIjkActive()) {
+            try {
+                int d = musicIjkPlayer.getDuration();
+                return d > 0 ? d : 0;
+            } catch (Exception e) {
+                return 0;
+            }
         }
         try {
             if (mediaPlayer == null) return 0;
@@ -48254,6 +48660,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         playerScrubMarker.setBackground(dot);
     }
 
+    /**
+     * 2026-07-15 — Arm NP scrub cursor at live playhead (IJK-aware via activeAudioPositionMs).
+     * Was: podcast or MediaPlayer only — YT/EQ IJK cursor started at 0 / never armed.
+     * Reversal: restore podcast/mediaPlayer ternary for start position.
+     */
     private void enterPlayerScrubCursorMode() {
         if (!hasActiveMediaPlayback()) return;
         int dur = playbackDurationForScrub();
@@ -48269,13 +48680,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } catch (Exception ignored) {}
         // #endregion
         if (dur <= 0) return;
-        try {
-            playerScrubCursorMs = playback.isPodcastActive() && podcastIjkPlayer != null
-                    ? podcastIjkPlayer.getCurrentPosition()
-                    : (mediaPlayer != null ? mediaPlayer.getCurrentPosition() : 0);
-        } catch (Exception e) {
-            playerScrubCursorMs = 0;
-        }
+        // Live position from podcast / music IJK / MediaPlayer (one helper).
+        playerScrubCursorMs = activeAudioPositionMs();
         playerScrubCursorMs = clampScrubPositionMs(playerScrubCursorMs, playbackMaxSeekMs());
         playerScrubCursorActive = true;
         updatePlayerScrubUi();
@@ -48297,14 +48703,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (restoreLiveUi) refreshPlayerProgressFromPlayback();
     }
 
+    /**
+     * 2026-07-15 — Refresh NP time/bar from live decoder (IJK when YT/EQ music active).
+     * Was: MediaPlayer-only after podcast — cancel-scrub UI froze on IJK tracks.
+     * Reversal: require mediaPlayer != null and read getCurrentPosition from it only.
+     */
     private void refreshPlayerProgressFromPlayback() {
         try {
             if (playback.isPodcastActive() && podcastIjkPlayer != null) {
                 refreshPodcastTimeUi();
                 return;
             }
-            if (mediaPlayer == null) return;
-            int current = mediaPlayer.getCurrentPosition();
+            if (!isMusicIjkActive() && mediaPlayer == null) return;
+            int current = activeAudioPositionMs();
             int dur = playbackDurationForScrub();
             if (dur > 0 && playerProgress != null) {
                 playerProgress.setProgress((int) (((float) current / dur) * 100));
@@ -48375,17 +48786,17 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         playerScrubMarker.setVisibility(View.VISIBLE);
     }
 
+    /**
+     * 2026-07-15 — Seek NP playhead; routes through seekActiveAudio (podcast / music IJK / MP).
+     * Was: podcastIjk or mediaPlayer.seekTo only — YouTube audio IJK never sought.
+     * Reversal: restore explicit podcast / mediaPlayer branches without seekActiveAudio.
+     */
     private void seekMediaTo(int positionMs) {
         try {
             int dur = playbackDurationForScrub();
             int pos = clampScrubPositionMs(positionMs, playbackMaxSeekMs());
-            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
-                podcastIjkPlayer.seekTo(pos);
-            } else if (mediaPlayer != null) {
-                mediaPlayer.seekTo(pos);
-            } else {
-                return;
-            }
+            // One seek ladder for all audio backends (incl. YT opus on musicIjk).
+            seekActiveAudio(pos);
             lastPodcastPlayPositionMs = pos;
             if (playback.isPodcastActive() && !podcastResumeKey.isEmpty()) {
                 PodcastResumeStore.save(getApplicationContext(), podcastResumeKey, pos,
@@ -48413,12 +48824,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } catch (Exception ignored) {}
     }
 
+    /**
+     * 2026-07-15 — Hold-seek ±delta from live playhead (IJK-aware).
+     * Was: podcast/MediaPlayer position only. Reversal: restore that ternary.
+     */
     private void scrubMediaBy(int deltaMs) {
         if (deltaMs == 0) return;
         try {
-            int current = playback.isPodcastActive() && podcastIjkPlayer != null
-                    ? podcastIjkPlayer.getCurrentPosition()
-                    : (mediaPlayer != null ? mediaPlayer.getCurrentPosition() : 0);
+            int current = activeAudioPositionMs();
             int pos = clampScrubPositionMs(current + deltaMs, playbackMaxSeekMs());
             seekMediaTo(pos);
         } catch (Exception ignored) {}
@@ -49177,12 +49590,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 int direction = Y1InputKeys.isWheelUp(keyCode) ? -1
                         : Y1InputKeys.isWheelDown(keyCode) ? 1 : 0;
                 if (direction != 0) {
-                    // PR #23 progressive flywheel; section jump replaces legacy fast-scroll letter skip.
+                    // PR #23 progressive flywheel; section jump only when letter index is eligible.
                     ensureWheelSectionIndex();
                     wheelPhysics.tick(android.os.SystemClock.elapsedRealtimeNanos(),
                             direction, wheelResult);
                     int current = currentWheelPosition();
-                    int target = wheelResult.sectionJump
+                    boolean sectionOk = wheelResult.sectionJump && isFastScrollLetterEligible();
+                    int target = sectionOk
                             ? wheelSectionIndex.jumpTarget(current, direction)
                             : current + direction * wheelResult.rowSteps;
                     if (target < 0) {
@@ -51277,7 +51691,26 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             "PLAYLIST".equals(virtualQueryType) ? virtualQueryValue : null);
                 }
             });
-            attachA5RowLongPress(row);
+            // 2026-07-15 — Touch long-press lifts playlist strip; skip row context hold (conflicts).
+            // Was: attachA5RowLongPress always. Reversal: always attachA5RowLongPress; drop MoveRibbonTouch.
+            if (numbered && "PLAYLIST".equals(virtualQueryType) && MoveRibbonTouch.touchReorderEnabled()) {
+                MoveRibbonTouch.attachBrowseLift(row, CENTER_MOVE_HOLD_MS, new MoveRibbonTouch.Callbacks() {
+                    @Override
+                    public void onLift() {
+                        if (playlistMoveFrom >= 0 || playlistMoveTutorialShowing) return;
+                        beginPlaylistMove(position);
+                        clickFeedback();
+                    }
+
+                    @Override
+                    public void onStep(int delta) {}
+
+                    @Override
+                    public void onConfirm() {}
+                });
+            } else {
+                attachA5RowLongPress(row);
+            }
             MoveRibbonRows.bindLibraryMoveRow(MainActivity.this, row,
                     numbered ? String.format(Locale.US, "%02d · %s", position + 1, song.title)
                             : song.title,
@@ -51435,6 +51868,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     public void mediaExitToHomeMenu() { changeScreen(STATE_MENU); }
+
+    /**
+     * 2026-07-15 — Music→YouTube Back returns to Music hub root.
+     * Was: Back from YouTube audio landed on Videos hub. Reversal: call changeScreen(STATE_VIDEO_HUB).
+     */
+    public void mediaExitYouTubeAudioToMusic() {
+        currentBrowserMode = BROWSER_ROOT;
+        changeScreen(STATE_BROWSER);
+    }
 
     public void mediaRefreshPlayerUi() {
         updatePlayerUI();

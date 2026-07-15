@@ -9,11 +9,12 @@ package com.solar.input.policy;
 public final class GlobalInputPolicy {    public static final String POLICY_REV_PROPERTY = "sys.solar.input.policy_rev";
     /** Bump when hold tiers or fail-open paths change — adb: getprop sys.solar.input.policy_rev */
     /**
-     * 2026-07-14 — Bump: Solar-only quick menu; HOLD BACK outside Solar returns home (no WM shell).
-     * Layman: Power-hold menu only inside Solar; elsewhere stock Android; hold Back to jump home.
-     * Reversal: POLICY_REV 21 + system-wide BACK/POWER modal for 3P/Rockbox/JJ/fail-open shells.
+     * 2026-07-15 — Bump: Y2 short POWER force-sleep only when screen was on at POWER DOWN.
+     * Layman: one press wakes a dark screen; the same short press sleeps a lit screen.
+     * Was: POLICY_REV 22 always goToSleep on short UP (wake already lit screen → flash→sleep).
+     * Reversal: POLICY_REV 22 + unguarded triggerGoToSleep on every short pass-through tap.
      */
-    public static final int POLICY_REV = 22;
+    public static final int POLICY_REV = 23;
  
     /**
      * Cross-process — infinite list wrap opt-in for main Solar lists (not context/overlay modal).
@@ -106,6 +107,16 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     /** Y2 short POWER tap — never consume; stock sleep/wake owns the gesture. */
     public static boolean shouldPassthroughPowerTap(long holdMs) {
         return holdMs < POWER_TAP_MAX_MS;
+    }
+
+    /**
+     * 2026-07-15 — Y2 Xposed may call goToSleep on short POWER when MTK misses sleep.
+     * Layman: only force sleep if the screen was already lit when the finger went down.
+     * Tech: hold under POWER_TAP_MAX_MS AND screenWasOnAtDown — UP-time isScreenOn is true after wake.
+     * Reversal: call goToSleep on every shouldPassthroughPowerTap without DOWN-time screen check.
+     */
+    public static boolean shouldForcePowerTapSleep(long holdMs, boolean screenWasOnAtDown) {
+        return screenWasOnAtDown && shouldPassthroughPowerTap(holdMs);
     }
 
     /**

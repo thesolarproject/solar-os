@@ -10,10 +10,13 @@ import android.widget.Toast;
 /**
  * Headphone hearing safety — Solar-owned 80% warning and optional cap; bypasses OS safe-volume
  * limits when disabled (default). UI always uses 0–100 where 100 = top of the allowed range.
+ *
+ * 2026-07-15 — OS bypass must write DISABLED (1), never ACTIVE (3); old fallback locked volume ~80%.
+ * Reversal: restore catch-only settings put with state 3 (broken EU lock — do not).
  */
 public final class HearingSafetyVolume {
 
-    /** Settings → Media — when on, cap at 80% of hardware max and show Solar warnings. */
+    /** Settings → Playback — when on, cap at 80% of hardware max and show Solar warnings. */
     public static final String PREF_ENABLED = "hearing_safety_enabled";
     /** Xposed / AudioService reads this — "1" = enforce cap, "0" = bypass OS limits. */
     public static final String PROP_ENABLED = "persist.solar.hearing_safety";
@@ -29,6 +32,12 @@ public final class HearingSafetyVolume {
     private static final String PREFS_ABS = "solar_volume_abs_max";
     /** Same store as {@link MainActivity} settings toggles. */
     private static final String PREFS_SETTINGS = "SOLAR_SETTINGS";
+    /**
+     * AOSP {@code Settings.Global.AUDIO_SAFE_VOLUME_STATE} values.
+     * 0 NOT_CONFIGURED, 1 DISABLED (full range), 2 INACTIVE (user confirmed), 3 ACTIVE (~80% EU cap).
+     */
+    static final int OS_SAFE_VOLUME_DISABLED = 1;
+    static final int OS_SAFE_VOLUME_ACTIVE = 3;
 
     private static volatile int lastWarnIndex = -1;
     private static volatile int cachedAbsoluteMax = -1;
@@ -52,6 +61,7 @@ public final class HearingSafetyVolume {
         Context app = ctx.getApplicationContext();
         app.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PREF_ENABLED, enabled).apply();
+        // 2026-07-15 — Push props + clear EU cap when off; Solar 80% clamp when on.
         syncSystemBypass(app, enabled);
         if (enabled) {
             clampStream(app, AudioManager.STREAM_MUSIC);
@@ -207,7 +217,16 @@ public final class HearingSafetyVolume {
         }
     }
 
+    /**
+     * Sync Xposed props and clear Android’s EU safe-media lock when Hearing Safety is off.
+     * Layman: turn off the phone’s hidden “headphones too loud” brake unless the user asked for it.
+     * 2026-07-15 — Always clear OS state when off (reflection alone left ACTIVE=3 on MTK).
+     */
     private static void syncSystemBypass(Context ctx, boolean safetyOn) {
+        // 2026-07-15 — Clear OS cap even without root when the KitKat API exists.
+        if (!safetyOn) {
+            disableOsSafeMediaVolume(ctx);
+        }
         if (!RootShell.canRun()) return;
         RootShell.run("setprop " + PROP_ENABLED + " " + (safetyOn ? "1" : "0"));
         RootShell.run("setprop " + PROP_SAFE_MEDIA_BYPASS + " " + (safetyOn ? "false" : "true"));
@@ -216,22 +235,38 @@ public final class HearingSafetyVolume {
             RootShell.run("setprop " + PROP_ABSOLUTE_MAX + " " + abs);
         }
         if (!safetyOn) {
-            disableOsSafeMediaVolume(ctx);
+            // Belt-and-suspenders: force DISABLED — ACTIVE (3) was the old bug that capped ~80%.
+            writeOsSafeVolumeState(OS_SAFE_VOLUME_DISABLED);
         }
     }
 
-    /** KitKat+ IAudioService.disableSafeMediaVolume — no-op when unavailable (Y1 JB). */
+    /**
+     * Ask AudioService to drop the EU headphone ceiling; then force global state DISABLED.
+     * Reversal: prior catch wrote state 3 (ACTIVE) which enforced the limit — replaced 2026-07-15.
+     */
     private static void disableOsSafeMediaVolume(Context ctx) {
         try {
             Class<?> sm = Class.forName("android.os.ServiceManager");
             Object binder = sm.getMethod("getService", String.class).invoke(null, "audio");
             Class<?> stub = Class.forName("android.media.IAudioService$Stub");
             Object svc = stub.getMethod("asInterface", android.os.IBinder.class).invoke(null, binder);
-            svc.getClass().getMethod("disableSafeMediaVolume", String.class)
-                    .invoke(svc, ctx.getPackageName());
+            // KitKat signature takes calling package; JB omit — try both.
+            try {
+                svc.getClass().getMethod("disableSafeMediaVolume", String.class)
+                        .invoke(svc, ctx != null ? ctx.getPackageName() : "com.solar.launcher");
+            } catch (NoSuchMethodException noPkg) {
+                svc.getClass().getMethod("disableSafeMediaVolume").invoke(svc);
+            }
         } catch (Exception ignored) {
-            RootShell.run("settings put global audio_safe_volume_state 3");
+            // Y1 JB / OEM stubs — root settings put below still clears the lock.
         }
+        writeOsSafeVolumeState(OS_SAFE_VOLUME_DISABLED);
+    }
+
+    /** Root write of {@code audio_safe_volume_state} — 1 = full volume, 3 = EU ~80% lock. */
+    private static void writeOsSafeVolumeState(int state) {
+        if (!RootShell.canRun()) return;
+        RootShell.run("settings put global audio_safe_volume_state " + state);
     }
 
     private static AudioManager audioManager(Context ctx) {
