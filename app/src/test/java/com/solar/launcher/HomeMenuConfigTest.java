@@ -36,10 +36,10 @@ public class HomeMenuConfigTest {
 
     @Test
     public void defaultOrder_mediaThenGetThenSystem() {
-        // 2026-07-15 — FM production: Radio on default home without experiment pref.
-        // Default: NP → Music → Get Music → Podcasts → Radio → BT → Settings → Transfer.
+        // 2026-07-16 — Radio/FM experiment off: home omits Radio tile.
+        // Default: NP → Music → Get Music → Podcasts → BT → Settings → Transfer.
         List<HomeMenuConfig.Entry> visible = HomeMenuConfig.loadVisible(prefs);
-        if (visible.size() != 8) throw new AssertionError("default size " + visible.size());
+        if (visible.size() != 7) throw new AssertionError("default size " + visible.size());
         if (!HomeMenuConfig.ID_NOW_PLAYING.equals(visible.get(0).id)) {
             throw new AssertionError("now playing position");
         }
@@ -52,19 +52,19 @@ public class HomeMenuConfigTest {
         if (!HomeMenuConfig.ID_PODCASTS.equals(visible.get(3).id)) {
             throw new AssertionError("podcasts position");
         }
-        if (!HomeMenuConfig.ID_RADIO.equals(visible.get(4).id)) {
-            throw new AssertionError("radio position");
-        }
-        if (!HomeMenuConfig.ID_BLUETOOTH.equals(visible.get(5).id)) {
+        if (!HomeMenuConfig.ID_BLUETOOTH.equals(visible.get(4).id)) {
             throw new AssertionError("bluetooth position");
         }
-        if (!HomeMenuConfig.ID_SETTINGS.equals(visible.get(6).id)) {
+        if (!HomeMenuConfig.ID_SETTINGS.equals(visible.get(5).id)) {
             throw new AssertionError("settings position");
         }
-        if (!HomeMenuConfig.ID_PC_UPLOAD.equals(visible.get(7).id)) {
+        if (!HomeMenuConfig.ID_PC_UPLOAD.equals(visible.get(6).id)) {
             throw new AssertionError("pc upload position");
         }
         for (HomeMenuConfig.Entry e : visible) {
+            if (HomeMenuConfig.ID_RADIO.equals(e.id)) {
+                throw new AssertionError("radio must stay off home until experiment on");
+            }
             if (HomeMenuConfig.ID_YOUTUBE_AUDIO.equals(e.id)) {
                 throw new AssertionError("youtube_audio must not be on home after schema 8");
             }
@@ -358,25 +358,36 @@ public class HomeMenuConfigTest {
     }
 
     @Test
-    public void radioVisibleWithoutExperiment() {
+    public void radioHiddenWithoutExperiment() {
+        // 2026-07-16 — FM behind Debug experiment (off by default).
         boolean hasRadio = false;
         for (HomeMenuConfig.Entry e : HomeMenuConfig.loadVisibleForDisplay(prefs, true, true)) {
             if (HomeMenuConfig.ID_RADIO.equals(e.id)) hasRadio = true;
         }
-        if (!hasRadio) throw new AssertionError("radio should be visible without experiment");
-        boolean editorHasRadio = false;
-        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
-            if (HomeMenuConfig.ID_RADIO.equals(e.id)) editorHasRadio = true;
+        if (hasRadio) throw new AssertionError("radio should be hidden without experiment");
+        prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, true)
+                .commit();
+        boolean hasRadioOn = false;
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadVisibleForDisplay(prefs, true, true)) {
+            if (HomeMenuConfig.ID_RADIO.equals(e.id)) hasRadioOn = true;
         }
-        if (!editorHasRadio) throw new AssertionError("editor missing radio");
+        if (!hasRadioOn) throw new AssertionError("radio should appear when experiment on");
     }
 
     @Test
-    public void radioAlwaysInEditorCatalog() {
+    public void radioInEditorCatalogWhenExperimentOn() {
+        // 2026-07-16 — Editor mirrors home gate: Radio only when Debug experiment is on.
+        for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
+            if (HomeMenuConfig.ID_RADIO.equals(e.id)) {
+                throw new AssertionError("radio should not be in editor while experiment off");
+            }
+        }
+        prefs.edit().putBoolean(com.solar.launcher.radio.RadioExperiment.PREF_RADIO_EXPERIMENT, true)
+                .commit();
         for (HomeMenuConfig.Entry e : HomeMenuConfig.loadEditorCatalogEntries(prefs)) {
             if (HomeMenuConfig.ID_RADIO.equals(e.id)) return;
         }
-        throw new AssertionError("radio missing from editor catalog");
+        throw new AssertionError("radio missing from editor catalog when experiment on");
     }
 
     @Test

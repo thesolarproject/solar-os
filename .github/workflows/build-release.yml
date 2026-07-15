@@ -122,6 +122,13 @@ jobs:
           echo "SOLAR_PLATFORM_KEY_PK8=$GITHUB_WORKSPACE/.ci-keys/platform.pk8" >> "$GITHUB_ENV"
           echo "SOLAR_PLATFORM_KEY_PEM=$GITHUB_WORKSPACE/.ci-keys/platform.x509.pem" >> "$GITHUB_ENV"
 
+      # 2026-07-16 — Rockbox Y2 patch + release APK need .gradle/platform.keystore before asset sync.
+      - name: Build platform.keystore for APK / Rockbox signing
+        run: |
+          chmod +x scripts/ensure-platform-keystore.sh scripts/env.sh
+          ./scripts/ensure-platform-keystore.sh
+          test -f .gradle/platform.keystore
+
       - name: Sync and verify Y1 scripts (ROM sources → APK assets)
         run: |
           chmod +x solar-rom/scripts/sync-y1-assets.sh solar-rom/scripts/verify-y1-assets.sh \

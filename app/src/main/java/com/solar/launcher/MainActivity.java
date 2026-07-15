@@ -9812,8 +9812,12 @@ public class MainActivity extends Activity {
         } else if (HomeMenuConfig.ID_SETTINGS.equals(id)) {
             changeScreen(STATE_SETTINGS);
         } else if (HomeMenuConfig.ID_RADIO.equals(id) || HomeMenuConfig.ID_FM.equals(id)) {
-            // 2026-07-15 — FM production (JJ path): open last station / NP; hub only if Internet experiment on.
-            // Was: toast + bail when Debug experiment off. Reversal: restore isEnabled gate.
+            // 2026-07-16 — Radio/FM behind Debug experiment (off by default).
+            if (!com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
+                Toast.makeText(this, getString(R.string.settings_debug_radio_experiment_hint),
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
             if (playback.isFmActive()) {
                 changeScreen(STATE_PLAYER);
             } else if (com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(prefs)) {

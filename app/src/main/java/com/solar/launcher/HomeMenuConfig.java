@@ -587,12 +587,16 @@ public final class HomeMenuConfig {
     }
 
     /**
-     * 2026-07-15 — Legacy youtube_audio id still gated if somehow listed; editor no longer shows it.
-     * Radio is production on home; Internet radio remains gated in MediaSuiteHost.
+     * 2026-07-16 — Hide Radio home tile while FM experiment is off (Debug → Radio).
+     * Legacy youtube_audio id still gated if somehow listed; editor no longer shows it.
      */
     private static boolean isHiddenByExperimentGate(String id, SharedPreferences prefs) {
-        if (ID_YOUTUBE_AUDIO.equals(migrateId(id))) {
+        String normalized = migrateId(id);
+        if (ID_YOUTUBE_AUDIO.equals(normalized)) {
             return !com.solar.launcher.youtube.YouTubeExperiment.isEnabled(prefs);
+        }
+        if (ID_RADIO.equals(normalized) || ID_FM.equals(id)) {
+            return !com.solar.launcher.radio.RadioExperiment.isEnabled(prefs);
         }
         return false;
     }

@@ -1447,8 +1447,8 @@
     <string name="settings_debug_show_error_toasts">Error Toasts</string>
     <string name="settings_debug_show_error_toasts_hint">Soulseek and Deezer download warnings</string>
     <string name="settings_debug_bluetooth_experiment">Bluetooth (experiment)</string>
-    <string name="settings_debug_radio_experiment">Internet radio experiment</string>
-    <string name="settings_debug_radio_experiment_hint">Off by default. Unlocks Internet radio browse from the Radio hub. FM Radio is always available.</string>
+    <string name="settings_debug_radio_experiment">Radio / FM experiment</string>
+    <string name="settings_debug_radio_experiment_hint">Off by default. Unlocks FM Radio and Internet radio while we finish the FM implementation.</string>
     <string name="settings_debug_youtube_experiment">YouTube</string>
     <string name="settings_debug_youtube_experiment_hint">On by default. Off hides Videos → YouTube and Music → YouTube. Uses Solar’s built-in Invidious/Piped clients (needs Wi‑Fi).</string>
     <string name="settings_debug_usb_mass_storage_experiment">USB mass storage (Y2 experiment)</string>
