@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Post-zip Y1 ROM audit — rockbox-y1 base must keep org.rockbox + permissive su after Solar overlay.
+# Post-zip Y1 ROM audit — ATA base keeps org.rockbox + permissive su + SP Flash Tool after Solar overlay.
+# 2026-07-15 — Bases are y1-community/y1-ata-rom (was rockbox-y1 type-a/b); Flash Tool stays in zip.
 # Usage: verify-y1-rom-contents.sh [rom.zip|rom_type_b.zip]
 set -euo pipefail
 
@@ -22,6 +23,10 @@ tmpdir=$(mktemp -d "$SOLAR_ROM_BUILD_DIR/verify-y1-XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 echo "==> verify-y1-rom-contents: $ZIP"
+# 2026-07-15 — download-and-flash UX: Y1 ATA zip must ship SP Flash Tool (not firmware-only).
+# Count matches (not grep -q on a pipe) so pipefail+SIGPIPE cannot false-fail.
+_ft_count="$(unzip -l "$ZIP" 2>/dev/null | grep -ciE 'flash_tool\.exe|FlashToolLib' || true)"
+[ "${_ft_count:-0}" -ge 1 ] || die "missing SP Flash Tool (flash_tool.exe) — pack from y1-ata-rom ATA base"
 unzip -q "$ZIP" system.img -d "$tmpdir"
 sys="$tmpdir/system.img"
 [ -f "$sys" ] || die "missing system.img in zip"

@@ -123,8 +123,10 @@ public final class DeviceFeatures {
     }
 
     public static boolean hasRootAccess() {
-        // Solar ROM: Y1/Y2 ship su; A5 stock typically does not — fail-open via canRunRootShell.
-        return isY1() || isY2();
+        // 2026-07-15 — A5 Solar ROM bakes the same setuid su as Y1 (verify-a5-rom-contents).
+        // Was: Y1/Y2 only — UMS + prep helpers treated A5 as unrooted even on Solar ROM.
+        // Reversal: return isY1() || isY2() if stock A5 without su returns as a product SKU.
+        return isY1() || isY2() || isA5();
     }
 
     /** True when su actually works from this app — ROM-only APK installs must fail-open without root. */

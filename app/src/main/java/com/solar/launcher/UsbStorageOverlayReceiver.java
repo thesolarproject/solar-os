@@ -115,8 +115,11 @@ public final class UsbStorageOverlayReceiver extends BroadcastReceiver {
         }
 
         // Unauthorized kernel UMS without consent — clear before prompt.
+        // 2026-07-15 — Skip while user/auto session armed (LUN bind races USB_STATE).
+        // Was: any mass_storage without lun → disable — killed mid-enable re-enum.
         if (UsbMassStorageController.isKernelMassStorageMode()
-                && !UsbMassStorageController.isMassStorageExported()) {
+                && !UsbMassStorageController.isMassStorageExported()
+                && !UsbMassStorageController.isUserSessionActive()) {
             final Context app = context.getApplicationContext();
             new Thread(new Runnable() {
                 @Override

@@ -26,18 +26,11 @@ public final class RootShell {
     /** Run one root shell command; returns true when exit code is 0. */
     public static boolean run(String command) {
         if (command == null || command.isEmpty()) return false;
-        // 2026-07-14 — A5 stock su prompts SuperSU over Solar and can stall; skip.
-        // Was: always trySuPaths. Now: no-op on A5 (SystemProperties paths used instead).
-        // Reversal: remove isA5 early return.
-        if (DeviceFeatures.isA5()) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("cmdPrefix", command.length() > 48 ? command.substring(0, 48) : command);
-                d.put("a5", true);
-                Debug1fc727Log.log(null, "RootShell.run", "A5 skip — no su", "H1", d);
-            } catch (Exception ignored) {}
-            // #endregion
+        // 2026-07-15 — Solar A5 ROM bakes the same setuid su as Y1 (no grant dialog).
+        // Was: always return false on isA5 — blocked UMS enable/disable forever on A5.
+        // Now: try su; only skip when a granting Superuser APK would prompt/stall.
+        // Reversal: restore isA5 early-return if stock A5 SuperSU prompts return.
+        if (DeviceFeatures.isA5() && hasGrantingSuperuserApk()) {
             return false;
         }
         if (trySuPaths(command)) return true;
@@ -141,11 +134,30 @@ public final class RootShell {
         }
     }
 
+    /**
+     * 2026-07-15 — True when a grant-dialog Superuser APK is installed (stock A5 stall risk).
+     * Layman: Solar's baked root has no "Allow?" popup; SuperSU apps do.
+     * Tech: presence of Superuser/SuperSU APK under /system/app or /system/priv-app.
+     */
+    static boolean hasGrantingSuperuserApk() {
+        String[] paths = new String[] {
+                "/system/app/Superuser.apk",
+                "/system/app/SuperSU.apk",
+                "/system/priv-app/Superuser.apk",
+                "/system/priv-app/SuperSU.apk",
+                "/system/app/eu.chainfire.supersu.apk"
+        };
+        for (String p : paths) {
+            if (new File(p).isFile()) return true;
+        }
+        return false;
+    }
+
     /** Run root command and capture combined stdout/stderr (for diagnostics). */
     public static String runCapture(String command) {
         if (command == null || command.isEmpty()) return "";
-        // 2026-07-14 — Same A5 skip as run() — avoid SuperSU prompt / su hang.
-        if (DeviceFeatures.isA5()) return "";
+        // 2026-07-15 — Match run(): Solar A5 setuid su OK; skip only grant-dialog SuperSU.
+        if (DeviceFeatures.isA5() && hasGrantingSuperuserApk()) return "";
         for (String su : SU_PATHS) {
             Process proc = null;
             try {

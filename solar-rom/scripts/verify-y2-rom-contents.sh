@@ -22,6 +22,9 @@ tmpdir=$(mktemp -d "$SOLAR_ROM_BUILD_DIR/verify-y2-XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
 
 echo "==> verify-y2-rom-contents: $ZIP"
+# 2026-07-15 — Y2 ATA zip keeps SP Flash Tool for download-and-flash (same as Y1/A5).
+_ft_count="$(unzip -l "$ZIP" 2>/dev/null | grep -ciE 'flash_tool\.exe|FlashToolLib' || true)"
+[ "${_ft_count:-0}" -ge 1 ] || die "missing SP Flash Tool (flash_tool.exe) — pack from y2-ata ATA base"
 unzip -q "$ZIP" system.img -d "$tmpdir"
 sys="$tmpdir/system.img"
 [ -f "$sys" ] || die "missing system.img in zip"
