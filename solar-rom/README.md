@@ -1,6 +1,6 @@
-# Solar ROM builder (Innioasis Y1 + Y2)
+# Solar ROM builder (Innioasis Y1 + Y2 + Timmkoo A5)
 
-Builds flashable **Y1 type A**, **Y1 type B**, and **Y2 ATA** firmware images from stock bases, with **Solar** (`com.solar.launcher`) as the system launcher.
+Builds flashable **Y1 type A**, **Y1 type B**, **Y2 ATA**, and **A5 ATA** firmware images from stock bases, with **Solar** (`com.solar.launcher`) as the system launcher.
 
 Release source: [github.com/thatwitchgirl/solar](https://github.com/thatwitchgirl/solar)
 
@@ -17,10 +17,33 @@ Both branches share the same `versionCode` (minutes since 2020-01-01 UTC). Day-t
 
 ```bash
 ./scripts/build.sh                    # signed app-release.apk
-./solar-rom/scripts/build-rom.sh a --apk app/build/outputs/apk/release/app-release.apk rom.zip
-./solar-rom/scripts/build-rom.sh b --apk app/build/outputs/apk/release/app-release.apk rom_type_b.zip
-./solar-rom/scripts/build-rom.sh y2 --apk app/build/outputs/apk/release/app-release.apk rom_y2.zip
+
+# All four Solar ROMs (Y1 A/B + Y2 + A5) — same entry point as CI:
+./scripts/build-all-roms.sh
+
+# Or build one type (ATA bases include preconfigured SP Flash Tool):
+./solar-rom/scripts/build-rom.sh a --apk app/build/outputs/apk/release/app-release.apk dist/rom.zip
+./solar-rom/scripts/build-rom.sh b --apk app/build/outputs/apk/release/app-release.apk dist/rom_type_b.zip
+./solar-rom/scripts/build-rom.sh y2 --apk app/build/outputs/apk/release/app-release.apk dist/rom_y2.zip
+./solar-rom/scripts/build-rom.sh a5 --apk app/build/outputs/apk/release/app-release.apk dist/rom_a5.zip
+
+# Until ATA releases are public / correct, point at local base zips:
+SOLAR_Y1A_BASE_ZIP=/path/to/rom.zip \
+SOLAR_Y1B_BASE_ZIP=/path/to/rom_type_b.zip \
+SOLAR_Y2_BASE_ZIP=/path/to/rom_y2.zip \
+SOLAR_A5_BASE_ZIP=/path/to/rom_a5.zip \
+  ./scripts/build-all-roms.sh
+# Or REQUIRE_ALL_ROMS=1 to fail if any Y1/A5 ATA base is missing.
 ```
+
+**Base URLs** (downloaded by `build-rom.sh` when no `SOLAR_*_BASE_ZIP` override):
+
+| Type | Output | Base |
+|------|--------|------|
+| Y1 A | `rom.zip` | `y1-community/y1-ata-rom` … `/0.1/rom.zip` |
+| Y1 B | `rom_type_b.zip` | `y1-community/y1-ata-rom` … `/0.1/rom_type_b.zip` |
+| Y2 | `rom_y2.zip` | `y1-community/y2-ata-rom` … `/y2-ata/rom_y2.zip` |
+| A5 | `rom_a5.zip` | `y1-community/a5-ata-rom` … `/0.1/rom_a5.zip` |
 
 Requires `curl`, `unzip`, `zip`, `openssl`, `sudo`, and loop-mount support for ext4 (`e2fsprogs`).
 
@@ -42,11 +65,24 @@ Each ROM includes, on the **system** partition:
 | `/system/app/XposedInstaller.apk` | Xposed module manager |
 | `/system/etc/init.d/99XposedInit.sh` | Boot: seed runtime jar into installer data dir |
 
-**Xposed** is installed on **all three ROM variants** (Y1 type A/B API 17, Y2 API 19) via `install-xposed-system.sh`. Lab devices without reflash: `solar-rom/scripts/install-xposed-adb.sh` or full overlay `apply-y1-rom-patches-adb.sh` / `apply-y2-rom-patches-adb.sh`. See [`solar-rom/patches/xposed/README.md`](patches/xposed/README.md).
+**Xposed** is installed on **all ROM variants** (Y1 type A/B + A5 API 17, Y2 API 19) via `install-xposed-system.sh`. Lab devices without reflash: `solar-rom/scripts/install-xposed-adb.sh` or full overlay `apply-y1-rom-patches-adb.sh` / `apply-y2-rom-patches-adb.sh`. See [`solar-rom/patches/xposed/README.md`](patches/xposed/README.md).
 
-**Y2 only** — Y1 permissive `su` is baked into `/system` during `build-rom.sh y2` (see `solar-rom/vendor/y1-su/` and `install-y1-su-system.sh`). Same setuid binary as the Y1 rockbox base — no Superuser.apk grant dialog. Y1 rockbox bases already ship this root; Y2 ATA stock base does not. **`org.rockbox.apk` + `librockbox.so`** are not vendored in git — `fetch-rockbox-y1-y2-assets.sh` downloads them from the rockbox-y1 type-A base at build time (cached under `~/.cache/solar-rom-build/rockbox-y1-y2/`). **AVRCP Bluetooth metadata patches** (`apply-avrcp-patches.sh`) run on **Y1 type A/B only** — the Y2 MT6582 base ships a different `MtkBt.odex` / `mtkbt` layout without `libextavrcp_jni.so`.
+**Y1 / Y2 / A5 ATA** — Y1 permissive `su` is baked into `/system` during `build-rom.sh` for ATA bases that need it (`install-y1-su-system.sh`). No Superuser.apk grant dialog. **`org.rockbox.apk` + `librockbox.so`** are not vendored in git — `fetch-rockbox-y1-y2-assets.sh` still downloads them from the rockbox-y1 type-A base (cached under `~/.cache/solar-rom-build/rockbox-y1-y2/`) for Y1 heal-if-missing and Y2 prep. **A5 omits Rockbox bake**. **AVRCP** runs on Y1 A/B (hard) and A5 (soft-skip on mismatch); Y2 skips.
 
-The ROM zip root also ships **`boot.img`** and **`logo.bin`** from `solar-rom/system/`.
+Y1 type A/B also replace zip-root **`boot.img`** / **`logo.bin`** from `solar-rom/system/` (Solar branding). Y2 and A5 keep stock kernels/logos.
+
+**Y1 A/B + A5 output zips** keep the full ATA tree including **SP Flash Tool** so users can download and flash without a separate tool pack.
+
+### A5 intentional divergences (`rom_a5.zip`)
+
+| Concern | A5 | vs Y1 |
+|---------|----|-------|
+| SoC / API | MT6572 / API 17 | Same family as Y1 (not Y2 MT6582) |
+| Keylayouts | `A5-mtk.kl` → `mtk-kpd.kl`, `A5.kl` → Generic | `Y1-Rockbox.kl` wheel maps |
+| Family pin | `persist.solar.device_family=a5` + `ro.product.model=A5` | Stock ATA may report `model=Y1` without pin |
+| Rockbox / `99Y1ButtonScript` / `solar-rb-launch` | Skipped | Required on Y1 |
+| Output zip | Full ATA tree + SP Flash Tool | Same (Y1 A/B also ship Flash Tool) |
+| Base override | `SOLAR_A5_BASE_ZIP` | `SOLAR_Y1A_BASE_ZIP` / `SOLAR_Y1B_BASE_ZIP` |
 
 These match what `./scripts/clean_install_system.sh` applies on a rooted device. Shared staging: `scripts/stage-y1-system-prep.sh` → `apply-y1-system-prep.sh` (ROM) or `push-y1-system-prep.sh` (adb). `SolarApplication` loads Conscrypt at boot; system cacerts are still required for stock HTTPS stacks (podcast streaming via MediaPlayer).
 
@@ -66,7 +102,7 @@ Override release repo for ROM downloads: `SOLAR_GITHUB_REPO=thatwitchgirl/solar`
 
 ## CI
 
-`.github/workflows/build-release.yml` runs on pushes to **`main`** and **`nightly`**: signs the release APK, builds Y1 ROM zips (`rom.zip`, `rom_type_b.zip`) and **Y2 ATA** (`rom_y2.zip`, desparsed ext4 + Y1 permissive root), then publishes a GitHub release on both branches.
+`.github/workflows/build-release.yml` runs on pushes to **`main`** and **`nightly`**: signs the release APK and builds **all four** ROM types via `scripts/build-all-roms.sh` — Y1 A (`rom.zip`), Y1 B (`rom_type_b.zip`), Y2 (`rom_y2.zip`), A5 (`rom_a5.zip`). Y2 is always required. Y1 A/B and A5 soft-skip only while their ATA base URLs 404 and no `SOLAR_*_BASE_ZIP` is set; once `y1-ata-rom` / `a5-ata-rom` release `0.1` is public, CI builds all four every time.
 
 Required secrets: `SOLAR_PLATFORM_KEY_PK8_B64`, `SOLAR_PLATFORM_KEY_PEM_B64` (base64-encoded AOSP test platform key material).
 

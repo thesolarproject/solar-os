@@ -58,7 +58,8 @@ for required in \
     fi
 done
 # 2026-07-06 — Y2 prep-delivered Rockbox: org.rockbox ships via Solar APK platform bundle, not ROM zip.
-if [ "${SOLAR_ROCKBOX_PREP_DELIVERED:-0}" != "1" ]; then
+# 2026-07-15 — A5: no Rockbox bake (SOLAR_ROM_NO_ROCKBOX=1 from verify-a5-rom-contents.sh).
+if [ "${SOLAR_ROCKBOX_PREP_DELIVERED:-0}" != "1" ] && [ "${SOLAR_ROM_NO_ROCKBOX:-0}" != "1" ]; then
     if ! debugfs -R "stat /app/org.rockbox.apk" "$SYS" 2>/dev/null | grep -q 'Type: regular'; then
         echo "verify-rom-app-allowlist: FAIL: missing /app/org.rockbox.apk" >&2
         errors=$((errors + 1))

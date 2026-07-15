@@ -70,19 +70,38 @@ jobs:
 
       - name: Verify ROM base firmware URLs
         run: |
+          # 2026-07-15 — Y1 type A/B from y1-community/y1-ata-rom (was rockbox-y1 type-a/b). Soft-skip until public.
+          if curl -fsSIL -o /dev/null "https://github.com/y1-community/y1-ata-rom/releases/download/0.1/rom.zip"; then
+            echo "Y1 type A ATA base URL OK"
+          else
+            echo "::warning::Y1 type A ATA base unavailable — rom.zip soft-skips unless SOLAR_Y1A_BASE_ZIP is set"
+          fi
+          if curl -fsSIL -o /dev/null "https://github.com/y1-community/y1-ata-rom/releases/download/0.1/rom_type_b.zip"; then
+            echo "Y1 type B ATA base URL OK"
+          else
+            echo "::warning::Y1 type B ATA base unavailable — rom_type_b.zip soft-skips unless SOLAR_Y1B_BASE_ZIP is set"
+          fi
+          # Y2 ATA required
+          curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom_y2.zip"
+          # Rockbox asset cache still pulled from rockbox-y1 type-a-base (org.rockbox for Y1 heal / Y2 prep)
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-a-base/rom.zip"
-          curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-b-base/rom.zip"
-          curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom.zip"
+          if curl -fsSIL -o /dev/null "https://github.com/y1-community/a5-ata-rom/releases/download/0.1/rom_a5.zip"; then
+            echo "A5 ATA base URL OK"
+          else
+            echo "::warning::A5 ATA base URL unavailable — rom_a5.zip soft-skips unless SOLAR_A5_BASE_ZIP is set"
+          fi
           test -f solar-rom/vendor/y1-su/su
           test -f solar-rom/vendor/y2-flash/EBR2
           test -f solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt
+          test -f solar-rom/scripts/A5-mtk.kl
+          test -f solar-rom/scripts/A5.kl
           test -d solar-rom/vendor/xposed/api17-arm
           test -d solar-rom/vendor/xposed/api19-arm
           test -f solar-rom/vendor/xposed/XposedInstaller.apk || ./solar-rom/scripts/build-xposed-installer-apk.sh
           test -f solar-rom/vendor/xposed/solar-context-bridge/SolarContextBridgeY1.apk || ./solar-rom/scripts/build-context-bridge-apk.sh
           test -f solar-rom/vendor/xposed/solar-context-bridge/SolarContextBridgeY2.apk || ./solar-rom/scripts/build-context-bridge-apk.sh
           test -f solar-rom/vendor/xposed/solar-theme-font/SolarThemeFont.apk || ./solar-rom/scripts/build-theme-font-apk.sh
-          echo "ROM base sources OK (Y1 type A/B + Y2 ATA + vendored y1-su + xposed; rockbox-y1 APK fetched at build)"
+          echo "ROM base sources OK (Y1 A/B + Y2 + A5 wired; soft-skip ATA bases until public; rockbox-y1 for Rockbox assets)"
 
       - name: Decode platform signing keys
         env:
@@ -130,8 +149,8 @@ jobs:
           chmod +x scripts/build-all-roms.sh scripts/ensure-platform-keystore.sh \
             solar-rom/scripts/*.sh
           ./scripts/build-all-roms.sh
-          echo "Y1 type A/B and Y2 ATA ROM zips built — verify-y1/y2 + verify-xposed (API 17+19) on all three zips"
-          echo "Y2 rom_y2.zip: desparsed ext4 system/userdata, EBR2 bundled, MTK scatter offsets verified"
+          echo "ROM builds: Y1 A/B + Y2 + A5 when each ATA base URL or SOLAR_*_BASE_ZIP is available"
+          echo "Y2 rom_y2.zip always built (desparsed ext4, EBR2, MTK scatter verified)"
           ls -la dist/
 
       - name: Prepare release artifact list
@@ -140,9 +159,10 @@ jobs:
           {
             echo "files<<EOF"
             echo "app/build/outputs/apk/release/app-release.apk"
-            echo "dist/rom.zip"
-            echo "dist/rom_type_b.zip"
             echo "dist/rom_y2.zip"
+            for f in dist/rom.zip dist/rom_type_b.zip dist/rom_a5.zip; do
+              [ -f "$f" ] && echo "$f"
+            done
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 

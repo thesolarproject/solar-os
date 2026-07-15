@@ -78,6 +78,11 @@ fi
 #    chmod 755 /data/data/solar-launcher-exec.sh
 #fi
 setprop persist.solar.home.target solar
+# 2026-07-15 — A5 ROM bakes A5-mtk.kl; pin family before keymap sync so Y1 wheel maps never win.
+# Was: sync used model alone (stock A5 reports Y1 → wrong keys). Now: A5 files force family a5.
+if [ -f /system/etc/solar/A5-mtk.kl ] && [ -f /system/etc/solar/A5.kl ]; then
+    setprop persist.solar.device_family a5 2>/dev/null
+fi
 if [ -f /system/etc/solar/sync-rockbox-libs.sh ]; then
     sh /system/etc/solar/sync-rockbox-libs.sh
 fi

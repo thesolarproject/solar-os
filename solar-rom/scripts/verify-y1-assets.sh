@@ -20,6 +20,9 @@ FILES=(
     Y1-Rockbox.kl
     Y2-Rockbox.kl
     mtk-kpd.y1.stock.kl
+    # 2026-07-15 — A5 face/volume maps must match between ROM build source and APK push script.
+    A5-mtk.kl
+    A5.kl
 )
 errors=0
 for f in "${FILES[@]}"; do

@@ -46,6 +46,21 @@ public class XposedParityVerifyScriptsTest {
         }
     }
 
+    /** 2026-07-15 — A5 ROM uses Y1 bridge + family pin; must not require Rockbox. */
+    @Test
+    public void a5VerifyScriptRequiresBridgeY1AndFamilyPin() throws Exception {
+        String body = readScript("verify-a5-rom-contents.sh");
+        if (!body.contains("com.solar.launcher.xposed.bridge.y1")) {
+            throw new AssertionError("verify-a5-rom-contents.sh must grep bridge.y1 in 99XposedInit.sh");
+        }
+        if (!body.contains("persist.solar.device_family=a5")) {
+            throw new AssertionError("verify-a5-rom-contents.sh must require A5 family pin");
+        }
+        if (!body.contains("A5-mtk.kl")) {
+            throw new AssertionError("verify-a5-rom-contents.sh must audit A5-mtk.kl");
+        }
+    }
+
     @Test
     public void xposedVerifyScriptRequiresBridgePackageByApi() throws Exception {
         String body = readScript("verify-xposed-rom-contents.sh");

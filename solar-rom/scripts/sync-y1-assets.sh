@@ -10,5 +10,11 @@ mkdir -p "$DST"
 for f in switch-to-stock.sh switch-to-rockbox.sh sync-rockbox-libs.sh sync-rockbox-assets.sh sync-y1-keymap.sh disable-rockbox-for-solar.sh apply-preferred-home-boot.sh solar-launcher-exec.sh disable-large-font-accessibility.sh enable-gpu-performance.sh solar-usb-recovery-agent.sh Y1-Rockbox.kl Y2-Rockbox.kl mtk-kpd.y1.stock.kl; do
     cp "$SRC/$f" "$DST/$f"
 done
+# 2026-07-15 — A5 keylayouts: app assets are hardware canon (push-a5-keymap.sh); sync into ROM scripts.
+# Was: A5.kl only in APK — ROM build had no source. Now: assets → solar-rom/scripts before verify.
+for f in A5-mtk.kl A5.kl; do
+    [ -f "$DST/$f" ] || { echo "sync-y1-assets: missing $DST/$f" >&2; exit 1; }
+    cp "$DST/$f" "$SRC/$f"
+done
 chmod +x "$ROOT/solar-rom/scripts/verify-y1-assets.sh"
 "$ROOT/solar-rom/scripts/verify-y1-assets.sh"
