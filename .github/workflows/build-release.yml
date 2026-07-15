@@ -11,6 +11,10 @@ permissions:
 
 env:
   SOLAR_GITHUB_REPO: thesolarproject/solar
+  SOLAR_Y1A_BASE_ZIP: ${{ vars.SOLAR_Y1A_BASE_ZIP }}
+  SOLAR_Y1B_BASE_ZIP: ${{ vars.SOLAR_Y1B_BASE_ZIP }}
+  SOLAR_Y2_BASE_ZIP: ${{ vars.SOLAR_Y2_BASE_ZIP }}
+  SOLAR_A5_BASE_ZIP: ${{ vars.SOLAR_A5_BASE_ZIP }}
 
 concurrency:
   group: solar-release-${{ github.ref }}
