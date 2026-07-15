@@ -22,8 +22,13 @@ public class UmsEnabler {
             "/sys/class/android_usb/android0/f_mass_storage/lun1/file"
     };
 
-    /** Default USB mode on Y1/Y2 stock ROMs after UMS is turned off. */
-    private static final String DEFAULT_USB_CONFIG = "mtp,adb";
+    /**
+     * Post-UMS USB mode: Y2 uses MTP; Y1 uses adb only (no MTP — disk mode is the PC path).
+     * 2026-07-10 — Y1 no longer restores mtp,adb after Turn Off.
+     */
+    private static String defaultUsbConfig() {
+        return isY1Product() ? "adb" : "mtp,adb";
+    }
 
     public static void main(String[] args) {
         if (args.length < 1) {
@@ -117,7 +122,7 @@ public class UmsEnabler {
     private static void disableMassStorageY1(String volumePath) throws Exception {
         tryVdcUnshareVolume(volumePath);
         Thread.sleep(800L);
-        setUsbConfig(DEFAULT_USB_CONFIG);
+        setUsbConfig(defaultUsbConfig());
         System.out.println("UMS disabled");
     }
 
@@ -165,7 +170,7 @@ public class UmsEnabler {
         Thread.sleep(800L);
         invokeSetUsbMassStorageEnabled(getMountService(), false);
         Thread.sleep(800L);
-        setUsbConfig(DEFAULT_USB_CONFIG);
+        setUsbConfig(defaultUsbConfig());
         System.out.println("UMS disabled");
     }
 
@@ -421,9 +426,9 @@ public class UmsEnabler {
                 .invoke(mountService, volumePath);
     }
 
-    /** Sync kernel USB mode back to stock MTP+adb before a clean UMS enable. */
+    /** Sync kernel USB mode back to product default before a clean UMS enable. */
     private static void resetUsbToDefaultConfig() throws Exception {
-        setUsbConfig(DEFAULT_USB_CONFIG);
+        setUsbConfig(defaultUsbConfig());
     }
 
     /** Write {@code sys.usb.config} and wait for the property shell to finish. */

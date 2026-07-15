@@ -50,6 +50,23 @@ public final class PlayQueueStore {
                     if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
                         o.put("navidromeCover", q.navidromeCoverArtId);
                     }
+                } else if (q.kind == PlayQueue.ItemKind.PLEX_STREAM) {
+                    // 2026-07-14: Persist Plex stream slot (meta fields shared with Navidrome shape).
+                    o.put("plexId", q.navidromeSongId);
+                    o.put("plexTitle", q.navidromeTitle);
+                    o.put("plexArtist", q.navidromeArtist);
+                    o.put("plexAlbum", q.navidromeAlbum);
+                    if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
+                        o.put("plexCover", q.navidromeCoverArtId);
+                    }
+                } else if (q.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
+                    o.put("jellyfinId", q.navidromeSongId);
+                    o.put("jellyfinTitle", q.navidromeTitle);
+                    o.put("jellyfinArtist", q.navidromeArtist);
+                    o.put("jellyfinAlbum", q.navidromeAlbum);
+                    if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
+                        o.put("jellyfinCover", q.navidromeCoverArtId);
+                    }
                 }
                 arr.put(o);
             }
@@ -111,6 +128,32 @@ public final class PlayQueueStore {
                                 o.optString("navidromeArtist", ""),
                                 o.optString("navidromeAlbum", ""),
                                 o.optString("navidromeCover", "")));
+                        continue;
+                    }
+                    if ("PLEX_STREAM".equals(kind)) {
+                        String plexId = o.optString("plexId", "");
+                        if (plexId.isEmpty()) {
+                            if (i < savedIndex) savedIndex--;
+                            continue;
+                        }
+                        items.add(PlayQueue.QueueItem.plex(plexId,
+                                o.optString("plexTitle", ""),
+                                o.optString("plexArtist", ""),
+                                o.optString("plexAlbum", ""),
+                                o.optString("plexCover", "")));
+                        continue;
+                    }
+                    if ("JELLYFIN_STREAM".equals(kind)) {
+                        String jfId = o.optString("jellyfinId", "");
+                        if (jfId.isEmpty()) {
+                            if (i < savedIndex) savedIndex--;
+                            continue;
+                        }
+                        items.add(PlayQueue.QueueItem.jellyfin(jfId,
+                                o.optString("jellyfinTitle", ""),
+                                o.optString("jellyfinArtist", ""),
+                                o.optString("jellyfinAlbum", ""),
+                                o.optString("jellyfinCover", "")));
                         continue;
                     }
                     if (path.isEmpty()) {
@@ -179,7 +222,8 @@ public final class PlayQueueStore {
                 String kind = o.optString("kind", "");
                 if ("REACH_STREAM".equals(kind) || "DEEZER_STREAM".equals(kind) || "PODCAST_EPISODE".equals(kind)
                         || "FM_STATION".equals(kind) || "INTERNET_RADIO_STATION".equals(kind)
-                        || "NAVIDROME_STREAM".equals(kind)) continue;
+                        || "NAVIDROME_STREAM".equals(kind) || "PLEX_STREAM".equals(kind)
+                        || "JELLYFIN_STREAM".equals(kind)) continue;
                 String path = o.optString("path", "");
                 if (path.isEmpty()) continue;
                 if (!new File(path).isFile()) missing++;

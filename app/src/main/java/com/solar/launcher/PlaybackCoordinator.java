@@ -1,6 +1,8 @@
 package com.solar.launcher;
 
+import com.solar.launcher.jellyfin.JellyfinSong;
 import com.solar.launcher.navidrome.NavidromeSong;
+import com.solar.launcher.plex.PlexSong;
 import com.solar.launcher.podcast.OpenRssClient;
 
 import java.io.File;
@@ -38,7 +40,9 @@ public final class PlaybackCoordinator {
                 || (c != null && (c.kind == PlayQueue.ItemKind.MUSIC_FILE
                 || c.kind == PlayQueue.ItemKind.REACH_STREAM
                 || c.kind == PlayQueue.ItemKind.DEEZER_STREAM
-                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM));
+                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM
+                || c.kind == PlayQueue.ItemKind.PLEX_STREAM
+                || c.kind == PlayQueue.ItemKind.JELLYFIN_STREAM));
     }
 
     public boolean isFmActive() {
@@ -305,6 +309,64 @@ public final class PlaybackCoordinator {
         queue.setAll(items, qStart);
     }
 
+    /** 2026-07-14: Plex album/playlist queue — mirrors activateNavidrome. */
+    public void activatePlex(List<PlexSong> songs, int startIndex, boolean shuffle,
+            String playlistLabel) {
+        musicOriginal.clear();
+        musicInitiator = null;
+        if (songs == null || songs.isEmpty()) {
+            queue.clear();
+            activeMode = Mode.NONE;
+            musicActivePlaylistName = null;
+            return;
+        }
+        activeMode = Mode.MUSIC;
+        musicActivePlaylistName = (playlistLabel != null && !playlistLabel.isEmpty()) ? playlistLabel : null;
+        List<PlayQueue.QueueItem> items = new ArrayList<PlayQueue.QueueItem>();
+        List<PlexSong> order = new ArrayList<PlexSong>(songs);
+        int clamped = Math.max(0, Math.min(startIndex, songs.size() - 1));
+        PlexSong currentSong = songs.get(clamped);
+        if (shuffle) {
+            java.util.Collections.shuffle(order);
+        }
+        int qStart = 0;
+        for (int i = 0; i < order.size(); i++) {
+            PlexSong s = order.get(i);
+            items.add(PlayQueue.QueueItem.plex(s.id, s.title, s.artist, s.album, s.coverArtId));
+            if (s.id != null && s.id.equals(currentSong.id)) qStart = i;
+        }
+        queue.setAll(items, qStart);
+    }
+
+    /** 2026-07-14: Jellyfin album/playlist queue — mirrors activateNavidrome. */
+    public void activateJellyfin(List<JellyfinSong> songs, int startIndex, boolean shuffle,
+            String playlistLabel) {
+        musicOriginal.clear();
+        musicInitiator = null;
+        if (songs == null || songs.isEmpty()) {
+            queue.clear();
+            activeMode = Mode.NONE;
+            musicActivePlaylistName = null;
+            return;
+        }
+        activeMode = Mode.MUSIC;
+        musicActivePlaylistName = (playlistLabel != null && !playlistLabel.isEmpty()) ? playlistLabel : null;
+        List<PlayQueue.QueueItem> items = new ArrayList<PlayQueue.QueueItem>();
+        List<JellyfinSong> order = new ArrayList<JellyfinSong>(songs);
+        int clamped = Math.max(0, Math.min(startIndex, songs.size() - 1));
+        JellyfinSong currentSong = songs.get(clamped);
+        if (shuffle) {
+            java.util.Collections.shuffle(order);
+        }
+        int qStart = 0;
+        for (int i = 0; i < order.size(); i++) {
+            JellyfinSong s = order.get(i);
+            items.add(PlayQueue.QueueItem.jellyfin(s.id, s.title, s.artist, s.album, s.coverArtId));
+            if (s.id != null && s.id.equals(currentSong.id)) qStart = i;
+        }
+        queue.setAll(items, qStart);
+    }
+
     /** Shuffle or restore music/stream slots in the unified queue; preserves Reach/Deezer item kinds. */
     public void reshuffleMusic(boolean shuffle) {
         java.util.List<PlayQueue.QueueItem> all = new java.util.ArrayList<PlayQueue.QueueItem>(queue.items());
@@ -337,12 +399,16 @@ public final class PlaybackCoordinator {
         return q != null && (q.kind == PlayQueue.ItemKind.MUSIC_FILE
                 || q.kind == PlayQueue.ItemKind.REACH_STREAM
                 || q.kind == PlayQueue.ItemKind.DEEZER_STREAM
-                || q.kind == PlayQueue.ItemKind.NAVIDROME_STREAM);
+                || q.kind == PlayQueue.ItemKind.NAVIDROME_STREAM
+                || q.kind == PlayQueue.ItemKind.PLEX_STREAM
+                || q.kind == PlayQueue.ItemKind.JELLYFIN_STREAM);
     }
 
     private static boolean musicLikeSame(PlayQueue.QueueItem a, PlayQueue.QueueItem b) {
         if (a == null || b == null || a.kind != b.kind) return false;
-        if (a.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+        if (a.kind == PlayQueue.ItemKind.NAVIDROME_STREAM
+                || a.kind == PlayQueue.ItemKind.PLEX_STREAM
+                || a.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
             return a.navidromeSongId != null && a.navidromeSongId.equals(b.navidromeSongId);
         }
         if (a.file != null && b.file != null) return a.file.equals(b.file);
@@ -377,7 +443,9 @@ public final class PlaybackCoordinator {
             PlayQueue.QueueItem q = items.get(i);
             if (current.kind == PlayQueue.ItemKind.PODCAST_EPISODE) {
                 if (q.kind == current.kind && q.episode == current.episode) return i;
-            } else if (current.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+            } else if (current.kind == PlayQueue.ItemKind.NAVIDROME_STREAM
+                    || current.kind == PlayQueue.ItemKind.PLEX_STREAM
+                    || current.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
                 if (q.kind == current.kind && musicLikeSame(q, current)) return i;
             } else if (current.file != null && q.file != null
                     && current.file.equals(q.file) && q.kind == current.kind) {
@@ -619,7 +687,9 @@ public final class PlaybackCoordinator {
             musicInitiator = null;
         } else if (c.kind == PlayQueue.ItemKind.MUSIC_FILE || c.kind == PlayQueue.ItemKind.REACH_STREAM
                 || c.kind == PlayQueue.ItemKind.DEEZER_STREAM
-                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+                || c.kind == PlayQueue.ItemKind.NAVIDROME_STREAM
+                || c.kind == PlayQueue.ItemKind.PLEX_STREAM
+                || c.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
             activeMode = Mode.MUSIC;
             musicInitiator = c.file;
             podcastShowTitle = "";

@@ -26,6 +26,20 @@ public final class RootShell {
     /** Run one root shell command; returns true when exit code is 0. */
     public static boolean run(String command) {
         if (command == null || command.isEmpty()) return false;
+        // 2026-07-14 — A5 stock su prompts SuperSU over Solar and can stall; skip.
+        // Was: always trySuPaths. Now: no-op on A5 (SystemProperties paths used instead).
+        // Reversal: remove isA5 early return.
+        if (DeviceFeatures.isA5()) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("cmdPrefix", command.length() > 48 ? command.substring(0, 48) : command);
+                d.put("a5", true);
+                Debug1fc727Log.log(null, "RootShell.run", "A5 skip — no su", "H1", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return false;
+        }
         if (trySuPaths(command)) return true;
         // Y2 ROMs before 99SuperSUDaemon may ship su without a running daemonsu — bootstrap once.
         if (bootstrapDaemonsu() && trySuPaths(command)) return true;
@@ -130,6 +144,8 @@ public final class RootShell {
     /** Run root command and capture combined stdout/stderr (for diagnostics). */
     public static String runCapture(String command) {
         if (command == null || command.isEmpty()) return "";
+        // 2026-07-14 — Same A5 skip as run() — avoid SuperSU prompt / su hang.
+        if (DeviceFeatures.isA5()) return "";
         for (String su : SU_PATHS) {
             Process proc = null;
             try {

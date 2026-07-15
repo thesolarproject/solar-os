@@ -2,11 +2,14 @@ package com.solar.launcher;
 
 import android.app.Application;
 import android.content.Intent;
+import android.os.Bundle;
 import com.solar.launcher.service.ProcessManagerService;
 
 import com.solar.launcher.net.TlsHelper;
 
 import com.solar.ota.net.OtaTlsHelper;
+import com.solar.launcher.overlay.OverlayThemeProvider;
+import com.solar.launcher.theme.AppOverlayThemeAdapter;
 import com.solar.launcher.theme.ThemeManager;
 
 import com.solar.launcher.soulseek.SolarDiagnosticReporter;
@@ -25,16 +28,98 @@ public class SolarApplication extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+        // #region agent log
+        try {
+            boolean a5 = DeviceFeatures.isA5();
+            String prop = "";
+            try {
+                Class<?> sp = Class.forName("android.os.SystemProperties");
+                Object v = sp.getMethod("get", String.class, String.class)
+                        .invoke(null, DeviceFeatures.PROP_DEVICE_FAMILY, "");
+                prop = v != null ? String.valueOf(v) : "";
+            } catch (Throwable ignoredProp) {}
+            android.util.Log.e("SolarDebugB4208e", "Application.onCreate isA5=" + a5
+                    + " isY1=" + DeviceFeatures.isY1()
+                    + " prop=" + prop
+                    + " overlay=" + isOverlayProcess());
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("isA5", a5);
+            d.put("isY1", DeviceFeatures.isY1());
+            d.put("propValue", prop);
+            d.put("overlayProcess", isOverlayProcess());
+            DebugB4208eLog.log("SolarApplication.onCreate", "boot family probe", "A,F", d);
+        } catch (Throwable ignored) {}
+        // #endregion
+        // 2026-07-14 — A5: lock system rotation to natural portrait before heavy Application I/O.
+        // Was: waited for Activity.onCreate (never reached — App.onCreate stalls on theme sync).
+        // Now: Settings USER_ROTATION=0 + accel off while panel init is 240×320.
+        // Reversal: delete this block; restore Activity-only LandscapeOrientationGuard.
+        if (!isOverlayProcess() && DeviceFeatures.isA5()) {
+            try {
+                android.provider.Settings.System.putInt(getContentResolver(),
+                        android.provider.Settings.System.ACCELEROMETER_ROTATION, 0);
+                android.provider.Settings.System.putInt(getContentResolver(),
+                        android.provider.Settings.System.USER_ROTATION, 0);
+                android.util.Log.e("SolarDebugB4208e", "A5 system rotation locked to natural(0)");
+            } catch (Throwable t) {
+                RootShell.run("settings put system accelerometer_rotation 0; settings put system user_rotation 0");
+                android.util.Log.e("SolarDebugB4208e", "A5 system rotation via root");
+            }
+        }
         SolarLog.installUncaughtHandler(this);
+        // 2026-07-08 — Bridge ThemedContextMenu to ThemeManager without a direct TCM link.
+        // Was: TCM called ThemeManager.*; Now: OverlayThemeProvider → AppOverlayThemeAdapter.
+        // Reversal: remove install; restore ThemeManager. calls in ThemedContextMenu.
+        OverlayThemeProvider.install(new AppOverlayThemeAdapter());
+        // 2026-07-14 — Enforce portrait/landscape as soon as any Activity is created.
+        // Was: only MainActivity.onCreate (too late / stalls on A5). Now: lifecycle callback.
+        // Reversal: unregister; rely on per-activity enforce only.
+        if (!isOverlayProcess()) {
+            registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+                @Override public void onActivityCreated(android.app.Activity a, Bundle b) {
+                    try {
+                        LandscapeOrientationGuard.enforceForDevice(a);
+                        android.util.Log.e("SolarDebugB4208e",
+                                "lifecycleCreated " + a.getClass().getSimpleName()
+                                        + " isA5=" + DeviceFeatures.isA5()
+                                        + " req=" + a.getRequestedOrientation());
+                    } catch (Throwable ignored) {}
+                }
+                @Override public void onActivityStarted(android.app.Activity a) {}
+                @Override public void onActivityResumed(android.app.Activity a) {
+                    try { LandscapeOrientationGuard.enforceForDevice(a); } catch (Throwable ignored) {}
+                }
+                @Override public void onActivityPaused(android.app.Activity a) {}
+                @Override public void onActivityStopped(android.app.Activity a) {}
+                @Override public void onActivitySaveInstanceState(android.app.Activity a, Bundle o) {}
+                @Override public void onActivityDestroyed(android.app.Activity a) {}
+            });
+        }
         if (!isOverlayProcess()) {
             SolarRecoveryCoordinator.onProcessStart(this);
+            // 2026-07-08 — Clear stale handler on main cold start; MainActivity re-registers IPC.
+            // State service now lives in main (not :overlay) so this handler is the live one.
             SolarOverlayStateService.registerActionHandler(null);
         }
         com.solar.launcher.theme.ActiveThemeEngine.init(this);
-        // 2026-07-05 — Sync snapshot RAM warm before any overlay/modal paints (both processes).
-        ThemeManager.loadOverlayRamCacheSync(this);
-        ThemeManager.preferInternalCacheForActiveTheme(this);
+        // 2026-07-14 — A5: do not block Application main on theme snapshot (stalls launch).
+        // Was: always loadOverlayRamCacheSync here. Now: async on A5; sync elsewhere.
+        // Reversal: always call loadOverlayRamCacheSync on main for all families.
+        if (DeviceFeatures.isA5()) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    ThemeManager.loadOverlayRamCacheSync(SolarApplication.this);
+                    ThemeManager.preferInternalCacheForActiveTheme(SolarApplication.this);
+                }
+            }, "A5ThemeRamWarm").start();
+        } else {
+            ThemeManager.loadOverlayRamCacheSync(this);
+            ThemeManager.preferInternalCacheForActiveTheme(this);
+        }
         NavigationPreferences.syncPropertyFromPrefs(this);
+        // 2026-07-11 — Rockbox experiment sysprop for companion launcher picker gate.
+        RockboxExperiment.syncSyspropFromPrefs(this);
         // Overlay process only hosts WM modal — skip HOME/bootstrap that could touch Rockbox focus.
         if (isOverlayProcess()) {
             // Theme I/O off Application main thread — startService can return while cache warms.
@@ -53,6 +138,27 @@ public class SolarApplication extends Application {
             }, "OverlayThemeBoot").start();
             return;
         }
+        // 2026-07-14 — A5: return ASAP so SolarLaunchActivity can paint; defer IME/overlay/host.
+        // Was: SolarImeBootstrap + overlay hosts on main blocked Activity.onCreate (ANR splash).
+        // Reversal: remove this if/return; keep runMainProcessBootstrap() call only.
+        if (DeviceFeatures.isA5()) {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    runMainProcessBootstrap();
+                }
+            }, "A5AppBootstrap").start();
+            android.util.Log.e("SolarDebugB4208e", "Application.onCreate A5 EARLY RETURN");
+            return;
+        }
+        runMainProcessBootstrap();
+    }
+
+    /**
+     * 2026-07-14 — Main process bootstrap after theme warm (IME, overlay hosts, theme loader thread).
+     * Layman: finish starting Solar helpers without holding the first screen hostage on A5.
+     */
+    private void runMainProcessBootstrap() {
         // 2026-07-05 — Main process: clear ghost IME WM overlay before MainActivity paints.
         SolarImeDismiss.recoverOnBoot(this);
         SolarImeBootstrap.ensureDefaultIme(this);
@@ -62,21 +168,26 @@ public class SolarApplication extends Application {
         LargeFontAccessibilitySuppressor.ensureNormalFontScale(this);
         GraphicsPerformancePolicy.ensureAsync(this);
         // 2026-07-05 — Silent platform prep when prepVersion ahead; no blocking wizard on ROM-ready devices.
-        PlatformPrepLauncher.ensureAsync(this);
+        // 2026-07-14 — A5 stock: skip (su/Xposed ladder not for Timmkoo; SuperSU overlays UI).
+        if (!DeviceFeatures.isA5()) {
+            PlatformPrepLauncher.ensureAsync(this);
+        }
         MediaVolumeControl.ensureAlertStreamsSilent(this);
         // Warm :overlay immediately — do not wait for background bootstrap thread.
         SolarOverlayHost.ensureStarted(this);
         SolarRescueHoldHost.ensureStarted(this);
         LauncherWatchdogService.ensureStarted(this);
         startService(new Intent(this, ProcessManagerService.class));
-        // 2026-07-06 — JJ/Rockbox HOME: claim MEDIA_BUTTON on main thread before bootstrap I/O (H2).
+        // 2026-07-08 — JJ/Rockbox/Stock HOME: claim MEDIA_BUTTON before bootstrap I/O (H2).
         String earlyHomeTarget = LauncherPreference.getHomeTarget(this);
         if (LauncherDefault.TARGET_JJ.equals(earlyHomeTarget)
-                || LauncherDefault.TARGET_ROCKBOX.equals(earlyHomeTarget)) {
+                || LauncherDefault.TARGET_ROCKBOX.equals(earlyHomeTarget)
+                || LauncherDefault.TARGET_STOCK.equals(earlyHomeTarget)) {
             MediaButtonRegistrar.ensureRegistered(this);
             ExternalInputHandoff.warmInjector(this);
             RockboxForegroundMonitor.ensureStarted(this);
-            if (LauncherDefault.TARGET_JJ.equals(earlyHomeTarget)) {
+            if (LauncherDefault.TARGET_JJ.equals(earlyHomeTarget)
+                    || LauncherDefault.TARGET_STOCK.equals(earlyHomeTarget)) {
                 ExternalInputHandoff.armJjShim(this);
             }
             try {
@@ -87,6 +198,12 @@ public class SolarApplication extends Application {
         LauncherPreference.reconcileHomeTargetFromProperty(this);
         // 2026-07-06 — Record USB boot host before Application bootstrap thread races USB_STATE.
         UsbHostSessionPolicy.onBootCompleted(this);
+        // 2026-07-11 — Kill adb/session instrumentation by default (observer-effect lag).
+        // User-facing Debug menu + experiment prefs remain; opt-in via *Log.ENABLED = true for sessions.
+        DebugPerfLog.ENABLED = false;
+        DebugSessionLog.ENABLED = false;
+        DebugImeLog.ENABLED = false;
+        Debug62b1bbLog.ENABLED = false;
         // #region agent log
         if (DebugPerfLog.ENABLED) {
             DebugPerfLog.markStart();
@@ -118,10 +235,15 @@ public class SolarApplication extends Application {
                 // 2026-07-06 — OTA catalog (SolarUpdateClient) shares Conscrypt + bundled LE roots with TlsHelper.
                 OtaTlsHelper.init(SolarApplication.this);
                 Y1InputKeys.selfCheckWheelMapping();
-                SolarBootPacing.pauseBetweenBootstrapSteps();
-                Y1RomPrep.ensureSwitchScripts(SolarApplication.this);
-                RockboxDisable.ensureOnce(SolarApplication.this);
-                SolarBootPacing.pauseBetweenBootstrapSteps();
+                // 2026-07-14 — A5 stock: skip ROM switch scripts / su prep (SuperSU steals UI).
+                // Was: always ensureSwitchScripts + RockboxDisable. Now: Y1/Y2 only.
+                // Reversal: remove isA5 continue; always run ensureSwitchScripts.
+                if (!DeviceFeatures.isA5()) {
+                    SolarBootPacing.pauseBetweenBootstrapSteps();
+                    Y1RomPrep.ensureSwitchScripts(SolarApplication.this);
+                    RockboxDisable.ensureOnce(SolarApplication.this);
+                    SolarBootPacing.pauseBetweenBootstrapSteps();
+                }
                 LargeFontAccessibilitySuppressor.ensureNormalFontScale(SolarApplication.this);
                 GraphicsPerformancePolicy.ensureAsync(SolarApplication.this);
                 WifiMacRandomizer.ensureOnce(SolarApplication.this);
@@ -138,12 +260,18 @@ public class SolarApplication extends Application {
                 ThemeManager.syncSavedThemeToPrefs(SolarApplication.this);
                 SolarBootPacing.pauseBetweenBootstrapSteps();
                 LauncherPreference.reconcileHomeTargetFromProperty(SolarApplication.this);
-                // 2026-07-06 — JJ/Rockbox HOME: prewarm inject daemon before first wheel tick.
+                // 2026-07-08 — JJ/Rockbox/Stock HOME: prewarm inject before first wheel tick.
                 String homeTarget = LauncherPreference.getHomeTarget(SolarApplication.this);
                 if (LauncherDefault.TARGET_JJ.equals(homeTarget)
-                        || LauncherDefault.TARGET_ROCKBOX.equals(homeTarget)) {
+                        || LauncherDefault.TARGET_ROCKBOX.equals(homeTarget)
+                        || LauncherDefault.TARGET_STOCK.equals(homeTarget)) {
                     ExternalInputHandoff.warmInjector(SolarApplication.this);
-                    ExternalInputHandoff.armForForegroundPackage(SolarApplication.this);
+                    if (LauncherDefault.TARGET_JJ.equals(homeTarget)
+                            || LauncherDefault.TARGET_STOCK.equals(homeTarget)) {
+                        ExternalInputHandoff.armJjShim(SolarApplication.this);
+                    } else {
+                        ExternalInputHandoff.armForForegroundPackage(SolarApplication.this);
+                    }
                     MediaButtonRegistrar.ensureRegistered(SolarApplication.this);
                     // #region agent log
                     try {

@@ -6,6 +6,7 @@ string helper_app_name
 string picker_jj
 string picker_rockbox
 string picker_solar
+string picker_stock
 string picker_title
 string prompt_restarting_jj
 string prompt_restarting_rockbox

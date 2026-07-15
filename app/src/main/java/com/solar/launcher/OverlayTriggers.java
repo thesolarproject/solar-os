@@ -86,6 +86,9 @@ public final class OverlayTriggers {
 
     public static final String EXTRA_KEY_CODE = "overlay_key_code";
 
+    /** Optional scancode — A5 face mid (158) vs side power (116) when remapping in IME. */
+    public static final String EXTRA_SCAN_CODE = "overlay_scan_code";
+
     /** {@link android.view.KeyEvent#ACTION_DOWN} or {@link android.view.KeyEvent#ACTION_UP}. */
     public static final String EXTRA_KEY_ACTION = "overlay_key_action";
 
@@ -104,6 +107,28 @@ public final class OverlayTriggers {
     /** SystemUI USB enable prompt — global overlay over any foreground app. */
     public static final String ACTION_SHOW_OVERLAY_USB_STORAGE =
             "com.solar.launcher.action.SHOW_OVERLAY_USB_STORAGE";
+
+    /**
+     * 2026-07-08 — UMS already exported — fullscreen lock modal (companion primary).
+     * Layman: “disk mode on” screen over any app; no Solar Home launch.
+     * Was: EXTRA_USB_OVERLAY_LOCK → MainActivity.STATE_USB_STORAGE.
+     */
+    public static final String ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK =
+            "com.solar.launcher.action.SHOW_OVERLAY_USB_STORAGE_LOCK";
+
+    /** :overlay / companion → main: UMS lock painted — pause players if process alive. */
+    public static final String ACTION_USB_STORAGE_LOCKED =
+            "com.solar.launcher.action.USB_STORAGE_LOCKED";
+
+    /** Lock ended (Turn Off or cable unplug) — clear main-process lock flags if alive. */
+    public static final String ACTION_USB_STORAGE_UNLOCKED =
+            "com.solar.launcher.action.USB_STORAGE_UNLOCKED";
+
+    /**
+     * 2026-07-08 — User forced Turn Off while PC cable still connected.
+     * Marks host session dismissed until next unplug (not set on cable-unplug alone).
+     */
+    public static final String EXTRA_USB_FORCE_OFF = "usb_force_off";
 
     /** Bluetooth pairing PIN / passkey / consent — global overlay over any foreground app. */
     public static final String ACTION_SHOW_OVERLAY_BT_PAIRING =

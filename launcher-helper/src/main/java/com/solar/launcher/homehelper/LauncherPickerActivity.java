@@ -26,7 +26,7 @@ import java.util.List;
 /**
  * 2026-07-07 — Wheel-friendly HOME picker fallback (Solar overlay is primary).
  * Layman: hold Back/Power, pick any Android HOME app — choice sticks across reboots.
- * Technical: PM CATEGORY_HOME scan + Solar/Rockbox/JJ rows; custom uses persist component.
+ * Technical: PM CATEGORY_HOME scan + Solar/Rockbox/JJ/Stock rows; custom uses persist component.
  * Reversal: finish-only stub; Solar OverlayModalHost.showLauncherPickerMode owns UI again.
  */
 public final class LauncherPickerActivity extends Activity {
@@ -67,7 +67,11 @@ public final class LauncherPickerActivity extends Activity {
         }
     }
 
-    /** Build Solar / Rockbox / JJ / PM-discovered HOME rows — skip helper middle-man. */
+    /**
+     * Build Solar / Rockbox / JJ / Stock / PM-discovered HOME rows — skip helper middle-man.
+     * 2026-07-08 — Stock Innioasis row was missing; custom scan alone skipped dedicated stock pkgs.
+     * Reversal: drop stock block (only solar/rockbox/jj + custom).
+     */
     private void buildRows() {
         ArrayList<String> labels = new ArrayList<String>();
         targets.clear();
@@ -83,6 +87,13 @@ public final class LauncherPickerActivity extends Activity {
         if (isInstalled(HomeTargetPolicy.JJ_PKG)) {
             labels.add(getString(R.string.picker_jj));
             targets.add(HomeTargetPolicy.TARGET_JJ);
+            customComponents.add("");
+        }
+        // 2026-07-08 — Factory HOME when either family package is present on the device.
+        if (isInstalled(HomeTargetPolicy.INNIOASIS_Y1_PKG)
+                || isInstalled(HomeTargetPolicy.INNIOASIS_Y2_PKG)) {
+            labels.add(getString(R.string.picker_stock));
+            targets.add(HomeTargetPolicy.TARGET_STOCK);
             customComponents.add("");
         }
         appendDiscoveredHomeLaunchers(labels);

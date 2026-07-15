@@ -764,12 +764,15 @@ public class ThemeDownloader {
         return rel;
     }
 
-    /** Gallery-relative path (under PATH_THEMES) for a config asset reference. */
+    /**
+     * Gallery-relative path (under PATH_THEMES) for a config asset reference.
+     * 2026-07-11 — Keep leading {@code @} in filenames (Habbo {@code @Be_*.png} lives on disk as-is).
+     * Was: strip leading {@code @} → gallery 404 on Be_*.png. Reversal: restore substring(1) strip.
+     */
     static String canonicalGalleryPath(String catalogFolder, String ref) {
         if (ref == null) return null;
         String p = ref.trim();
         if (p.isEmpty() || p.contains("://")) return null;
-        if (p.startsWith("@")) p = p.substring(1);
         while (p.startsWith("./")) p = p.substring(2);
         p = p.replace('\\', '/');
         if (p.startsWith("/")) p = p.substring(1);
@@ -995,7 +998,7 @@ public class ThemeDownloader {
                 String url = themeFileUrlForGallery(rel);
                 dlLog("GET " + rel + " <- " + url);
                 try {
-                    byte[] fileBytes = httpGet(url);
+                    byte[] fileBytes = httpGetGalleryAsset(rel);
                     writeFile(out, fileBytes);
                     dlLog("saved " + rel + " (" + fileBytes.length + "b)");
                 } catch (Exception raw) {
@@ -1109,7 +1112,7 @@ public class ThemeDownloader {
                 String url = themeFileUrlForGallery(galleryRel);
                 dlLog("GET " + galleryRel + " -> " + localName);
                 try {
-                    writeFile(out, httpGet(url));
+                    writeFile(out, httpGetGalleryAsset(galleryRel));
                 } catch (Exception raw) {
                     Exception mapped = mapHttpFailure(raw);
                     if (mapped instanceof HttpStatusException) {
@@ -1287,7 +1290,7 @@ public class ThemeDownloader {
             String url = themeFileUrlForGallery(galleryRel);
             dlLog("variant recovery GET " + localName + " <- " + galleryRel);
             try {
-                writeFile(new File(dest, localName), httpGet(url));
+                writeFile(new File(dest, localName), httpGetGalleryAsset(galleryRel));
             } catch (Exception raw) {
                 Exception mapped = mapHttpFailure(raw);
                 if (mapped instanceof HttpStatusException) {
@@ -1340,7 +1343,7 @@ public class ThemeDownloader {
                 dlLog("recovery saved config.json (" + configBytes.length + "b)");
             } else {
                 try {
-                    byte[] fileBytes = httpGet(url);
+                    byte[] fileBytes = httpGetGalleryAsset(rel);
                     File out = resolveAssetOutputFile(entry.themeDir(), entry.folder, rel);
                     if (out == null) {
                         dlLog("recovery skip unresolved " + rel);
@@ -1391,6 +1394,46 @@ public class ThemeDownloader {
             rel = sb.toString();
         } catch (Exception ignored) {}
         return BASE_URL + rel;
+    }
+
+    /**
+     * 2026-07-11 — Toggle leading {@code @} on the last path segment only.
+     * Layman: try Habbo/@Be_foo.png vs Habbo/Be_foo.png when one 404s.
+     * Technical: basename @ dual for gallery GET fallback.
+     */
+    static String alternateLeadingAtPath(String galleryRel) {
+        if (galleryRel == null || galleryRel.isEmpty()) return null;
+        String rel = galleryRel.replace('\\', '/');
+        int slash = rel.lastIndexOf('/');
+        String dir = slash >= 0 ? rel.substring(0, slash + 1) : "";
+        String name = slash >= 0 ? rel.substring(slash + 1) : rel;
+        if (name.isEmpty()) return null;
+        if (name.startsWith("@")) {
+            return dir + name.substring(1);
+        }
+        return dir + "@" + name;
+    }
+
+    /**
+     * 2026-07-11 — GET gallery bytes; on 404 retry once with/without leading {@code @} on basename.
+     * Writes still use the caller's original output path (config name).
+     * Reversal: callers can httpGet(themeFileUrlForGallery(rel)) alone again.
+     */
+    static byte[] httpGetGalleryAsset(String galleryRel) throws Exception {
+        String url = themeFileUrlForGallery(galleryRel);
+        try {
+            return httpGet(url);
+        } catch (Exception raw) {
+            Exception mapped = mapHttpFailure(raw);
+            if (!(mapped instanceof HttpStatusException)
+                    || ((HttpStatusException) mapped).statusCode != 404) {
+                throw mapped;
+            }
+            String alt = alternateLeadingAtPath(galleryRel);
+            if (alt == null || alt.equals(galleryRel)) throw mapped;
+            dlLog("404 retry alternate @ " + galleryRel + " -> " + alt);
+            return httpGet(themeFileUrlForGallery(alt));
+        }
     }
 
     private static void writeFile(File file, byte[] data) throws Exception {
@@ -1544,8 +1587,32 @@ public class ThemeDownloader {
         } finally {
             deleteRecursive(subDir);
         }
-        if (!collectAssetPaths(new JSONObject("{\"themeCover\":\"@cover.png\"}"), "T").contains("T/cover.png")) {
-            throw new AssertionError("@ prefix");
+        if (!collectAssetPaths(new JSONObject("{\"themeCover\":\"@cover.png\"}"), "T").contains("T/@cover.png")) {
+            throw new AssertionError("@ prefix preserved");
+        }
+        if (!"Habbo/@Be_itemBackground.png".equals(
+                canonicalGalleryPath("Habbo", "@Be_itemBackground.png"))) {
+            throw new AssertionError("Habbo @Be_ itemBackground path");
+        }
+        if (!"Habbo/@Be_Now Playing.png".equals(
+                canonicalGalleryPath("Habbo", "@Be_Now Playing.png"))) {
+            throw new AssertionError("Habbo @Be_ spaced icon path");
+        }
+        if (!"Habbo/Shutdown@1x.png".equals(
+                canonicalGalleryPath("Habbo", "Shutdown@1x.png"))) {
+            throw new AssertionError("mid-name @1x unchanged");
+        }
+        if (!"Habbo/Be_itemBackground.png".equals(
+                alternateLeadingAtPath("Habbo/@Be_itemBackground.png"))) {
+            throw new AssertionError("alternate strip @");
+        }
+        if (!"Habbo/@Be_itemBackground.png".equals(
+                alternateLeadingAtPath("Habbo/Be_itemBackground.png"))) {
+            throw new AssertionError("alternate add @");
+        }
+        String encUrl = themeFileUrlForGallery("Habbo/@Be_Now Playing.png");
+        if (!encUrl.contains("%40Be_Now") || !encUrl.contains("Playing.png")) {
+            throw new AssertionError("URL encode @ and space: " + encUrl);
         }
         if (!"Stranger Things/cover.png".equals(
                 canonicalGalleryPath("Stranger Things/Variants/Robin", "../../cover.png"))) {

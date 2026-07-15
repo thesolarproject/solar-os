@@ -27,6 +27,8 @@ public final class NotPipeClient {
     }
 
     private static final long DEFAULT_TIMEOUT_MS = 12000L;
+    /** 2026-07-14 — Cold Piped/Invidious pick can exceed 12s; keep probe short. */
+    private static final long RESOLVE_TIMEOUT_MS = 28000L;
     private static final long PROBE_TIMEOUT_MS = 3000L;
     /** Staggered sends — bridge may register after wake MainActivity. */
     private static final long[] SEND_DELAYS_MS = {300L, 1200L, 2500L};
@@ -66,6 +68,23 @@ public final class NotPipeClient {
         }
     }
 
+    /**
+     * 2026-07-14 — Preferred progressive quality for this device.
+     * Layman: Y2 tries 480p first; Y1 stays at 360p for the weak SoC.
+     */
+    public static String preferredVideoQuality() {
+        return DeviceFeatures.isY2() ? "480" : "360";
+    }
+
+    /**
+     * 2026-07-14 — Next lower quality after a failed resolve / IJK error, or null if none.
+     * Ladder: 480 → 360; 360 has no further step.
+     */
+    public static String fallbackVideoQuality(String failedQuality) {
+        if ("480".equals(failedQuality)) return "360";
+        return null;
+    }
+
     public void probe(Callback cb) {
         dispatch(NotPipeIpc.CMD_PROBE, null, null, null, null, PROBE_TIMEOUT_MS, cb);
     }
@@ -78,16 +97,34 @@ public final class NotPipeClient {
         dispatch(NotPipeIpc.CMD_SEARCH, query, null, null, null, DEFAULT_TIMEOUT_MS, cb);
     }
 
+    /** Resolve video stream at device-preferred quality. */
     public void resolveStream(String videoId, Callback cb) {
-        String quality = DeviceFeatures.isY2() ? "480" : "360";
-        dispatch(NotPipeIpc.CMD_RESOLVE_STREAM, null, videoId, quality,
-                NotPipeIpc.STREAM_KIND_VIDEO, DEFAULT_TIMEOUT_MS, cb);
+        resolveStream(videoId, preferredVideoQuality(), cb);
+    }
+
+    /**
+     * 2026-07-14 — Resolve at an explicit quality (quality ladder retries).
+     * Layman: ask notPipe for this resolution; Solar may try 360 after 480 fails.
+     */
+    public void resolveStream(String videoId, String quality, Callback cb) {
+        String q = (quality != null && quality.length() > 0) ? quality : preferredVideoQuality();
+        dispatch(NotPipeIpc.CMD_RESOLVE_STREAM, null, videoId, q,
+                NotPipeIpc.STREAM_KIND_VIDEO, RESOLVE_TIMEOUT_MS, cb);
     }
 
     /** Audio-only stream for save-to-Music — not a video container. */
     public void resolveAudioStream(String videoId, Callback cb) {
         dispatch(NotPipeIpc.CMD_RESOLVE_STREAM, null, videoId, "360",
-                NotPipeIpc.STREAM_KIND_AUDIO, DEFAULT_TIMEOUT_MS, cb);
+                NotPipeIpc.STREAM_KIND_AUDIO, RESOLVE_TIMEOUT_MS, cb);
+    }
+
+    /**
+     * Top-level comments for a video — Solar messaging-style detail UI.
+     * Payload JSON array: [{author, content}, …] via notPipe multi-instance Metadata.
+     */
+    public void fetchComments(String videoId, Callback cb) {
+        dispatch(NotPipeIpc.CMD_GET_COMMENTS, null, videoId, null, null,
+                DEFAULT_TIMEOUT_MS, cb);
     }
 
     private void dispatch(String cmd, String query, String videoId, String quality,
@@ -104,6 +141,11 @@ public final class NotPipeClient {
         }, timeoutMs);
 
         final Intent i = new Intent(NotPipeIpc.ACTION_CMD);
+        // 2026-07-14 — Target SolarCmdReceiver (API 17 has no am -p; component is reliable).
+        // Layman: drop the YouTube ask on notPipe's named mailbox, not the whole device.
+        // Reversal: setPackage(NOTPIPE_PKG) only — needs dynamic Application receiver.
+        i.setClassName(NotPipeIpc.NOTPIPE_PKG, NotPipeIpc.NOTPIPE_PKG + ".SolarCmdReceiver");
+        i.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES);
         i.putExtra(NotPipeIpc.EXTRA_CMD, cmd);
         i.putExtra(NotPipeIpc.EXTRA_REQUEST_ID, requestId);
         if (query != null) i.putExtra(NotPipeIpc.EXTRA_QUERY, query);

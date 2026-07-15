@@ -35,6 +35,13 @@ public class SettingLookup {
         put("usb auto connect", "usb_auto_connect");
         put("skip plug-in prompt", "usb_suppress_connect_prompt");
         put("auto-connect", "usb_auto_connect");
+        // 2026-07-11 — Label form for enable/disableMenu_Item_Padding; runtime uses per-theme keys.
+        put("menu item padding", "menu_item_padding");
+        // 2026-07-11 — Home right-pane NP title/artist; also solarConfig.settingsShow_Now_Playing_Info.
+        put("show now playing info", "show_now_playing_info");
+        // 2026-07-11 — A5 portrait theme flag (runtime also forces full-width + no masks).
+        put("a5 portrait mode", "a5_portrait_mode");
+        put("a5 portrait", "a5_portrait_mode");
     }
 
     private static void put(String label, String prefKey) {
@@ -67,8 +74,8 @@ public class SettingLookup {
      */
     public static void applySolarConfigOverrides(Context ctx, Map<String, Object> overrides) {
         if (ctx == null || overrides == null || overrides.isEmpty()) return;
-        SharedPreferences prefs = ctx.getSharedPreferences(
-                ctx.getPackageName() + "_preferences", Context.MODE_PRIVATE);
+        // 2026-07-11 — Must match MainActivity / ActiveThemeEngine (was package_preferences → no-op).
+        SharedPreferences prefs = ctx.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = prefs.edit();
         boolean anyChange = false;
         // ponytail: if theme enables both LCD and 3D album art, skip both — user pref wins.

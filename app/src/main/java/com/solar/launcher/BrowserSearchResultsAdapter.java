@@ -123,7 +123,9 @@ public final class BrowserSearchResultsAdapter extends BaseAdapter {
     }
 
     private void bindGetMusicRow(LinearLayout layout, Row row) {
-        layout.setOnClickListener(row.click);
+        // 2026-07-14 — Re-wrap on recycle; plain setOnClickListener stripped A5 two-tap.
+        // Was: layout.setOnClickListener(row.click) one-tap. Reversal: that direct assign.
+        A5FocusConfirm.setOnClickListener(layout, row.click);
         layout.setEnabled(row.enabled);
         layout.setFocusable(row.enabled);
         if (layout.getChildCount() > 0 && layout.getChildAt(0) instanceof TextView) {

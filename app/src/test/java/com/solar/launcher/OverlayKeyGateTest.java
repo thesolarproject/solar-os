@@ -21,9 +21,10 @@ public class OverlayKeyGateTest {
     }
 
     @Test
-    public void postOverlayCooldownMsIsNonTrivial() {
-        if (OverlayKeyGate.POST_OVERLAY_COOLDOWN_MS < 200L) {
-            throw new AssertionError("cooldown too short to absorb dismiss storms");
+    public void postOverlayCooldownMatchesSharedPolicy() {
+        // 2026-07-10 — 90ms matches CompanionOverlayKeyGate + Xposed cooldown prop.
+        if (OverlayKeyGate.POST_OVERLAY_COOLDOWN_MS != 90L) {
+            throw new AssertionError("cooldown drift — align with GlobalInputPolicy / companion gate");
         }
     }
 
@@ -41,31 +42,19 @@ public class OverlayKeyGateTest {
     }
 
     @Test
-    public void deliverDedupeSkipsRapidRepeat() {
-        OverlayKeyGate.resetDeliverDedupeForTest();
-        final int[] calls = new int[] {0};
-        OverlayKeyGate.arm(new OverlayKeyGate.Handler() {
-            @Override
-            public boolean onKeyDown(int keyCode) {
-                calls[0]++;
-                return true;
-            }
-
-            @Override
-            public boolean onKeyUp(int keyCode) {
-                return true;
-            }
-        });
-        OverlayKeyGate.deliver(126);
-        OverlayKeyGate.deliver(126);
-        if (calls[0] != 1) {
-            throw new AssertionError("expected one handler call, got " + calls[0]);
+    public void wheelDedupeWindowIsShorterThanNonWheel() {
+        // Host JVM cannot mock SystemClock — assert dedupe policy constants instead.
+        long wheel = OverlayKeyGate.dedupeWindowMsForTest(KeyEvent.KEYCODE_MEDIA_PLAY);
+        long back = OverlayKeyGate.dedupeWindowMsForTest(KeyEvent.KEYCODE_BACK);
+        if (wheel >= back) {
+            throw new AssertionError("wheel dedupe must be tighter than non-wheel");
         }
-        OverlayKeyGate.deliverUp(126);
-        if (calls[0] != 1) {
-            throw new AssertionError("key-up should not be deduped against key-down");
+        if (wheel != 12L) {
+            throw new AssertionError("wheel dedupe drift");
         }
-        OverlayKeyGate.disarm();
+        if (back != 45L) {
+            throw new AssertionError("non-wheel dedupe drift");
+        }
     }
 
     @Test

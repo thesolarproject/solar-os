@@ -76,17 +76,38 @@ public final class MediaVolumeControl {
     /** Brief gate so Xposed volume hooks ignore Solar in-app slider adjustments. */
     static void markInternalVolumeAdjust() {
         if (!RootShell.canRun()) return;
-        RootShell.run("setprop " + PROP_INTERNAL_ADJUST + " 1");
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    Thread.sleep(250L);
-                } catch (InterruptedException ignored) {}
-                RootShell.run("setprop " + PROP_INTERNAL_ADJUST + " 0");
-            }
-        }, "SolarVolInternal").start();
+        // Async + coalesced — sync su per wheel tick caused multi-second volume lag (session 62b1bb).
+        RootShell.runAsync("setprop " + PROP_INTERNAL_ADJUST + " 1");
+        scheduleInternalAdjustClear();
     }
+
+    private static final android.os.Handler INTERNAL_ADJUST_HANDLER;
+    private static volatile long internalAdjustClearAtMs;
+
+    static {
+        android.os.HandlerThread ht = new android.os.HandlerThread("SolarVolInternal");
+        ht.start();
+        INTERNAL_ADJUST_HANDLER = new android.os.Handler(ht.getLooper());
+    }
+
+    /** Extend clear deadline on rapid wheel steps — one setprop 0 after burst ends. */
+    private static void scheduleInternalAdjustClear() {
+        internalAdjustClearAtMs = android.os.SystemClock.uptimeMillis() + 250L;
+        INTERNAL_ADJUST_HANDLER.removeCallbacks(clearInternalAdjustRunnable);
+        INTERNAL_ADJUST_HANDLER.postDelayed(clearInternalAdjustRunnable, 250L);
+    }
+
+    private static final Runnable clearInternalAdjustRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (android.os.SystemClock.uptimeMillis() < internalAdjustClearAtMs) {
+                INTERNAL_ADJUST_HANDLER.postDelayed(this,
+                        internalAdjustClearAtMs - android.os.SystemClock.uptimeMillis());
+                return;
+            }
+            RootShell.runAsync("setprop " + PROP_INTERNAL_ADJUST + " 0");
+        }
+    };
 
     /** 2026-07-06 — Which stream global overlay should adjust (FM app or Solar FM vs music). */
     public static int resolveActiveStream(Context ctx) {

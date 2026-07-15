@@ -27,13 +27,13 @@ public final class SystemErrorDialogRouting {
     private SystemErrorDialogRouting() {}
 
     /**
-     * Tier 1 gate — replace third-party ANR when overlay host is installed.
-     * Tier 2: {@code isSystemAnrProcess} → stock Holo + AnrDialogKeyForwarder wheel remap.
+     * Tier 1 gate — replace ANR when overlay host is installed (incl. system_server).
+     * 2026-07-08 — Was: system/android ANR stayed on stock Holo. Now: companion overlay
+     * replaces all ANRs; timed fail-open restores stock + wheel forwarder if paint misses.
      * Tier 3: {@code overlayAvailable=false} → stock Holo unchanged.
      */
     public static boolean shouldReplaceAnr(String processName, boolean overlayAvailable) {
-        if (!overlayAvailable) return false;
-        return !isSystemAnrProcess(processName);
+        return overlayAvailable;
     }
 
     /**
@@ -44,7 +44,10 @@ public final class SystemErrorDialogRouting {
         return overlayAvailable;
     }
 
-    /** system / android ANR — never overlay; PWM key forwarder owns wheel UX (tier 2). */
+    /**
+     * 2026-07-08 — Informational: system ANR still benefits from fail-open wheel remap.
+     * No longer a denylist for overlay replace — companion shell owns system ANRs too.
+     */
     public static boolean isSystemAnrProcess(String processName) {
         return "system".equals(processName) || "android".equals(processName);
     }

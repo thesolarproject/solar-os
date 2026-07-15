@@ -532,8 +532,15 @@ public final class ExternalInputHandoff {
     public static int resolveModeForForegroundPackage(String packageName) {
         if (packageName == null || packageName.isEmpty()) return MODE_OFF;
         if (SOLAR_PACKAGE.equals(packageName) || ROCKBOX_PACKAGE.equals(packageName)) return MODE_OFF;
-        if (packageName.startsWith("com.innioasis.")) return MODE_OFF;
-        if (LauncherDefault.JJ_PACKAGE.equals(packageName)) return MODE_JJ;
+        // 2026-07-08 — JJ + stock Innioasis HOME share Y1-Rockbox.kl → MODE_JJ wheel inject.
+        // Reversal: blanket com.innioasis.* → MODE_OFF; MODE_JJ for com.themoon.y1 only.
+        if (com.solar.input.policy.GlobalInputPolicy.isJjKeylayoutLauncher(packageName)) {
+            return MODE_JJ;
+        }
+        // Other vendor apps under com.innioasis.* (music/fm) — no stock inject remap.
+        if (com.solar.input.policy.GlobalInputPolicy.isInnioasisNonLauncherPackage(packageName)) {
+            return MODE_OFF;
+        }
         if (FM_RADIO_PACKAGE.equals(packageName)) return MODE_FM;
         return MODE_ANDROID;
     }
@@ -555,8 +562,8 @@ public final class ExternalInputHandoff {
     }
 
     /**
-     * 2026-07-06 — Immediate JJ wheel remap when helper routes HOME to com.themoon.y1.
-     * Layman: turn on scroll-wheel translation before the first wheel tick in JJ.
+     * 2026-07-08 — Immediate JJ-style wheel remap for JJ or Innioasis stock HOME.
+     * Layman: turn on scroll-wheel translation before the first wheel tick.
      * Technical: MODE_JJ + MEDIA_BUTTON register + root inject prewarm.
      */
     public static void armJjShim(Context context) {
@@ -636,7 +643,15 @@ public final class ExternalInputHandoff {
         return 0;
     }
 
-    /** JJ MainActivity expects 21/22 wheel scroll; 85/87/88 arrive from Y1-Rockbox.kl unchanged. */
+    /**
+     * 2026-07-08 — JJ + stock Innioasis HOME expect DPAD 21/22 for wheel.
+     * Layman: turn Play/Pause wheel ticks into left/right for factory and JJ menus.
+     * Technical: Y1-Rockbox.kl maps wheel 105/106→MEDIA_PLAY/PAUSE; stock mtk-kpd often used
+     * DPAD_UP/DOWN — legacyHardwareToDpad covers that. Do not edit .kl scancode lines.
+     * Note (hardware): stock Y2 wheel axis (LEFT/RIGHT vs UP/DOWN) still needs a device check
+     * before splitting MODE_JJ by family — until then Y1+Y2 share this table.
+     * Reversal: MEDIA_PLAY/PAUSE passthrough under MODE_JJ (breaks JJ/Innioasis scroll).
+     */
     private static int mediaToJjDpad(int keyCode) {
         switch (keyCode) {
             case KeyEvent.KEYCODE_MEDIA_PLAY:

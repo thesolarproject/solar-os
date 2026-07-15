@@ -6,9 +6,10 @@ import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
- * 2026-07-05 — When stock Holo ANR is showing, remap wheel/side/center keys to DPAD taps
+ * 2026-07-05 — When stock Holo ANR/crash is showing, remap wheel/side/center keys to DPAD taps
  * so scrollwheel hardware can focus Wait / Close / Report without editing keylayouts.
- * Reversal: remove install() from SystemServerHooks — stock ANR stays touch-only again.
+ * 2026-07-08 — Also armed for AppErrorDialog fail-open (crash dialog wheel parity).
+ * Reversal: remove install() from SystemServerHooks — stock dialogs stay touch-only again.
  */
 final class AnrDialogKeyForwarder {
 
@@ -21,7 +22,7 @@ final class AnrDialogKeyForwarder {
 
     private AnrDialogKeyForwarder() {}
 
-    /** Called from AppAnrHooks when stock Holo ANR is visible. */
+    /** Called from AppAnrHooks / AppErrorHooks when stock Holo ANR or crash is visible. */
     static void setStockAnrActive(boolean active) {
         stockAnrActive = active;
         if (active) {

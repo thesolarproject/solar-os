@@ -27,10 +27,14 @@ public final class RowKeys {
     public static final String STATUS_BAR_MATCH_FONT = "settings.status_bar_match_font";
     public static final String NOW_PLAYING_MATCH_FONT = "settings.now_playing_match_font";
     public static final String NOW_PLAYING_BACKDROP = "settings.now_playing_backdrop";
+    /** 2026-07-11 — Home right-pane title/artist under Now Playing preview art (opt-in). */
+    public static final String SHOW_NOW_PLAYING_INFO = "settings.show_now_playing_info";
     public static final String NOW_PLAYING_LCD_ART = "settings.now_playing_lcd_art";
     public static final String NOW_PLAYING_3D_ALBUM_ART = "settings.now_playing_3d_album_art";
     public static final String SCREEN_TIMEOUT = "settings.screen_timeout";
     public static final String FULL_WIDTH = "settings.full_width";
+    /** 2026-07-11 — Keep 9dp left gutter on home/settings menu rows (off = flush to screen edge). */
+    public static final String MENU_ITEM_PADDING = "settings.menu_item_padding";
     /** 2026-07-06 — Wrap wheel focus at list ends (Solar + global overlay). */
     public static final String INFINITE_SCROLL = "settings.infinite_scroll";
     public static final String MENU_TRANSITIONS = "settings.menu_transitions";
@@ -52,6 +56,8 @@ public final class RowKeys {
     public static final String HOME_LAUNCHER_TO_SOLAR = "settings.home_launcher.to_solar";
     public static final String HOME_LAUNCHER_TO_ROCKBOX = "settings.home_launcher.to_rockbox";
     public static final String HOME_LAUNCHER_TO_JJ = "settings.home_launcher.to_jj";
+    /** 2026-07-08 — Settings row for Stock (Innioasis) HOME. */
+    public static final String HOME_LAUNCHER_TO_STOCK = "settings.home_launcher.to_stock";
     public static final String RESET = "settings.reset";
     public static final String RESET_ROCKBOX = "settings.reset.rockbox";
     public static final String RESET_SOLAR = "settings.reset.solar";
@@ -85,6 +91,14 @@ public final class RowKeys {
     public static final String NAVIDROME_USER = "settings.navidrome.user";
     public static final String NAVIDROME_PASS = "settings.navidrome.pass";
     public static final String NAVIDROME_TEST = "settings.navidrome.test";
+    public static final String PLEX_URL = "settings.plex.url";
+    public static final String PLEX_TOKEN = "settings.plex.token";
+    public static final String PLEX_TEST = "settings.plex.test";
+    // 2026-07-14 — Jellyfin settings rows.
+    public static final String JELLYFIN_URL = "settings.jellyfin.url";
+    public static final String JELLYFIN_USER = "settings.jellyfin.user";
+    public static final String JELLYFIN_PASS = "settings.jellyfin.pass";
+    public static final String JELLYFIN_TEST = "settings.jellyfin.test";
     public static final String ABOUT = "settings.about";
     public static final String DIAG_AUTO_REPORT = "settings.diag_auto_report";
     /** Root Settings — GitHub Issues URL screen. */
@@ -103,6 +117,17 @@ public final class RowKeys {
     public static final String DEBUG_SHOW_ERROR_TOASTS = "settings.debug.show_error_toasts";
     public static final String DEBUG_BLUETOOTH_EXPERIMENT = "settings.debug.bluetooth_experiment";
     public static final String DEBUG_RADIO_EXPERIMENT = "settings.debug.radio_experiment";
+    /** 2026-07-14 — YouTube hub kill switch (default on); Debug can hide Videos → YouTube. */
+    public static final String DEBUG_YOUTUBE_EXPERIMENT = "settings.debug.youtube_experiment";
+    /** 2026-07-11 — Rockbox-Y1 install + HOME switch; off by default (Y2 uses Y1 APK + compat module). */
+    public static final String DEBUG_ROCKBOX_EXPERIMENT = "settings.debug.rockbox_experiment";
+    public static final String DEBUG_PLEX_EXPERIMENT = "settings.debug.plex_experiment";
+    /** 2026-07-14 — Jellyfin music client; off by default until enabled in Debug. */
+    public static final String DEBUG_JELLYFIN_EXPERIMENT = "settings.debug.jellyfin_experiment";
+    /** 2026-07-14 — A5-only: Y1/Y2 landscape chrome scaled to 240p (320×240); off by default. */
+    public static final String DEBUG_A5_LANDSCAPE_EXPERIMENT = "settings.debug.a5_landscape_experiment";
+    /** 2026-07-14 — Y1/Y2-only: tall portrait chrome + remapped wheel/side keys; off by default. */
+    public static final String DEBUG_Y1_PORTRAIT_EXPERIMENT = "settings.debug.y1_portrait_experiment";
     /** Y2-only — USB mass storage (UMS) lab toggle; off by default until MT6582 path works (2026-07-05). */
     public static final String DEBUG_USB_MASS_STORAGE_EXPERIMENT = "settings.debug.usb_mass_storage_experiment";
     public static final String DEBUG_FLOW_ENABLED = "settings.debug.flow_enabled";
@@ -131,6 +156,10 @@ public final class RowKeys {
     public static final String Y2_INTERNAL_MEDIA = "settings.y2_internal_media";
     /** Y2 only — long OK sleeps screen instead of opening quick menu (legacy behaviour). */
     public static final String Y2_HOLD_OK_TO_SLEEP = "settings.y2_hold_ok_to_sleep";
+    /** 2026-07-11 — A5: face vs side buttons navigate menus. */
+    public static final String A5_MENU_NAV = "settings.a5_menu_nav";
+    /** 2026-07-11 — A5: portrait 240×320 vs landscape 240p-scaled. */
+    public static final String A5_ORIENTATION = "settings.a5_orientation";
     /** Y2 — submenu to pick MicroSD vs internal as primary save target. */
     public static final String Y2_PRIMARY_STORAGE = "settings.y2_primary_storage";
     public static final String Y2_PRIMARY_MICROSD = "settings.y2_primary.microsd";
@@ -250,11 +279,13 @@ public final class RowKeys {
         if (STATUS_BAR_MATCH_FONT.equals(rowKey)) return R.string.settings_status_bar_match_font;
         if (NOW_PLAYING_MATCH_FONT.equals(rowKey)) return R.string.settings_now_playing_match_font;
         if (NOW_PLAYING_BACKDROP.equals(rowKey)) return R.string.settings_now_playing_backdrop;
+        if (SHOW_NOW_PLAYING_INFO.equals(rowKey)) return R.string.settings_show_now_playing_info;
         if (NOW_PLAYING_LCD_ART.equals(rowKey)) return R.string.settings_now_playing_lcd_art;
         if (ARTWORK_PERSPECTIVE.equals(rowKey)) return R.string.settings_artwork_perspective;
         if (NOW_PLAYING_3D_ALBUM_ART.equals(rowKey)) return R.string.settings_now_playing_3d_album_art;
         if (SCREEN_TIMEOUT.equals(rowKey)) return R.string.settings_screen_timeout;
         if (FULL_WIDTH.equals(rowKey)) return R.string.settings_full_width_menus;
+        if (MENU_ITEM_PADDING.equals(rowKey)) return R.string.settings_menu_item_padding;
         if (INFINITE_SCROLL.equals(rowKey)) return R.string.settings_infinite_scroll;
         if (MENU_TRANSITIONS.equals(rowKey)) return R.string.settings_menu_transitions;
         if (POWER_OFF.equals(rowKey)) return R.string.settings_power_off;
@@ -274,6 +305,7 @@ public final class RowKeys {
         if (HOME_LAUNCHER_TO_SOLAR.equals(rowKey)) return R.string.settings_home_launcher_switch_solar;
         if (HOME_LAUNCHER_TO_ROCKBOX.equals(rowKey)) return R.string.settings_home_launcher_switch_rockbox;
         if (HOME_LAUNCHER_TO_JJ.equals(rowKey)) return R.string.settings_home_launcher_switch_jj;
+        if (HOME_LAUNCHER_TO_STOCK.equals(rowKey)) return R.string.settings_home_launcher_switch_stock;
         if (RESET.equals(rowKey)) return R.string.settings_reset;
         if (RESET_ROCKBOX.equals(rowKey)) return R.string.settings_reset_rockbox;
         if (RESET_SOLAR.equals(rowKey)) return R.string.settings_reset_solar;
@@ -305,6 +337,13 @@ public final class RowKeys {
         if (NAVIDROME_USER.equals(rowKey)) return R.string.navidrome_settings_user;
         if (NAVIDROME_PASS.equals(rowKey)) return R.string.navidrome_settings_pass;
         if (NAVIDROME_TEST.equals(rowKey)) return R.string.navidrome_settings_test;
+        if (PLEX_URL.equals(rowKey)) return R.string.plex_settings_url;
+        if (PLEX_TOKEN.equals(rowKey)) return R.string.plex_settings_token;
+        if (PLEX_TEST.equals(rowKey)) return R.string.plex_settings_test;
+        if (JELLYFIN_URL.equals(rowKey)) return R.string.jellyfin_settings_url;
+        if (JELLYFIN_USER.equals(rowKey)) return R.string.jellyfin_settings_user;
+        if (JELLYFIN_PASS.equals(rowKey)) return R.string.jellyfin_settings_pass;
+        if (JELLYFIN_TEST.equals(rowKey)) return R.string.jellyfin_settings_test;
         if (ABOUT.equals(rowKey)) return R.string.settings_about;
         if (DIAG_AUTO_REPORT.equals(rowKey)) return R.string.settings_diag_auto_report;
         if (REPORT_ISSUE.equals(rowKey)) return R.string.settings_report_issue;
@@ -316,6 +355,16 @@ public final class RowKeys {
         if (DEBUG_SHOW_ERROR_TOASTS.equals(rowKey)) return R.string.settings_debug_show_error_toasts;
         if (DEBUG_BLUETOOTH_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_bluetooth_experiment;
         if (DEBUG_RADIO_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_radio_experiment;
+        if (DEBUG_YOUTUBE_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_youtube_experiment;
+        if (DEBUG_ROCKBOX_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_rockbox_experiment;
+        if (DEBUG_PLEX_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_plex_experiment;
+        if (DEBUG_JELLYFIN_EXPERIMENT.equals(rowKey)) return R.string.settings_debug_jellyfin_experiment;
+        if (DEBUG_A5_LANDSCAPE_EXPERIMENT.equals(rowKey)) {
+            return R.string.settings_debug_a5_landscape_experiment;
+        }
+        if (DEBUG_Y1_PORTRAIT_EXPERIMENT.equals(rowKey)) {
+            return R.string.settings_debug_y1_portrait_experiment;
+        }
         if (DEBUG_USB_MASS_STORAGE_EXPERIMENT.equals(rowKey)) {
             return R.string.settings_debug_usb_mass_storage_experiment;
         }
@@ -335,6 +384,8 @@ public final class RowKeys {
         if (STORAGE.equals(rowKey)) return R.string.settings_storage_info;
         if (Y2_INTERNAL_MEDIA.equals(rowKey)) return R.string.settings_y2_internal_media;
         if (Y2_HOLD_OK_TO_SLEEP.equals(rowKey)) return R.string.settings_y2_hold_ok_to_sleep;
+        if (A5_MENU_NAV.equals(rowKey)) return R.string.settings_a5_menu_nav;
+        if (A5_ORIENTATION.equals(rowKey)) return R.string.settings_a5_orientation;
         if (Y2_PRIMARY_STORAGE.equals(rowKey)) return R.string.settings_y2_primary_storage;
         if (Y2_PRIMARY_MICROSD.equals(rowKey)) return R.string.settings_y2_primary_microsd;
         if (Y2_PRIMARY_INTERNAL.equals(rowKey)) return R.string.settings_y2_primary_internal;

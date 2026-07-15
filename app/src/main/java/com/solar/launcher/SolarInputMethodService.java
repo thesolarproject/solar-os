@@ -5,6 +5,8 @@ import android.content.Intent;
 import android.inputmethodservice.InputMethodService;
 import android.os.SystemClock;
 import android.view.KeyEvent;
+import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -15,6 +17,7 @@ import android.view.inputmethod.InputConnection;
  * 2026-07-05 — Tier-1 IME: wheel keyboard overlay + InputConnection text commits only.
  * Mutex: pauses when global overlay active; arbiter publishes route=ime while tray is visible.
  * Fail-open: if Solar IME unavailable, stock LatinIME and normal key delivery continue.
+ * 2026-07-14 — A5: real InputMethod input view (no Xposed); Vol space/del; Back Enter / hold charset.
  * When changing: SolarImeRouteArbiter arm/disarm; never commit keys while overlay owns wheel.
  * Reversal: unregister IME in manifest; stock LatinIME becomes default again.
  */
@@ -26,6 +29,15 @@ public class SolarInputMethodService extends InputMethodService implements Solar
     private String sessionTitle = "";
     private long ppDownAt;
     private boolean ppLongHandled;
+    /** 2026-07-14 — A5 side-Back hold while IME tray open. */
+    private long a5BackDownAt;
+    private boolean a5BackLongHandled;
+    /** 2026-07-14 — Last KeyEvent scan for face-mid vs side-Back (int onKey* path). */
+    private int lastScanCode;
+    /** 2026-07-14 — A5 framework soft-input shell (keeps InputConnection alive). */
+    private View a5InputRoot;
+    private SolarKeyboardShellHost a5ShellHost;
+    private A5EdgeGestures a5EdgeGestures;
 
     @Override
     public void onCreate() {
@@ -34,11 +46,149 @@ public class SolarInputMethodService extends InputMethodService implements Solar
         setExtractViewShown(false);
     }
 
+    /** A5 uses a real soft-input view; Y1/Y2 keep WM overlay + Xposed key gate. */
+    private boolean useA5InputView() {
+        return DeviceFeatures.isA5();
+    }
+
     @Override
     public View onCreateInputView() {
-        View v = new View(this);
-        v.setVisibility(View.GONE);
-        return v;
+        // 2026-07-14 — A5: inflate themed shell so touch + keys work without Xposed IPC.
+        // Was: GONE placeholder + TYPE_SYSTEM_ERROR overlay (Y1/Y2 Xposed path).
+        // Reversal: always return GONE view; A5 also uses WM overlay.
+        if (!useA5InputView()) {
+            View v = new View(this);
+            v.setVisibility(View.GONE);
+            return v;
+        }
+        LayoutInflater inflater = LayoutInflater.from(this);
+        a5InputRoot = inflater.inflate(R.layout.layout_solar_keyboard_shell, null);
+        String enterLabel = getString(R.string.keyboard_enter);
+        a5ShellHost = new SolarKeyboardShellHost(this, a5InputRoot, enterLabel);
+        a5ShellHost.getKeyboardUi().setHintText(getString(R.string.keyboard_hint_a5));
+        // Touch: focus-then-confirm + drag; commit via applyCenterSelection so IC gets text.
+        a5ShellHost.getKeyboardUi().attachTouchSlotsForIme(wheelKeyboard, new Runnable() {
+            @Override
+            public void run() {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("idx", wheelKeyboard.getIndex());
+                    d.put("ch", wheelKeyboard.charAt(wheelKeyboard.getIndex()));
+                    Debug670453Log.log(SolarInputMethodService.this,
+                            "SolarInputMethodService.touchConfirm", "confirm runnable", "H5", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                applyCenterSelection();
+            }
+        });
+        wireA5EdgeDismiss(a5InputRoot);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("isA5", DeviceFeatures.isA5());
+            d.put("family", DeviceFeatures.deviceModelLabel());
+            d.put("rootNull", a5InputRoot == null);
+            Debug670453Log.log(this, "SolarInputMethodService.onCreateInputView",
+                    "a5 shell inflated", "H6", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        return a5InputRoot;
+    }
+
+    /**
+     * 2026-07-14 — Left/right edge swipe closes IME (hardware Back is Enter on A5).
+     * Layman: flick from the screen edge to cancel typing without submitting.
+     */
+    private void wireA5EdgeDismiss(View root) {
+        if (root == null || !DeviceFeatures.isA5()) return;
+        a5EdgeGestures = new A5EdgeGestures(new A5EdgeGestures.Host() {
+            @Override
+            public void onA5EdgeBack() {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("via", "edgeBack");
+                    d.put("vw", viewportWidth());
+                    d.put("vh", viewportHeight());
+                    d.put("rootW", a5InputRoot != null ? a5InputRoot.getWidth() : -1);
+                    d.put("rootH", a5InputRoot != null ? a5InputRoot.getHeight() : -1);
+                    Debug670453Log.log(SolarInputMethodService.this,
+                            "SolarInputMethodService.wireA5EdgeDismiss", "edge dismiss", "H1", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                dismissImeSession();
+            }
+
+            @Override
+            public void onA5EdgeHome() {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("via", "edgeHome");
+                    Debug670453Log.log(SolarInputMethodService.this,
+                            "SolarInputMethodService.wireA5EdgeDismiss", "edge dismiss", "H1", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                dismissImeSession();
+            }
+
+            @Override
+            public void onA5EdgeOpenContext() {
+                // Ignore hold-context on IME tray — typing owns the session.
+            }
+
+            @Override
+            public int viewportWidth() {
+                return getResources().getDisplayMetrics().widthPixels;
+            }
+
+            @Override
+            public int viewportHeight() {
+                return getResources().getDisplayMetrics().heightPixels;
+            }
+
+            @Override
+            public View a5GestureRoot() {
+                return a5InputRoot;
+            }
+
+            @Override
+            public boolean a5ContextMenuBlockingHold() {
+                return true;
+            }
+        });
+        root.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                boolean consumed = a5EdgeGestures != null && a5EdgeGestures.process(event);
+                // #region agent log
+                if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("x", event.getX());
+                        d.put("y", event.getY());
+                        d.put("vw", getResources().getDisplayMetrics().widthPixels);
+                        d.put("vh", getResources().getDisplayMetrics().heightPixels);
+                        d.put("viewW", v != null ? v.getWidth() : -1);
+                        d.put("viewH", v != null ? v.getHeight() : -1);
+                        d.put("consumed", consumed);
+                        d.put("edge", A5EdgeGestures.edgeAt(
+                                event.getX(), event.getY(),
+                                getResources().getDisplayMetrics().widthPixels,
+                                getResources().getDisplayMetrics().heightPixels).name());
+                        d.put("edgeViewLocal", A5EdgeGestures.edgeAt(
+                                event.getX(), event.getY(),
+                                v != null ? v.getWidth() : 0,
+                                v != null ? v.getHeight() : 0).name());
+                        Debug670453Log.log(SolarInputMethodService.this,
+                                "SolarInputMethodService.a5RootTouch", "DOWN", "H1", d);
+                    } catch (Exception ignored) {}
+                }
+                // #endregion
+                return consumed;
+            }
+        });
     }
 
     @Override
@@ -51,10 +201,13 @@ public class SolarInputMethodService extends InputMethodService implements Solar
         return false;
     }
 
-    /** Never paint stock framework IME chrome — Solar uses WM fullscreen shell only. */
+    /**
+     * 2026-07-14 — A5 shows framework input view; Y1/Y2 hide it (WM shell only).
+     * Was: always false. Reversal: return false always.
+     */
     @Override
     public boolean onEvaluateInputViewShown() {
-        return false;
+        return useA5InputView();
     }
 
     @Override
@@ -65,6 +218,9 @@ public class SolarInputMethodService extends InputMethodService implements Solar
             d.put("restarting", restarting);
             d.put("canArm", SolarImeRouteArbiter.canArm());
             d.put("pkg", attribute != null ? attribute.packageName : "");
+            d.put("a5View", useA5InputView());
+            d.put("isA5", DeviceFeatures.isA5());
+            d.put("trayGate", SolarImeDismiss.shouldShowSystemImeTray(attribute));
             if (attribute != null) {
                 d.put("fieldId", attribute.fieldId);
                 d.put("label", attribute.label != null ? attribute.label.toString() : "");
@@ -72,14 +228,14 @@ public class SolarInputMethodService extends InputMethodService implements Solar
                 d.put("inputType", DebugImeLog.inputTypeFields(attribute.inputType));
             }
             DebugImeLog.log(this, "SolarInputMethodService.onStartInput", "enter", "H2", d);
+            Debug670453Log.log(this, "SolarInputMethodService.onStartInput", "enter", "H6", d);
         } catch (Exception ignored) {}
         // #endregion
         if (!SolarImeRouteArbiter.canArm()) {
             // #region agent log
             try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("overlayActive", OverlayKeyGate.isOverlayKeysActive());
-                DebugImeLog.log(this, "SolarInputMethodService.onStartInput", "blocked canArm", "H2", d);
+                Debug670453Log.log(this, "SolarInputMethodService.onStartInput",
+                        "early dismiss !canArm", "H6", null);
             } catch (Exception ignored) {}
             // #endregion
             dismissImeSession();
@@ -88,10 +244,8 @@ public class SolarInputMethodService extends InputMethodService implements Solar
         if (!SolarImeDismiss.shouldShowSystemImeTray(attribute)) {
             // #region agent log
             try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("pkg", attribute != null ? attribute.packageName : "");
-                d.put("inputType", attribute != null ? attribute.inputType : 0);
-                DebugImeLog.log(this, "SolarInputMethodService.onStartInput", "rejected target", "H1", d);
+                Debug670453Log.log(this, "SolarInputMethodService.onStartInput",
+                        "early dismiss !trayGate", "H6", null);
             } catch (Exception ignored) {}
             // #endregion
             dismissImeSession();
@@ -100,40 +254,73 @@ public class SolarInputMethodService extends InputMethodService implements Solar
         super.onStartInput(attribute, restarting);
         sessionTitle = attribute != null && attribute.label != null
                 ? attribute.label.toString() : getString(R.string.solar_ime_label);
-        InputConnection icProbe = getCurrentInputConnection();
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("hasIc", icProbe != null);
-            d.put("inputType", attribute != null ? attribute.inputType : 0);
-            d.put("imeUi", SolarImeRouteArbiter.isTrayUiVisible());
-            d.put("imeActiveProp", SolarImeRouteArbiter.isActive());
-            DebugImeLog.log(this, "SolarInputMethodService.onStartInput", "will show overlay", "H1", d);
-        } catch (Exception ignored) {}
-        // #endregion
         wheelKeyboard.reset();
         seedBufferFromInputConnection();
-        if (overlay == null) {
-            overlay = new SolarImeFullscreenOverlay(this, wheelKeyboard);
-        }
         if (!SolarImeKeyGate.arm(this)) {
+            // #region agent log
+            try {
+                Debug670453Log.log(this, "SolarInputMethodService.onStartInput",
+                        "early dismiss !keyGate", "H6", null);
+            } catch (Exception ignored) {}
+            // #endregion
             dismissImeSession();
             return;
         }
-        overlay.show(sessionTitle);
-        suppressFrameworkImeWindow();
-        GlobalOverlayTrigger.ensureStarted(getApplicationContext());
+        if (useA5InputView()) {
+            // Framework paints onCreateInputView; refresh shell + mark tray visible.
+            refreshA5InputUi();
+            SolarImeRouteArbiter.setTrayUiVisible(true);
+            try {
+                showWindow(true);
+            } catch (Exception ignored) {}
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("path", "a5InputView");
+                d.put("icNull", getCurrentInputConnection() == null);
+                Debug670453Log.log(this, "SolarInputMethodService.onStartInput",
+                        "armed a5 path", "H6", d);
+            } catch (Exception ignored) {}
+            // #endregion
+        } else {
+            if (overlay == null) {
+                overlay = new SolarImeFullscreenOverlay(this, wheelKeyboard);
+            }
+            overlay.show(sessionTitle);
+            suppressFrameworkImeWindow();
+            GlobalOverlayTrigger.ensureStarted(getApplicationContext());
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("path", "wmOverlay");
+                Debug670453Log.log(this, "SolarInputMethodService.onStartInput",
+                        "armed y1y2 path on non-a5", "H6", d);
+            } catch (Exception ignored) {}
+            // #endregion
+        }
+    }
+
+    @Override
+    public void onStartInputView(EditorInfo info, boolean restarting) {
+        super.onStartInputView(info, restarting);
+        if (useA5InputView()) {
+            refreshA5InputUi();
+        }
+    }
+
+    /** Paint A5 soft-input shell from controller + session title. */
+    private void refreshA5InputUi() {
+        if (a5ShellHost == null) return;
+        a5ShellHost.applyShellTheme(sessionTitle);
+        String buffer = wheelKeyboard.getBuffer();
+        String placeholder = getString(R.string.solar_ime_type_hint);
+        String display = buffer.length() == 0 ? placeholder : buffer;
+        a5ShellHost.getKeyboardUi().setHintText(getString(R.string.keyboard_hint_a5));
+        a5ShellHost.getKeyboardUi().refresh(wheelKeyboard, sessionTitle, display, buffer.length() == 0);
     }
 
     @Override
     public void onFinishInput() {
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("overlayShowing", overlay != null && overlay.isShowing());
-            DebugImeLog.log(this, "SolarInputMethodService.onFinishInput", "tearDown", "H2", d);
-        } catch (Exception ignored) {}
-        // #endregion
         tearDown();
         super.onFinishInput();
     }
@@ -141,7 +328,63 @@ public class SolarInputMethodService extends InputMethodService implements Solar
     @Override
     public void onWindowShown() {
         super.onWindowShown();
-        suppressFrameworkImeWindow();
+        // Y1/Y2 shrink framework window; A5 needs the real soft-input window visible.
+        if (!useA5InputView()) {
+            suppressFrameworkImeWindow();
+        }
+    }
+
+    /**
+     * 2026-07-14 — Framework key path for A5 soft-input window (no Xposed forwarder).
+     * Layman: buttons on the player reach the keyboard even in other apps.
+     * Tech: remap A5 mid/power then delegate to int onKeyDown.
+     */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (useA5InputView() && event != null) {
+            lastScanCode = event.getScanCode();
+            int mapped = A5KeyboardKeys.remapForIme(keyCode, lastScanCode);
+            boolean handled = onKeyDown(mapped);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("raw", keyCode);
+                d.put("scan", lastScanCode);
+                d.put("mapped", mapped);
+                d.put("enterBack", A5KeyboardKeys.isEnterBackKey(mapped, lastScanCode));
+                d.put("faceMid", A5InputKeys.isFaceMiddle(mapped, lastScanCode));
+                d.put("space", A5KeyboardKeys.isSpaceKey(mapped));
+                d.put("del", A5KeyboardKeys.isDeleteKey(mapped));
+                d.put("handled", handled);
+                Debug670453Log.log(this, "SolarInputMethodService.onKeyDown(KeyEvent)",
+                        "key", "H2", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return handled;
+        }
+        return super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public boolean onKeyUp(int keyCode, KeyEvent event) {
+        if (useA5InputView() && event != null) {
+            lastScanCode = event.getScanCode();
+            int mapped = A5KeyboardKeys.remapForIme(keyCode, lastScanCode);
+            boolean handled = onKeyUp(mapped);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("raw", keyCode);
+                d.put("scan", lastScanCode);
+                d.put("mapped", mapped);
+                d.put("handled", handled);
+                Debug670453Log.log(this, "SolarInputMethodService.onKeyUp(KeyEvent)",
+                        "key", "H3", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return handled;
+        }
+        return super.onKeyUp(keyCode, event);
     }
 
     @Override
@@ -149,40 +392,23 @@ public class SolarInputMethodService extends InputMethodService implements Solar
         if (intent != null && OverlayTriggers.ACTION_IME_KEY.equals(intent.getAction())) {
             int keyCode = intent.getIntExtra(OverlayTriggers.EXTRA_KEY_CODE, 0);
             int action = intent.getIntExtra(OverlayTriggers.EXTRA_KEY_ACTION, KeyEvent.ACTION_DOWN);
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("keyCode", keyCode);
-                d.put("action", action);
-                d.put("hasHandler", SolarImeKeyGate.isActive());
-                DebugImeLog.log(this, "SolarInputMethodService.onStartCommand", "IME_KEY", "H3", d);
-            } catch (Exception ignored) {}
-            // #endregion
+            int scan = intent.getIntExtra(OverlayTriggers.EXTRA_SCAN_CODE, 0);
             if (keyCode != 0) {
-                // 2026-07-05 — Always handle on live service instance; static handler can go stale after :overlay recycle.
                 SolarImeKeyGate.rebindHandler(this);
+                lastScanCode = scan;
+                int mapped = A5KeyboardKeys.active()
+                        ? A5KeyboardKeys.remapForIme(keyCode, scan) : keyCode;
                 boolean handled;
                 if (action == KeyEvent.ACTION_DOWN) {
-                    handled = onKeyDown(keyCode);
+                    handled = onKeyDown(mapped);
                 } else if (action == KeyEvent.ACTION_UP) {
-                    handled = onKeyUp(keyCode);
+                    handled = onKeyUp(mapped);
                 } else {
                     handled = false;
                 }
                 if (!handled && SolarImeRouteArbiter.isActive()) {
-                    // 2026-07-06 — Key reached service but tray did not consume — escalate to root.
                     SolarImeRouteArbiter.signalXposedMiss();
                 }
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("keyCode", keyCode);
-                    d.put("action", action);
-                    d.put("handled", handled);
-                    d.put("runId", "post-fix");
-                    DebugImeLog.log(this, "SolarInputMethodService.onStartCommand", "IME_KEY handled", "H3", d);
-                } catch (Exception ignored) {}
-                // #endregion
             }
             return START_NOT_STICKY;
         }
@@ -197,22 +423,22 @@ public class SolarInputMethodService extends InputMethodService implements Solar
             return START_NOT_STICKY;
         }
         if (intent != null && OverlayTriggers.ACTION_IME_DISMISS.equals(intent.getAction())) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("overlayShowing", overlay != null && overlay.isShowing());
-                d.put("imeActive", SolarImeRouteArbiter.isActive());
-                DebugImeLog.log(this, "SolarInputMethodService.onStartCommand", "IME_DISMISS", "H2", d);
-            } catch (Exception ignored) {}
-            // #endregion
             dismissImeSession();
             return START_NOT_STICKY;
         }
         return START_NOT_STICKY;
     }
 
-    /** BACK / dismiss — tear down WM overlay first, then tell framework IME to hide. */
+    /** BACK / dismiss — tear down tray first, then tell framework IME to hide. */
     private void dismissImeSession() {
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("a5", useA5InputView());
+            Debug670453Log.log(this, "SolarInputMethodService.dismissImeSession",
+                    "dismiss", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
         tearDown();
         try {
             requestHideSelf(0);
@@ -221,7 +447,9 @@ public class SolarInputMethodService extends InputMethodService implements Solar
 
     @Override
     public void onStateChanged() {
-        if (overlay != null) {
+        if (useA5InputView()) {
+            refreshA5InputUi();
+        } else if (overlay != null) {
             overlay.refresh(sessionTitle);
         }
     }
@@ -234,14 +462,23 @@ public class SolarInputMethodService extends InputMethodService implements Solar
 
     @Override
     public boolean onKeyDown(int keyCode) {
+        // 2026-07-14 — A5: Vol = space/delete; Back arms Enter/charset (not dismiss).
+        if (A5KeyboardKeys.isSpaceKey(keyCode)) {
+            insertText(" ");
+            return true;
+        }
+        if (A5KeyboardKeys.isDeleteKey(keyCode)) {
+            deleteOneChar();
+            return true;
+        }
+        if (A5KeyboardKeys.active() && A5KeyboardKeys.isEnterBackKey(keyCode, lastScanCode)) {
+            if (a5BackDownAt == 0) {
+                a5BackDownAt = SystemClock.uptimeMillis();
+                a5BackLongHandled = false;
+            }
+            return true;
+        }
         if (Y1InputKeys.isBackKey(keyCode)) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("keyCode", keyCode);
-                DebugImeLog.log(this, "SolarInputMethodService.onKeyDown", "BACK dismiss", "H2", d);
-            } catch (Exception ignored) {}
-            // #endregion
             dismissImeSession();
             return true;
         }
@@ -273,14 +510,24 @@ public class SolarInputMethodService extends InputMethodService implements Solar
 
     @Override
     public boolean onKeyUp(int keyCode) {
+        if (A5KeyboardKeys.isSpaceKey(keyCode) || A5KeyboardKeys.isDeleteKey(keyCode)) {
+            return true;
+        }
+        if (A5KeyboardKeys.active() && A5KeyboardKeys.isEnterBackKey(keyCode, lastScanCode)) {
+            long held = a5BackDownAt > 0 ? SystemClock.uptimeMillis() - a5BackDownAt : 0;
+            a5BackDownAt = 0;
+            if (!a5BackLongHandled && held >= A5KeyboardKeys.CHARSET_HOLD_MS) {
+                wheelKeyboard.playPauseLongPress();
+                a5BackLongHandled = true;
+                return true;
+            }
+            if (!a5BackLongHandled) {
+                onEnterRequested();
+            }
+            a5BackLongHandled = false;
+            return true;
+        }
         if (Y1InputKeys.isBackKey(keyCode)) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("keyCode", keyCode);
-                DebugImeLog.log(this, "SolarInputMethodService.onKeyUp", "BACK dismiss", "H2", d);
-            } catch (Exception ignored) {}
-            // #endregion
             dismissImeSession();
             return true;
         }
@@ -290,29 +537,9 @@ public class SolarInputMethodService extends InputMethodService implements Solar
             if (!ppLongHandled && held >= 400L) {
                 wheelKeyboard.playPauseLongPress();
                 ppLongHandled = true;
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("keyCode", keyCode);
-                    d.put("heldMs", held);
-                    d.put("branch", "ppLongCharset");
-                    DebugImeLog.log(this, "SolarInputMethodService.onKeyUp", "pp path", "H3", d);
-                } catch (Exception ignored) {}
-                // #endregion
                 return true;
             }
             if (!ppLongHandled) {
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("keyCode", keyCode);
-                    d.put("heldMs", held);
-                    d.put("branch", "ppShortEnter");
-                    d.put("wheelIndex", wheelKeyboard.getIndex());
-                    d.put("wheelChar", SolarWheelKeyboardController.charAtIndex(wheelKeyboard.getIndex()));
-                    DebugImeLog.log(this, "SolarInputMethodService.onKeyUp", "pp path", "H3", d);
-                } catch (Exception ignored) {}
-                // #endregion
                 onEnterRequested();
             }
             ppLongHandled = false;
@@ -327,14 +554,6 @@ public class SolarInputMethodService extends InputMethodService implements Solar
                 return true;
             }
             if (!ppLongHandled) {
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("keyCode", keyCode);
-                    d.put("branch", "centerShortSelect");
-                    DebugImeLog.log(this, "SolarInputMethodService.onKeyUp", "center path", "H3", d);
-                } catch (Exception ignored) {}
-                // #endregion
                 applyCenterSelection();
             }
             ppLongHandled = false;
@@ -345,7 +564,16 @@ public class SolarInputMethodService extends InputMethodService implements Solar
 
     /** Center short — mirror in-app keyboard; inject matching text into the target field only. */
     private void applyCenterSelection() {
-        String selected = SolarWheelKeyboardController.charAtIndex(wheelKeyboard.getIndex());
+        String selected = wheelKeyboard.charAt(wheelKeyboard.getIndex());
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("selected", selected);
+            d.put("icNull", getCurrentInputConnection() == null);
+            Debug670453Log.log(this, "SolarInputMethodService.applyCenterSelection",
+                    "enter", "H4", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (SolarWheelKeyboardController.TOKEN_DEL.equals(selected)) {
             deleteOneChar();
         } else if (SolarWheelKeyboardController.TOKEN_CONN.equals(selected)) {
@@ -385,33 +613,18 @@ public class SolarInputMethodService extends InputMethodService implements Solar
                     lp.height = 0;
                     w.setAttributes(lp);
                 }
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    WindowManager.LayoutParams after = w.getAttributes();
-                    d.put("fwW", after != null ? after.width : -1);
-                    d.put("fwH", after != null ? after.height : -1);
-                    d.put("fwDim", after != null ? after.dimAmount : -1f);
-                    d.put("overlayShowing", overlay != null && overlay.isShowing());
-                    DebugImeLog.log(this, "SolarInputMethodService.suppressFrameworkImeWindow", "shrunk fw window", "H4", d);
-                } catch (Exception ignored) {}
-                // #endregion
             }
         } catch (Exception ignored) {}
     }
 
     private void tearDown() {
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("hadOverlay", overlay != null && overlay.isShowing());
-            DebugImeLog.log(this, "SolarInputMethodService.tearDown", "exit", "H2", d);
-        } catch (Exception ignored) {}
-        // #endregion
         SolarImeKeyGate.disarm();
+        SolarImeRouteArbiter.setTrayUiVisible(false);
         if (overlay != null) {
             overlay.dismiss();
         }
+        a5BackDownAt = 0;
+        a5BackLongHandled = false;
         try {
             hideWindow();
         } catch (Exception ignored) {}
@@ -447,7 +660,19 @@ public class SolarInputMethodService extends InputMethodService implements Solar
     }
 
     private boolean commitTextTiered(CharSequence text) {
-        return commitTextTiered(this, getCurrentInputConnection(), text);
+        InputConnection ic = getCurrentInputConnection();
+        boolean ok = commitTextTiered(this, ic, text);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("text", text != null ? text.toString() : "");
+            d.put("icNull", ic == null);
+            d.put("ok", ok);
+            Debug670453Log.log(this, "SolarInputMethodService.commitTextTiered",
+                    "commit", "H4", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        return ok;
     }
 
     private void commitDelete(int count) {

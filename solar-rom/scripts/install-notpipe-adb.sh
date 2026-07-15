@@ -25,15 +25,27 @@ adb_system_preflight
 
 chmod +x "$SCRIPT_DIR/fetch-notpipe-apk.sh"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# 2026-07-14 — Prefer Solarized asset/ref (WakeService + SolarCmdReceiver) over upstream minify.
+ASSET_APK="$ROOT/app/src/main/assets/platform/thirdparty/notPipe-0.3.0-release.apk"
 REF_APK="$ROOT/reference/NotPipe reference/notPipe-0.3.0-release.apk"
-if [ -f "$REF_APK" ]; then
-    NOTPIPE_APK="$REF_APK"
-    echo "==> Using reference notPipe APK: $NOTPIPE_APK"
-else
-    NOTPIPE_CACHE="$("$SCRIPT_DIR/fetch-notpipe-apk.sh")"
-    NOTPIPE_APK="$NOTPIPE_CACHE/notPipe-0.3.0-release.apk"
+NOTPIPE_APK=""
+for cand in "$ASSET_APK" "$REF_APK"; do
+    if [ -f "$cand" ] && python3 -c "import zipfile,sys;z=zipfile.ZipFile(sys.argv[1]);sys.exit(0 if b'SolarWakeService' in z.read('classes.dex') else 1)" "$cand" 2>/dev/null; then
+        NOTPIPE_APK="$cand"
+        break
+    fi
+done
+if [ -z "$NOTPIPE_APK" ]; then
+    if [ -x "$SCRIPT_DIR/build-notpipe-solar-apk.sh" ]; then
+        "$SCRIPT_DIR/build-notpipe-solar-apk.sh"
+        NOTPIPE_APK="$ASSET_APK"
+    else
+        NOTPIPE_CACHE="$("$SCRIPT_DIR/fetch-notpipe-apk.sh")"
+        NOTPIPE_APK="$NOTPIPE_CACHE/notPipe-0.3.0-release.apk"
+    fi
 fi
-[ -f "$NOTPIPE_APK" ] || { echo "missing notPipe APK (reference or cache)" >&2; exit 1; }
+[ -f "$NOTPIPE_APK" ] || { echo "missing notPipe APK (solarized asset/reference or cache)" >&2; exit 1; }
+echo "==> Using notPipe APK: $NOTPIPE_APK"
 
 SYSTEM_NOTPIPE="/system/app/io.github.gohoski.notpipe.apk"
 

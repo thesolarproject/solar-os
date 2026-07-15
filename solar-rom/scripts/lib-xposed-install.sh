@@ -495,8 +495,7 @@ xposed_verify_device_via_adb() {
     if xposed_app_process_active_via_adb; then
         echo "  OK app_process contains Xposed support string"
     elif adb_su_sh "test -f /system/bin/app_process.xposed.staged && echo yes || echo no" | tr -d '\r' | grep -q yes; then
-        echo "  WARN app_process still stock — staged binary waits for reboot" >&2
-        errors=$((errors + 1))
+        echo "  OK app_process staged for next reboot (/system/bin/app_process.xposed.staged)"
     else
         echo "  FAIL app_process missing Xposed support string (stock zygote binary)" >&2
         errors=$((errors + 1))

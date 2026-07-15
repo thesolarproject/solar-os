@@ -20,13 +20,9 @@ public final class LauncherPreference {
 
     private LauncherPreference() {}
 
-    /** Read persisted HOME target from SharedPreferences — defaults to Solar. */
+    /** 2026-07-10 — Solar-only product: HOME is always Solar. */
     public static String getHomeTarget(Context context) {
-        if (context == null) return LauncherDefault.TARGET_SOLAR;
-        String target = context.getApplicationContext()
-                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_HOME_TARGET, LauncherDefault.TARGET_SOLAR);
-        return normalizeHomeTarget(target);
+        return LauncherDefault.TARGET_SOLAR;
     }
 
     /** Copy prefs choice to persist prop — call on boot so scripts/Xposed see the same target. */
@@ -88,34 +84,82 @@ public final class LauncherPreference {
         return LauncherDefault.TARGET_SOLAR.equals(target);
     }
 
+    /**
+     * 2026-07-08 — Prefs-only write when shell already set props + competition under one su session.
+     * Layman: remember the home pick without starting another root call that can deadlock the switch script.
+     * Reversal: delete; LauncherHomeReceiver always uses applyHomeTarget again.
+     */
+    static void writeHomeTargetPrefsOnly(Context context, String target) {
+        if (context == null || target == null) return;
+        context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit().putString(KEY_HOME_TARGET, normalizeHomeTarget(target)).apply();
+    }
+
     /** Set preferred HOME via PackageManager helper pin, persist target, and mirror to boot/Xposed prop. */
     public static void applyHomeTarget(Context context, String target) {
         applyHomeTargetWithComponent(context, target, null);
     }
 
-    /** 2026-07-07 — Custom HOME includes pkg/activity flat component prop. */
+    /**
+     * 2026-07-08 — Persist HOME + PM competition. Prefs write sync; root/PM work off main when needed.
+     * Layman: remembers your home choice without freezing the wheel UI while packages enable/disable.
+     * Technical: main-thread callers post heavy work to SolarHomeApply; switch scripts gate on PROP_HOME_APPLYING.
+     * Reversal: run applyPreferred* synchronously on caller thread again.
+     */
     public static void applyHomeTargetWithComponent(Context context, String target, String componentFlat) {
-        if (context == null || target == null) return;
-        target = normalizeHomeTarget(target);
+        if (context == null) return;
+        // 2026-07-10 — Solar-only product: ignore alternate HOME targets from legacy UI/scripts.
+        target = LauncherDefault.TARGET_SOLAR;
+        componentFlat = null;
+        final String normalized = target;
+        final Context app = context.getApplicationContext();
+        final String flat = resolveComponentFlatForTarget(app, normalized, componentFlat);
         markHomeApplyInProgress();
-        Context app = context.getApplicationContext();
         app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .edit().putString(KEY_HOME_TARGET, target).apply();
-        syncHomeTargetProperty(target);
-        if (componentFlat != null && componentFlat.length() > 0) {
-            RootShell.run("setprop " + HomeTargetPolicy.PROP_HOME_COMPONENT + " " + componentFlat);
-        }
-        if (LauncherDefault.TARGET_ROCKBOX.equals(target)) {
-            LauncherDefault.setPreferredRockboxHome(app);
-        } else if (LauncherDefault.TARGET_JJ.equals(target)) {
-            LauncherDefault.setPreferredJjHome(app);
-        } else if (HomeTargetPolicy.TARGET_CUSTOM.equals(target)) {
-            LauncherDefault.setPreferredCustomHome(app);
+                .edit().putString(KEY_HOME_TARGET, normalized).apply();
+        Runnable heavy = new Runnable() {
+            @Override
+            public void run() {
+                syncHomeTargetProperty(normalized);
+                if (flat != null && flat.length() > 0) {
+                    RootShell.run("setprop " + HomeTargetPolicy.PROP_HOME_COMPONENT + " " + flat);
+                }
+                if (LauncherDefault.TARGET_ROCKBOX.equals(normalized)) {
+                    LauncherDefault.setPreferredRockboxHome(app);
+                } else if (LauncherDefault.TARGET_JJ.equals(normalized)) {
+                    LauncherDefault.setPreferredJjHome(app);
+                } else if (LauncherDefault.TARGET_STOCK.equals(normalized)) {
+                    LauncherDefault.setPreferredStockHome(app);
+                } else if (HomeTargetPolicy.TARGET_CUSTOM.equals(normalized)) {
+                    LauncherDefault.setPreferredCustomHome(app);
+                } else {
+                    LauncherDefault.setPreferredSolarHome(app);
+                }
+                SolarOverlayHost.ensureStarted(app);
+                LauncherWatchdogService.ensureStarted(app);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            new Thread(heavy, "SolarHomeApply").start();
         } else {
-            LauncherDefault.setPreferredSolarHome(app);
+            heavy.run();
         }
-        SolarOverlayHost.ensureStarted(app);
-        LauncherWatchdogService.ensureStarted(app);
+    }
+
+    /**
+     * 2026-07-08 — Stock needs package/activity flat for shell am start; fill when missing.
+     * Reversal: only write componentFlat when caller supplies it.
+     */
+    private static String resolveComponentFlatForTarget(Context app, String target, String componentFlat) {
+        if (componentFlat != null && componentFlat.length() > 0) return componentFlat;
+        if (!LauncherDefault.TARGET_STOCK.equals(target)) return componentFlat;
+        String pkg = LauncherSwitch.stockPackageForDevice(app);
+        if (pkg == null) return "";
+        String activity = HomeTargetPolicy.stockActivityForPackage(pkg);
+        String resolved = LauncherSwitch.resolveStockLaunchActivity(app, pkg);
+        if (resolved != null) activity = resolved;
+        return HomeTargetPolicy.flattenComponent(pkg, activity);
     }
 
     /** Start persisted HOME — explicit component only (never ambiguous CATEGORY_HOME). */
@@ -135,9 +179,22 @@ public final class LauncherPreference {
                 && LauncherSwitch.isJjDisabled(context)) {
             normalized = LauncherDefault.TARGET_SOLAR;
         }
+        if (LauncherDefault.TARGET_STOCK.equals(normalized)
+                && LauncherSwitch.isStockDisabled(context)) {
+            normalized = LauncherDefault.TARGET_SOLAR;
+        }
         Intent launch = buildExplicitHomeIntent(context, normalized);
         if (launch == null) return;
-        context.getApplicationContext().startActivity(launch);
+        try {
+            context.getApplicationContext().startActivity(launch);
+        } catch (android.content.ActivityNotFoundException e) {
+            android.util.Log.w("LauncherPreference", "explicit home target not found: " + normalized, e);
+            try {
+                Intent fallback = new Intent(context, MainActivity.class);
+                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                context.getApplicationContext().startActivity(fallback);
+            } catch (Throwable ignored) {}
+        } catch (Throwable ignored) {}
     }
 
     /** Explicit MAIN launch — unit-tested without Robolectric. */
@@ -150,6 +207,10 @@ public final class LauncherPreference {
         }
         if (LauncherDefault.TARGET_JJ.equals(normalizeHomeTarget(target))
                 && !LauncherSwitch.isJjInstalled(context)) {
+            return null;
+        }
+        if (LauncherDefault.TARGET_STOCK.equals(normalizeHomeTarget(target))
+                && !LauncherSwitch.isStockInstalled(context)) {
             return null;
         }
         Intent launch = new Intent(Intent.ACTION_MAIN);
@@ -183,13 +244,19 @@ public final class LauncherPreference {
         }, "SolarHomeApplyGate").start();
     }
 
-    /** Coerce unknown values — solar, rockbox, jj, or custom. */
+    /**
+     * 2026-07-08 — Coerce unknown values — solar, rockbox, jj, stock, or custom.
+     * Reversal: drop TARGET_STOCK branch.
+     */
     static String normalizeHomeTarget(String target) {
         if (LauncherDefault.TARGET_ROCKBOX.equals(target)) {
             return LauncherDefault.TARGET_ROCKBOX;
         }
         if (LauncherDefault.TARGET_JJ.equals(target)) {
             return LauncherDefault.TARGET_JJ;
+        }
+        if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            return LauncherDefault.TARGET_STOCK;
         }
         if (HomeTargetPolicy.TARGET_CUSTOM.equals(target)) {
             return HomeTargetPolicy.TARGET_CUSTOM;

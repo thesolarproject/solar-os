@@ -23,6 +23,12 @@ public final class SidecarPublishHelper {
 
     private SidecarPublishHelper() {}
 
+    /**
+     * 2026-07-10 — World-readable flat mirror for data-installed companion (no sdcard group).
+     * ThemeReader FLAT_SIDECAR_DIRS reads this path; mode 0644 files + 0755 dir.
+     */
+    public static final String COMPANION_THEME_MIRROR = "/data/local/tmp/solar-theme";
+
     /** All sidecar parent dirs — app files first (UMS-safe), then primary + secondary storage. */
     public static List<File> sidecarDirs(Context ctx) {
         List<File> dirs = new ArrayList<File>();
@@ -34,6 +40,8 @@ public final class SidecarPublishHelper {
                 dirs.add(new File(root, SIDECAR_DIR));
             }
         }
+        // Companion ThemeReader — flat dir (files not nested under .solar/).
+        dirs.add(new File(COMPANION_THEME_MIRROR));
         return dirs;
     }
 
@@ -87,6 +95,11 @@ public final class SidecarPublishHelper {
     private static void writeOne(File dir, String fileName, byte[] data) {
         if (dir == null) return;
         if (!dir.isDirectory() && !dir.mkdirs()) return;
+        // Companion + Xposed need o+rx on dirs under /data/local/tmp/solar-theme.
+        try {
+            dir.setReadable(true, false);
+            dir.setExecutable(true, false);
+        } catch (Exception ignored) {}
         File out = new File(dir, fileName);
         FileOutputStream fos = null;
         try {

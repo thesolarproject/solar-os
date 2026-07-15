@@ -33,13 +33,24 @@
     <dimen name="y1_status_icon_size">25dp</dimen>
     <dimen name="y1_battery_icon_height">20dp</dimen>
     <dimen name="y1_theme_cover_height">32dp</dimen>
-    <dimen name="y1_player_art_width">200dp</dimen>
+    <!-- 2026-07-11 — Parallel NP cells 235×225: 5+235+5+235=480 (was 12+210+12=234 start). -->
+    <dimen name="y1_player_art_width">235dp</dimen>
     <dimen name="y1_player_info_width">235dp</dimen>
+    <dimen name="y1_player_info_margin_left">5dp</dimen>
+    <dimen name="y1_player_content_pad_left">5dp</dimen>
+    <!-- Info fills same 225 content cell as art cover (not the taller art slot). -->
+    <dimen name="y1_player_info_height">225dp</dimen>
+    <!-- 2026-07-11 — Headroom above cover so Camera.rotateY near-edge isn't flat-cropped. -->
+    <dimen name="y1_player_art_top_overshoot">14dp</dimen>
+    <!-- Slot = overshoot + content band 267; marginTop −overshoot keeps cover top-aligned with info. -->
+    <dimen name="y1_player_art_slot_height">281dp</dimen>
+    <!-- Flat 2D cover matches 3D content cell; reflection only in 3D path. -->
+    <dimen name="y1_player_art_cover_height">225dp</dimen>
     <dimen name="y1_player_progress_height">34dp</dimen>
     <dimen name="y1_transport_volume_height">12dp</dimen>
     <dimen name="y1_transport_hint_height">14dp</dimen>
-    <!-- Now Playing: scrub + hold-Back hint -->
-    <dimen name="y1_player_transport_height">46dp</dimen>
+    <!-- Bottom chrome band — scrub gravity-bottom. -->
+    <dimen name="y1_player_transport_height">48dp</dimen>
     <!-- Video: scrub row only -->
     <dimen name="y1_video_transport_height">34dp</dimen>
     <dimen name="y1_settings_menu_width">218dp</dimen>

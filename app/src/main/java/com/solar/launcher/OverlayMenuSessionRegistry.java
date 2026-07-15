@@ -44,6 +44,9 @@ public final class OverlayMenuSessionRegistry {
     /**
      * 2026-07-07 — Companion IPC row pick → APP_MENU_RESULT broadcast to hooked app.
      * Layman: wheel selection in helper overlay reaches the third-party app menu.
+     * 2026-07-08 — Keep session when has_submenu[index] or solar_home_* (drill / Home refresh).
+     * Was: always remove. Now: submenu/Home stay until DISMISS or non-keep pick.
+     * Reversal: restore unconditional remove — one-shot menus only.
      */
     public static boolean dispatchAction(android.content.Context context, String sessionId,
             int actionIndex) {
@@ -58,7 +61,12 @@ public final class OverlayMenuSessionRegistry {
             result.setPackage(s.callerPackage);
         }
         context.sendBroadcast(result);
-        SESSIONS.remove(sessionId);
+        boolean opensSub = s.hasSubmenu != null && actionIndex >= 0
+                && actionIndex < s.hasSubmenu.length && s.hasSubmenu[actionIndex];
+        boolean solarHome = sessionId.startsWith("solar_home_");
+        if (!opensSub && !solarHome) {
+            SESSIONS.remove(sessionId);
+        }
         return true;
     }
 

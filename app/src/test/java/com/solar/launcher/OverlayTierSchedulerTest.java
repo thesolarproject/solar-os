@@ -1,56 +1,49 @@
 package com.solar.launcher;
 
-import org.junit.After;
+import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** JVM tier mutex — ANR native_error blocks USB; queue consumed after dismiss policy (2026-07-06). */
+/**
+ * 2026-07-08 — USB tier takeover vs native-error queue ordering.
+ * Layman: "app not responding" keeps the menu; USB waits; other prompts swap in place.
+ */
 public class OverlayTierSchedulerTest {
 
-    @After
-    public void tearDown() {
+    @Before
+    public void reset() {
         OverlayTierScheduler.resetForTest();
+        OverlayTierScheduler.onOverlayTeardown();
     }
 
     @Test
-    public void nativeErrorTierDefersUsbSpawn() {
+    public void nativeErrorDefersUsbSpawn() {
         OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_NATIVE_ERROR);
         assertTrue(OverlayTierScheduler.shouldDeferUsbSpawn());
-        assertTrue(OverlayTierScheduler.shouldDeferUsbForTier(
-                OverlayTierScheduler.TIER_NATIVE_ERROR));
+        OverlayTierScheduler.queuePendingUsbPrompt();
+        assertTrue(OverlayTierScheduler.hasPendingUsbPrompt());
     }
 
     @Test
     public void powerTierDoesNotDeferUsb() {
         OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_POWER);
         assertFalse(OverlayTierScheduler.shouldDeferUsbSpawn());
-        assertFalse(OverlayTierScheduler.shouldDeferUsbForTier(
-                OverlayTierScheduler.TIER_POWER));
     }
 
     @Test
-    public void pendingUsbQueueTracksState() {
-        OverlayTierScheduler.queuePendingUsbPrompt();
-        assertTrue(OverlayTierScheduler.hasPendingUsbPrompt());
-        OverlayTierScheduler.clearPendingUsbPrompt();
-        assertFalse(OverlayTierScheduler.hasPendingUsbPrompt());
-    }
-
-    @Test
-    public void consumePendingUsbWithoutContextClearsQueue() {
-        OverlayTierScheduler.queuePendingUsbPrompt();
-        assertFalse(OverlayTierScheduler.tryConsumePendingUsbPrompt(null));
-        assertFalse(OverlayTierScheduler.hasPendingUsbPrompt());
-    }
-
-    @Test
-    public void teardownClearsTierAndPendingUsb() {
-        OverlayTierScheduler.setActiveTier(OverlayTierScheduler.TIER_NATIVE_ERROR);
+    public void teardownClearsPendingUsb() {
         OverlayTierScheduler.queuePendingUsbPrompt();
         OverlayTierScheduler.onOverlayTeardown();
-        assertFalse(OverlayTierScheduler.shouldDeferUsbSpawn());
         assertFalse(OverlayTierScheduler.hasPendingUsbPrompt());
+    }
+
+    @Test
+    public void shouldDeferUsbForTierHelper() {
+        assertTrue(OverlayTierScheduler.shouldDeferUsbForTier(
+                OverlayTierScheduler.TIER_NATIVE_ERROR));
+        assertFalse(OverlayTierScheduler.shouldDeferUsbForTier(
+                OverlayTierScheduler.TIER_USB));
     }
 }

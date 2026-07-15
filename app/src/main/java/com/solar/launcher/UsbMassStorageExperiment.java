@@ -4,71 +4,65 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 /**
- * 2026-07-05 — Y2-only opt-in for USB mass storage (UMS still broken on MT6582 KitKat).
- * Layman: hides USB disk mode on Y2 until you flip the experiment in Debug settings.
- * Tech: prefs gate UI + {@link UsbMassStorageController}; {@link #SYSPROP} gates Xposed server hooks.
- * Reversal: delete class and always call UMS on Y2 when ROM hooks are stable.
+ * 2026-07-10 — USB mass storage is Y1-only product path; Y2 stays MTP (UMS not working on 4.4.2).
+ * Layman: Y1 can show the PC as a disk after Turn on; Y2 always uses normal phone file transfer.
+ * Tech: gates UI + {@link UsbMassStorageController}; {@link #SYSPROP} stays 0 on Y2 for Xposed.
+ * Was: Y2 opt-in experiment. Now: Y2 hard-off until a real MT6582 UMS path exists.
+ * Reversal: restore experiment pref path on Y2 when hooks+LUN bind are proven.
  */
 public final class UsbMassStorageExperiment {
 
     public static final String PREF_USB_MASS_STORAGE_EXPERIMENT = "solar_y2_usb_mass_storage_experiment";
-    /** Read by SolarContextBridgeY2 {@code UsbMassStorageServerHooks} — 1 = hooks active (2026-07-05). */
+    /** Read by SolarContextBridgeY2 {@code UsbMassStorageServerHooks} — always 0 on Y2 product. */
     public static final String SYSPROP = "sys.solar.ums.experiment";
 
     private UsbMassStorageExperiment() {}
 
-    /** UMS experiment toggle is shown and enforced on Y2 only; Y1 keeps stock UMS path. */
+    /**
+     * Debug UMS experiment row — no longer shown (Y2 UMS retired for now).
+     * Kept for pref migration / old menus.
+     */
     public static boolean isAvailableOnDevice() {
-        return DeviceFeatures.isY2();
+        return false;
     }
 
-    /** Off by default on Y2; always true on Y1 and when experiment unavailable. */
+    /** Y1 always; Y2 never (MTP-only product policy 2026-07-10). */
     public static boolean isEnabled(SharedPreferences prefs) {
-        if (!isAvailableOnDevice()) return true;
-        return prefs != null && prefs.getBoolean(PREF_USB_MASS_STORAGE_EXPERIMENT, false);
+        return !DeviceFeatures.isY2();
     }
 
     public static boolean isEnabled(Context ctx) {
-        if (ctx == null) return !isAvailableOnDevice();
+        if (ctx == null) return !DeviceFeatures.isY2();
         return isEnabled(ctx.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE));
     }
 
-    /** Root setprop so system_server hooks match the Debug experiment toggle (2026-07-05). */
+    /** Force sysprop 0 on Y2 so system_server UMS hooks stay off; no-op on Y1. */
     public static void syncExperimentSysprop(Context ctx) {
-        if (!isAvailableOnDevice() || ctx == null) return;
+        if (ctx == null || !DeviceFeatures.isY2()) return;
         if (!RootShell.canRun()) return;
-        String val = isEnabled(ctx) ? "1" : "0";
-        RootShell.run("setprop " + SYSPROP + " " + val);
+        RootShell.run("setprop " + SYSPROP + " 0");
+        UsbMassStorageController.ensureStockMtpWhenExperimentOff(ctx);
     }
 
-    /** Persist toggle + sync sysprop — call after user flips the Debug row. */
+    /** No-op — Y2 UMS cannot be enabled in product builds. */
     public static void setEnabled(Context ctx, boolean enable) {
-        if (ctx == null || !isAvailableOnDevice()) return;
+        if (ctx == null || !DeviceFeatures.isY2()) return;
         ctx.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE)
                 .edit()
-                .putBoolean(PREF_USB_MASS_STORAGE_EXPERIMENT, enable)
+                .putBoolean(PREF_USB_MASS_STORAGE_EXPERIMENT, false)
                 .apply();
-        if (enable) {
-            XposedModuleConfigStore.writeBoolean(
-                    "com.solar.launcher.xposed.bridge.y2",
-                    "y2_usb_mass_storage_hooks",
-                    true);
-        }
         syncExperimentSysprop(ctx);
-        if (!enable) {
-            UsbMassStorageController.ensureStockMtpWhenExperimentOff(ctx);
-        }
     }
 
-    /** Test hook — family + pref without Android context (2026-07-05). */
+    /** Test hook — family only (Y2 always blocked regardless of pref). */
     static boolean isEnabledForFamily(String family, boolean experimentPref) {
-        if (family == null || !"y2".equals(family)) return true;
-        return experimentPref;
+        if (family != null && "y2".equals(family)) return false;
+        return true;
     }
 
-    /** Test hook — USB submenu visible when Y1 always, Y2 only if experiment on. */
+    /** Connections → USB (UMS) submenu: Y1 only. */
     static boolean connectionsUsbMenuVisibleForFamily(String family, boolean experimentPref) {
-        if (family == null || !"y2".equals(family)) return true;
-        return experimentPref;
+        if (family != null && "y2".equals(family)) return false;
+        return true;
     }
 }

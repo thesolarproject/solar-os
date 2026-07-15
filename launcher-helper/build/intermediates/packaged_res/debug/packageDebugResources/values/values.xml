@@ -6,6 +6,7 @@
     <string name="picker_jj">JJ Launcher</string>
     <string name="picker_rockbox">Rockbox</string>
     <string name="picker_solar">Solar</string>
+    <string name="picker_stock">Stock Innioasis</string>
     <string name="picker_title">Choose home app</string>
     <string name="prompt_restarting_jj">Restarting JJ Launcher…</string>
     <string name="prompt_restarting_rockbox">Restarting Rockbox…</string>

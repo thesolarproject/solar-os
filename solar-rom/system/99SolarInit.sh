@@ -8,6 +8,8 @@
 # Stuck overlay key gate breaks Rockbox/Solar back+OK (legacy persist + sys props).
 setprop persist.solar.overlay.active 0 2>/dev/null
 setprop sys.solar.overlay.active 0 2>/dev/null
+# 2026-07-08 — Clear shell_visible so stuck BACK heal does not fire after cold boot.
+setprop sys.solar.overlay.shell_visible 0 2>/dev/null
 setprop sys.solar.ime.active 0 2>/dev/null
 setprop sys.solar.ime.ui 0 2>/dev/null
 
@@ -60,15 +62,22 @@ if [ -d "$SD" ]; then
         "$SD/Videos" "$SD/Pictures" "$SD/FM Recordings" "$SD/RadioBuffer" 2>/dev/null
 fi
 
-# Seed launcher switch scripts for unmodified Rockbox-y1 APK (expects /data/data/switch-to-stock.sh).
-if [ -f /system/etc/solar/switch-to-stock.sh ]; then
-    cp /system/etc/solar/switch-to-stock.sh /data/data/
-    chmod 755 /data/data/switch-to-stock.sh
-fi
-if [ -f /system/etc/solar/switch-to-rockbox.sh ]; then
-    cp /system/etc/solar/switch-to-rockbox.sh /data/data/
-    chmod 755 /data/data/switch-to-rockbox.sh
-fi
+# 2026-07-10 — Solar-only: do not seed launcher switch scripts on boot (no Rockbox/JJ handoff).
+# Scripts remain on /system/etc/solar for adb recovery only.
+# Reversal: restore cp blocks below for alternate-launcher ROM builds.
+#if [ -f /system/etc/solar/switch-to-stock.sh ]; then
+#    cp /system/etc/solar/switch-to-stock.sh /data/data/
+#    chmod 755 /data/data/switch-to-stock.sh
+#fi
+#if [ -f /system/etc/solar/switch-to-rockbox.sh ]; then
+#    cp /system/etc/solar/switch-to-rockbox.sh /data/data/
+#    chmod 755 /data/data/switch-to-rockbox.sh
+#fi
+#if [ -f /system/etc/solar/solar-launcher-exec.sh ]; then
+#    cp /system/etc/solar/solar-launcher-exec.sh /data/data/
+#    chmod 755 /data/data/solar-launcher-exec.sh
+#fi
+setprop persist.solar.home.target solar
 if [ -f /system/etc/solar/sync-rockbox-libs.sh ]; then
     sh /system/etc/solar/sync-rockbox-libs.sh
 fi

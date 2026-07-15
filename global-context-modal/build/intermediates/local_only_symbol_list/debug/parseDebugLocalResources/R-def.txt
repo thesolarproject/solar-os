@@ -11,3 +11,12 @@ string overlay_power_placeholder
 string overlay_power_title
 string rescue_hold_countdown
 string rescue_hold_restarting
+string usb_connection_title
+string usb_mass_storage_detail
+string usb_mass_storage_dismiss
+string usb_mass_storage_turn_on
+string usb_storage_enable_failed
+string usb_storage_mode_back_hint
+string usb_storage_mode_body
+string usb_storage_mode_title
+string usb_storage_mode_turn_off

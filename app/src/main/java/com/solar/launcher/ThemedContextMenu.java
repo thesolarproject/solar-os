@@ -18,15 +18,20 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.solar.launcher.overlay.OverlayThemeProvider;
 import com.solar.launcher.soulseek.SoulseekCountryFlags;
-import com.solar.launcher.theme.ThemeManager;
 import com.solar.launcher.ui.ListDrillTransition;
 import com.solar.launcher.ui.ModalTransition;
 import com.solar.launcher.ui.ScreenTransition;
 
 import org.json.JSONObject;
 
-/** 2026-07-05 — Context modal tiers; PM/T&C use two-row-tall scrollable detail before action rows. */
+/**
+ * 2026-07-05 — Context modal tiers; PM/T&C use two-row-tall scrollable detail before action rows.
+ * 2026-07-08 — Theme bridge: paints via OverlayThemeProvider (app ThemeManager adapter / companion ThemeReader).
+ * Was: ThemeManager statics. Now: OverlayTheme so companion APK can host TCM without ThemeManager.
+ * Reversal: restore ThemeManager. calls + import; uninstall OverlayThemeProvider install sites.
+ */
 public final class ThemedContextMenu {
     private static final int TAG_LABEL = 0x70ca0001;
     private static final int TAG_ARROW = 0x70ca0002;
@@ -44,6 +49,8 @@ public final class ThemedContextMenu {
     private static final int TAG_QUEUE_DROP = 0x70ca0014;
     private static final int TAG_DECOR = 0x70ca0016;
     private static final int TAG_STATE_SPIN = 0x70ca0017;
+    /** 2026-07-14 — Option-row index for A5 tap-to-focus / tap-to-confirm. */
+    private static final int TAG_OPTION_INDEX = 0x70ca0018;
 
     /** Context-menu row: muted label + indeterminate spinner (Wi‑Fi/BT scan footer). */
     public static final String ICON_ROW_LOADING = "__loading__";
@@ -110,7 +117,7 @@ public final class ThemedContextMenu {
     private ImageView titleBackIcon;
     private HorizontalScrollView quickBarScroll;
     private LinearLayout quickBarHost;
-    /** 2026-07-06 — Rescue countdown strip inside global modal (7s..10s hold). */
+    /** 2026-07-08 — Rescue countdown strip inside global modal (7s..10s continuous hold). */
     private TextView rescueBannerView;
     private ScrollView itemsScroll;
     private LinearLayout itemsHost;
@@ -688,23 +695,70 @@ public final class ThemedContextMenu {
             titleRow.addView(titleChip, chipLp);
         }
         if (hasQuick) {
-            quickBarScroll = new HorizontalScrollView(context);
-            quickBarScroll.setHorizontalScrollBarEnabled(false);
-            quickBarScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
-            quickBarScroll.setFillViewport(!showBackChip);
-            quickBarHost = new LinearLayout(context);
-            quickBarHost.setOrientation(LinearLayout.HORIZONTAL);
-            quickBarHost.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+            // 2026-07-14 — Portrait-narrow: two chip rows; landscape: one scroll strip (Y1 parity @ 240p).
+            // Was: isA5 alone → two-row even sideways. Now: A5/narrow/Y1-portrait ∧ physical tall.
+            boolean twoRow = A5PortraitChrome.useTwoRowQuickBar(context);
+            // #region agent log
+            try {
+                android.util.DisplayMetrics dm = context.getResources().getDisplayMetrics();
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("runId", "quickbar-rows");
+                d.put("twoRow", twoRow);
+                d.put("w", dm != null ? dm.widthPixels : -1);
+                d.put("h", dm != null ? dm.heightPixels : -1);
+                d.put("portrait", A5PortraitChrome.isPhysicalPortrait(context));
+                d.put("a5", DeviceFeatures.isA5());
+                Debug391149Log.log(context, "ThemedContextMenu.buildTitleRow",
+                        "quick bar row mode", "H-QB", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            java.util.ArrayList<Integer> visibleIdx = new java.util.ArrayList<Integer>();
             for (int i = 0; i < quickItems.length; i++) {
-                if (!quickItems[i].visible) continue;
-                quickBarHost.addView(createQuickChip(quickItems[i], rowHeightPx, i));
+                if (quickItems[i].visible) visibleIdx.add(Integer.valueOf(i));
             }
-            quickBarScroll.addView(quickBarHost, new HorizontalScrollView.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, rowHeightPx));
-            LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(
-                    showBackChip ? 0 : LinearLayout.LayoutParams.MATCH_PARENT,
-                    rowHeightPx, showBackChip ? 1f : 0f);
-            titleRow.addView(quickBarScroll, qLp);
+            if (twoRow && visibleIdx.size() > 1) {
+                LinearLayout chipRows = new LinearLayout(context);
+                chipRows.setOrientation(LinearLayout.VERTICAL);
+                chipRows.setGravity(Gravity.CENTER_HORIZONTAL);
+                int mid = (visibleIdx.size() + 1) / 2;
+                for (int row = 0; row < 2; row++) {
+                    LinearLayout chipRow = new LinearLayout(context);
+                    chipRow.setOrientation(LinearLayout.HORIZONTAL);
+                    chipRow.setGravity(Gravity.CENTER);
+                    int start = row == 0 ? 0 : mid;
+                    int end = row == 0 ? mid : visibleIdx.size();
+                    for (int j = start; j < end; j++) {
+                        int qi = visibleIdx.get(j).intValue();
+                        chipRow.addView(createQuickChip(quickItems[qi], rowHeightPx, qi));
+                    }
+                    chipRows.addView(chipRow, new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, rowHeightPx));
+                }
+                quickBarHost = chipRows;
+                LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(
+                        showBackChip ? 0 : LinearLayout.LayoutParams.MATCH_PARENT,
+                        rowHeightPx * 2, showBackChip ? 1f : 0f);
+                titleRow.addView(chipRows, qLp);
+                quickBarScroll = null;
+            } else {
+                quickBarScroll = new HorizontalScrollView(context);
+                quickBarScroll.setHorizontalScrollBarEnabled(false);
+                quickBarScroll.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                quickBarScroll.setFillViewport(!showBackChip);
+                quickBarHost = new LinearLayout(context);
+                quickBarHost.setOrientation(LinearLayout.HORIZONTAL);
+                quickBarHost.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
+                for (int i = 0; i < quickItems.length; i++) {
+                    if (!quickItems[i].visible) continue;
+                    quickBarHost.addView(createQuickChip(quickItems[i], rowHeightPx, i));
+                }
+                quickBarScroll.addView(quickBarHost, new HorizontalScrollView.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, rowHeightPx));
+                LinearLayout.LayoutParams qLp = new LinearLayout.LayoutParams(
+                        showBackChip ? 0 : LinearLayout.LayoutParams.MATCH_PARENT,
+                        rowHeightPx, showBackChip ? 1f : 0f);
+                titleRow.addView(quickBarScroll, qLp);
+            }
         }
     }
 
@@ -724,8 +778,8 @@ public final class ThemedContextMenu {
         sliderLabel.setGravity(Gravity.CENTER);
         sliderLabel.setSingleLine(true);
         sliderLabel.setEllipsize(TextUtils.TruncateAt.END);
-        ThemeManager.applyThemedTextStyle(sliderLabel,
-                ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+        OverlayThemeProvider.get().applyThemedTextStyle(sliderLabel,
+                OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
         volumeSliderBlock.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         sliderBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
@@ -739,8 +793,8 @@ public final class ThemedContextMenu {
         brightnessLabel.setGravity(Gravity.CENTER);
         brightnessLabel.setSingleLine(true);
         brightnessLabel.setEllipsize(TextUtils.TruncateAt.END);
-        ThemeManager.applyThemedTextStyle(brightnessLabel,
-                ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+        OverlayThemeProvider.get().applyThemedTextStyle(brightnessLabel,
+                OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
         brightnessSliderBlock.addView(brightnessLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         brightnessBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
@@ -785,14 +839,14 @@ public final class ThemedContextMenu {
         sliderBar.setAlpha(1f);
         brightnessBar.setAlpha(1f);
         if (sliderLabel != null) {
-            ThemeManager.applyThemedTextStyle(sliderLabel,
+            OverlayThemeProvider.get().applyThemedTextStyle(sliderLabel,
                     volActive ? textSelected()
-                            : ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+                            : OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
         }
         if (brightnessLabel != null) {
-            ThemeManager.applyThemedTextStyle(brightnessLabel,
+            OverlayThemeProvider.get().applyThemedTextStyle(brightnessLabel,
                     brightActive ? textSelected()
-                            : ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+                            : OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
         }
     }
 
@@ -1424,10 +1478,19 @@ public final class ThemedContextMenu {
         this.quickItems = quickBar != null ? quickBar : new QuickItem[0];
         this.rowHeightPx = rowHeightPx;
         this.panelWidthPx = panelWidthPx;
+        // 2026-07-11 / 2026-07-14 — A5 / narrow / Y1-Y2 portrait: squarish modal (~90% width).
+        // Was: isA5 || shortSide≤280 only — Y1 tall kept wide overlay. Reversal: drop useNarrowContextMenu.
+        if (A5PortraitChrome.useNarrowContextMenu(context)) {
+            int screenW = context.getResources().getDisplayMetrics().widthPixels;
+            int narrow = (int) (screenW * 0.9f);
+            if (narrow > 0 && (this.panelWidthPx <= 0 || this.panelWidthPx > narrow)) {
+                this.panelWidthPx = narrow;
+            }
+        }
         this.menuRows = menuStyleRows;
         this.dialogStyle = dialogStyleRows;
         // Dark neutral panel — theme decorates row selection, not the panel fill (avoids light dialogConfig).
-        this.panelBgColor = ThemeManager.getContextMenuPanelColor();
+        this.panelBgColor = OverlayThemeProvider.get().getContextMenuPanelColor();
         this.focusIndex = firstFocusableIndex(0);
         this.quickFocusIndex = firstVisibleQuickIndex();
         optionsListVisible = labels.length > 0;
@@ -1458,11 +1521,11 @@ public final class ThemedContextMenu {
         } else if (title != null && title.length() > 0) {
             TextView tit = new TextView(context);
             tit.setText(title);
-            tit.setTypeface(ThemeManager.getCustomFont());
+            tit.setTypeface(OverlayThemeProvider.get().getCustomFont());
             tit.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
                     context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.95f);
-            ThemeManager.applyThemedTextStyle(tit,
-                    ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+            OverlayThemeProvider.get().applyThemedTextStyle(tit,
+                    OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
             tit.setPadding(0, 0, 0, (int) (4 * density));
             panel.addView(tit, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -1545,7 +1608,7 @@ public final class ThemedContextMenu {
             d.put("quickChipCount", quickBarHost != null ? quickBarHost.getChildCount() : -1);
             d.put("hasQuick", quickItems.length > 0 && !dialogStyle);
             d.put("systemOverlayMode", systemOverlayMode);
-            d.put("themeReady", ThemeManager.isOverlayThemeReady());
+            d.put("themeReady", OverlayThemeProvider.get().isOverlayThemeReady());
             DebugAgentLog.log(context, "ThemedContextMenu.show", "menu painted", "H2-H4", d);
         } catch (Exception ignored) {}
         // #endregion
@@ -1586,7 +1649,7 @@ public final class ThemedContextMenu {
                 if (ICON_ROW_LOADING.equals(iconKey)) {
                     itemsHost.addView(createLoadingRow(labels[i]));
                 } else {
-                    itemsHost.addView(createRow(labels[i], iconKey, stateText));
+                    itemsHost.addView(createRow(labels[i], iconKey, stateText, i));
                 }
             }
         }
@@ -1723,7 +1786,7 @@ public final class ThemedContextMenu {
         if (ICON_ROW_LOADING.equals(iconKey)) {
             return createLoadingRow(labels[i]);
         }
-        return createRow(labels[i], iconKey, stateText);
+        return createRow(labels[i], iconKey, stateText, i);
     }
 
     private void animateWifiTickerRowIn(final View row, int delayMs) {
@@ -1955,6 +2018,8 @@ public final class ThemedContextMenu {
                     ((ViewGroup) row.getParent()).removeView(row);
                 }
                 itemsHost.addView(row);
+                // 2026-07-14 — Reused Wi‑Fi ticker rows keep a stale click index; rebind A5 tap.
+                attachA5OptionRowTap(row, i);
                 if (!resetFocus && animateIn) {
                     animateWifiTickerRowIn(row, stagger);
                     stagger += WIFI_TICKER_STAGGER_MS;
@@ -2495,6 +2560,8 @@ public final class ThemedContextMenu {
         scrollQueueRowToViewportSlotNow(index);
     }
 
+    // 2026-07-11 — Non-queue: edge-only via FocusScrollHelper; queue still center-locks.
+    // Was: local pad/clip math. Now: shared ensureChildVisible. Reversal: restore local if-branch.
     private void scrollQueueRowIntoViewNow(int index) {
         if (itemsScroll == null || itemsHost == null) return;
         if (queueMode) {
@@ -2504,21 +2571,7 @@ public final class ThemedContextMenu {
             return;
         }
         if (index < 0 || index >= itemsHost.getChildCount()) return;
-        View row = itemsHost.getChildAt(index);
-        int rowTop = row.getTop();
-        int rowBottom = row.getBottom();
-        int scrollY = itemsScroll.getScrollY();
-        int viewport = itemsScroll.getHeight();
-        if (viewport <= 0) return;
-        float density = context.getResources().getDisplayMetrics().density;
-        int pad = Math.max(1, (int) (2 * density));
-        if (rowTop < scrollY + pad) {
-            itemsScroll.scrollTo(0, Math.max(0, rowTop - pad));
-        } else if (rowBottom > scrollY + viewport - pad) {
-            int target = rowBottom - viewport + pad;
-            int maxScroll = Math.max(0, itemsHost.getHeight() - viewport);
-            itemsScroll.scrollTo(0, Math.min(Math.max(0, target), maxScroll));
-        }
+        FocusScrollHelper.ensureChildVisible(itemsScroll, itemsHost.getChildAt(index));
     }
 
     private void bindQueueRowIndicesAndText() {
@@ -2804,7 +2857,7 @@ public final class ThemedContextMenu {
         TextView title = new TextView(context);
         title.setTag(TAG_QUEUE_TITLE);
         title.setText(spec.displayLine());
-        title.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+        title.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
         title.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx);
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.MARQUEE);
@@ -2826,7 +2879,7 @@ public final class ThemedContextMenu {
         grip.setTag(TAG_QUEUE_GRIP);
         grip.setText(context.getString(R.string.home_screen_move_grip));
         grip.setGravity(Gravity.CENTER);
-        grip.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+        grip.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
         grip.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx);
         grip.setVisibility(View.GONE);
         rightSlot.addView(grip, new android.widget.FrameLayout.LayoutParams(
@@ -2848,6 +2901,7 @@ public final class ThemedContextMenu {
         rightSlot.addView(confirm, new android.widget.FrameLayout.LayoutParams(ppSz, ppSz, Gravity.CENTER));
 
         row.addView(rightSlot);
+        attachA5OptionRowTap(row, index);
         return row;
     }
 
@@ -2946,7 +3000,7 @@ public final class ThemedContextMenu {
         this.rowHeightPx = rowHeightPx;
         this.panelWidthPx = panelWidthPx;
         this.menuRows = false;
-        this.panelBgColor = ThemeManager.getContextMenuPanelColor();
+        this.panelBgColor = OverlayThemeProvider.get().getContextMenuPanelColor();
 
         overlay = new FrameLayout(context);
         styleOverlayScrim(overlay);
@@ -2963,12 +3017,12 @@ public final class ThemedContextMenu {
         if (hintText != null && hintText.length() > 0) {
             TextView hint = new TextView(context);
             hint.setText(hintText);
-            hint.setTypeface(ThemeManager.getCustomFont());
+            hint.setTypeface(OverlayThemeProvider.get().getCustomFont());
             hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
                     context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
             hint.setGravity(Gravity.CENTER);
-            ThemeManager.applyThemedTextStyle(hint,
-                    ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+            OverlayThemeProvider.get().applyThemedTextStyle(hint,
+                    OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
             panel.addView(hint, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
@@ -3001,7 +3055,7 @@ public final class ThemedContextMenu {
         this.rowHeightPx = rowHeightPx;
         this.panelWidthPx = panelWidthPx;
         this.menuRows = false;
-        this.panelBgColor = ThemeManager.getContextMenuPanelColor();
+        this.panelBgColor = OverlayThemeProvider.get().getContextMenuPanelColor();
         sliderMax = Math.max(1, max);
         sliderValue = Math.max(0, Math.min(value, sliderMax));
 
@@ -3020,12 +3074,12 @@ public final class ThemedContextMenu {
         if (hintText != null && hintText.length() > 0) {
             TextView hint = new TextView(context);
             hint.setText(hintText);
-            hint.setTypeface(ThemeManager.getCustomFont());
+            hint.setTypeface(OverlayThemeProvider.get().getCustomFont());
             hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
                     context.getResources().getDimension(R.dimen.y1_menu_text_size) * 0.82f);
             hint.setGravity(Gravity.CENTER);
-            ThemeManager.applyThemedTextStyle(hint,
-                    ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+            OverlayThemeProvider.get().applyThemedTextStyle(hint,
+                    OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
             hint.setPadding(0, 0, 0, (int) (6 * density));
             panel.addView(hint, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -3034,8 +3088,8 @@ public final class ThemedContextMenu {
         sliderLabel = new TextView(context);
         sliderLabel.setText(sliderTitle != null ? sliderTitle : "");
         sliderLabel.setGravity(Gravity.CENTER);
-        ThemeManager.applyThemedTextStyle(sliderLabel,
-                ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+        OverlayThemeProvider.get().applyThemedTextStyle(sliderLabel,
+                OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
         panel.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -3197,8 +3251,10 @@ public final class ThemedContextMenu {
         if (quickBarHost == null || quickIndex < 0 || quickIndex >= quickItems.length) return;
         QuickItem prior = quickItems[quickIndex];
         quickItems[quickIndex] = new QuickItem(prior.iconKey, iconResId, prior.label, prior.visible);
-        for (int i = 0; i < quickBarHost.getChildCount(); i++) {
-            View chip = quickBarHost.getChildAt(i);
+        java.util.ArrayList<View> chips = new java.util.ArrayList<View>();
+        collectQuickChipViews(quickBarHost, chips);
+        for (int i = 0; i < chips.size(); i++) {
+            View chip = chips.get(i);
             Object tag = chip.getTag();
             if (!(tag instanceof Integer) || ((Integer) tag) != quickIndex) continue;
             ImageView icon = (ImageView) chip.findViewWithTag("quick_icon");
@@ -3315,7 +3371,7 @@ public final class ThemedContextMenu {
         dismiss();
         sliderMax = Math.max(1, max);
         sliderValue = 0;
-        panelBgColor = ThemeManager.getContextMenuPanelColor();
+        panelBgColor = OverlayThemeProvider.get().getContextMenuPanelColor();
         overlay = new FrameLayout(context);
         styleOverlayScrim(overlay);
         overlay.setClickable(true);
@@ -3329,19 +3385,19 @@ public final class ThemedContextMenu {
         if (title != null && title.length() > 0) {
             TextView tv = new TextView(context);
             tv.setText(title);
-            tv.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+            tv.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
             tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
                     context.getResources().getDimension(R.dimen.y1_menu_text_size));
-            ThemeManager.applyThemedTextStyle(tv,
-                    ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+            OverlayThemeProvider.get().applyThemedTextStyle(tv,
+                    OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
             panel.addView(tv);
         }
         sliderLabel = new TextView(context);
         sliderLabel.setGravity(Gravity.CENTER);
         sliderLabel.setPadding(0, (int) (8 * density), 0, (int) (4 * density));
         sliderLabel.setText(subtitle != null ? subtitle : "");
-        ThemeManager.applyThemedTextStyle(sliderLabel,
-                ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(), panelBgColor));
+        OverlayThemeProvider.get().applyThemedTextStyle(sliderLabel,
+                OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(), panelBgColor));
         panel.addView(sliderLabel, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         sliderBar = new ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal);
@@ -3380,7 +3436,7 @@ public final class ThemedContextMenu {
     }
 
     /**
-     * 2026-07-06 — In-overlay rescue preview during 7s..10s BACK/POWER hold (menu stays usable).
+     * 2026-07-08 — In-overlay rescue preview during 7s..10s BACK/POWER hold (menu stays usable).
      * Layman: banner under the quick chips shows "Going back to Solar in 3…".
      * Reversal: delete banner; {@link SolarRescueHoldService} bottom HUD remains.
      */
@@ -3396,8 +3452,8 @@ public final class ThemedContextMenu {
             rescueBannerView.setGravity(Gravity.CENTER);
             rescueBannerView.setSingleLine(true);
             rescueBannerView.setEllipsize(TextUtils.TruncateAt.END);
-            ThemeManager.applyThemedTextStyle(rescueBannerView,
-                    ThemeManager.ensureReadableOnBackground(ThemeManager.getDialogTextColor(),
+            OverlayThemeProvider.get().applyThemedTextStyle(rescueBannerView,
+                    OverlayThemeProvider.get().ensureReadableOnBackground(OverlayThemeProvider.get().getDialogTextColor(),
                             panelBgColor));
             rescueBannerView.setPadding(0, 0, 0, (int) (4 * density));
             int insertAt = titleRow != null ? panel.indexOfChild(titleRow) + 1 : 0;
@@ -3915,9 +3971,15 @@ public final class ThemedContextMenu {
         return from;
     }
 
-    /** 2026-07-06 — Opt-in wrap at list ends (overlay + in-app modals read persist.solar.nav.infinite_scroll). */
+    /**
+     * 2026-07-11 — Context/overlay modal never wraps (was: honor infinite_scroll pref).
+     * Layman: wheel at list top must reach Wi‑Fi/Bluetooth chips, not jump to the last row.
+     * Technical: ListNavigationPolicy.appliesToContextModal() is false; clamp + focusQuickBarFromListTopExit.
+     * Reversal: return NavigationPreferences.isInfiniteScrollEnabled(context) alone.
+     */
     private boolean isInfiniteScrollEnabled() {
-        return NavigationPreferences.isInfiniteScrollEnabled(context);
+        return com.solar.input.policy.ListNavigationPolicy.effectiveInfinite(
+                NavigationPreferences.isInfiniteScrollEnabled(context), true);
     }
 
     private int wrapFocusableIndex(int from, int delta) {
@@ -4032,13 +4094,16 @@ public final class ThemedContextMenu {
     }
 
     private void scrollQuickFocusIntoView() {
-        if (quickBarHost == null || quickBarScroll == null || focusZone != FocusZone.QUICK_BAR) return;
+        if (quickBarHost == null || focusZone != FocusZone.QUICK_BAR) return;
+        if (quickBarScroll == null) return; // 2-row layout has no horizontal scroll
         if (isFirstVisibleQuickIndex(quickFocusIndex)) {
             scrollQuickBarToStart();
             return;
         }
-        for (int i = 0; i < quickBarHost.getChildCount(); i++) {
-            View chip = quickBarHost.getChildAt(i);
+        java.util.ArrayList<View> chips = new java.util.ArrayList<View>();
+        collectQuickChipViews(quickBarHost, chips);
+        for (int i = 0; i < chips.size(); i++) {
+            View chip = chips.get(i);
             Object tag = chip.getTag();
             if (tag instanceof Integer && ((Integer) tag).intValue() == quickFocusIndex) {
                 final View target = chip;
@@ -4085,7 +4150,7 @@ public final class ThemedContextMenu {
         icon.setTag("quick_icon");
         icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
         int iconRes = iconResForQuickIndex(index, item.iconResId);
-        android.graphics.Bitmap bmp = item.iconKey != null ? ThemeManager.getSettingIcon(item.iconKey) : null;
+        android.graphics.Bitmap bmp = item.iconKey != null ? OverlayThemeProvider.get().getSettingIcon(item.iconKey) : null;
         if (bmp != null) {
             icon.setImageBitmap(bmp);
         } else if (iconRes != 0) {
@@ -4094,7 +4159,70 @@ public final class ThemedContextMenu {
         FrameLayout.LayoutParams iconLp = new FrameLayout.LayoutParams(iconSize, iconSize);
         iconLp.gravity = Gravity.CENTER;
         chip.addView(icon, iconLp);
+        attachA5QuickChipTap(chip, index);
         return chip;
+    }
+
+    /**
+     * 2026-07-14 — A5/touch: first tap focuses a context option; second tap confirms (like home lists).
+     * Layman: poke a menu line to highlight it, poke again to pick it.
+     * Tech: A5FocusConfirm.enabled(); enterMenuListFocus then activateFocused. Header/decor skip.
+     * Reversal: no-op — rows stay wheel/OK only on touchscreens.
+     */
+    private void attachA5OptionRowTap(final View row, final int index) {
+        if (row == null || !A5FocusConfirm.enabled()) return;
+        if (row.getTag(TAG_HEADER) instanceof Boolean) return;
+        if (row.getTag(TAG_SCROLL_HEADER) instanceof Boolean) return;
+        if (Boolean.TRUE.equals(row.getTag(TAG_DECOR))) return;
+        if (index < 0) return;
+        row.setTag(TAG_OPTION_INDEX, Integer.valueOf(index));
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setFocusableInTouchMode(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                int idx = index;
+                Object tag = v.getTag(TAG_OPTION_INDEX);
+                if (tag instanceof Integer) idx = ((Integer) tag).intValue();
+                if (queueMode) {
+                    if (focusZone == FocusZone.TIER_CONTENT && focusIndex == idx) {
+                        activateFocused();
+                    } else {
+                        enterMenuListFocus(idx);
+                    }
+                    return;
+                }
+                if (isHeaderRow(idx) || isDecorRow(idx)) return;
+                if (isMenuListZone() && focusIndex == idx) {
+                    activateFocused();
+                } else {
+                    enterMenuListFocus(idx);
+                }
+            }
+        });
+    }
+
+    /**
+     * 2026-07-14 — A5/touch on quick-bar chips: focus then confirm (same two-tap as option rows).
+     * Layman: tap Wi‑Fi/BT/volume icon to highlight, tap again to open it.
+     * Tech: A5FocusConfirm.enabled() (was isA5-only). Reversal: remove listener — chips stay key-only.
+     */
+    private void attachA5QuickChipTap(final View chip, final int index) {
+        if (chip == null || !A5FocusConfirm.enabled() || index < 0) return;
+        chip.setClickable(true);
+        chip.setFocusable(true);
+        chip.setFocusableInTouchMode(true);
+        chip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (focusZone == FocusZone.QUICK_BAR && quickFocusIndex == index) {
+                    activateFocused();
+                } else {
+                    focusQuickBar(index);
+                }
+            }
+        });
     }
 
     /** Reapply row chrome after async overlay theme warm — main thread only. */
@@ -4112,8 +4240,10 @@ public final class ThemedContextMenu {
 
     private void refreshQuickBar() {
         if (quickBarHost == null) return;
-        for (int i = 0; i < quickBarHost.getChildCount(); i++) {
-            View chip = quickBarHost.getChildAt(i);
+        java.util.ArrayList<View> chips = new java.util.ArrayList<View>();
+        collectQuickChipViews(quickBarHost, chips);
+        for (int i = 0; i < chips.size(); i++) {
+            View chip = chips.get(i);
             Object tag = chip.getTag();
             if (!(tag instanceof Integer)) continue;
             int idx = (Integer) tag;
@@ -4133,6 +4263,23 @@ public final class ThemedContextMenu {
         }
     }
 
+    /**
+     * 2026-07-11 — Flatten nested 2-row chip hosts so focus/refresh find FrameLayout chips.
+     * Layman: chips may sit in two rows; we still walk every chip the same way.
+     */
+    private void collectQuickChipViews(ViewGroup host, java.util.ArrayList<View> out) {
+        if (host == null || out == null) return;
+        for (int i = 0; i < host.getChildCount(); i++) {
+            View c = host.getChildAt(i);
+            if (c == null) continue;
+            if (c.getTag() instanceof Integer) {
+                out.add(c);
+            } else if (c instanceof ViewGroup) {
+                collectQuickChipViews((ViewGroup) c, out);
+            }
+        }
+    }
+
     /** Swap quick-bar icons/labels without closing the menu (e.g. queue ↔ music library). */
     public void replaceQuickBar(QuickItem[] items) {
         if (volumeOnlyMode || !isShowing()) return;
@@ -4143,10 +4290,33 @@ public final class ThemedContextMenu {
         }
         quickItems = next;
         if (quickBarHost == null) return;
-        quickBarHost.removeAllViews();
+        // 2026-07-14 — Portrait-narrow two-row only; landscape keeps single-row host.
+        boolean twoRow = A5PortraitChrome.useTwoRowQuickBar(context);
+        java.util.ArrayList<Integer> visibleIdx = new java.util.ArrayList<Integer>();
         for (int i = 0; i < quickItems.length; i++) {
-            if (!quickItems[i].visible) continue;
-            quickBarHost.addView(createQuickChip(quickItems[i], rowHeightPx, i));
+            if (quickItems[i].visible) visibleIdx.add(Integer.valueOf(i));
+        }
+        quickBarHost.removeAllViews();
+        if (twoRow && visibleIdx.size() > 1 && quickBarScroll == null) {
+            int mid = (visibleIdx.size() + 1) / 2;
+            for (int row = 0; row < 2; row++) {
+                LinearLayout chipRow = new LinearLayout(context);
+                chipRow.setOrientation(LinearLayout.HORIZONTAL);
+                chipRow.setGravity(Gravity.CENTER);
+                int start = row == 0 ? 0 : mid;
+                int end = row == 0 ? mid : visibleIdx.size();
+                for (int j = start; j < end; j++) {
+                    int qi = visibleIdx.get(j).intValue();
+                    chipRow.addView(createQuickChip(quickItems[qi], rowHeightPx, qi));
+                }
+                quickBarHost.addView(chipRow, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, rowHeightPx));
+            }
+        } else {
+            for (int i = 0; i < quickItems.length; i++) {
+                if (!quickItems[i].visible) continue;
+                quickBarHost.addView(createQuickChip(quickItems[i], rowHeightPx, i));
+            }
         }
         syncMediaQuickIconResFromItems();
         refreshQuickChipIcons();
@@ -4169,7 +4339,7 @@ public final class ThemedContextMenu {
     }
 
     private Drawable buildPanelBackground() {
-        return ThemeManager.buildContextMenuPanelDrawable(context);
+        return OverlayThemeProvider.get().buildContextMenuPanelDrawable(context);
     }
 
     private int iconResForQuickIndex(int index, int fallbackResId) {
@@ -4181,8 +4351,10 @@ public final class ThemedContextMenu {
     /** Re-apply chip drawables after slider-index fix or replaceQuickBar no-op (BT scan ticks). */
     private void refreshQuickChipIcons() {
         if (quickBarHost == null) return;
-        for (int i = 0; i < quickBarHost.getChildCount(); i++) {
-            View chip = quickBarHost.getChildAt(i);
+        java.util.ArrayList<View> chips = new java.util.ArrayList<View>();
+        collectQuickChipViews(quickBarHost, chips);
+        for (int i = 0; i < chips.size(); i++) {
+            View chip = chips.get(i);
             Object tag = chip.getTag();
             if (!(tag instanceof Integer)) continue;
             int idx = (Integer) tag;
@@ -4192,7 +4364,7 @@ public final class ThemedContextMenu {
             if (icon == null) continue;
             int iconRes = iconResForQuickIndex(idx, item.iconResId);
             android.graphics.Bitmap bmp = item.iconKey != null
-                    ? ThemeManager.getSettingIcon(item.iconKey) : null;
+                    ? OverlayThemeProvider.get().getSettingIcon(item.iconKey) : null;
             if (bmp != null) {
                 icon.setImageBitmap(bmp);
             } else if (iconRes != 0) {
@@ -4216,7 +4388,7 @@ public final class ThemedContextMenu {
         if (iconKey.startsWith("wifi.sig.")) {
             try {
                 int idx = Integer.parseInt(iconKey.substring(9));
-                android.graphics.Bitmap themed = ThemeManager.getWifiIcon(idx);
+                android.graphics.Bitmap themed = OverlayThemeProvider.get().getWifiIcon(idx);
                 if (themed != null) return themed;
                 int res = R.drawable.ic_wifi_signal_1;
                 if (idx >= 2) res = R.drawable.ic_wifi_signal_3;
@@ -4227,12 +4399,12 @@ public final class ThemedContextMenu {
             }
         }
         if ("wifi.lock".equals(iconKey)) {
-            android.graphics.Bitmap themed = ThemeManager.getSettingIcon("lock");
+            android.graphics.Bitmap themed = OverlayThemeProvider.get().getSettingIcon("lock");
             if (themed != null) return themed;
             return tintedDrawableBitmap(R.drawable.ic_lock);
         }
         if (iconKey.startsWith("shuffle") || iconKey.startsWith("repeat")) {
-            return ThemeManager.getPlaybackModeIcon(iconKey);
+            return OverlayThemeProvider.get().getPlaybackModeIcon(iconKey);
         }
         if (iconKey.startsWith("flag.")) {
             Bitmap flag = SoulseekCountryFlags.loadFlag(context, iconKey.substring(5));
@@ -4241,7 +4413,7 @@ public final class ThemedContextMenu {
             int h = (int) (rowHeightPx * 0.33f);
             return Bitmap.createScaledBitmap(flag, w, h, true);
         }
-        return ThemeManager.getSettingIcon(iconKey);
+        return OverlayThemeProvider.get().getSettingIcon(iconKey);
     }
 
     private android.graphics.Bitmap tintedDrawableBitmap(int resId) {
@@ -4251,7 +4423,7 @@ public final class ThemedContextMenu {
         Bitmap bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         d.setBounds(0, 0, size, size);
-        d.setColorFilter(ThemeManager.getStatusBarTextColor(), PorterDuff.Mode.SRC_IN);
+        d.setColorFilter(OverlayThemeProvider.get().getStatusBarTextColor(), PorterDuff.Mode.SRC_IN);
         d.draw(c);
         return bmp;
     }
@@ -4268,10 +4440,10 @@ public final class ThemedContextMenu {
         tv.setTag(TAG_HEADER, Boolean.TRUE);
         tv.setFocusable(false);
         tv.setText(text);
-        tv.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+        tv.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
         tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.85f);
-        ThemeManager.applyThemedTextStyle(tv, ThemeManager.ensureReadableOnBackground(
-                ThemeManager.getSectionHeaderTextColor(), panelBgColor));
+        OverlayThemeProvider.get().applyThemedTextStyle(tv, OverlayThemeProvider.get().ensureReadableOnBackground(
+                OverlayThemeProvider.get().getSectionHeaderTextColor(), panelBgColor));
         android.graphics.Bitmap iconBmp = resolveContextMenuIcon(iconKey);
         if (iconBmp != null) {
             int pad = (int) (4 * density);
@@ -4286,10 +4458,10 @@ public final class ThemedContextMenu {
         return tv;
     }
 
-    private FrameLayout createRow(String text, String iconKey, String stateText) {
+    private FrameLayout createRow(String text, String iconKey, String stateText, int index) {
         int textPadLeft = (int) context.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
         float menuTextPx = context.getResources().getDimension(R.dimen.y1_menu_text_size);
-        android.graphics.Bitmap arrowBmp = ThemeManager.getScaledItemRightArrow(rowHeightPx);
+        android.graphics.Bitmap arrowBmp = OverlayThemeProvider.get().getScaledItemRightArrow(rowHeightPx);
         int arrowW = arrowBmp != null ? arrowBmp.getWidth() : 0;
         int arrowMarginEnd = (int) context.getResources().getDimension(R.dimen.y1_arrow_margin_end);
         float density = context.getResources().getDisplayMetrics().density;
@@ -4308,6 +4480,7 @@ public final class ThemedContextMenu {
         int rowH = stackHint ? rowHeightPx + (int) (menuTextPx * 0.95f) : rowHeightPx;
 
         FrameLayout row = new FrameLayout(context);
+        // 2026-07-14 — A5 makes rows touchable via attachA5OptionRowTap; Y1/Y2 stay wheel-only focus paint.
         row.setFocusable(false);
         LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, rowH);
@@ -4326,13 +4499,13 @@ public final class ThemedContextMenu {
 
         TextView label = new TextView(context);
         label.setText(text);
-        label.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+        label.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
         label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.MARQUEE);
         label.setMarqueeRepeatLimit(-1);
         label.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        ThemeManager.applyThemedTextStyle(label, textNormal());
+        OverlayThemeProvider.get().applyThemedTextStyle(label, textNormal());
 
         if (stackHint) {
             LinearLayout stack = new LinearLayout(context);
@@ -4346,11 +4519,11 @@ public final class ThemedContextMenu {
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
             TextView state = new TextView(context);
             state.setText(stateText);
-            state.setTypeface(ThemeManager.getCustomFont());
+            state.setTypeface(OverlayThemeProvider.get().getCustomFont());
             state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.82f);
             state.setMaxLines(2);
-            ThemeManager.applyThemedTextStyle(state,
-                    ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+            OverlayThemeProvider.get().applyThemedTextStyle(state,
+                    OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
             stack.addView(state, new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
             row.addView(stack, stackLp);
@@ -4364,12 +4537,12 @@ public final class ThemedContextMenu {
             row.addView(label, labelLp);
             if (hasState) {
                 TextView state = new TextView(context);
-                state.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
+                state.setTypeface(OverlayThemeProvider.get().getCustomFont(), android.graphics.Typeface.BOLD);
                 state.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.9f);
                 state.setSingleLine(true);
                 state.setEllipsize(TextUtils.TruncateAt.END);
-                ThemeManager.applyThemedTextStyle(state,
-                        ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+                OverlayThemeProvider.get().applyThemedTextStyle(state,
+                        OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
                 FrameLayout.LayoutParams stateLp = new FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.MATCH_PARENT);
                 stateLp.gravity = Gravity.CENTER_VERTICAL | Gravity.END;
@@ -4392,6 +4565,7 @@ public final class ThemedContextMenu {
 
         row.setTag(TAG_LABEL, label);
         row.setTag(TAG_ARROW, arrow);
+        attachA5OptionRowTap(row, index);
         return row;
     }
 
@@ -4412,13 +4586,13 @@ public final class ThemedContextMenu {
 
         TextView label = new TextView(context);
         label.setText(text);
-        label.setTypeface(ThemeManager.getCustomFont());
+        label.setTypeface(OverlayThemeProvider.get().getCustomFont());
         label.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.9f);
         label.setSingleLine(true);
         label.setEllipsize(TextUtils.TruncateAt.END);
         label.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
-        ThemeManager.applyThemedTextStyle(label,
-                ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+        OverlayThemeProvider.get().applyThemedTextStyle(label,
+                OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
         FrameLayout.LayoutParams labelLp = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
         labelLp.leftMargin = textPadLeft;
@@ -4453,12 +4627,12 @@ public final class ThemedContextMenu {
             int w = panelWidthPx > 0 ? panelWidthPx : row.getWidth();
             row.setBackground(rowBackground(focused, w, rowHeightPx));
             if (label != null) {
-                ThemeManager.applyThemedTextStyle(label, focused ? textSelected() : textNormal());
+                OverlayThemeProvider.get().applyThemedTextStyle(label, focused ? textSelected() : textNormal());
                 label.setSelected(focused);
             }
             if (state != null) {
-                ThemeManager.applyThemedTextStyle(state, focused ? textSelected()
-                        : ThemeManager.contextMenuMutedText(ThemeManager.getHintTextColor()));
+                OverlayThemeProvider.get().applyThemedTextStyle(state, focused ? textSelected()
+                        : OverlayThemeProvider.get().contextMenuMutedText(OverlayThemeProvider.get().getHintTextColor()));
             }
             if (arrow != null) arrow.setVisibility(focused && !dialogStyle ? View.VISIBLE : View.GONE);
         }
@@ -4499,7 +4673,7 @@ public final class ThemedContextMenu {
         ImageView confirm = (ImageView) row.findViewWithTag(TAG_QUEUE_CONFIRM);
         int titleColor = highlighted ? textSelected() : textNormal();
         if (title != null) {
-            ThemeManager.applyThemedTextStyle(title, titleColor);
+            OverlayThemeProvider.get().applyThemedTextStyle(title, titleColor);
             title.setSelected(highlighted);
             if (highlighted) {
                 title.setEllipsize(TextUtils.TruncateAt.MARQUEE);
@@ -4511,7 +4685,7 @@ public final class ThemedContextMenu {
         }
         if (grip != null) {
             grip.setVisibility(moving ? View.VISIBLE : View.GONE);
-            ThemeManager.applyThemedTextStyle(grip, textSelected());
+            OverlayThemeProvider.get().applyThemedTextStyle(grip, textSelected());
         }
         if (confirm != null) {
             if (!confirming) {
@@ -4572,7 +4746,7 @@ public final class ThemedContextMenu {
             }
             GradientDrawable none = new GradientDrawable();
             none.setColor(0x00000000);
-            none.setCornerRadius(ThemeManager.getButtonRadius() * context.getResources().getDisplayMetrics().density);
+            none.setCornerRadius(OverlayThemeProvider.get().getButtonRadius() * context.getResources().getDisplayMetrics().density);
             if (queueMode) {
                 cachedQueueRowBg = none;
                 cachedQueueRowBgWidth = widthPx;
@@ -4583,16 +4757,16 @@ public final class ThemedContextMenu {
             return cachedQueueRowBgFocused;
         }
         if (focused && dialogStyle) {
-            Drawable dialogRow = ThemeManager.getDialogOptionRowBackgroundScaled(
+            Drawable dialogRow = OverlayThemeProvider.get().getDialogOptionRowBackgroundScaled(
                     context.getResources(), true, widthPx, heightPx);
             if (dialogRow != null) {
                 return dialogRow;
             }
         }
         Drawable scaled = menuRows
-                ? ThemeManager.getMenuRowBackgroundScaled(
+                ? OverlayThemeProvider.get().getMenuRowBackgroundScaled(
                         context.getResources(), true, widthPx, heightPx)
-                : ThemeManager.getItemRowBackgroundScaled(
+                : OverlayThemeProvider.get().getItemRowBackgroundScaled(
                         context.getResources(), true, widthPx, heightPx);
         if (scaled != null) {
             if (queueMode) {
@@ -4602,8 +4776,8 @@ public final class ThemedContextMenu {
             return scaled;
         }
         GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(ThemeManager.getButtonRadius() * context.getResources().getDisplayMetrics().density);
-        g.setColor(ThemeManager.getRowSelectionFillColor());
+        g.setCornerRadius(OverlayThemeProvider.get().getButtonRadius() * context.getResources().getDisplayMetrics().density);
+        g.setColor(OverlayThemeProvider.get().getRowSelectionFillColor());
         if (queueMode) {
             cachedQueueRowBgFocused = g;
             cachedQueueRowBgWidth = widthPx;
@@ -4613,23 +4787,23 @@ public final class ThemedContextMenu {
 
     private int textNormal() {
         if (dialogStyle) {
-            return ThemeManager.ensureReadableOnBackground(
-                    ThemeManager.getDialogOptionTextColorNormal(), panelBgColor);
+            return OverlayThemeProvider.get().ensureReadableOnBackground(
+                    OverlayThemeProvider.get().getDialogOptionTextColorNormal(), panelBgColor);
         }
-        int themeNormal = menuRows ? ThemeManager.getSettingMenuTextColorNormal()
-                : ThemeManager.getItemTextColorNormal();
-        int themeSelected = menuRows ? ThemeManager.getSettingMenuTextColorSelected()
-                : ThemeManager.getItemTextColorSelected();
-        return ThemeManager.contextMenuTextNormal(themeNormal, themeSelected, panelBgColor, menuRows);
+        int themeNormal = menuRows ? OverlayThemeProvider.get().getSettingMenuTextColorNormal()
+                : OverlayThemeProvider.get().getItemTextColorNormal();
+        int themeSelected = menuRows ? OverlayThemeProvider.get().getSettingMenuTextColorSelected()
+                : OverlayThemeProvider.get().getItemTextColorSelected();
+        return OverlayThemeProvider.get().contextMenuTextNormal(themeNormal, themeSelected, panelBgColor, menuRows);
     }
 
     private int textSelected() {
         if (dialogStyle) {
-            return ThemeManager.ensureReadableOnBackground(
-                    ThemeManager.getDialogOptionTextColorSelected(), panelBgColor);
+            return OverlayThemeProvider.get().ensureReadableOnBackground(
+                    OverlayThemeProvider.get().getDialogOptionTextColorSelected(), panelBgColor);
         }
-        int themeSelected = menuRows ? ThemeManager.getSettingMenuTextColorSelected()
-                : ThemeManager.getItemTextColorSelected();
-        return ThemeManager.contextMenuTextSelected(themeSelected, menuRows);
+        int themeSelected = menuRows ? OverlayThemeProvider.get().getSettingMenuTextColorSelected()
+                : OverlayThemeProvider.get().getItemTextColorSelected();
+        return OverlayThemeProvider.get().contextMenuTextSelected(themeSelected, menuRows);
     }
 }

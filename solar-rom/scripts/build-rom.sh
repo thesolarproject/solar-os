@@ -742,8 +742,11 @@ audit_rom_contents() {
             "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
         echo "audit fail: switch-to-stock.sh must not reboot (unified keymap)" >&2
         errors=$((errors + 1))
-    elif ! grep -q 'set_preferred_home' "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
-        echo "audit fail: switch-to-stock.sh must set preferred HOME for launcher switch" >&2
+    # 2026-07-08 — Prefer solar-launcher-exec delegate; legacy inline uses apply_competition.
+    # Was: require set_preferred_home symbol (removed when helper HOME enforcement landed).
+    elif ! grep -qE 'solar-launcher-exec\.sh|apply_competition|set_preferred_home' \
+            "$sys_mount/etc/solar/switch-to-stock.sh" 2>/dev/null; then
+        echo "audit fail: switch-to-stock.sh must delegate to solar-launcher-exec or apply HOME" >&2
         errors=$((errors + 1))
     fi
 
@@ -1237,10 +1240,14 @@ sudo rm -f "$MOUNT_USER/data/initialized"
 
 echo "==> Seed Rockbox switch scripts in userdata (overwrite rockbox-y1 reboot/keylayout script)"
 sudo mkdir -p "$MOUNT_USER/data"
+# 2026-07-08 — Ship executor next to Rockbox's /data/data/switch-to-stock.sh wrapper.
 sudo cp "$SCRIPT_DIR/switch-to-stock.sh" "$MOUNT_USER/data/switch-to-stock.sh"
 sudo cp "$SCRIPT_DIR/switch-to-rockbox.sh" "$MOUNT_USER/data/switch-to-rockbox.sh"
-sudo chmod 755 "$MOUNT_USER/data/switch-to-stock.sh" "$MOUNT_USER/data/switch-to-rockbox.sh"
-sudo chown root:root "$MOUNT_USER/data/switch-to-stock.sh" "$MOUNT_USER/data/switch-to-rockbox.sh"
+sudo cp "$SCRIPT_DIR/solar-launcher-exec.sh" "$MOUNT_USER/data/solar-launcher-exec.sh"
+sudo chmod 755 "$MOUNT_USER/data/switch-to-stock.sh" "$MOUNT_USER/data/switch-to-rockbox.sh" \
+    "$MOUNT_USER/data/solar-launcher-exec.sh"
+sudo chown root:root "$MOUNT_USER/data/switch-to-stock.sh" "$MOUNT_USER/data/switch-to-rockbox.sh" \
+    "$MOUNT_USER/data/solar-launcher-exec.sh"
 
 audit_rom_contents "$BASE_DIR" "$MOUNT_SYS" "$MOUNT_USER"
 

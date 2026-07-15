@@ -19,7 +19,7 @@ public final class YouTubeVideo {
         this.duration = duration != null ? duration : "";
     }
 
-    /** Subtitle for list row — channel plus optional duration. */
+    /** 2026-07-06 — Subtitle for list row — channel plus optional duration. */
     public String subtitle() {
         if (duration != null && !duration.isEmpty()) {
             return author + " · " + duration;

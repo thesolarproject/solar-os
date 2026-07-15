@@ -18,7 +18,7 @@ public final class DebugImeLog {
     private static final String FILE = "debug-9870a6.log";
     private static final String SESSION = "9870a6";
     /** 2026-07-05 — Off in release; flip true manually for short adb debug sessions. */
-    public static volatile boolean ENABLED = BuildConfig.DEBUG;
+    public static volatile boolean ENABLED = false;
 
     private DebugImeLog() {}
 

@@ -63,6 +63,8 @@ public final class SettingsScreens {
     public static final String EQ = "settings.eq";
     public static final String LIBRARY_BROWSE = "settings.library_browse";
     public static final String NAVIDROME = "settings.navidrome";
+    public static final String PLEX = "settings.plex";
+    public static final String JELLYFIN = "settings.jellyfin";
     public static final String RADIO = "settings.radio";
     public static final String RADIO_FM = "settings.radio.fm";
     public static final String RADIO_FM_BAND = "settings.radio.fm_band";
@@ -123,6 +125,8 @@ public final class SettingsScreens {
         if (THEME_VARIANT.equals(key)) return R.string.settings_sub_theme_variant;
         if (LIBRARY_BROWSE.equals(key)) return R.string.settings_sub_library_browse;
         if (NAVIDROME.equals(key)) return R.string.settings_navidrome;
+        if (PLEX.equals(key)) return R.string.settings_plex;
+        if (JELLYFIN.equals(key)) return R.string.settings_jellyfin;
         if (RADIO.equals(key)) return R.string.settings_sub_radio;
         if (RADIO_FM.equals(key)) return R.string.settings_sub_fm;
         if (RADIO_FM_BAND.equals(key)) return R.string.settings_sub_radio_fm_band;
@@ -158,6 +162,53 @@ public final class SettingsScreens {
 
     public static boolean isThemes(String key) {
         return THEMES.equals(key) || THEME_VARIANT.equals(key);
+    }
+
+    /**
+     * 2026-07-14 — Portrait bottom strip (= Y1 dual-pane preview stand-in) only for simple prefs.
+     * Layman: toggle lists keep a hint strip; About / chat / catalogs stay full height.
+     * Tech: denylist document & browse keys; allowlist preference roots; unknown → false.
+     * Reversal: always return true so every SETTINGS sub-screen shows the strip.
+     */
+    public static boolean allowsPortraitPreviewStrip(String key) {
+        if (key == null) return false;
+        // Document / legal / donor — never a second pane.
+        if (ABOUT.equals(key) || REPORT_ISSUE.equals(key) || SUPPORT_DEVELOPER.equals(key)
+                || DONORS_LIST.equals(key) || SOULSEEK_ABOUT.equals(key)) {
+            return false;
+        }
+        // Catalogs / threads / browse — full width, no strip.
+        if (THEME_PICKER.equals(key) || LIBRARY_BROWSE.equals(key)) return false;
+        if (isSoulseek(key) && !SOULSEEK_CONNECTION.equals(key) && !SOULSEEK.equals(key)) {
+            return false;
+        }
+        if (SOULSEEK_FIND_USER.equals(key) || SOULSEEK_FIND_REACH.equals(key)
+                || SOULSEEK_MESSAGES.equals(key) || SOULSEEK_MESSAGES_THREAD.equals(key)
+                || SOULSEEK_CHAT_ROOMS.equals(key) || SOULSEEK_CHAT_ROOM_THREAD.equals(key)
+                || SOULSEEK_CHAT_ROOM_WALL.equals(key) || SOULSEEK_INTERESTS.equals(key)
+                || SOULSEEK_USER_PROFILE.equals(key)) {
+            return false;
+        }
+        // Simple preference / toggle surfaces (Y1 right-pane hints).
+        if (APPEARANCE.equals(key) || APPEARANCE_STATUS.equals(key) || APPEARANCE_LAYOUT.equals(key)
+                || THEMES.equals(key) || THEME_VARIANT.equals(key)
+                || CONNECTIONS.equals(key) || USB.equals(key) || DEVICE.equals(key)
+                || HOME_LAUNCHER.equals(key) || PLAYBACK.equals(key) || LIBRARY.equals(key)
+                || MEDIA.equals(key) || POWER.equals(key) || RESET.equals(key)
+                || DEBUG.equals(key) || FLOW.equals(key) || XPOSED_MODULES.equals(key)
+                || XPOSED_MODULE_DETAIL.equals(key) || SYSTEM_UPDATE.equals(key)
+                || HOME.equals(key) || HOME_ARRANGE.equals(key) || HOME_MORE.equals(key)
+                || HOME_MORE_ARRANGE.equals(key) || BACKGROUND.equals(key)
+                || NOW_PLAYING.equals(key) || DATETIME.equals(key) || LANGUAGE.equals(key)
+                || Y2_PRIMARY_STORAGE.equals(key) || EQ.equals(key)
+                || REACH.equals(key) || SOULSEEK.equals(key) || SOULSEEK_CONNECTION.equals(key)
+                || DEEZER.equals(key) || DEEZER_ACCOUNT.equals(key) || DEEZER_CONNECTION.equals(key)
+                || NAVIDROME.equals(key) || PLEX.equals(key) || JELLYFIN.equals(key) || RADIO.equals(key)
+                || RADIO_FM.equals(key) || RADIO_FM_BAND.equals(key)
+                || RADIO_INTERNET_COUNTRY.equals(key) || VIDEO.equals(key)) {
+            return true;
+        }
+        return false;
     }
 
     private SettingsScreens() {}

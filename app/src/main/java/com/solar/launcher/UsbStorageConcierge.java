@@ -14,8 +14,11 @@ public final class UsbStorageConcierge {
 
     /** Set by SolarContextBridge {@link com.solar.launcher.xposed.bridge.UsbStorageHooks} on intercept. */
     public static final String SYSPROP = "sys.solar.usb.concierge";
-    /** Wait for Xposed concierge before USB_STATE broadcast fallbacks fire (ms). */
-    private static final long FALLBACK_DELAY_MS = 800L;
+    /** Wait for Xposed concierge before USB_STATE broadcast fallbacks fire (ms).
+     * 2026-07-08 — Was 800ms; shortened so Solar-fg fallback feels prompt when hook misses.
+     * Reversal: 800L if race with SystemUI UsbStorageActivity reappears.
+     */
+    private static final long FALLBACK_DELAY_MS = 250L;
 
     private UsbStorageConcierge() {}
 

@@ -2,6 +2,7 @@
 <!-- 2026-07-05 — Companion global context modal + input coordinator (fail-open SPOF relief). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.solar.launcher.globalcontext"
+    android:sharedUserId="android.uid.system"
     android:versionCode="1"
     android:versionName="1.0.0" >
 
@@ -12,6 +13,17 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.GET_TASKS" />
+    <!-- 2026-07-10 — Theme sidecars on MicroSD / internal (.solar/theme-*.json + selection PNG). -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- 2026-07-08 — ChipOverlayHost Wi‑Fi / BT / brightness tiers. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!-- 2026-07-08 — Debug ingest to host via adb reverse; remove with AgentDebugLog. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="com.solar.launcher.permission.OVERLAY_TRIGGER" />
 
     <permission
@@ -30,6 +42,20 @@
             android:name="com.solar.launcher.globalcontext.GlobalContextOverlayService"
             android:exported="true"
             android:process=":overlay" />
+
+        <!--
+             2026-07-10 — Same process as overlay shell so static KeyGate handler is live.
+             Xposed prefers broadcast for high-frequency wheel; startService remains fallback.
+        -->
+        <receiver
+            android:name="com.solar.launcher.globalcontext.CompanionOverlayKeyReceiver"
+            android:exported="true"
+            android:process=":overlay" >
+            <intent-filter>
+                <action android:name="com.solar.launcher.action.OVERLAY_KEY" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name="com.solar.launcher.globalcontext.RescueHoldService"
             android:exported="true"

@@ -5,7 +5,9 @@ import android.content.Context;
 import android.content.Intent;
 
 /**
- * Entry point for Xposed bridge broadcasts — starts {@link SolarOverlayService}.
+ * 2026-07-10 — Xposed bridge broadcasts → the ONE shell from OverlayShellRouter (companion).
+ * Was: always SolarOverlayService (second modal path). Now: companion Global Quick Menu.
+ * Reversal: hardcode SolarOverlayService.class if legacy_shell-only is required.
  */
 public final class OverlayTriggerReceiver extends BroadcastReceiver {
 
@@ -18,14 +20,16 @@ public final class OverlayTriggerReceiver extends BroadcastReceiver {
                 && !OverlayTriggers.ACTION_SHOW_OVERLAY_TOAST.equals(action)) {
             return;
         }
-        Intent svc = new Intent(context, SolarOverlayService.class);
-        svc.setAction(action);
+        Intent svc = new Intent(action);
+        svc.setComponent(com.solar.launcher.overlay.OverlayShellRouter.overlayComponent());
         if (OverlayTriggers.ACTION_SHOW_OVERLAY_TOAST.equals(action)) {
             svc.putExtra(OverlayTriggers.EXTRA_TOAST_TEXT,
                     intent.getStringExtra(OverlayTriggers.EXTRA_TOAST_TEXT));
             svc.putExtra(OverlayTriggers.EXTRA_TOAST_DURATION_MS,
                     intent.getLongExtra(OverlayTriggers.EXTRA_TOAST_DURATION_MS, 2000L));
         }
-        context.startService(svc);
+        try {
+            context.startService(svc);
+        } catch (Exception ignored) {}
     }
 }

@@ -5,48 +5,62 @@ import android.content.SharedPreferences;
 import com.solar.launcher.media.MediaSuiteHost;
 
 /**
- * FM radio is production; Internet radio stays behind debug experiment pref.
- * 2026-07-06 — FM always on home; experiment toggles net browse + hub only.
+ * 2026-07-10 — FM radio + Internet radio behind Debug → Radio experiment (off by default).
+ * Was: FM production always; only internet gated. Now: entire Radio feature is experimental.
+ * Reversal: restore isFmProduction()=true and isInAppRadioUiEnabled()=true.
  */
 public final class RadioExperiment {
     public static final String PREF_RADIO_EXPERIMENT = "solar_radio_experiment";
 
     private RadioExperiment() {}
 
-    /** FM browse, FM NP, and FM settings are always available. */
-    public static boolean isFmProduction() {
-        return true;
-    }
-
-    /** Internet radio hub row + net browse — off until Debug → Radio experiment. */
-    public static boolean isInternetRadioEnabled(SharedPreferences prefs) {
+    /** Master switch — FM + internet radio need Debug → Radio experiment. */
+    public static boolean isEnabled(SharedPreferences prefs) {
         return prefs != null && prefs.getBoolean(PREF_RADIO_EXPERIMENT, false);
     }
 
-    /** @deprecated use {@link #isInternetRadioEnabled} for net; FM no longer gated */
-    public static boolean isEnabled(SharedPreferences prefs) {
-        return isInternetRadioEnabled(prefs);
+    /** FM browse / player / settings — same gate as internet (2026-07-10). */
+    public static boolean isFmEnabled(SharedPreferences prefs) {
+        return isEnabled(prefs);
+    }
+
+    /** @deprecated use {@link #isFmEnabled} — FM is no longer production-default. */
+    public static boolean isFmProduction() {
+        return false;
+    }
+
+    /** Internet radio hub row + net browse — same experiment pref. */
+    public static boolean isInternetRadioEnabled(SharedPreferences prefs) {
+        return isEnabled(prefs);
     }
 
     /** Hub + FM browse + internet browse screen ids. */
     public static boolean isRadioScreenState(int state) {
-        return state >= MediaSuiteHost.STATE_RADIO && state <= MediaSuiteHost.STATE_RADIO_NET_BROWSE;
+        return state >= MediaSuiteHost.STATE_RADIO && state <= MediaSuiteHost.STATE_RADIO_NET_BROWSE
+                || state == MediaSuiteHost.STATE_RADIO_FM_PLAYER;
     }
 
-    /** FM player + browse always in Solar; internet hub needs experiment. */
+    /** Any in-app Radio UI (FM or internet) when experiment is on. */
     public static boolean isInAppRadioUiEnabled(SharedPreferences prefs) {
-        return true;
+        return isEnabled(prefs);
     }
 
-    /** Net browse blocked when experiment off; FM screens always allowed. 2026-07-06 */
+    /** Block all radio screens when experiment off. 2026-07-10 */
     public static boolean isBlockedScreenState(int state, SharedPreferences prefs) {
-        return state == MediaSuiteHost.STATE_RADIO_NET_BROWSE
-                && !isInternetRadioEnabled(prefs);
+        if (!isRadioScreenState(state)) return false;
+        return !isEnabled(prefs);
     }
 
-    /** FM home opens player; full hub when internet experiment on. */
+    /** Home Radio/FM — only when experiment on (caller should hide row otherwise). */
     public static int resolveRadioHomeTarget(int state, SharedPreferences prefs) {
+        if (!isEnabled(prefs)) {
+            return state;
+        }
         if (state == MediaSuiteHost.STATE_RADIO && !isInternetRadioEnabled(prefs)) {
+            return MediaSuiteHost.STATE_RADIO_FM_PLAYER;
+        }
+        // With unified experiment, hub is available; prefer FM player for simple home open.
+        if (state == MediaSuiteHost.STATE_RADIO) {
             return MediaSuiteHost.STATE_RADIO_FM_PLAYER;
         }
         return state;

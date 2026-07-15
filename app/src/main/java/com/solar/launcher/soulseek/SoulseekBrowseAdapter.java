@@ -8,6 +8,7 @@ import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.TextView;
 
+import com.solar.launcher.A5FocusConfirm;
 import com.solar.launcher.R;
 import com.solar.launcher.theme.ThemeManager;
 
@@ -197,6 +198,7 @@ public final class SoulseekBrowseAdapter extends BaseAdapter {
                 ThemeManager.applyThemedTextStyle(tv, ThemeManager.getItemTextColorNormal());
             }
             tv.setText(activity.getString(R.string.soulseek_show_more, visibleCount, allEntries.size()));
+            // Show-more pagination stays one-tap.
             tv.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -219,7 +221,8 @@ public final class SoulseekBrowseAdapter extends BaseAdapter {
                 AbsListView.LayoutParams.WRAP_CONTENT));
         if (entry.type == TYPE_FOLDER) {
             btn.setText("\uD83D\uDCC1 " + entry.folderPath);
-            btn.setOnClickListener(new View.OnClickListener() {
+            // 2026-07-14 — A5 two-tap on browse folders (was one-tap plain Button).
+            A5FocusConfirm.setOnClickListener(btn, new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     if (listener != null) listener.onFolderSelected(entry.folderPath);
@@ -227,7 +230,7 @@ public final class SoulseekBrowseAdapter extends BaseAdapter {
             });
         } else {
             btn.setText("  " + (entry.file != null ? entry.file.name : ""));
-            btn.setOnClickListener(new View.OnClickListener() {
+            A5FocusConfirm.setOnClickListener(btn, new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     if (listener != null && entry.file != null) listener.onFileSelected(entry.file);

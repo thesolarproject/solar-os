@@ -14,6 +14,9 @@ public final class DebugB8b871Log {
     private static final String SESSION = "b8b871";
     private static final String SDCARD_FILE = "/storage/sdcard0/solar/debug-b8b871.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private DebugB8b871Log() {}
 
     public static void log(Context ctx, String location, String message, String hypothesisId,
@@ -23,6 +26,7 @@ public final class DebugB8b871Log {
 
     public static void log(Context ctx, String location, String message, String hypothesisId,
             JSONObject data, String runId) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

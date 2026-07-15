@@ -11,7 +11,9 @@ done
 
 settings put system sound_effects_enabled 0
 
-# Seed launcher switch scripts on every boot (overwrite stale /data copies).
+# 2026-07-08 — Seed switch + executor on every boot (overwrite stale /data copies).
+# Rockbox only calls /data/data/switch-to-stock.sh; that script needs solar-launcher-exec nearby.
+# Reversal: seed switch-to-stock/rockbox only (legacy inline path then runs without gates).
 if [ -f /system/etc/solar/switch-to-stock.sh ]; then
     cp /system/etc/solar/switch-to-stock.sh /data/data/
     chmod 755 /data/data/switch-to-stock.sh
@@ -19,6 +21,10 @@ fi
 if [ -f /system/etc/solar/switch-to-rockbox.sh ]; then
     cp /system/etc/solar/switch-to-rockbox.sh /data/data/
     chmod 755 /data/data/switch-to-rockbox.sh
+fi
+if [ -f /system/etc/solar/solar-launcher-exec.sh ]; then
+    cp /system/etc/solar/solar-launcher-exec.sh /data/data/
+    chmod 755 /data/data/solar-launcher-exec.sh
 fi
 
 DEVICE="/dev/input/event2"
@@ -49,15 +55,9 @@ restart_rockbox() {
     am start -n org.rockbox/.RockboxActivity
 }
 
-# Back+Play 10s: switch to the other launcher (whichever is currently disabled).
+# 2026-07-10 — Solar-only: Back+Play 10s launcher toggle disabled (no Rockbox handoff).
 launcher_handoff() {
-    if pm list packages -d | grep -q "$package_solar"; then
-        echo "Solar disabled — switching to Solar."
-        sh /data/data/switch-to-stock.sh
-    elif pm list packages -d | grep -q "$package_rb"; then
-        echo "Rockbox disabled — switching to Rockbox."
-        sh /data/data/switch-to-stock.sh --rockbox
-    fi
+    echo "Solar-only ROM — launcher handoff disabled."
 }
 
 while true; do

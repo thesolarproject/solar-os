@@ -1,6 +1,7 @@
 package com.solar.launcher.overlay;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.graphics.PorterDuff;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
@@ -319,6 +320,22 @@ public final class ChipContextMenu {
         refreshChrome();
     }
 
+    /**
+     * 2026-07-14 — Focus a specific list row (touch first-tap / CoverFlow-style highlight).
+     * Layman: highlight this menu line before OK.
+     * Reversal: call focusList() only.
+     */
+    public void focusListAt(int index) {
+        if (labels.length == 0) return;
+        if (!isRowVisible(index) || isHeader(index)) {
+            index = firstVisibleIndex();
+        }
+        focusZone = FocusZone.LIST;
+        focusIndex = index;
+        refreshChrome();
+        scrollListIntoView();
+    }
+
     public void focusQuick(int index) {
         if (!isVisibleQuick(index)) index = firstVisibleQuickIndex();
         quickFocusIndex = index;
@@ -499,6 +516,24 @@ public final class ChipContextMenu {
                     rowHeightPx, 0f);
             if (withQuick) chipLp.rightMargin = (int) (2 * density);
             titleRow.addView(backChip, chipLp);
+            // 2026-07-14 — Touch: focus Back then confirm (same two-tap as list rows).
+            attachTouchFocusConfirm(backChip, new Runnable() {
+                @Override
+                public void run() {
+                    focusZone = FocusZone.BACK;
+                    refreshChrome();
+                }
+            }, new Runnable() {
+                @Override
+                public void run() {
+                    activateFocused();
+                }
+            }, new Predicate() {
+                @Override
+                public boolean test() {
+                    return focusZone == FocusZone.BACK;
+                }
+            });
         }
         if (withQuick) {
             // 2026-07-11 — Narrow viewports: two chip rows instead of one scroll strip.
@@ -573,6 +608,24 @@ public final class ChipContextMenu {
         iconLp.gravity = Gravity.CENTER;
         chip.addView(icon, iconLp);
         chip.setContentDescription(item.label);
+        final int qi = index;
+        // 2026-07-14 — Touch chip: first tap focuses, second activates (was key-only).
+        attachTouchFocusConfirm(chip, new Runnable() {
+            @Override
+            public void run() {
+                focusQuick(qi);
+            }
+        }, new Runnable() {
+            @Override
+            public void run() {
+                activateFocused();
+            }
+        }, new Predicate() {
+            @Override
+            public boolean test() {
+                return focusZone == FocusZone.QUICK_BAR && quickFocusIndex == qi;
+            }
+        });
         return chip;
     }
 
@@ -620,7 +673,66 @@ public final class ChipContextMenu {
                     LinearLayout.LayoutParams.MATCH_PARENT, rowHeightPx);
             lp.setMargins(0, 1, 0, 1);
             itemsHost.addView(row, lp);
+            if (!isHeader(i)) {
+                final int rowIndex = i;
+                // 2026-07-14 — Touch list: focus then confirm (match Solar ThemedContextMenu).
+                attachTouchFocusConfirm(row, new Runnable() {
+                    @Override
+                    public void run() {
+                        focusListAt(rowIndex);
+                    }
+                }, new Runnable() {
+                    @Override
+                    public void run() {
+                        activateFocused();
+                    }
+                }, new Predicate() {
+                    @Override
+                    public boolean test() {
+                        return focusZone == FocusZone.LIST && focusIndex == rowIndex;
+                    }
+                });
+            }
         }
+    }
+
+    /**
+     * 2026-07-14 — True on touchscreen devices (A5); companion APK has no DeviceFeatures.
+     * Layman: finger menus need two-tap; wheel-only boxes skip.
+     */
+    private boolean touchConfirmEnabled() {
+        try {
+            return context.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Simple predicate without Java 8 deps (API 17). */
+    private interface Predicate {
+        boolean test();
+    }
+
+    /**
+     * 2026-07-14 — First tap focuses; second tap runs activate.
+     * Was: no finger listeners on companion chrome. Reversal: leave views key-only.
+     */
+    private void attachTouchFocusConfirm(final View view, final Runnable focus,
+            final Runnable activate, final Predicate alreadyFocused) {
+        if (view == null || !touchConfirmEnabled()) return;
+        view.setClickable(true);
+        view.setFocusable(true);
+        view.setFocusableInTouchMode(true);
+        view.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (alreadyFocused != null && alreadyFocused.test()) {
+                    if (activate != null) activate.run();
+                } else {
+                    if (focus != null) focus.run();
+                }
+            }
+        });
     }
 
     private void refreshChrome() {

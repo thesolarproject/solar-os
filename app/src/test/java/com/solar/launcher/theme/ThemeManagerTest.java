@@ -278,6 +278,23 @@ public class ThemeManagerTest {
     }
 
     @Test
+    public void ensureReadableOnBackground_invertsClash() {
+        // 2026-07-11 — White-on-white / black-on-dark must auto-fix for About/USB/donation.
+        int whiteOnWhite = ThemeManager.ensureReadableOnBackground(0xFFFFFFFF, 0xFFFFFFF0);
+        if (ThemeManager.contrastRatio(whiteOnWhite, 0xFFFFFFF0) < 3.0) {
+            throw new AssertionError("white-on-white should invert");
+        }
+        int blackOnDark = ThemeManager.ensureReadableOnBackground(0xFF111111, 0xFF1A1A1A);
+        if (ThemeManager.contrastRatio(blackOnDark, 0xFF1A1A1A) < 3.0) {
+            throw new AssertionError("black-on-dark should invert");
+        }
+        int keep = ThemeManager.ensureReadableOnBackground(0xFFE8E8E8, 0xFF252528);
+        if (keep != 0xFFE8E8E8) {
+            throw new AssertionError("readable light-on-dark must keep fill");
+        }
+    }
+
+    @Test
     public void selfCheck() {
         com.solar.launcher.theme.SolarTheming.selfCheck();
         ThemeManager.selfCheck();

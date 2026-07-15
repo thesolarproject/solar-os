@@ -20,7 +20,19 @@ public final class Y1InputKeys {
     private Y1InputKeys() {}
 
     public static boolean isBackKey(int keyCode) {
-        return keyCode == KEY_BACK || keyCode == 4;
+        if (keyCode == KEY_BACK || keyCode == 4) return true;
+        // 2026-07-14 — A5 side power reports MEDIA_STOP(86); fail-open if remap missed.
+        // Was: only KEYCODE_BACK. Now: A5 also accepts 86 as Back. Reversal: drop 86 branch.
+        if (DeviceFeatures.isA5()
+                && (keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86)) {
+            return true;
+        }
+        // 2026-07-11 — Emulator Esc/Backspace and A5 soft keys leave menus/NP/Flow.
+        if (keyCode == KeyEvent.KEYCODE_ESCAPE || keyCode == KeyEvent.KEYCODE_DEL
+                || keyCode == KeyEvent.KEYCODE_FORWARD_DEL) {
+            return DeviceFeatures.isA5() || EmulatorInputMap.isEmulator();
+        }
+        return false;
     }
 
     public static boolean isCenterKey(int keyCode) {
@@ -34,6 +46,13 @@ public final class Y1InputKeys {
     }
 
     public static boolean isPlayPauseKey(int keyCode) {
+        // 2026-07-14 — A5 power is MEDIA_STOP(86) → Back, not play/pause.
+        // Was: 86 counted as play/pause on all families. Now: skip on A5.
+        // Reversal: restore || MEDIA_STOP || 86 without isA5 guard.
+        if (DeviceFeatures.isA5()
+                && (keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86)) {
+            return false;
+        }
         return keyCode == KEY_PLAY_PAUSE || keyCode == 85
                 || keyCode == KeyEvent.KEYCODE_MEDIA_STOP || keyCode == 86;
     }

@@ -178,7 +178,14 @@ public final class ScreenBackdropTransition {
         if (incomingSnapshot != null && toState != ScreenTransitionMap.STATE_PLAYER) {
             bindSnapshot(wallOut, maskOut, incomingSnapshot, resolver);
         } else if (toState == ScreenTransitionMap.STATE_PLAYER) {
-            // Player uses iv_player_bg_blur — keep global wall as-is until leaving player.
+            // 2026-07-11 — Bind NP globalWallpaper onto the primary wall too.
+            // Was: leave home desktopWallpaper on iv_main_bg while only painting iv_player_bg_blur;
+            // 3D art then hid the blur layer → Cupertino NP showed the wrong (home) wallpaper.
+            // Reversal: skip bindSnapshot here again (player-only blur path).
+            if (incomingSnapshot != null) {
+                bindSnapshot(wallOut, maskOut, incomingSnapshot, resolver);
+            }
+            if (resolver != null) resolver.bindPlayerBlurEarly();
         } else {
             bindSnapshot(wallOut, maskOut, incomingSnapshot, resolver);
         }

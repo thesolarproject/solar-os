@@ -10,12 +10,15 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import com.solar.launcher.DeviceFeatures;
 import com.solar.launcher.R;
 import com.solar.launcher.theme.ThemeManager;
 
 /**
  * Shared bottom transport strip — scrub timeline, volume-in-track pulse, optional hold-Back hint.
- * ponytail: one include per screen (player + video); bind via root view to avoid duplicate IDs.
+ * Layman: the thin bar under Now Playing / video with time, scrub, and the “hold for Options” tip.
+ * Technical: one include per screen (player + video); bind via root view to avoid duplicate IDs.
+ * Reversal: drop DeviceFeatures hint swap — layout default is Y1 Back-only copy again.
  */
 public final class MediaTransportBar {
     private static final long OVERLAY_FADE_MS = 200L;
@@ -61,6 +64,11 @@ public final class MediaTransportBar {
         scrubMarker = transportRoot.findViewById(R.id.transport_scrub_marker);
         volumeProgress = transportRoot.findViewById(R.id.transport_volume_progress);
         hint = transportRoot.findViewById(R.id.transport_hint);
+        // 2026-07-11 — Y2 power key also opens Options; swap tip at bind. Y1 keeps XML Back-only string.
+        // Reversal: delete this branch — inflate text stays context_hold_back_hint for both.
+        if (hint != null && DeviceFeatures.isY2()) {
+            hint.setText(R.string.context_hold_back_or_power_hint);
+        }
         styleScrubMarker();
     }
 

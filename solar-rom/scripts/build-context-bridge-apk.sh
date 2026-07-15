@@ -73,6 +73,8 @@ public final class XposedHelpers {
     public static Object callStaticMethod(Class<?> clazz, String methodName, Object... args) { return null; }
     public static void findAndHookMethod(Class<?> clazz, String methodName, Object... args) {}
     public static void findAndHookMethod(String className, ClassLoader cl, String methodName, Object... args) {}
+    public static void setAdditionalInstanceField(Object obj, String key, Object value) {}
+    public static Object getAdditionalInstanceField(Object obj, String key) { return null; }
 }
 EOF
     cat > "$stubdir/de/robv/android/xposed/callbacks/XC_LoadPackage.java" <<'EOF'

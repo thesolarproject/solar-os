@@ -4,17 +4,17 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IBinder;
-import android.os.Looper;
 import android.util.Log;
 
 import com.solar.home.policy.HomeTargetPolicy;
 
 /**
- * 2026-07-06 — Poll saved HOME and enforce foreground for Rockbox/JJ in helper :watchdog process.
- * Layman: if you picked Rockbox as home and it hiccups, this quietly reopens it.
- * Technical: 2.5s poll; calls solar-launcher-exec.sh enforce-foreground; skips solar target.
- * Reversal: stop service; Solar LauncherWatchdogService owns enforcement again.
+ * 2026-07-08 — Poll saved HOME and enforce foreground for Rockbox/JJ/Stock in helper :watchdog.
+ * Layman: if you picked Rockbox/JJ/Stock as home and it hiccups, this quietly reopens it.
+ * Technical: 2.5s poll on worker looper (not main); solar-launcher-exec.sh enforce-foreground.
+ * Reversal: Handler(Looper.getMainLooper()) again — can freeze helper main during dumpsys+su.
  */
 public final class LauncherEnforcerService extends Service implements Runnable {
 
@@ -22,11 +22,15 @@ public final class LauncherEnforcerService extends Service implements Runnable {
     private static final long POLL_MS = 2500L;
 
     private Handler handler;
+    private HandlerThread worker;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        handler = new Handler(Looper.getMainLooper());
+        // 2026-07-08 — Root dumpsys must not run on service main looper (plan: unfreeze).
+        worker = new HandlerThread("LauncherEnforcer");
+        worker.start();
+        handler = new Handler(worker.getLooper());
     }
 
     @Override
@@ -44,6 +48,10 @@ public final class LauncherEnforcerService extends Service implements Runnable {
     @Override
     public void onDestroy() {
         handler.removeCallbacks(this);
+        if (worker != null) {
+            worker.quit();
+            worker = null;
+        }
         super.onDestroy();
     }
 

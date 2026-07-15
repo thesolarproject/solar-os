@@ -3,6 +3,7 @@ package com.solar.launcher.xposed.notpipe;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
+import android.os.Bundle;
 import android.view.KeyEvent;
 import android.widget.VideoView;
 
@@ -12,8 +13,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
  * 2026-07-06 — Wheel keys + landscape lock for Solar-hosted notPipe VideoActivity.
- * Layman: makes YouTube playback work with the scroll wheel on Y1/Y2.
+ * Layman: makes YouTube playback work with the scroll wheel on Y1/Y2 (legacy hosted path).
  * Technical: solar_hosted extra gates hooks; blocks portrait fullscreen from notPipe 0.3.0.
+ * 2026-07-14 — NotPipeXposedKit; Solar IJK play does not need these hooks.
  * Reversal: disable module — notPipe stock touch UI returns for direct launches.
  */
 public final class NotPipeVideoActivityHooks {
@@ -24,57 +26,54 @@ public final class NotPipeVideoActivityHooks {
         try {
             Class<?> videoAct = XposedHelpers.findClass(
                     "io.github.gohoski.notpipe.VideoActivity", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(videoAct, "onCreate",
-                    android.os.Bundle.class, new XC_MethodHook() {
-                        @Override
-                        protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                            Activity act = (Activity) param.thisObject;
-                            if (!isSolarHosted(act)) return;
-                            act.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
-                            try {
-                                act.getActionBar().hide();
-                            } catch (Throwable ignored) {}
-                        }
-                    });
-            XposedHelpers.findAndHookMethod(videoAct, "setRequestedOrientation", int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            Activity act = (Activity) param.thisObject;
-                            if (!isSolarHosted(act)) return;
-                            int req = (Integer) param.args[0];
-                            if (req == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                                    || req == ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                                    || req == ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT) {
-                                param.args[0] = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
-                            }
-                        }
-                    });
-            XposedHelpers.findAndHookMethod(videoAct, "onKeyDown", int.class, KeyEvent.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            Activity act = (Activity) param.thisObject;
-                            if (!isSolarHosted(act)) return;
-                            int keyCode = (Integer) param.args[0];
-                            KeyEvent event = (KeyEvent) param.args[1];
-                            if (event == null) return;
-                            if (handleWheelKey(act, keyCode, event)) {
-                                param.setResult(true);
-                            }
-                        }
-                    });
-            XposedHelpers.findAndHookMethod(videoAct, "onDestroy", new XC_MethodHook() {
+            NotPipeXposedKit.hookExact(videoAct, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     Activity act = (Activity) param.thisObject;
                     if (!isSolarHosted(act)) return;
-                    Intent exited = new Intent(NotPipeIpc.ACTION_PLAYER_EXITED);
-                    act.sendBroadcast(exited);
+                    act.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
+                    try {
+                        act.getActionBar().hide();
+                    } catch (Throwable ignored) {}
+                }
+            }, Bundle.class);
+            NotPipeXposedKit.hookExact(videoAct, "setRequestedOrientation", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    Activity act = (Activity) param.thisObject;
+                    if (!isSolarHosted(act)) return;
+                    int req = (Integer) param.args[0];
+                    if (req == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            || req == ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                            || req == ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT) {
+                        param.args[0] = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE;
+                    }
+                }
+            }, int.class);
+            NotPipeXposedKit.hookExact(videoAct, "onKeyDown", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    Activity act = (Activity) param.thisObject;
+                    if (!isSolarHosted(act)) return;
+                    int keyCode = (Integer) param.args[0];
+                    KeyEvent event = (KeyEvent) param.args[1];
+                    if (event == null) return;
+                    if (handleWheelKey(act, keyCode, event)) {
+                        param.setResult(true);
+                    }
+                }
+            }, int.class, KeyEvent.class);
+            NotPipeXposedKit.hookDeclared(videoAct, "onDestroy", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                    Activity act = (Activity) param.thisObject;
+                    if (!isSolarHosted(act)) return;
+                    act.sendBroadcast(new Intent(NotPipeIpc.ACTION_PLAYER_EXITED));
                 }
             });
+            SolarNotPipeBridge.log("NotPipeVideoActivityHooks installed via kit");
         } catch (Throwable t) {
-            SolarNotPipeBridge.log("NotPipeVideoActivityHooks failed: " + t.getMessage());
+            SolarNotPipeBridge.log("NotPipeVideoActivityHooks failed: " + t);
         }
     }
 
@@ -91,19 +90,19 @@ public final class NotPipeVideoActivityHooks {
             VideoView vv = (VideoView) XposedHelpers.getObjectField(act, "videoView");
             if (vv == null) return false;
             switch (keyCode) {
-                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE: // 85
+                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
                 case 126:
                 case 127:
                     if (vv.isPlaying()) vv.pause();
                     else vv.start();
                     return true;
-                case KeyEvent.KEYCODE_DPAD_LEFT: // 21
+                case KeyEvent.KEYCODE_DPAD_LEFT:
                     vv.seekTo(Math.max(0, vv.getCurrentPosition() - 10000));
                     return true;
-                case KeyEvent.KEYCODE_DPAD_RIGHT: // 22
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
                     vv.seekTo(vv.getCurrentPosition() + 10000);
                     return true;
-                case KeyEvent.KEYCODE_BACK: // 4
+                case KeyEvent.KEYCODE_BACK:
                     act.finish();
                     return true;
                 default:

@@ -95,10 +95,19 @@ final class MoveRibbonRows {
         float density = activity.getResources().getDisplayMetrics().density;
         int textPadLeft = (int) activity.getResources().getDimension(R.dimen.y1_menu_text_pad_left);
         float menuTextPx = activity.getResources().getDimension(R.dimen.y1_menu_text_size);
+        float stockRowH = activity.getResources().getDimension(R.dimen.y1_library_row_height);
+        // 2026-07-14 — Shrink title/artist text when rowH is scaled (A5 land 240/360) or short.
+        // Was: full 22sp on ~29px rows → subtitle clipped off. Reversal: always stock menuTextPx.
+        if (rowHeightPx > 0 && stockRowH > 1f && rowHeightPx < stockRowH * 0.95f) {
+            float ts = rowHeightPx / stockRowH;
+            menuTextPx = Math.max(10f, menuTextPx * ts);
+            textPadLeft = Math.max(2, Math.round(textPadLeft * ts));
+        }
         float subTextPx = menuTextPx * 0.78f;
         int slotW = (int) (rowHeightPx * 0.55f);
 
         FrameLayout row = new FrameLayout(activity);
+        A5FocusConfirm.prepareRow(row);
         LinearLayout textCol = new LinearLayout(activity);
         textCol.setOrientation(LinearLayout.VERTICAL);
         textCol.setGravity(Gravity.CENTER_VERTICAL);
@@ -239,8 +248,12 @@ final class MoveRibbonRows {
         }
         TextView sub = (TextView) row.findViewWithTag(TAG_SUB);
         if (sub != null) {
-            sub.setText(subText != null ? subText : "");
-            sub.setSelected(highlighted && subText != null && !subText.isEmpty());
+            boolean hasSub = subText != null && !subText.isEmpty();
+            sub.setText(hasSub ? subText : "");
+            // 2026-07-14 — Keep subtitle slot visible when empty (GONE collapsed layouts clipped
+            // recycled rows). Was: always VISIBLE via no-op; ensure GONE not left from elsewhere.
+            sub.setVisibility(View.VISIBLE);
+            sub.setSelected(highlighted && hasSub);
             ThemeManager.applyThemedTextStyle(sub, highlighted
                     ? ThemeManager.getItemTextColorSelected()
                     : ThemeManager.getSubtitleTextColor());

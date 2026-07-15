@@ -293,6 +293,20 @@ final class BluetoothAudioRepair {
         forceA2dpRoute(context, am);
     }
 
+    /**
+     * 2026-07-14 — Identity for STREAM_MUSIC during A2DP route; never raise the user's level.
+     * Was: Math.max(cur, (max*3)/4) floor in forceA2dpRoute. Reversal: return that floor again.
+     */
+    static int preserveUserVolumeIndex(int cur, int max) {
+        if (max <= 0) return Math.max(0, cur);
+        return Math.max(0, Math.min(cur, max));
+    }
+
+    /**
+     * 2026-07-14 — Push music out the BT speaker path without touching loudness.
+     * Was: also raised STREAM_MUSIC to ≥75% max when quiet — track/A2DP repair felt like
+     * volume shooting to full. Reversal: setStreamVolume(..., preserve floor (max*3)/4, 0).
+     */
     @SuppressWarnings("deprecation")
     static void forceA2dpRoute(Context context, AudioManager audioManager) {
         if (audioManager == null) return;
@@ -305,14 +319,7 @@ final class BluetoothAudioRepair {
         try { audioManager.setParameters("A2dpSuspended=0"); } catch (Exception ignored) {}
         try { audioManager.setParameters("bluetooth_enabled=true"); } catch (Exception ignored) {}
         try { audioManager.setParameters("routing=128"); } catch (Exception ignored) {}
-        try {
-            int stream = AudioManager.STREAM_MUSIC;
-            int max = audioManager.getStreamMaxVolume(stream);
-            int cur = audioManager.getStreamVolume(stream);
-            if (max > 0 && cur < Math.max(1, (max * 3) / 4)) {
-                audioManager.setStreamVolume(stream, Math.max(cur, (max * 3) / 4), 0);
-            }
-        } catch (Exception ignored) {}
+        // 2026-07-14 — Route only. Never rewrite user volume (repair runs on connect + track edges).
     }
 
     private static boolean putGlobalIntPrivileged(String key, int value) {

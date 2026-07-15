@@ -9,17 +9,16 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-import com.solar.launcher.platform.PlatformPrepLauncher;
-
 /**
  * 2026-07-05 — Degraded launcher when Solar crash loop sets emergency_mode after reboot.
- * Layman: explains Solar could not start and offers repair, app picker, or streak reset.
+ * Layman: explains Solar could not start and offers app picker, versions, or streak reset.
  * Technical: lightweight Activity — companion EmergencyRockboxMode replaces when installed.
  * Reversal: delete Activity; boot always starts MainActivity.
  */
 public class EmergencyRecoveryActivity extends Activity {
 
-    private static final String[] MENU = {"repair", "versions", "launcher", "clear", "retry"};
+    /** No user-facing platform repair — silent prep only (2026-07-11). */
+    private static final String[] MENU = {"versions", "launcher", "clear", "retry"};
     private int focusIndex;
     private LinearLayout menuRoot;
 
@@ -57,7 +56,6 @@ public class EmergencyRecoveryActivity extends Activity {
     }
 
     private String labelFor(String id) {
-        if ("repair".equals(id)) return getString(R.string.emergency_recovery_repair);
         if ("versions".equals(id)) return getString(R.string.emergency_recovery_versions);
         if ("launcher".equals(id)) return getString(R.string.emergency_recovery_launcher);
         if ("clear".equals(id)) return getString(R.string.emergency_recovery_clear);
@@ -95,10 +93,6 @@ public class EmergencyRecoveryActivity extends Activity {
     }
 
     private void performAction(String id) {
-        if ("repair".equals(id)) {
-            PlatformPrepLauncher.launchManualWizard(this);
-            return;
-        }
         if ("versions".equals(id)) {
             launchSolarVersionsApp();
             return;

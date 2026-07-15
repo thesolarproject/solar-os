@@ -18,6 +18,28 @@ die() { echo "verify-platform-assets: $*" >&2; exit 1; }
 [ -f "$DST/thirdparty/notPipe-0.3.0-release.apk" ] || die "missing notPipe APK asset"
 [ -f "$DST/companion/SolarGlobalContextModal.apk" ] || die "missing SolarGlobalContextModal.apk asset"
 [ -f "$DST/companion/SolarHomeHelper.apk" ] || die "missing SolarHomeHelper.apk asset"
+# 2026-07-08 — Companion must ship interactive sole-shell host (not text placeholder only).
+if ! unzip -p "$DST/companion/SolarGlobalContextModal.apk" classes.dex 2>/dev/null \
+        | strings | grep -E 'CompanionOverlayKeyGate|CompanionTierScheduler' >/dev/null; then
+    die "SolarGlobalContextModal.apk missing companion overlay gate/tier (rebuild :global-context-modal)"
+fi
+# 2026-07-08 — Bridge assets must retain companion retarget + system ANR/crash fail-open.
+for bridge in SolarContextBridgeY1.apk SolarContextBridgeY2.apk; do
+    dex_strings="$(unzip -p "$DST/xposed/$bridge" classes.dex 2>/dev/null | strings || true)"
+    echo "$dex_strings" | grep 'legacy_shell' >/dev/null \
+        || die "$bridge missing legacy_shell rollback prop"
+    echo "$dex_strings" | grep 'globalcontext' >/dev/null \
+        || die "$bridge missing companion globalcontext retarget"
+    echo "$dex_strings" | grep 'SystemErrorDialogRouting' >/dev/null \
+        || die "$bridge missing SystemErrorDialogRouting"
+    echo "$dex_strings" | grep 'scheduleCrashOverlayFailOpen' >/dev/null \
+        || die "$bridge missing crash 2s fail-open"
+done
+# 2026-07-08 — Manifest prepVersion must match sync-platform-assets.sh source of truth.
+SYNC_PREP="$(grep -E '^\s*"prepVersion":' "$ROOT/solar-rom/scripts/sync-platform-assets.sh" | head -1 | grep -oE '[0-9]+' || true)"
+MAN_PREP="$(grep -E '"prepVersion"' "$DST/manifest.json" | head -1 | grep -oE '[0-9]+' || true)"
+[ -n "$SYNC_PREP" ] && [ -n "$MAN_PREP" ] || die "could not read prepVersion from sync/manifest"
+[ "$SYNC_PREP" = "$MAN_PREP" ] || die "prepVersion mismatch sync=$SYNC_PREP manifest=$MAN_PREP — re-run sync-platform-assets.sh"
 [ -f "$DST/init/99XposedInit.sh" ] || die "missing 99XposedInit.sh asset"
 for api in api17-arm api19-arm; do
     for f in app_process XposedBridge.jar xposed.prop; do

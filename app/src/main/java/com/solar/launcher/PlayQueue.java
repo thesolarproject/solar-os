@@ -11,6 +11,7 @@ import java.util.List;
 public final class PlayQueue {
     public enum ItemKind {
         MUSIC_FILE, PODCAST_EPISODE, REACH_STREAM, DEEZER_STREAM, NAVIDROME_STREAM,
+        PLEX_STREAM, JELLYFIN_STREAM,
         FM_STATION, INTERNET_RADIO_STATION
     }
 
@@ -33,7 +34,10 @@ public final class PlayQueue {
         public final String radioUrl;
         public final String radioSubtitle;
         public final String radioFavicon;
-        /** Navidrome Subsonic song id — HTTP stream, no local file. */
+        /**
+         * 2026-07-14: Remote music stream metadata — kind is NAVIDROME/PLEX/JELLYFIN_STREAM.
+         * Field names kept navidrome* for fewer constructor args (kind discriminates service).
+         */
         public final String navidromeSongId;
         public final String navidromeTitle;
         public final String navidromeArtist;
@@ -97,6 +101,20 @@ public final class PlayQueue {
                     0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
         }
 
+        /** 2026-07-14: Plex HTTP stream — reuses remote meta fields; kind=PLEX_STREAM. */
+        public static QueueItem plex(String songId, String title, String artist, String album,
+                String coverArtId) {
+            return new QueueItem(ItemKind.PLEX_STREAM, null, null, "", false, null, null, null,
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
+        }
+
+        /** 2026-07-14: Jellyfin HTTP stream — reuses remote meta fields; kind=JELLYFIN_STREAM. */
+        public static QueueItem jellyfin(String songId, String title, String artist, String album,
+                String coverArtId) {
+            return new QueueItem(ItemKind.JELLYFIN_STREAM, null, null, "", false, null, null, null,
+                    0, 0, "", "", "", "", "", "", songId, title, artist, album, coverArtId);
+        }
+
         public static QueueItem podcast(OpenRssClient.Episode ep, String showTitle, boolean fromSaved) {
             return new QueueItem(ItemKind.PODCAST_EPISODE, null, ep, showTitle, fromSaved, null,
                     null, null, 0, 0, "", "", "", "", "", "", "", "", "", "", "");
@@ -116,7 +134,9 @@ public final class PlayQueue {
 
         /** Display title for stream / radio items. */
         public String streamMeta() {
-            if (kind == ItemKind.NAVIDROME_STREAM) {
+            // 2026-07-14: Plex/Jellyfin share remote title slots with Navidrome.
+            if (kind == ItemKind.NAVIDROME_STREAM || kind == ItemKind.PLEX_STREAM
+                    || kind == ItemKind.JELLYFIN_STREAM) {
                 return navidromeTitle != null && !navidromeTitle.isEmpty() ? navidromeTitle : navidromeSongId;
             }
             if (kind == ItemKind.DEEZER_STREAM && deezerMeta != null) return deezerMeta;
@@ -316,7 +336,8 @@ public final class PlayQueue {
         int n = 0;
         for (QueueItem q : items) {
             if (q.kind == ItemKind.MUSIC_FILE || q.kind == ItemKind.REACH_STREAM
-                    || q.kind == ItemKind.DEEZER_STREAM || q.kind == ItemKind.NAVIDROME_STREAM) {
+                    || q.kind == ItemKind.DEEZER_STREAM || q.kind == ItemKind.NAVIDROME_STREAM
+                    || q.kind == ItemKind.PLEX_STREAM || q.kind == ItemKind.JELLYFIN_STREAM) {
                 n++;
             }
         }

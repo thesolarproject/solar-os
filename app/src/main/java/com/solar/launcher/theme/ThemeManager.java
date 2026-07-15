@@ -2,6 +2,8 @@ package com.solar.launcher.theme;
 
 import com.solar.launcher.HomeMenuConfig;
 import com.solar.launcher.SolarOverlayHost;
+import com.solar.launcher.A5NavigationMode;
+import com.solar.launcher.DeviceFeatures;
 
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -91,7 +93,7 @@ public class ThemeManager {
     /** User pref: Now Playing title/artist use list item text colour (default off — Y1 white). */
     private static boolean nowPlayingMatchItemText = false;
     /** User pref: semi-translucent meta bars (default off — theme engine / Y1 original). */
-    private static boolean nowPlayingBackdropEnabled = false;
+    private static boolean nowPlayingBackdropEnabled = true;
     /** User pref: dithered LCD-style album art tinted to theme font colour. */
     private static boolean nowPlayingLcdArtEnabled = false;
 
@@ -1100,6 +1102,31 @@ public class ThemeManager {
         }
     }
 
+    /**
+     * 2026-07-11 — Push solarConfig enable/disable/set* keys into SOLAR_SETTINGS.
+     * Call after theme switch so Match NP / Backdrop / etc. follow the theme author.
+     * Direct keys like settingsShow_Now_Playing_Info are read at runtime (not written here).
+     * Reversal: stop calling; prefs stay user-only.
+     */
+    public static void applySolarConfigPrefs(Context ctx) {
+        if (ctx == null) return;
+        JSONObject solar = solarBlock();
+        if (solar == null) return;
+        Map<String, Object> overrides = new HashMap<String, Object>();
+        java.util.Iterator<String> keys = solar.keys();
+        while (keys.hasNext()) {
+            String k = keys.next();
+            if (k == null) continue;
+            // Only SettingLookup prefixes — skip asset paths and settings* direct bools.
+            if (k.regionMatches(true, 0, "enable", 0, 6)
+                    || k.regionMatches(true, 0, "disable", 0, 7)
+                    || k.regionMatches(true, 0, "set", 0, 3)) {
+                overrides.put(k, solar.opt(k));
+            }
+        }
+        SettingLookup.applySolarConfigOverrides(ctx, overrides);
+    }
+
     public static void setThemeByFolderPath(String path) {
         int idx = findThemeIndexForPath(path);
         if (idx >= 0) setThemeIndex(idx);
@@ -1662,6 +1689,36 @@ public class ThemeManager {
         return relativeLuminance(bg) > 0.45 ? 0xFF1A1A1A : 0xFFE8E8E8;
     }
 
+    /**
+     * 2026-07-11 — Page/wallpaper bg for clash checks (About, donation, USB body copy).
+     * Samples global wallpaper centre; falls back to inverse of primary text luminance.
+     * Reversal: hardcode panel colour at each call site.
+     */
+    public static int sampleThemePageBackground() {
+        try {
+            Bitmap wall = getWallpaper(false);
+            if (wall == null || wall.isRecycled()) wall = getWallpaper(true);
+            if (wall != null && !wall.isRecycled() && wall.getWidth() > 0 && wall.getHeight() > 0) {
+                return wall.getPixel(wall.getWidth() / 2, wall.getHeight() / 2) | 0xFF000000;
+            }
+        } catch (Exception ignored) {}
+        return relativeLuminance(getTextColorPrimary()) > 0.45 ? 0xFF333333 : 0xFFCCCCCC;
+    }
+
+    /**
+     * 2026-07-11 — Theme fill + auto-invert when it clashes with {@code backgroundColor}.
+     * Use for body copy on wallpaper / panels (About, USB prompts, donation); keep
+     * {@link #applyThemedTextStyle(TextView, int)} for selection rows that already own contrast.
+     */
+    public static void applyReadableThemedTextStyle(TextView tv, int fillColor, int backgroundColor) {
+        applyThemedTextStyle(tv, ensureReadableOnBackground(fillColor, backgroundColor));
+    }
+
+    /** Same as {@link #applyReadableThemedTextStyle(TextView, int, int)} against page wallpaper. */
+    public static void applyReadableThemedTextStyle(TextView tv, int fillColor) {
+        applyReadableThemedTextStyle(tv, fillColor, sampleThemePageBackground());
+    }
+
     /** Selected row text — only adjust when selection uses a solid fill, not a theme bitmap. */
     public static int textOnRowSelection(int selectedColor) {
         return textOnRowSelection(selectedColor, false);
@@ -1802,6 +1859,138 @@ public class ThemeManager {
         JSONObject setting = getCurrentTheme().root.optJSONObject("settingConfig");
         if (setting == null) return null;
         return getThemeBitmap(setting.optString("settingMask", ""));
+    }
+
+    /**
+     * 2026-07-11 — solarConfig.settingsMenu_Item_Padding: false = flush menu chrome
+     * (left edge + column to screen bottom + 1px under status bar via MainActivity hosts).
+     * Missing key = keep stock 9dp left gutter and short dual-pane heights (third-party themes).
+     * Per-theme user override: SharedPreferences {@code menu_item_padding.<folder>}.
+     * Masks force padding on — desktopMask / settingMask art is sized for the guttered dual-pane.
+     * Reversal: drop key + prefs prefix; always use {@code y1_menu_left} + stock heights.
+     */
+    public static final String SOLAR_MENU_ITEM_PADDING = "settingsMenu_Item_Padding";
+    /**
+     * 2026-07-11 — solarConfig.settingsShow_Now_Playing_Info: home right-pane title/artist under art.
+     * Opt-in (default off). Menu label "Show Now Playing Info" → this key.
+     * Reversal: drop key; always hide titles unless user pref set.
+     */
+    public static final String SOLAR_SHOW_NOW_PLAYING_INFO = "settingsShow_Now_Playing_Info";
+    /** Global user override for home NP title/artist under preview art. */
+    public static final String PREF_SHOW_NOW_PLAYING_INFO = "show_now_playing_info";
+    /** Pref prefix; suffix is active theme folderName. true = keep gutter, false = flush left. */
+    public static final String PREF_MENU_ITEM_PADDING_PREFIX = "menu_item_padding.";
+
+    /** Theme declares a home desktopMask path (may still fail to decode). */
+    public static boolean themeDeclaresDesktopMask() {
+        // 2026-07-11 / 2026-07-14 — Tall chrome (A5 or Y1/Y2 portrait) never uses dual-pane masks.
+        // Was: isA5 ∧ forcePortraitThemeRules — Y1 portrait still declared masks. Reversal: restore isA5().
+        if (assetContext != null && A5NavigationMode.forcePortraitThemeRules(assetContext)) {
+            return false;
+        }
+        ThemeEntry t = getCurrentTheme();
+        return t != null && t.root != null
+                && !t.root.optString("desktopMask", "").trim().isEmpty();
+    }
+
+    /** Theme declares settingConfig.settingMask (settings dual-pane frame). */
+    public static boolean themeDeclaresSettingMask() {
+        // 2026-07-14 — Same tall-chrome gate as desktopMask (Y1/Y2 portrait parity).
+        if (assetContext != null && A5NavigationMode.forcePortraitThemeRules(assetContext)) {
+            return false;
+        }
+        ThemeEntry t = getCurrentTheme();
+        if (t == null || t.root == null) return false;
+        JSONObject setting = t.root.optJSONObject("settingConfig");
+        return setting != null && !setting.optString("settingMask", "").trim().isEmpty();
+    }
+
+    /** Pref key for this theme's menu-gutter override; null folder → {@code default}. */
+    public static String menuItemPaddingPrefKey(String folderName) {
+        String folder = (folderName == null || folderName.isEmpty()) ? "default" : folderName;
+        return PREF_MENU_ITEM_PADDING_PREFIX + folder;
+    }
+
+    /**
+     * Theme-authored default for left menu gutter.
+     * {@code false} = flush to left edge; {@code true} = keep padding; null = unset (treat as keep).
+     */
+    public static Boolean themeDefaultMenuItemPadding() {
+        JSONObject solar = solarBlock();
+        if (solar == null || !solar.has(SOLAR_MENU_ITEM_PADDING)) return null;
+        return parseSolarBool(solar, SOLAR_MENU_ITEM_PADDING);
+    }
+
+    /**
+     * Effective left gutter for home or settings list host.
+     * Order: per-theme user override → explicit solarConfig → masks force pad → default pad on.
+     * Theme authors who set {@code settingsMenu_Item_Padding:false} own mask alignment.
+     */
+    public static boolean isMenuItemPaddingEnabled(android.content.SharedPreferences prefs,
+            boolean forSettings) {
+        ThemeEntry t = getCurrentTheme();
+        String folder = t != null ? t.folderName : "";
+        String key = menuItemPaddingPrefKey(folder);
+        if (prefs != null && prefs.contains(key)) {
+            return prefs.getBoolean(key, true);
+        }
+        Boolean themeDef = themeDefaultMenuItemPadding();
+        if (themeDef != null) {
+            return themeDef.booleanValue();
+        }
+        // 2026-07-11 — No author preference: keep gutter when a dual-pane mask is declared.
+        if (forSettings ? themeDeclaresSettingMask() : themeDeclaresDesktopMask()) {
+            return true;
+        }
+        return true;
+    }
+
+    /**
+     * True when Appearance cannot flush because a mask is present and the theme did not
+     * opt into flush (and the user has not overridden).
+     */
+    public static boolean menuItemPaddingForcedByMask(boolean forSettings) {
+        if (themeDefaultMenuItemPadding() != null) return false;
+        return forSettings ? themeDeclaresSettingMask() : themeDeclaresDesktopMask();
+    }
+
+    /** Save user choice for the active theme folder only. */
+    public static void setMenuItemPaddingOverride(android.content.SharedPreferences prefs,
+            boolean paddingEnabled) {
+        if (prefs == null) return;
+        ThemeEntry t = getCurrentTheme();
+        String folder = t != null ? t.folderName : "";
+        prefs.edit().putBoolean(menuItemPaddingPrefKey(folder), paddingEnabled).commit();
+    }
+
+    /**
+     * 2026-07-11 — Theme default for home NP title/artist under preview art.
+     * {@code true} = show; {@code false}/missing = hide (opt-in).
+     */
+    public static Boolean themeDefaultShowNowPlayingInfo() {
+        JSONObject solar = solarBlock();
+        if (solar == null || !solar.has(SOLAR_SHOW_NOW_PLAYING_INFO)) return null;
+        return parseSolarBool(solar, SOLAR_SHOW_NOW_PLAYING_INFO);
+    }
+
+    /**
+     * Effective home right-pane NP title/artist visibility.
+     * Order: user pref → solarConfig.settingsShow_Now_Playing_Info → false (opt-in).
+     */
+    public static boolean isShowNowPlayingInfoEnabled(android.content.SharedPreferences prefs) {
+        if (prefs != null && prefs.contains(PREF_SHOW_NOW_PLAYING_INFO)) {
+            return prefs.getBoolean(PREF_SHOW_NOW_PLAYING_INFO, false);
+        }
+        Boolean themeDef = themeDefaultShowNowPlayingInfo();
+        if (themeDef != null) return themeDef.booleanValue();
+        return false;
+    }
+
+    /** Persist Appearance → Show Now Playing Info. */
+    public static void setShowNowPlayingInfoEnabled(android.content.SharedPreferences prefs,
+            boolean enabled) {
+        if (prefs == null) return;
+        prefs.edit().putBoolean(PREF_SHOW_NOW_PLAYING_INFO, enabled).commit();
     }
 
     public static Bitmap getSettingIcon(String configKey) {
@@ -2856,6 +3045,33 @@ public class ThemeManager {
             availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
             if ((getHomeMenuTextColorNormal() & 0xFFFFFF) != 0x000000) throw new AssertionError("ipod-ish home text");
             if ((getHomeMenuTextColorSelected() & 0xFFFFFF) != 0xFFFFFF) throw new AssertionError("ipod-ish home selected");
+            // 2026-07-11 — Menu gutter: unset=on; solarConfig false=flush; masks only gate when unset.
+            if (themeDefaultMenuItemPadding() != null) throw new AssertionError("padding unset");
+            if (!isMenuItemPaddingEnabled(null, false)) throw new AssertionError("default padding on");
+            ipod.put("desktopMask", "@mask.png");
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (!themeDeclaresDesktopMask()) throw new AssertionError("desktopMask declared");
+            if (!isMenuItemPaddingEnabled(null, false)) throw new AssertionError("mask keeps pad when unset");
+            if (!menuItemPaddingForcedByMask(false)) throw new AssertionError("mask lock when unset");
+            ipod.put("solarConfig", new JSONObject().put(SOLAR_MENU_ITEM_PADDING, false));
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (Boolean.TRUE.equals(themeDefaultMenuItemPadding())) throw new AssertionError("theme wants flush");
+            if (isMenuItemPaddingEnabled(null, false)) throw new AssertionError("author false wins over mask");
+            if (menuItemPaddingForcedByMask(false)) throw new AssertionError("no mask lock when author set");
+            if (!"menu_item_padding.Cupertino".equals(menuItemPaddingPrefKey("Cupertino"))) {
+                throw new AssertionError("pref key folder");
+            }
+            // 2026-07-11 — settingsShow_Now_Playing_Info opt-in default.
+            if (isShowNowPlayingInfoEnabled(null)) throw new AssertionError("NP info default off");
+            ipod.put("solarConfig", new JSONObject().put(SOLAR_SHOW_NOW_PLAYING_INFO, true));
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (!Boolean.TRUE.equals(themeDefaultShowNowPlayingInfo())) {
+                throw new AssertionError("theme wants NP info");
+            }
+            if (!isShowNowPlayingInfoEnabled(null)) throw new AssertionError("theme enables NP info");
+            ipod.remove("desktopMask");
+            ipod.remove("solarConfig");
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
             JSONObject mc = new JSONObject();
             mc.put("menuConfig", new JSONObject().put("menuBackgroundColor", "#000000"));
             mc.put("itemConfig", new JSONObject().put("itemBackground", ""));
@@ -2972,6 +3188,11 @@ public class ThemeManager {
             int fixed = ensureReadableOnBackground(0xFF555555, panel);
             if (contrastRatio(fixed, panel) < 3.0) throw new AssertionError("context menu fix contrast");
             if ((fixed & 0xFFFFFF) == 0x555555) throw new AssertionError("context menu fix applied");
+            // 2026-07-11 — Page clash cases used by applyReadableThemedTextStyle (About/USB/donation).
+            int wow = ensureReadableOnBackground(0xFFFFFFFF, 0xFFFFFFF0);
+            if (contrastRatio(wow, 0xFFFFFFF0) < 3.0) throw new AssertionError("white-on-white invert");
+            int bod = ensureReadableOnBackground(0xFF101010, 0xFF181818);
+            if (contrastRatio(bod, 0xFF181818) < 3.0) throw new AssertionError("black-on-dark invert");
             if (!isAchromaticColor(0xFFFFFFFF) || !isAchromaticColor(0xFF888888)) {
                 throw new AssertionError("achromatic detect");
             }

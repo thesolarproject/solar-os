@@ -20,7 +20,7 @@ public final class DebugPerfLog {
     private static final String SESSION = "9870a6";
     private static final String FILE = "debug-9870a6.log";
     /** Remove WM overlay. */
-    public static volatile boolean ENABLED = BuildConfig.DEBUG;
+    public static volatile boolean ENABLED = false;
 
     private static volatile long startedAtMs;
     private static volatile long lastFlushMs;

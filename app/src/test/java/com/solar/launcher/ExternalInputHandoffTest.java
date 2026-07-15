@@ -61,6 +61,12 @@ public class ExternalInputHandoffTest {
                 ExternalInputHandoff.resolveModeForForegroundPackage("com.mediatek.FMRadio"));
         assertEquals(ExternalInputHandoff.MODE_JJ,
                 ExternalInputHandoff.resolveModeForForegroundPackage(LauncherDefault.JJ_PACKAGE));
+        assertEquals(ExternalInputHandoff.MODE_JJ,
+                ExternalInputHandoff.resolveModeForForegroundPackage("com.innioasis.y1"));
+        assertEquals(ExternalInputHandoff.MODE_JJ,
+                ExternalInputHandoff.resolveModeForForegroundPackage("com.innioasis.y2"));
+        assertEquals(ExternalInputHandoff.MODE_OFF,
+                ExternalInputHandoff.resolveModeForForegroundPackage("com.innioasis.music"));
         assertEquals(ExternalInputHandoff.MODE_ANDROID,
                 ExternalInputHandoff.resolveModeForForegroundPackage("com.android.settings"));
     }

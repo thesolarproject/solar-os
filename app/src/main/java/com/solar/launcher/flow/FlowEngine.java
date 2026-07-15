@@ -3,12 +3,19 @@ package com.solar.launcher.flow;
 /**
  * Cover Flow scroll engine — time-based ease per album step (Classipod ~300ms),
  * Apple/Classipod pose layout via {@link CoverFlowLayout}.
+ * 2026-07-14 — Touch free-scroll / fling parallel path; key {@link #scrollBy} unchanged.
  */
 public final class FlowEngine {
 
     public static final int VISIBLE_RADIUS = CoverFlowLayout.SIDE_SLIDES;
     /** One wheel detent — frame-rate independent on MT6572. */
     public static final long SCROLL_MS = 290L;
+    /** 2026-07-14 — Short snap after finger fling settles (iPhone CoverFlow detent). */
+    public static final long FREE_SNAP_MS = 220L;
+    /** Fling friction — albums/s²; coast then snap. */
+    private static final float FLING_DECEL_ALBUMS = 9.5f;
+    /** Stop coast when slower than this (albums/s). */
+    private static final float FLING_STOP_ALBUMS = 0.35f;
 
     private int itemCount;
     private int centerIndex;
@@ -22,6 +29,14 @@ public final class FlowEngine {
     private int scrollAnimFromFixed;
     private int scrollAnimToFixed;
     private boolean scrollAnimPendingStart;
+    /** Duration for current ease segment (wheel SCROLL_MS or free-snap FREE_SNAP_MS). */
+    private long scrollAnimDurationMs = SCROLL_MS;
+
+    /** 2026-07-14 — Finger-follow / fling (touch only); keys use scrollBy. */
+    private boolean freeScrollActive;
+    private boolean flingActive;
+    private float flingVelocityAlbumsPerSec;
+    private long flingLastMs;
 
     private final CoverFlowLayout.SlidePose centerSlide = new CoverFlowLayout.SlidePose();
     private final CoverFlowLayout.SlidePose[] leftSlides =
@@ -83,15 +98,15 @@ public final class FlowEngine {
 
     /** End scroll animation on the cover the user sees at center (wheel OK during motion). */
     public void snapToVisualCenter() {
-        if (step == 0) return;
-        int visual = getVisualCenterIndex();
-        centerIndex = visual;
-        targetIndex = visual;
-        slideFrameInt = visual << 16;
-        step = 0;
-        scrollAnimStartMs = 0L;
-        scrollAnimPendingStart = false;
-        resetSlides(null);
+        // 2026-07-14 — Also clears free/fling so Center OK lands on the visible cover.
+        freeScrollActive = false;
+        flingActive = false;
+        flingVelocityAlbumsPerSec = 0f;
+        flingLastMs = 0L;
+        if (step == 0 && Math.abs(getVisualOffset() - getVisualCenterIndex()) < 0.02f) {
+            return;
+        }
+        finishScrollAtTargetHard(getVisualCenterIndex());
     }
 
     public void setViewport(float w, float h) {
@@ -126,6 +141,10 @@ public final class FlowEngine {
     }
 
     public void setFocusIndex(int index) {
+        freeScrollActive = false;
+        flingActive = false;
+        flingVelocityAlbumsPerSec = 0f;
+        flingLastMs = 0L;
         if (itemCount <= 0) {
             centerIndex = 0;
             targetIndex = 0;
@@ -142,6 +161,8 @@ public final class FlowEngine {
     }
 
     public void scrollBy(int delta) {
+        // 2026-07-14 — Wheel/key owns stepped path; abandon free/fling first.
+        cancelFreeScrollForKeyInput();
         if (itemCount <= 0 || delta == 0) return;
         if (delta > 0) showNextSlide();
         else showPreviousSlide();
@@ -151,12 +172,167 @@ public final class FlowEngine {
     public boolean scrollByReturningMoved(int delta) {
         if (itemCount <= 0 || delta == 0) return false;
         int before = centerIndex;
-        boolean animBefore = step != 0;
+        boolean animBefore = step != 0 || freeScrollActive || flingActive;
         scrollBy(delta);
-        return step != 0 || centerIndex != before || animBefore;
+        return step != 0 || centerIndex != before || animBefore || freeScrollActive || flingActive;
+    }
+
+    /**
+     * 2026-07-14 — Start finger-follow Cover Flow (cancels stepped ease mid-flight).
+     * Layman: grab the rack under your finger. Tech: stick slideFrameInt; clear step/fling.
+     * Reversal: omit; touch only uses scrollBy flick steps again.
+     */
+    public void beginFreeScroll() {
+        if (itemCount <= 0) return;
+        if (step != 0) {
+            float visual = getVisualOffset();
+            slideFrameInt = Math.round(visual * 65536f);
+            step = 0;
+            scrollAnimStartMs = 0L;
+            scrollAnimPendingStart = false;
+            scrollAnimDurationMs = SCROLL_MS;
+        }
+        freeScrollActive = true;
+        flingActive = false;
+        flingVelocityAlbumsPerSec = 0f;
+        flingLastMs = 0L;
+        int nearest = getVisualCenterIndex();
+        centerIndex = nearest;
+        targetIndex = nearest;
+    }
+
+    /**
+     * 2026-07-14 — Drag albums by finger motion (px → fractional offset).
+     * Layman: swipe sideways and covers stick to your finger.
+     * Finger left (dx negative) advances next album (positive offset).
+     */
+    public void dragByPixels(float dxPx) {
+        if (itemCount <= 0 || !freeScrollActive) return;
+        float pxPer = pixelsPerAlbum();
+        if (pxPer < 1f) pxPer = 1f;
+        offsetFreeByAlbums(-dxPx / pxPer);
+    }
+
+    /**
+     * 2026-07-14 — Coast with deceleration then snap to nearest album.
+     * Layman: flick and covers keep spinning a bit like iPhone Cover Flow.
+     * velocityPxPerSec: positive = finger right; maps to previous albums.
+     */
+    public void fling(float velocityPxPerSec) {
+        if (itemCount <= 0) return;
+        freeScrollActive = false;
+        float pxPer = pixelsPerAlbum();
+        if (pxPer < 1f) pxPer = 1f;
+        flingVelocityAlbumsPerSec = -velocityPxPerSec / pxPer;
+        if (Math.abs(flingVelocityAlbumsPerSec) < FLING_STOP_ALBUMS) {
+            snapNearestAlbum();
+            return;
+        }
+        flingActive = true;
+        flingLastMs = 0L;
+        step = 0;
+    }
+
+    /**
+     * 2026-07-14 — Ease into nearest album detent after free-scroll/fling.
+     * Layman: covers settle on the one in the middle.
+     */
+    public void snapNearestAlbum() {
+        if (itemCount <= 0) {
+            freeScrollActive = false;
+            flingActive = false;
+            return;
+        }
+        freeScrollActive = false;
+        flingActive = false;
+        flingVelocityAlbumsPerSec = 0f;
+        flingLastMs = 0L;
+        int nearest = getVisualCenterIndex();
+        float visual = getVisualOffset();
+        if (Math.abs(visual - nearest) < 0.02f) {
+            finishScrollAtTargetHard(nearest);
+            return;
+        }
+        targetIndex = nearest;
+        scrollAnimFromFixed = slideFrameInt;
+        scrollAnimToFixed = nearest << 16;
+        scrollAnimDurationMs = FREE_SNAP_MS;
+        scrollAnimStartMs = 0L;
+        scrollAnimPendingStart = true;
+        step = scrollAnimToFixed >= scrollAnimFromFixed ? 1 : -1;
+        if (scrollAnimToFixed == scrollAnimFromFixed) {
+            finishScrollAtTargetHard(nearest);
+        }
+    }
+
+    /**
+     * 2026-07-14 — Wheel/key arrived: hard-snap free/fling then resume stepped scrollBy.
+     * Layman: buttons always win if you rotate the wheel while dragging.
+     * Reversal: leave free mode running under wheel (modes fight).
+     */
+    public void cancelFreeScrollForKeyInput() {
+        if (!freeScrollActive && !flingActive) return;
+        freeScrollActive = false;
+        flingActive = false;
+        flingVelocityAlbumsPerSec = 0f;
+        flingLastMs = 0L;
+        finishScrollAtTargetHard(getVisualCenterIndex());
+    }
+
+    /** True while finger drag or fling coast owns the carousel. */
+    public boolean isFreeScrolling() {
+        return freeScrollActive || flingActive;
+    }
+
+    /** Approx px for one album step — neighbor fan spacing. */
+    public float pixelsPerAlbum() {
+        CoverFlowLayout.Metrics m = metrics();
+        float spacing = CoverFlowLayout.cxForSideRank(1, m);
+        if (spacing < 40f) {
+            spacing = m.displaySize * CoverFlowLayout.NEIGHBOR_CX_FRAC;
+        }
+        if (spacing < 40f) spacing = Math.max(40f, viewportW * 0.35f);
+        return spacing;
+    }
+
+    private void offsetFreeByAlbums(float deltaAlbums) {
+        if (itemCount <= 0 || deltaAlbums == 0f) return;
+        float visual = getVisualOffset() + deltaAlbums;
+        float max = Math.max(0, itemCount - 1);
+        if (visual < 0f) visual = 0f;
+        if (visual > max) visual = max;
+        slideFrameInt = Math.round(visual * 65536f);
+        int nearest = Math.round(visual);
+        if (nearest < 0) nearest = 0;
+        if (nearest > itemCount - 1) nearest = itemCount - 1;
+        centerIndex = nearest;
+        targetIndex = nearest;
+        fade = 256;
+    }
+
+    private void finishScrollAtTargetHard(int index) {
+        if (itemCount <= 0) {
+            centerIndex = 0;
+            targetIndex = 0;
+            slideFrameInt = 0;
+        } else {
+            centerIndex = clamp(index, 0, itemCount - 1);
+            targetIndex = centerIndex;
+            slideFrameInt = centerIndex << 16;
+        }
+        step = 0;
+        fade = 256;
+        scrollAnimStartMs = 0L;
+        scrollAnimPendingStart = false;
+        scrollAnimDurationMs = SCROLL_MS;
+        resetSlides(metrics());
     }
 
     public void tick(long nowMs) {
+        if (flingActive) {
+            updateFling(nowMs);
+            return;
+        }
         if (step == 0) return;
         if (scrollAnimPendingStart) {
             scrollAnimStartMs = nowMs;
@@ -166,12 +342,12 @@ public final class FlowEngine {
     }
 
     public boolean isAnimating() {
-        return step != 0;
+        return step != 0 || freeScrollActive || flingActive;
     }
 
-    /** True while carousel scroll animation is running (step != 0). */
+    /** True while carousel scroll animation is running (step != 0 or free/fling). */
     public boolean isCarouselScrolling() {
-        return step != 0;
+        return step != 0 || freeScrollActive || flingActive;
     }
 
     public int getScrollStep() {
@@ -324,6 +500,7 @@ public final class FlowEngine {
     private void restartScrollSegment(long nowMs) {
         scrollAnimFromFixed = slideFrameInt;
         scrollAnimToFixed = targetIndex << 16;
+        scrollAnimDurationMs = SCROLL_MS;
         if (nowMs > 0L) {
             scrollAnimStartMs = nowMs;
             scrollAnimPendingStart = false;
@@ -369,8 +546,9 @@ public final class FlowEngine {
     private void updateScrollAnimation(long nowMs) {
         if (step == 0) return;
 
+        long duration = scrollAnimDurationMs > 0L ? scrollAnimDurationMs : SCROLL_MS;
         long elapsed = nowMs - scrollAnimStartMs;
-        float t = Math.min(1f, elapsed / (float) SCROLL_MS);
+        float t = Math.min(1f, elapsed / (float) duration);
         float eased = easeOutCubic(t);
         slideFrameInt = scrollAnimFromFixed
                 + Math.round((scrollAnimToFixed - scrollAnimFromFixed) * eased);
@@ -394,6 +572,34 @@ public final class FlowEngine {
         }
     }
 
+    /** 2026-07-14 — Integrate fling velocity with friction; snap when slow. */
+    private void updateFling(long nowMs) {
+        if (!flingActive) return;
+        if (flingLastMs <= 0L) {
+            flingLastMs = nowMs;
+            return;
+        }
+        float dt = (nowMs - flingLastMs) / 1000f;
+        if (dt <= 0f) return;
+        if (dt > 0.05f) dt = 0.05f;
+        flingLastMs = nowMs;
+        float v = flingVelocityAlbumsPerSec;
+        float sign = v >= 0f ? 1f : -1f;
+        float mag = Math.abs(v) - FLING_DECEL_ALBUMS * dt;
+        if (mag <= FLING_STOP_ALBUMS) {
+            flingActive = false;
+            snapNearestAlbum();
+            return;
+        }
+        flingVelocityAlbumsPerSec = mag * sign;
+        offsetFreeByAlbums(flingVelocityAlbumsPerSec * dt);
+        float visual = getVisualOffset();
+        if (visual <= 0.001f || visual >= itemCount - 1.001f) {
+            flingActive = false;
+            snapNearestAlbum();
+        }
+    }
+
     private static float easeOutCubic(float t) {
         float u = 1f - t;
         return 1f - u * u * u;
@@ -406,6 +612,7 @@ public final class FlowEngine {
         fade = 256;
         scrollAnimStartMs = 0L;
         scrollAnimPendingStart = false;
+        scrollAnimDurationMs = SCROLL_MS;
         resetSlides(metrics());
     }
 

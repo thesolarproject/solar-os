@@ -11,6 +11,7 @@ import android.widget.ListView;
 import com.solar.launcher.MainActivity;
 import com.solar.launcher.PlaybackCoordinator;
 import com.solar.launcher.media.MediaTransportBar;
+import com.solar.launcher.youtube.YouTubeVideo;
 
 /** Bridges {@link MediaSuiteHost} to {@link MainActivity} without bloating the activity file. */
 public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
@@ -62,6 +63,10 @@ public final class MediaSuiteHostAdapter implements MediaSuiteHost.Host {
     @Override public void exitToHomeMenu() { act.mediaExitToHomeMenu(); }
 
     @Override public void openYouTubeSearchKeyboard(String prefill) { act.mediaOpenYouTubeSearchKeyboard(prefill); }
+
+    @Override public void requestYouTubeSave(YouTubeVideo video, boolean audioOnly) {
+        act.mediaRequestYouTubeSave(video, audioOnly);
+    }
 
     @Override public View createTwoLineBrowseRow(String title, String subtitle) {
         return act.mediaCreateTwoLineBrowseRow(title, subtitle);

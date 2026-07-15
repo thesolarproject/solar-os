@@ -43,9 +43,17 @@ public final class LauncherSwitchExecutor {
         return runScript("enforce-foreground");
     }
 
+    /**
+     * 2026-07-08 — Map HOME target tokens for solar-launcher-exec.sh (stock was missing → solar).
+     * Layman: "Stock" must stay Stock when the helper asks the switch script — not silently Solar.
+     * Technical: TARGET_STOCK → "stock"; unknown → solar fail-open.
+     * Reversal: drop TARGET_STOCK branch (stock fell through to solar).
+     */
     static String normalizeSwitchArg(String target) {
         if (HomeTargetPolicy.TARGET_ROCKBOX.equals(target)) return "rockbox";
         if (HomeTargetPolicy.TARGET_JJ.equals(target)) return "jj";
+        // 2026-07-08 — Factory Innioasis HOME; without this, helper ran "switch solar" and undid Stock.
+        if (HomeTargetPolicy.TARGET_STOCK.equals(target)) return "stock";
         if (HomeTargetPolicy.TARGET_CUSTOM.equals(target)) return "custom";
         return "solar";
     }

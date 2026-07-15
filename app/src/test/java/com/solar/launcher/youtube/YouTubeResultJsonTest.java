@@ -49,4 +49,22 @@ public class YouTubeResultJsonTest {
         assertNotNull(rows);
         assertEquals(0, rows.size());
     }
+
+    @Test
+    public void parseCommentsPayload() throws Exception {
+        String json = "[{\"author\":\"Alice\",\"content\":\"Great video!\"},"
+                + "{\"author\":\"Bob\",\"content\":\"Thanks\"}]";
+        List<YouTubeComment> rows = YouTubeResultJson.parseComments(json);
+        assertEquals(2, rows.size());
+        assertEquals("Alice", rows.get(0).author);
+        assertEquals("Great video!", rows.get(0).content);
+        assertEquals("Bob", rows.get(1).author);
+    }
+
+    @Test
+    public void parseEmptyComments() throws Exception {
+        List<YouTubeComment> rows = YouTubeResultJson.parseComments("[]");
+        assertNotNull(rows);
+        assertEquals(0, rows.size());
+    }
 }

@@ -74,6 +74,22 @@ public class DeviceFeaturesTest {
     }
 
     @Test
+    public void productModelLabelMatchesDeviceModelLabel() {
+        DeviceFeatures.setCachedFamilyForTest("y1");
+        if (!"Y1".equals(DeviceFeatures.productModelLabel())) {
+            throw new AssertionError("expected Y1 product label");
+        }
+        if (!DeviceFeatures.deviceModelLabel().equals(DeviceFeatures.productModelLabel())) {
+            throw new AssertionError("productModelLabel must match deviceModelLabel");
+        }
+        DeviceFeatures.setCachedFamilyForTest("y2");
+        if (!"Y2".equals(DeviceFeatures.productModelLabel())) {
+            throw new AssertionError("expected Y2 product label");
+        }
+        DeviceFeatures.resetCacheForTest();
+    }
+
+    @Test
     public void y2UmsExportVolumesInternalThenMicroSd() {
         DeviceFeatures.setCachedFamilyForTest("y2");
         java.util.List<String> ums = DeviceFeatures.getUmsExportVolumePaths();
@@ -170,5 +186,20 @@ public class DeviceFeaturesTest {
         if (!"internal".equals(DeviceFeatures.PRIMARY_MEDIA_INTERNAL)) {
             throw new AssertionError("internal constant");
         }
+    }
+
+    @Test
+    public void a5FamilyExclusive() {
+        DeviceFeatures.setCachedFamilyForTest("a5");
+        if (!DeviceFeatures.isA5() || DeviceFeatures.isY1() || DeviceFeatures.isY2()) {
+            throw new AssertionError("a5 exclusive");
+        }
+        DeviceFeatures.resetCacheForTest();
+    }
+
+    @Test
+    public void a5DetectionFromModel() {
+        String family = DeviceFeatures.detectFamilyForTest("unknown", "unknown", 17, "Timmkoo A5", "Timmkoo");
+        if (!"a5".equals(family)) throw new AssertionError("expected a5 got " + family);
     }
 }

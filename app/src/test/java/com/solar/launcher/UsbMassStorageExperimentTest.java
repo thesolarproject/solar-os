@@ -13,23 +13,19 @@ public class UsbMassStorageExperimentTest {
     }
 
     @Test
-    public void y2DefaultOffBlocksUms() {
+    public void y2AlwaysBlocksUms() {
         if (UsbMassStorageExperiment.isEnabledForFamily("y2", false)) {
-            throw new AssertionError("Y2 experiment off must block UMS");
+            throw new AssertionError("Y2 must block UMS (MTP-only product)");
+        }
+        if (UsbMassStorageExperiment.isEnabledForFamily("y2", true)) {
+            throw new AssertionError("Y2 must block UMS even if old experiment pref is true");
         }
     }
 
     @Test
-    public void y2ExperimentOnAllowsUms() {
-        if (!UsbMassStorageExperiment.isEnabledForFamily("y2", true)) {
-            throw new AssertionError("Y2 experiment on must allow UMS");
-        }
-    }
-
-    @Test
-    public void connectionsUsbHiddenOnY2WhenExperimentOff() {
-        if (UsbMassStorageExperiment.connectionsUsbMenuVisibleForFamily("y2", false)) {
-            throw new AssertionError("Connections USB submenu must hide when experiment off");
+    public void connectionsUsbHiddenOnY2() {
+        if (UsbMassStorageExperiment.connectionsUsbMenuVisibleForFamily("y2", true)) {
+            throw new AssertionError("Connections USB submenu must hide on Y2");
         }
     }
 

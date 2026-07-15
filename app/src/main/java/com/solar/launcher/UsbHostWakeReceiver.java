@@ -6,8 +6,10 @@ import android.content.Intent;
 
 /**
  * Wakes Solar when a USB host (PC) connects while the process is not running.
+ * 2026-07-10 — Restored July-2 monlith: start MainActivity HOME; USB UI is in-app.
  * ponytail: dynamic receivers in MainActivity miss USB_STATE if SystemUI wins
  * the race and Solar was force-stopped; this manifest receiver starts HOME.
+ * Reversal: companion/Xposed-only concierge without MainActivity wake.
  */
 public final class UsbHostWakeReceiver extends BroadcastReceiver {
 
@@ -15,10 +17,15 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
 
     static boolean isUsbHostIntent(Intent intent) {
         if (intent == null || !ACTION_USB_STATE.equals(intent.getAction())) return false;
-        return intent.getBooleanExtra("connected", false);
+        if (!intent.getBooleanExtra("connected", false)) return false;
+        // Prefer host signals when present (July-2); fall back to connected-only for stock variance.
+        return intent.getBooleanExtra("host_connected", false)
+                || intent.getBooleanExtra("mass_storage", false)
+                || intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false)
+                || intent.getBooleanExtra("connected", false);
     }
 
-    /** Cable unplug — dismiss global USB overlay without launching Solar. */
+    /** Cable unplug — unlock MainActivity flags / tear down UMS without launching Solar. */
     static boolean isUsbDisconnectIntent(Intent intent) {
         return intent != null
                 && ACTION_USB_STATE.equals(intent.getAction())
@@ -41,7 +48,6 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
             UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(context);
             UsbStorageConcierge.clearOnUsbDisconnect();
             UsbHostSessionPolicy.onUsbHostDisconnected(context);
-            // Manifest path — tear down stale kernel UMS even when MainActivity is not alive (2026-07-05).
             final android.content.BroadcastReceiver.PendingResult pending = goAsync();
             final Context app = context.getApplicationContext();
             new Thread(new Runnable() {
@@ -57,32 +63,45 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
             return;
         }
         if (!isUsbHostIntent(intent)) return;
-        final android.content.BroadcastReceiver.PendingResult pending = goAsync();
-        final Context app = context.getApplicationContext();
-        // 2026-07-06 — Defer to Xposed UsbStorageHooks; fallback if concierge sysprop never set.
-        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    routeUsbHostConnectFallback(app);
-                } finally {
-                    pending.finish();
-                }
-            }
-        }, UsbStorageConcierge.fallbackDelayMs());
-    }
-
-    /** Tier-2 wake when Solar process was dead and Xposed concierge did not route (2026-07-06). */
-    private static void routeUsbHostConnectFallback(Context context) {
-        if (UsbStorageConcierge.isXposedConciergeActive()) {
-            UsbStorageConcierge.logFallbackDecision("UsbHostWakeReceiver", true);
+        boolean dismissed = UsbHostSessionPolicy.hasUserDismissedThisSession(context);
+        boolean evaluated = UsbHostSessionPolicy.hasPromptEvaluatedThisSession(context);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("hostIntent", true);
+            d.put("dismissed", dismissed);
+            d.put("evaluated", evaluated);
+            d.put("extraHost", intent.getBooleanExtra("host_connected", false));
+            d.put("extraMs", intent.getBooleanExtra("mass_storage", false));
+            d.put("extraPcKnow", intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false));
+            d.put("connectedOnlyFallback", intent.getBooleanExtra("connected", false)
+                    && !intent.getBooleanExtra("host_connected", false)
+                    && !intent.getBooleanExtra("mass_storage", false)
+                    && !intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false));
+            Debug02fc83Log.log(context, "UsbHostWakeReceiver.onReceive",
+                    "host path", "H3", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        // 2026-07-14 — Prompt already shown/dismissed this plug: idle until cable unplug (H3 logs).
+        // Was: every USB_STATE started MainActivity with evaluate_host while cable stayed in.
+        if (dismissed || evaluated) {
             return;
         }
-        UsbStorageConcierge.logFallbackDecision("UsbHostWakeReceiver", false);
-        if (UsbHostSessionPolicy.hasUserDismissedThisSession(context)) {
-            return;
-        }
+        // Mid-cable USB_STATE storm: session already armed — do not relaunch before evaluated sticks.
+        boolean wasActive = UsbHostSessionPolicy.hasActiveHostSession(context);
         UsbHostSessionPolicy.onUsbHostConnected(context);
+        if (wasActive) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("wasActive", true);
+                d.put("skipRelaunch", true);
+                Debug02fc83Log.log(context, "UsbHostWakeReceiver.onReceive",
+                        "skip relaunch — session active", "H3", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return;
+        }
         try {
             if (!context.getPackageManager()
                     .getApplicationInfo(context.getPackageName(), 0).enabled) {
@@ -91,34 +110,42 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
         } catch (Exception e) {
             return;
         }
-        if (!UsbHostSessionPolicy.shouldEvaluatePromptThisSession(context)) {
+        if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)) {
             return;
         }
-        if (UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)
-                && !UsbStorageSessionFlags.isAutoConnectEnabled(context)
-                && UsbStorageOverlayReceiver.shouldUseGlobalOverlayPrompt(context)) {
-            UsbStorageOverlayReceiver.routeEnablePromptOverlay(context, "UsbHostWakeReceiver.fallback");
-            return;
-        }
-        if (!shouldLaunchMainActivityForUsbHost(context)) {
-            return;
-        }
+        // July-2: bring MainActivity once per host session; USB prompt/lock is in-process.
         Intent home = new Intent(context, MainActivity.class);
         home.setAction(Intent.ACTION_MAIN);
         home.addCategory(Intent.CATEGORY_HOME);
-        home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        context.startActivity(home);
+        home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+        home.putExtra(MainActivity.EXTRA_USB_EVALUATE_HOST, true);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("startActivity", true);
+            d.put("evaluatedBeforeStart", evaluated);
+            d.put("wasActive", wasActive);
+            Debug02fc83Log.log(context, "UsbHostWakeReceiver.onReceive",
+                    "start MainActivity evaluate", "H3", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        try {
+            context.startActivity(home);
+        } catch (Exception e) {
+            android.util.Log.w("UsbHostWake", "start MainActivity failed", e);
+            UsbStorageOverlayReceiver.routeToSolar(context, true, false, "UsbHostWakeReceiver");
+        }
     }
 
     /**
-     * True when USB host connect should wake {@link MainActivity} (Solar foreground or auto-connect).
-     * False when a stock app is foreground and the enable prompt belongs in :overlay.
+     * True when USB host connect should wake MainActivity.
+     * Always true for monlith Solar USB UX (except dismissed session / experiment off).
      */
     static boolean shouldLaunchMainActivityForUsbHost(Context context) {
         if (context == null) return false;
         if (UsbHostSessionPolicy.hasUserDismissedThisSession(context)) return false;
         if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)) return false;
-        if (UsbStorageSessionFlags.isAutoConnectEnabled(context)) return true;
-        return !UsbStorageOverlayReceiver.shouldUseGlobalOverlayPrompt(context);
+        return UsbMassStorageExperiment.isEnabled(context);
     }
 }

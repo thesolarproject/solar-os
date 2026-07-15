@@ -30,10 +30,9 @@ final class NotPipeStreamResolver {
                     + NotPipeJson.escape(videoId) + "\",\"ext\":\""
                     + NotPipeJson.escape(pick.ext != null ? pick.ext : "m4a") + "\"}";
         }
-        Class<?> managerClass = Class.forName("io.github.gohoski.notpipe.api.Manager");
-        Method getUrl = managerClass.getDeclaredMethod(
-                "getVideoUrl", String.class, String.class, int.class);
-        String url = (String) getUrl.invoke(manager, videoId, quality, timeout);
+        // 2026-07-14 — Clear getVideoUrl or release minify a(String,String,int,h,h[]).
+        ClassLoader cl = manager.getClass().getClassLoader();
+        String url = NotPipeReflect.getVideoUrl(manager, cl, videoId, quality, timeout);
         String ext = guessExtFromUrl(url, "mp4");
         return "{\"url\":\"" + NotPipeJson.escape(url) + "\",\"videoId\":\""
                 + NotPipeJson.escape(videoId) + "\",\"ext\":\"" + NotPipeJson.escape(ext) + "\"}";

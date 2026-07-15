@@ -55,50 +55,55 @@ final class AppAnrHooks {
     /** Install in system_server (Y1 + Y2) alongside AppErrorHooks. */
     static void install(LoadPackageParam lpparam) {
         try {
-            Class<?> cls = XposedHelpers.findClass(
-                    "com.android.server.am.AppNotRespondingDialog", lpparam.classLoader);
-            XposedHookKit.hookAll(cls, "show", new XC_MethodHook() {
+            Class<?> dialogClass = XposedHelpers.findClass(
+                    "android.app.Dialog", lpparam.classLoader);
+            XposedHookKit.hookAll(dialogClass, "show", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        if (interceptAnrDialog(param.thisObject)) {
-                            XposedHookKit.skipMethod(param);
+                    Object dialog = param.thisObject;
+                    if (dialog == null) return;
+                    if ("com.android.server.am.AppNotRespondingDialog".equals(dialog.getClass().getName())) {
+                        try {
+                            Boolean failOpen = (Boolean) XposedHelpers.getAdditionalInstanceField(dialog, "solar_fail_open");
+                            if (failOpen != null && failOpen) {
+                                return;
+                            }
+                            if (interceptAnrDialog(dialog)) {
+                                XposedHookKit.skipMethod(param);
+                            }
+                        } catch (Throwable t) {
+                            SolarContextBridge.log("AppAnr.show intercept error: "
+                                    + t.getClass().getSimpleName());
                         }
-                    } catch (Throwable t) {
-                        SolarContextBridge.log("AppAnr.show intercept error: "
-                                + t.getClass().getSimpleName());
                     }
                 }
 
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    // Stock Holo shown — arm PWM wheel→DPAD for scrollwheel navigation.
-                    AnrDialogKeyForwarder.setStockAnrActive(true);
+                    Object dialog = param.thisObject;
+                    if (dialog != null && "com.android.server.am.AppNotRespondingDialog".equals(dialog.getClass().getName())) {
+                        Boolean failOpen = (Boolean) XposedHelpers.getAdditionalInstanceField(dialog, "solar_fail_open");
+                        if (failOpen != null && failOpen) {
+                            // Stock Holo shown — arm PWM wheel→DPAD for scrollwheel navigation.
+                            AnrDialogKeyForwarder.setStockAnrActive(true);
+                        }
+                    }
                 }
             });
-            hookDismiss(cls);
-            int nClose = XposedHookKit.hookAll(cls, "closeDialog", new XC_MethodHook() {
+
+            XposedHookKit.hookAll(dialogClass, "dismiss", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
-                    AnrDialogKeyForwarder.setStockAnrActive(false);
+                    Object dialog = param.thisObject;
+                    if (dialog != null && "com.android.server.am.AppNotRespondingDialog".equals(dialog.getClass().getName())) {
+                        AnrDialogKeyForwarder.setStockAnrActive(false);
+                    }
                 }
             });
-            SolarContextBridge.log("AppNotRespondingDialog hooks show+dismiss close=" + nClose);
+            SolarContextBridge.log("AppNotRespondingDialog hook installed on Dialog.show/dismiss");
         } catch (Throwable t) {
             SolarContextBridge.log("AppNotRespondingDialog skip: " + t.getClass().getSimpleName());
         }
-    }
-
-    /** Clear stock-ANR key-forward flag when the Holo dialog closes. */
-    private static void hookDismiss(Class<?> cls) {
-        try {
-            XposedHookKit.hookAll(cls, "dismiss", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    AnrDialogKeyForwarder.setStockAnrActive(false);
-                }
-            });
-        } catch (Throwable ignored) {}
     }
 
     /**
@@ -320,10 +325,11 @@ final class AppAnrHooks {
                         + sessionId.substring(0, Math.min(8, sessionId.length())));
                 AnrDialogKeyForwarder.setStockAnrActive(true);
                 try {
+                    XposedHelpers.setAdditionalInstanceField(dialog, "solar_fail_open", true);
                     XposedHelpers.callMethod(dialog, "show");
                 } catch (Throwable t) {
                     SolarContextBridge.log("AppAnr fail-open show failed: "
-                            + t.getClass().getSimpleName());
+                             + t.getClass().getSimpleName());
                 }
             }
         }, 2000L);

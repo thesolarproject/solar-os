@@ -42,7 +42,7 @@ public final class SolarRescueHoldState {
 
     private SolarRescueHoldState() {}
 
-    /** BACK down outside Solar — start 10s rescue track from hold anchor (HUD at 7s). */
+    /** 2026-07-08 — BACK down outside Solar — 10s rescue track (HUD arms at 7s). */
     public static void armBack() {
         arm(KIND_BACK, 0L);
     }
@@ -53,8 +53,8 @@ public final class SolarRescueHoldState {
     }
 
     /**
-     * 2026-07-06 — Arm rescue HUD with deadline anchored to hold DOWN (7s preview, 10s exec).
-     * Layman: countdown stays synced when HUD arms at 7s, not a fresh 10s from that moment.
+     * 2026-07-08 — Arm rescue HUD with deadline anchored to hold DOWN (7s preview, 10s exec).
+     * Layman: countdown stays synced when HUD arms mid-hold, not a fresh 10s from that moment.
      */
     public static void armFromHoldStart(String kind, long holdDownAtUptime) {
         arm(kind, holdDownAtUptime);
@@ -192,7 +192,7 @@ public final class SolarRescueHoldState {
 
     /**
      * Countdown digit only — 0 during restarting flash or outside final 3s window.
-     * Layman: nothing on screen for the first 7s, then 3, 2, 1.
+     * Layman: nothing on screen for the first ~7s, then 3, 2, 1 to 10s.
      */
     public static int hudCountdownValue() {
         if (isHudRestarting()) return 0;

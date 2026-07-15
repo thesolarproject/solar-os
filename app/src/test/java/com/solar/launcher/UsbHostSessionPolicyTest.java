@@ -28,6 +28,17 @@ public class UsbHostSessionPolicyTest {
         }
     }
 
+    /**
+     * 2026-07-08 — Fresh plug after Solar is already running clears boot-host settle.
+     * Mirror: hostAtBoot false once markFreshHostUnlockBootSettle would fire.
+     */
+    @Test
+    public void promptAllowedWhenBootHostCleared() {
+        if (!UsbHostSessionPolicy.isPromptAllowedForTest(false, true, 10_000L, 20_000L)) {
+            throw new AssertionError("expected prompt when boot-host unlocked after fresh plug");
+        }
+    }
+
     @Test
     public void promptAllowedAfterDisconnect() {
         if (!UsbHostSessionPolicy.isPromptAllowedForTest(true, true, 10_000L, 15_000L)) {

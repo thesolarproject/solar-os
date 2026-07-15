@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Bottom scrub / volume-in-track pulse + optional hold-Back hint (music Now Playing only). -->
+<!-- 2026-07-11 — Tall bottom band; padTop drops scrub into chrome (was floating mid-band). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/transport_bar_root"
     android:layout_width="match_parent"
-    android:layout_height="wrap_content"
+    android:layout_height="@dimen/y1_player_transport_height"
     android:orientation="vertical"
+    android:gravity="bottom"
     android:paddingLeft="10dp"
     android:paddingRight="10dp"
-    android:paddingBottom="6dp">
+    android:paddingTop="16dp"
+    android:paddingBottom="2dp">
 
     <TextView
         android:id="@+id/transport_hint"
@@ -21,6 +23,7 @@
         android:text="@string/context_hold_back_hint"
         android:textSize="12sp"
         android:visibility="gone" />
+    <!-- 2026-07-11 — Default = Y1 Back-only; MediaTransportBar swaps to context_hold_back_or_power_hint on Y2. -->
 
     <!-- 2026-07-06 — scrub row grows when FM tune shows MHz above the knob circle. -->
     <LinearLayout

@@ -1,10 +1,10 @@
 package com.solar.home.policy;
 
 /**
- * 2026-07-07 — Which launcher packages compete for HOME and which get pm-disabled per active choice.
+ * 2026-07-08 — Which launcher packages compete for HOME and which get pm-disabled per active choice.
  * Layman: any app Android lists as a home screen competes; only your pick stays enabled.
  * Technical: pure Java; no android imports — shared by helper, Solar, bridge, shell callers.
- * Reversal: delete; restore ad-hoc pm enable/disable in LauncherDefault + switch-to-stock.sh.
+ * Reversal: drop TARGET_STOCK + Innioasis from known lists; restore rockbox/jj only competition.
  */
 public final class LauncherCompetitionPolicy {
 
@@ -18,22 +18,25 @@ public final class LauncherCompetitionPolicy {
     /** Input-policy exceptions — longer BACK hold / nav-owned rules; not generic Android launchers. */
     private static final String[] SPECIAL_INPUT_LAUNCHERS = {
             HomeTargetPolicy.ROCKBOX_PKG,
-            HomeTargetPolicy.JJ_PKG
+            HomeTargetPolicy.JJ_PKG,
+            HomeTargetPolicy.INNIOASIS_Y1_PKG,
+            HomeTargetPolicy.INNIOASIS_Y2_PKG
     };
 
     private LauncherCompetitionPolicy() {}
 
-    /** solar / rockbox / jj / custom — canonical HOME target ids. */
+    /** solar / rockbox / jj / stock / custom — canonical HOME target ids. */
     public static String[] knownHomeTargets() {
         return new String[] {
                 HomeTargetPolicy.TARGET_SOLAR,
                 HomeTargetPolicy.TARGET_ROCKBOX,
                 HomeTargetPolicy.TARGET_JJ,
+                HomeTargetPolicy.TARGET_STOCK,
                 HomeTargetPolicy.TARGET_CUSTOM
         };
     }
 
-    /** Package name for a normalized HOME target — custom resolves via component prop elsewhere. */
+    /** Package name for a normalized HOME target — custom/stock resolve via component prop. */
     public static String packageForTarget(String target) {
         String t = HomeTargetPolicy.normalizeTarget(target);
         if (HomeTargetPolicy.TARGET_ROCKBOX.equals(t)) {
@@ -42,9 +45,13 @@ public final class LauncherCompetitionPolicy {
         if (HomeTargetPolicy.TARGET_JJ.equals(t)) {
             return HomeTargetPolicy.JJ_PKG;
         }
-        if (HomeTargetPolicy.TARGET_CUSTOM.equals(t)) {
+        if (HomeTargetPolicy.TARGET_STOCK.equals(t) || HomeTargetPolicy.TARGET_CUSTOM.equals(t)) {
             String[] parts = HomeTargetPolicy.parseComponent(readComponentPropForPolicy());
-            return parts != null ? parts[0] : HomeTargetPolicy.SOLAR_PKG;
+            if (parts != null) return parts[0];
+            if (HomeTargetPolicy.TARGET_STOCK.equals(t)) {
+                return HomeTargetPolicy.INNIOASIS_Y1_PKG;
+            }
+            return HomeTargetPolicy.SOLAR_PKG;
         }
         return HomeTargetPolicy.SOLAR_PKG;
     }
@@ -59,6 +66,9 @@ public final class LauncherCompetitionPolicy {
         if (HomeTargetPolicy.JJ_PKG.equals(base)) {
             return HomeTargetPolicy.TARGET_JJ;
         }
+        if (HomeTargetPolicy.isInnioasisStockPackage(base)) {
+            return HomeTargetPolicy.TARGET_STOCK;
+        }
         if (HomeTargetPolicy.SOLAR_PKG.equals(base)) {
             return HomeTargetPolicy.TARGET_SOLAR;
         }
@@ -69,26 +79,39 @@ public final class LauncherCompetitionPolicy {
     }
 
     /**
-     * 2026-07-07 — Legacy target-based disable list — prefer {@link #packagesToDisableForActiveHome}.
-     * Keeps Rockbox/JJ matrix for scripts/tests; custom uses active-package scan.
+     * 2026-07-08 — Legacy target-based disable list — prefer {@link #packagesToDisableForActiveHome}.
+     * Keeps Rockbox/JJ/Stock matrix for scripts/tests; custom uses active-package scan.
      */
     public static String[] packagesToDisableForTarget(String target) {
         String t = HomeTargetPolicy.normalizeTarget(target);
-        if (HomeTargetPolicy.TARGET_CUSTOM.equals(t)) {
+        if (HomeTargetPolicy.TARGET_CUSTOM.equals(t) || HomeTargetPolicy.TARGET_STOCK.equals(t)) {
             return packagesToDisableForActiveHome(packageForTarget(t), null);
         }
         if (HomeTargetPolicy.TARGET_ROCKBOX.equals(t)) {
-            return new String[] { HomeTargetPolicy.JJ_PKG };
+            return new String[] {
+                    HomeTargetPolicy.JJ_PKG,
+                    HomeTargetPolicy.INNIOASIS_Y1_PKG,
+                    HomeTargetPolicy.INNIOASIS_Y2_PKG
+            };
         }
         if (HomeTargetPolicy.TARGET_JJ.equals(t)) {
-            return new String[] { HomeTargetPolicy.ROCKBOX_PKG };
+            return new String[] {
+                    HomeTargetPolicy.ROCKBOX_PKG,
+                    HomeTargetPolicy.INNIOASIS_Y1_PKG,
+                    HomeTargetPolicy.INNIOASIS_Y2_PKG
+            };
         }
-        return new String[] { HomeTargetPolicy.ROCKBOX_PKG, HomeTargetPolicy.JJ_PKG };
+        return new String[] {
+                HomeTargetPolicy.ROCKBOX_PKG,
+                HomeTargetPolicy.JJ_PKG,
+                HomeTargetPolicy.INNIOASIS_Y1_PKG,
+                HomeTargetPolicy.INNIOASIS_Y2_PKG
+        };
     }
 
     /**
-     * 2026-07-07 — Disable every HOME competitor except {@code activePkg} and platform packages.
-     * {@code discoveredHomePkgs} from PM CATEGORY_HOME scan (may be null → rockbox+jj fallback).
+     * 2026-07-08 — Disable every HOME competitor except {@code activePkg} and platform packages.
+     * {@code discoveredHomePkgs} from PM CATEGORY_HOME scan (may be null → rockbox+jj+stock fallback).
      */
     public static String[] packagesToDisableForActiveHome(String activePkg, String[] discoveredHomePkgs) {
         java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<String>();
@@ -102,9 +125,11 @@ public final class LauncherCompetitionPolicy {
                 out.add(pkg);
             }
         }
-        // Always consider Rockbox/JJ when installed — even if PM scan misses them.
+        // Always consider Rockbox/JJ/Stock when installed — even if PM scan misses them.
         addIfNotActive(out, HomeTargetPolicy.ROCKBOX_PKG, active);
         addIfNotActive(out, HomeTargetPolicy.JJ_PKG, active);
+        addIfNotActive(out, HomeTargetPolicy.INNIOASIS_Y1_PKG, active);
+        addIfNotActive(out, HomeTargetPolicy.INNIOASIS_Y2_PKG, active);
         if (discoveredHomePkgs == null || discoveredHomePkgs.length == 0) {
             return out.toArray(new String[out.size()]);
         }
@@ -122,13 +147,14 @@ public final class LauncherCompetitionPolicy {
         return HomeTargetPolicy.TARGET_SOLAR.equals(HomeTargetPolicy.normalizeTarget(target));
     }
 
-    /** Solar/Rockbox/JJ/helper/companion — process suffixes stripped. */
+    /** Solar/Rockbox/JJ/Stock/helper/companion — process suffixes stripped. */
     public static boolean isKnownLauncherPackage(String procOrPkg) {
         if (procOrPkg == null || procOrPkg.length() == 0) return false;
         String base = basePackageName(procOrPkg);
         return HomeTargetPolicy.SOLAR_PKG.equals(base)
                 || HomeTargetPolicy.ROCKBOX_PKG.equals(base)
                 || HomeTargetPolicy.JJ_PKG.equals(base)
+                || HomeTargetPolicy.isInnioasisStockPackage(base)
                 || HomeTargetPolicy.HELPER_PKG.equals(base);
     }
 
@@ -142,7 +168,7 @@ public final class LauncherCompetitionPolicy {
         return false;
     }
 
-    /** 2026-07-07 — Rockbox/JJ only — input hooks use nav-owned / 300 ms passthrough tier. */
+    /** 2026-07-08 — Rockbox/JJ/Stock — input hooks use nav-owned / 300 ms passthrough tier. */
     public static boolean isSpecialInputLauncher(String pkg) {
         if (pkg == null || pkg.length() == 0) return false;
         String base = basePackageName(pkg);

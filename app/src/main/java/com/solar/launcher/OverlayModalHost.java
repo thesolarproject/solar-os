@@ -896,6 +896,14 @@ public final class OverlayModalHost {
      */
     private void handleUsbStorageOverlayEnable() {
         if (!UsbMassStorageExperiment.isEnabled(context)) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("a5", DeviceFeatures.isA5());
+                Debug1fc727Log.log(context, "OverlayModalHost.handleUsbStorageOverlayEnable",
+                        "experiment off → dismiss", "H2,H4", d);
+            } catch (Exception ignored) {}
+            // #endregion
             handleUsbStorageOverlayDismiss();
             return;
         }
@@ -904,8 +912,11 @@ public final class OverlayModalHost {
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("action", "enable");
+            d.put("a5", DeviceFeatures.isA5());
             DebugEdc27bLog.log("OverlayModalHost.handleUsbStorageOverlayEnable",
                     "user confirmed USB enable", "USB-F2", d);
+            Debug1fc727Log.log(context, "OverlayModalHost.handleUsbStorageOverlayEnable",
+                    "user confirmed USB enable", "H2", d);
         } catch (Exception ignored) {}
         // #endregion
         final Context app = context.getApplicationContext();
@@ -915,6 +926,16 @@ public final class OverlayModalHost {
             public void run() {
                 final boolean ok = UsbMassStorageController.enable(app, "user.overlay.confirm");
                 final boolean exported = UsbMassStorageController.isMassStorageExported();
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("ok", ok);
+                    d.put("exported", exported);
+                    d.put("a5", DeviceFeatures.isA5());
+                    Debug1fc727Log.log(app, "OverlayModalHost.handleUsbStorageOverlayEnable",
+                            "enable thread result", "H1,H3", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 if (ok && exported) {
                     // Solar MainActivity owns the lock screen — not a second overlay tier.
                     UsbStorageOverlayReceiver.launchSolarUsbHandoff(app, false, true);

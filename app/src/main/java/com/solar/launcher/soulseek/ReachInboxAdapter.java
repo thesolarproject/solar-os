@@ -8,6 +8,7 @@ import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import com.solar.launcher.A5FocusConfirm;
 import com.solar.launcher.DebugAgentLog;
 import com.solar.launcher.R;
 import com.solar.launcher.soulseek.store.ReachDatabase;
@@ -210,7 +211,8 @@ public final class ReachInboxAdapter extends BaseAdapter {
                         show, rowWidthPx, rowHeightPx, cc);
             }
         });
-        frame.setOnClickListener(new View.OnClickListener() {
+        // 2026-07-14 — A5: first tap focuses inbox peer; second opens thread (was one-tap).
+        A5FocusConfirm.setOnClickListener(frame, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (listener != null) listener.onPeerSelected(row.peer);

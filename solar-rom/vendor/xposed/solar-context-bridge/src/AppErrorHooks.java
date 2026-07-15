@@ -67,21 +67,29 @@ final class AppErrorHooks {
     /** Install in system_server (Y1 + Y2) — does not touch USB storage hooks. */
     static void install(LoadPackageParam lpparam) {
         try {
-            Class<?> cls = XposedHelpers.findClass(
-                    "com.android.server.am.AppErrorDialog", lpparam.classLoader);
-            int n = XposedHookKit.hookAll(cls, "show", new XC_MethodHook() {
+            Class<?> dialogClass = XposedHelpers.findClass(
+                    "android.app.Dialog", lpparam.classLoader);
+            XposedHookKit.hookAll(dialogClass, "show", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
-                    try {
-                        if (interceptAppErrorDialog(param.thisObject)) {
-                            XposedHookKit.skipMethod(param);
+                    Object dialog = param.thisObject;
+                    if (dialog == null) return;
+                    if ("com.android.server.am.AppErrorDialog".equals(dialog.getClass().getName())) {
+                        try {
+                            Boolean failOpen = (Boolean) XposedHelpers.getAdditionalInstanceField(dialog, "solar_fail_open");
+                            if (failOpen != null && failOpen) {
+                                return;
+                            }
+                            if (interceptAppErrorDialog(dialog)) {
+                                XposedHookKit.skipMethod(param);
+                            }
+                        } catch (Throwable t) {
+                            SolarContextBridge.log("AppError.show intercept error: " + t.getClass().getSimpleName());
                         }
-                    } catch (Throwable t) {
-                        SolarContextBridge.log("AppError.show intercept error: " + t.getClass().getSimpleName());
                     }
                 }
             });
-            SolarContextBridge.log("AppErrorDialog hooks=" + n);
+            SolarContextBridge.log("AppErrorDialog hook installed on Dialog.show");
         } catch (Throwable t) {
             SolarContextBridge.log("AppErrorDialog skip: " + t.getClass().getSimpleName());
         }
@@ -158,6 +166,8 @@ final class AppErrorHooks {
                 return false;
             }
             SolarContextBridge.log("AppError overlay pkg=" + body.substring(0, Math.min(40, body.length())));
+            // 2026-07-08 — Symmetry with AppAnrHooks: 2s paint-or-fail-open + wheel forwarder.
+            scheduleCrashOverlayFailOpen(dialog, sessionId);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -169,6 +179,44 @@ final class AppErrorHooks {
             return true;
         } catch (Throwable t) {
             SolarContextBridge.log("AppError intercept failed: " + t.getClass().getSimpleName());
+            return false;
+        }
+    }
+
+    /**
+     * 2026-07-08 — If overlay never paints ui=1, fail-open to stock crash dialog + wheel remap.
+     * Layman: if our themed crash screen never appears, stock dialog comes back and the wheel works.
+     * Technical: mirrors AppAnrHooks.scheduleAnrOverlayFailOpen / AnrDialogKeyForwarder.
+     */
+    private static void scheduleCrashOverlayFailOpen(final Object dialog, final String sessionId) {
+        android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+        h.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!PENDING.containsKey(sessionId)) return;
+                if (isOverlayUiVisible()) return;
+                PENDING.remove(sessionId);
+                SolarContextBridge.log("AppError fail-open stock Holo session="
+                        + sessionId.substring(0, Math.min(8, sessionId.length())));
+                AnrDialogKeyForwarder.setStockAnrActive(true);
+                try {
+                    XposedHelpers.setAdditionalInstanceField(dialog, "solar_fail_open", true);
+                    XposedHelpers.callMethod(dialog, "show");
+                } catch (Throwable t) {
+                    SolarContextBridge.log("AppError fail-open show failed: "
+                            + t.getClass().getSimpleName());
+                }
+            }
+        }, 2000L);
+    }
+
+    private static boolean isOverlayUiVisible() {
+        try {
+            Class<?> sp = XposedHelpers.findClass("android.os.SystemProperties", null);
+            Object v = XposedHelpers.callStaticMethod(sp, "get",
+                    "sys.solar.overlay.ui", "0");
+            return "1".equals(String.valueOf(v));
+        } catch (Throwable ignored) {
             return false;
         }
     }

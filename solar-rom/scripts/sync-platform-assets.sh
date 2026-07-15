@@ -34,10 +34,22 @@ build_if_missing "$VENDOR/solar-rockbox-compat/SolarRockboxCompat.apk" "build-ro
 build_if_missing "$VENDOR/solar-notpipe-bridge/SolarNotPipeBridge.apk" "build-notpipe-bridge-apk.sh"
 
 # 2026-07-06 — notPipe YouTube client APK (third-party; pinned v0.3.0).
+# 2026-07-14 — Prefer Solarized APK (WakeService + SolarCmdReceiver); never overwrite with upstream minify.
 chmod +x "$SCRIPT_DIR/fetch-notpipe-apk.sh"
 NOTPIPE_CACHE="$("$SCRIPT_DIR/fetch-notpipe-apk.sh")"
-NOTPIPE_SRC="$NOTPIPE_CACHE/notPipe-0.3.0-release.apk"
-[ -f "$NOTPIPE_SRC" ] || die "missing notPipe APK — fetch-notpipe-apk.sh failed"
+NOTPIPE_UPSTREAM_CACHE="$NOTPIPE_CACHE/notPipe-0.3.0-release.apk"
+NOTPIPE_SOLAR_REF="$ROOT/reference/NotPipe reference/notPipe-0.3.0-release.apk"
+NOTPIPE_SRC=""
+if [ -f "$NOTPIPE_SOLAR_REF" ] && python3 -c "import zipfile,sys;z=zipfile.ZipFile(sys.argv[1]);d=z.read('classes.dex');sys.exit(0 if b'SolarWakeService' in d and b'SolarCmdReceiver' in d else 1)" "$NOTPIPE_SOLAR_REF" 2>/dev/null; then
+    NOTPIPE_SRC="$NOTPIPE_SOLAR_REF"
+    echo "==> Using Solarized notPipe reference: $NOTPIPE_SRC"
+elif [ -x "$SCRIPT_DIR/build-notpipe-solar-apk.sh" ]; then
+    echo "==> Building Solarized notPipe APK (WakeService + SolarCmdReceiver)"
+    "$SCRIPT_DIR/build-notpipe-solar-apk.sh"
+    NOTPIPE_SRC="$NOTPIPE_SOLAR_REF"
+fi
+[ -f "$NOTPIPE_SRC" ] || NOTPIPE_SRC="$NOTPIPE_UPSTREAM_CACHE"
+[ -f "$NOTPIPE_SRC" ] || die "missing notPipe APK — fetch/build failed"
 
 # 2026-07-05 — Companion global context modal APK (Phase 1); bundled for platform self-heal.
 COMPANION_APK="$ROOT/global-context-modal/build/outputs/apk/debug/global-context-modal-debug.apk"

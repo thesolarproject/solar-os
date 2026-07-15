@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.animation.DecelerateInterpolator;
+import android.view.animation.Interpolator;
 
 /**
  * Push/pop on clipped list hosts (settings, library browse) — iPod submenu drill.
@@ -12,7 +12,7 @@ import android.view.animation.DecelerateInterpolator;
  */
 public final class ListDrillTransition {
 
-    private static final DecelerateInterpolator EASE = new DecelerateInterpolator(1.6f);
+    private static final Interpolator EASE = ScreenTransition.PUSH_EASE;
     private static volatile boolean animating;
 
     private ListDrillTransition() {}

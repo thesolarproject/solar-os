@@ -6,116 +6,117 @@ import android.content.Context;
 import android.content.Intent;
 
 /**
- * SystemUI Xposed hook forwards USB storage enable prompts here — starts the global overlay tier.
+ * USB storage UI router → Solar MainActivity (monolithic, July-2 style).
+ * 2026-07-10 — Restored from reference/Better State/solar-20260702-1521 after companion
+ * split races broke enable/lock. Companion is not the USB host.
+ * Layman: cable events wake Solar; Turn on → STATE_USB_STORAGE eject screen until Turn Off.
+ * Reversal: routeToCompanionModal + OverlayMenuClient (broken dual-handler path).
  */
 public final class UsbStorageOverlayReceiver extends BroadcastReceiver {
 
-    private static final android.os.Handler sDismissHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static android.os.Handler sHandler;
     private static Runnable sPendingDismiss = null;
-    private static long sLastPromptTime = 0L;
+    private static long sLastRouteMs = 0L;
+    private static boolean sLastRouteLock = false;
+    private static volatile boolean sHandoffInFlight = false;
+
+    private static final long ROUTE_DEBOUNCE_MS = 600L;
+
+    private static android.os.Handler handler() {
+        if (sHandler == null) {
+            sHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+        }
+        return sHandler;
+    }
 
     @Override
     public void onReceive(Context context, Intent intent) {
         if (context == null || intent == null) return;
-        if (!OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(intent.getAction())) return;
-        routeUsbStorageOverlay(context, intent.getBooleanExtra(
-                OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false));
+        String action = intent.getAction();
+        if (OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE_LOCK.equals(action)) {
+            routeToSolar(context, false, true, "receiver.lock");
+            return;
+        }
+        if (!OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE.equals(action)) return;
+        boolean lock = intent.getBooleanExtra(OverlayTriggers.EXTRA_USB_STORAGE_LOCK, false);
+        routeToSolar(context, !lock, lock, "receiver.usb");
     }
 
-    /** Cable unplug — dismiss global USB overlay without pulling Solar HOME. */
+    /** Cable unplug — dismiss any leftover overlay shells + unlock MainActivity flags. */
     static void dismissGlobalOverlayIfActive(final Context context) {
         if (context == null) return;
-        // ponytail: delay dismiss to debounce bouncy USB unplug/replug events
         if (sPendingDismiss != null) {
-            sDismissHandler.removeCallbacks(sPendingDismiss);
+            handler().removeCallbacks(sPendingDismiss);
         }
         sPendingDismiss = new Runnable() {
             @Override
             public void run() {
                 sPendingDismiss = null;
-                if (!OverlayKeyGate.isOverlayKeysActive()) return;
                 OverlayTierScheduler.clearPendingUsbPrompt();
                 ExternalInputHandoff.restoreAfterOverlayDismiss(context.getApplicationContext());
-                Intent svc = new Intent(context, SolarOverlayService.class);
-                svc.setAction(OverlayTriggers.ACTION_DISMISS_OVERLAY);
-                try {
-                    context.startService(svc);
-                } catch (Exception ignored) {}
+                dismissCompanionShell(context);
+                notifyMainUsbUnlocked(context, false);
             }
         };
-        sDismissHandler.postDelayed(sPendingDismiss, 1000L); // 1s debounce
+        handler().postDelayed(sPendingDismiss, 400L);
     }
 
-    /** Honor Solar USB prefs, then start overlay or jump straight to Solar USB lock / enable. */
-    static void routeUsbStorageOverlay(Context context, boolean massStorageLockOnly) {
+    /**
+     * Launch or re-deliver extras into Solar MainActivity (single USB UI owner).
+     * @param enable true → evaluate / show enable prompt or auto-connect
+     * @param lockOnly true → lock screen only (UMS already on)
+     */
+    static void routeToSolar(Context context, boolean enable, boolean lockOnly, String caller) {
         if (context == null) return;
-        // ponytail: cancel any pending disconnect dismiss if a connect event occurs
-        if (sPendingDismiss != null) {
-            sDismissHandler.removeCallbacks(sPendingDismiss);
-            sPendingDismiss = null;
-        }
-        if (!massStorageLockOnly) {
-            long now = android.os.SystemClock.elapsedRealtime();
-            if (now - sLastPromptTime < 500L) {
-                return;
-            }
-            sLastPromptTime = now;
-        }
-        if (!massStorageLockOnly && UsbHostSessionPolicy.hasUserDismissedThisSession(context)) {
+        if (!UsbMassStorageExperiment.isEnabled(context)) return;
+
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (now - sLastRouteMs < ROUTE_DEBOUNCE_MS && sLastRouteLock == lockOnly) {
             return;
         }
+        sLastRouteMs = now;
+        sLastRouteLock = lockOnly;
+
         // #region agent log
         try {
             org.json.JSONObject d = Debug266f21Log.usbSnapshot();
-            d.put("massStorageLockOnly", massStorageLockOnly);
+            d.put("caller", caller);
+            d.put("enable", enable);
+            d.put("lockOnly", lockOnly);
             d.put("fg", ExternalInputHandoff.getForegroundPackageName(context));
-            d.put("useGlobalOverlay", shouldUseGlobalOverlayPrompt(context));
-            d.put("autoConnect", UsbStorageSessionFlags.isAutoConnectEnabled(context));
-            Debug266f21Log.log(context, "UsbStorageOverlayReceiver.routeUsbStorageOverlay",
-                    "route entry", "H3,H7", d);
+            d.put("exported", UsbMassStorageController.isMassStorageExported());
+            Debug266f21Log.log(context, "UsbStorageOverlayReceiver.routeToSolar",
+                    "MainActivity USB handoff", "USB-SOLAR", d);
         } catch (Exception ignored) {}
         // #endregion
-        if (!UsbMassStorageExperiment.isEnabled(context)) return;
-        if (massStorageLockOnly) {
-            if (!UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
-                final Context app = context.getApplicationContext();
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        UsbMassStorageController.disable(app);
-                    }
-                }, "UsbUnauthorizedTearDown").start();
-                return;
-            }
-            if (shouldUseGlobalOverlayPrompt(context)) {
-                // UMS exported while user stays in a stock app — no Solar lock handoff.
+
+        if (lockOnly) {
+            if (!UsbMassStorageController.isMassStorageExported()
+                    && !UsbMassStorageController.isKernelMassStorageMode()) {
+                // Spurious lock — clear sticky flags if MainActivity alive.
+                notifyMainUsbUnlocked(context, false);
                 return;
             }
             launchSolarUsbHandoff(context, false, true);
+            return;
+        }
+
+        if (UsbHostSessionPolicy.hasUserDismissedThisSession(context)) {
             return;
         }
         if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)) {
             return;
         }
-        // 2026-07-06 — ANR/crash native tier owns overlay — USB waits for user action first.
-        if (OverlayTierScheduler.shouldDeferUsbSpawn()) {
-            OverlayTierScheduler.queuePendingUsbPrompt();
-            return;
-        }
         UsbHostSessionPolicy.markPromptEvaluated(context);
+
         if (UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
-            final Context app = context.getApplicationContext();
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    UsbMassStorageController.enable(app, "auto.receiver");
-                }
-            }, "UsbAutoConnectRecv").start();
-            launchSolarUsbHandoff(context, false, true);
+            launchSolarUsbHandoff(context, true, true);
             return;
         }
-        // Ensure UMS is disabled if auto-connect is disabled and we are showing prompt
-        if (!UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
+
+        // Unauthorized kernel UMS without consent — clear before prompt.
+        if (UsbMassStorageController.isKernelMassStorageMode()
+                && !UsbMassStorageController.isMassStorageExported()) {
             final Context app = context.getApplicationContext();
             new Thread(new Runnable() {
                 @Override
@@ -124,89 +125,166 @@ public final class UsbStorageOverlayReceiver extends BroadcastReceiver {
                 }
             }, "UsbUnauthorizedTearDown").start();
         }
-        // 2026-07-06 — Solar foreground: in-app USB tier owns keys; global WM overlay steals nothing.
-        if (!shouldUseGlobalOverlayPrompt(context)) {
-            launchSolarUsbHandoff(context, false, false);
+
+        launchSolarUsbHandoff(context, true, false);
+    }
+
+    /** @deprecated companion path removed — use {@link #routeToSolar} */
+    static void routeToCompanionModal(Context context, boolean lockOnly, String caller) {
+        routeToSolar(context, !lockOnly, lockOnly, caller != null ? caller : "routeToCompanionModal");
+    }
+
+    static void routeUsbStorageOverlay(Context context, boolean massStorageLockOnly) {
+        routeToSolar(context, !massStorageLockOnly, massStorageLockOnly,
+                massStorageLockOnly ? "route.lock" : "route.enable");
+    }
+
+    static void startUsbLockShell(Context context) {
+        // Prefer in-process lock when MainActivity is already alive (no activity restart).
+        MainActivity activity = MainActivity.peekForOverlay();
+        if (activity != null) {
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    activity.enterUsbMassStorageLockFromExternal();
+                }
+            });
             return;
         }
-        // Overlay arms inside SolarOverlayService — never set sys.solar.overlay.active here.
-        Intent svc = new Intent(context, SolarOverlayService.class);
-        svc.setComponent(new ComponentName(context.getPackageName(),
-                SolarOverlayService.class.getName()));
-        svc.setAction(OverlayTriggers.ACTION_SHOW_OVERLAY_USB_STORAGE);
+        routeToSolar(context, false, true, "startUsbLockShell");
+    }
+
+    static void routeEnablePromptOverlay(Context context, String caller) {
+        routeToSolar(context, true, false, caller != null ? caller : "routeEnablePrompt");
+    }
+
+    static void routeUsbConnectPromptIfNeeded(Context context) {
+        routeToSolar(context, true, false, "routeUsbConnectPromptIfNeeded");
+    }
+
+    static void dismissCompanionShell(Context context) {
+        if (context == null) return;
         try {
-            context.startService(svc);
+            Intent companion = new Intent(OverlayTriggers.ACTION_DISMISS_OVERLAY);
+            companion.setComponent(new ComponentName(
+                    com.solar.launcher.overlay.OverlayShellRouter.COMPANION_PKG,
+                    com.solar.launcher.overlay.OverlayShellRouter.COMPANION_OVERLAY_SERVICE));
+            context.startService(companion);
         } catch (Exception ignored) {}
+        try {
+            Intent solar = new Intent(OverlayTriggers.ACTION_DISMISS_OVERLAY);
+            solar.setComponent(new ComponentName(
+                    com.solar.launcher.overlay.OverlayShellRouter.SOLAR_PKG,
+                    com.solar.launcher.overlay.OverlayShellRouter.SOLAR_OVERLAY_SERVICE));
+            context.startService(solar);
+        } catch (Exception ignored) {}
+    }
+
+    /** @deprecated alias */
+    static void dismissAllUsbOverlayShells(Context context) {
+        dismissCompanionShell(context);
+    }
+
+    static void notifyMainUsbLocked(Context context) {
+        if (context == null) return;
+        try {
+            Intent i = new Intent(OverlayTriggers.ACTION_USB_STORAGE_LOCKED);
+            i.setPackage(context.getPackageName());
+            context.sendBroadcast(i);
+        } catch (Exception ignored) {}
+    }
+
+    static void notifyMainUsbUnlocked(Context context, boolean forceOff) {
+        if (context == null) return;
+        try {
+            Intent i = new Intent(OverlayTriggers.ACTION_USB_STORAGE_UNLOCKED);
+            i.setPackage(context.getPackageName());
+            if (forceOff) {
+                i.putExtra(OverlayTriggers.EXTRA_USB_FORCE_OFF, true);
+            }
+            context.sendBroadcast(i);
+        } catch (Exception ignored) {}
+    }
+
+    static void notifyMainUsbUnlocked(Context context) {
+        notifyMainUsbUnlocked(context, true);
     }
 
     /**
-     * True when a stock/third-party app is foreground — USB enable prompt belongs in :overlay,
-     * not Solar's in-app context menu (which would steal focus via moveTaskToFront).
+     * Solar owns USB UX (July-2 monlith). Global overlay prompt is never preferred.
+     * Kept for Xposed/tests that still query the flag.
      */
     static boolean shouldUseGlobalOverlayPrompt(Context context) {
-        if (context == null) return false;
-        if (OverlayKeyGate.isOverlayKeysActive()) return false;
-        return shouldUseGlobalOverlayPromptForTest(
-                ExternalInputHandoff.getForegroundPackageName(context));
+        return false;
     }
 
-    /** Test hook — package name to overlay-vs-in-app routing without Robolectric. */
     static boolean shouldUseGlobalOverlayPromptForTest(String foregroundPkg) {
-        if (GlobalOverlayPolicy.isSolarForegroundPackage(foregroundPkg)) return false;
-        // Unknown / SystemUI / third-party / Rockbox — global overlay; never HOME-steal Solar.
-        return true;
+        return false;
     }
 
-    /** Route USB enable prompt through global overlay when user is not already in Solar. */
-    static void routeUsbConnectPromptIfNeeded(Context context) {
-        if (!shouldUseGlobalOverlayPrompt(context)) return;
-        routeUsbStorageOverlay(context, false);
+    static boolean shouldPaintUsbLockShellForTest(boolean autoConnect, boolean massStorageExported) {
+        return massStorageExported || autoConnect;
     }
 
-    /** True when the enable prompt should stay in :overlay — UMS not exported yet. */
     static boolean isEnablePromptOverlayPreferred(Context context) {
-        return shouldUseGlobalOverlayPrompt(context);
+        return false;
     }
 
-    /** Log + route overlay enable prompt (never pulls Solar HOME until user confirms). */
-    static void routeEnablePromptOverlay(Context context, String caller) {
-        if (context == null) return;
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("caller", caller);
-            d.put("fg", ExternalInputHandoff.getForegroundPackageName(context));
-            d.put("overlayActive", OverlayKeyGate.isOverlayKeysActive());
-            DebugEdc27bLog.log("UsbStorageOverlayReceiver.routeEnablePromptOverlay",
-                    "overlay enable prompt", "USB-F1", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        routeUsbStorageOverlay(context, false);
-    }
-
-    /** Bring Solar to front for enable or mass-storage lock — skips third-party foreground restore. */
+    /**
+     * Start MainActivity with USB handoff extras (evaluate prompt / lock / auto enable).
+     * Matches July-2 single-owner model; extras consumed by routeUsbOverlayLaunchExtras.
+     */
     static void launchSolarUsbHandoff(Context context, boolean enableStorage, boolean lockOnly) {
         if (context == null) return;
         if (!UsbMassStorageExperiment.isEnabled(context)) return;
-        // #region agent log
+
+        // Alive MainActivity — apply in-process (no extra activity race).
+        MainActivity activity = MainActivity.peekForOverlay();
+        if (activity != null) {
+            final boolean en = enableStorage;
+            final boolean lk = lockOnly;
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    activity.applyUsbHandoffFromExternal(en, lk);
+                }
+            });
+            return;
+        }
+
+        sHandoffInFlight = true;
         try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("enableStorage", enableStorage);
-            d.put("lockOnly", lockOnly);
-            DebugEdc27bLog.log("UsbStorageOverlayReceiver.launchSolarUsbHandoff",
-                    "start MainActivity for USB", "USB-F2", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        OverlayForegroundGuard.markUserRequestedSolarNavigation();
-        Intent launch = new Intent(context, MainActivity.class);
-        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP
-                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        if (enableStorage) {
-            launch.putExtra(MainActivity.EXTRA_USB_OVERLAY_ENABLE, true);
+            Intent home = new Intent(context, MainActivity.class);
+            home.setAction(Intent.ACTION_MAIN);
+            home.addCategory(Intent.CATEGORY_HOME);
+            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            if (lockOnly) {
+                home.putExtra(MainActivity.EXTRA_USB_OVERLAY_LOCK, true);
+            }
+            if (enableStorage) {
+                home.putExtra(MainActivity.EXTRA_USB_OVERLAY_ENABLE, true);
+            }
+            if (!lockOnly && !enableStorage) {
+                home.putExtra(MainActivity.EXTRA_USB_EVALUATE_HOST, true);
+            }
+            // enable+lock → auto-connect path inside MainActivity
+            if (enableStorage && lockOnly) {
+                home.putExtra(MainActivity.EXTRA_USB_OVERLAY_ENABLE, true);
+                home.putExtra(MainActivity.EXTRA_USB_OVERLAY_LOCK, true);
+            }
+            context.startActivity(home);
+        } catch (Exception e) {
+            sHandoffInFlight = false;
+            android.util.Log.w("UsbStorageOverlay", "launchSolarUsbHandoff failed", e);
         }
-        if (lockOnly) {
-            launch.putExtra(MainActivity.EXTRA_USB_OVERLAY_LOCK, true);
-        }
-        context.startActivity(launch);
+    }
+
+    static void clearHandoffInFlight() {
+        sHandoffInFlight = false;
+    }
+
+    static boolean isHandoffInFlight() {
+        return sHandoffInFlight;
     }
 }

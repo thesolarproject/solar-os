@@ -17,10 +17,14 @@ public final class PlatformPrepDebugLog {
     private static final String SESSION = "9972e0";
     private static final String FILE = "debug-9972e0.log";
 
+    /** Off by default — prep is silent; file I/O during boot hurts cold start (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private PlatformPrepDebugLog() {}
 
     public static void log(Context ctx, String location, String message,
             String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

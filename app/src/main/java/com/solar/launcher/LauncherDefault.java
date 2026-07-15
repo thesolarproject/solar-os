@@ -31,6 +31,8 @@ public final class LauncherDefault {
     public static final String TARGET_ROCKBOX = HomeTargetPolicy.TARGET_ROCKBOX;
     /** 2026-07-06 — JJ Launcher (MO-ON) third HOME option — package from reference/jj_launcher. */
     public static final String TARGET_JJ = HomeTargetPolicy.TARGET_JJ;
+    /** 2026-07-08 — Factory Innioasis HOME (com.innioasis.y1 / .y2) — MODE_JJ inject. */
+    public static final String TARGET_STOCK = HomeTargetPolicy.TARGET_STOCK;
     /** 2026-07-07 — Any PM-resolved CATEGORY_HOME launcher (no Solar manifest extension). */
     public static final String TARGET_CUSTOM = HomeTargetPolicy.TARGET_CUSTOM;
     public static final String JJ_PACKAGE = HomeTargetPolicy.JJ_PKG;
@@ -50,6 +52,8 @@ public final class LauncherDefault {
             setPreferredRockboxHome(context);
         } else if (TARGET_JJ.equals(target) && LauncherSwitch.isJjInstalled(context)) {
             setPreferredJjHome(context);
+        } else if (TARGET_STOCK.equals(target) && LauncherSwitch.isStockInstalled(context)) {
+            setPreferredStockHome(context);
         } else if (TARGET_CUSTOM.equals(HomeTargetPolicy.normalizeTarget(target))) {
             setPreferredCustomHome(context);
         } else {
@@ -107,6 +111,27 @@ public final class LauncherDefault {
         }
     }
 
+    /**
+     * 2026-07-08 — Stock Innioasis effective HOME — helper owns PM; MODE_JJ inject while fg.
+     * Reversal: remove; route users through TARGET_CUSTOM only.
+     */
+    public static void setPreferredStockHome(Context context) {
+        if (context == null) return;
+        try {
+            enablePackageIfNeeded(context, context.getPackageName());
+            enableHelperIfNeeded(context);
+            String pkg = LauncherSwitch.stockPackageForDevice(context);
+            if (pkg != null) {
+                enablePackageIfNeeded(context, pkg);
+            }
+            applyCompetitionPolicy(context, TARGET_STOCK);
+            applyPreferredHelperHome(context);
+            Log.i(TAG, "Stock Innioasis target — helper set as PM preferred HOME");
+        } catch (Exception e) {
+            Log.w(TAG, "set preferred stock HOME failed: " + e.getMessage());
+        }
+    }
+
     /** 2026-07-07 — Custom PM HOME — enable chosen pkg; disable other discovered launchers. */
     public static void setPreferredCustomHome(Context context) {
         if (context == null) return;
@@ -137,18 +162,42 @@ public final class LauncherDefault {
         applyCompetitionPolicyForTarget(context, target);
     }
 
+    /**
+     * 2026-07-08 — One batched su for enable/disable instead of N× RootShell.run (UI freeze).
+     * Layman: flip all the competing home apps in one go so the screen does not stall.
+     * Technical: builds pm enable active + pm disable others; falls back to per-pkg on failure.
+     * Reversal: restore per-package disablePackageIfEnabled loop.
+     */
     private static void applyCompetitionPolicyForTarget(Context context, String target) {
         LauncherDiscovery.syncHomeLauncherListProperty(context.getPackageManager());
         String activePkg = LauncherCompetitionPolicy.packageForTarget(
                 HomeTargetPolicy.normalizeTarget(target));
+        if (TARGET_STOCK.equals(HomeTargetPolicy.normalizeTarget(target))) {
+            String stock = LauncherSwitch.stockPackageForDevice(context);
+            if (stock != null) activePkg = stock;
+        }
         String[] discovered = LauncherDiscovery.homeLauncherPackages(context.getPackageManager())
                 .toArray(new String[0]);
         String[] disable = LauncherCompetitionPolicy.packagesToDisableForActiveHome(
                 activePkg, discovered);
+        StringBuilder batch = new StringBuilder();
+        if (activePkg != null && activePkg.length() > 0) {
+            batch.append("pm enable ").append(activePkg).append("; ");
+        }
+        batch.append("pm enable ").append(context.getPackageName()).append("; ");
+        batch.append("pm enable ").append(HomeTargetPolicy.HELPER_PKG);
         for (int i = 0; i < disable.length; i++) {
             String pkg = disable[i];
             if (LauncherCompetitionPolicy.isPlatformHomePackage(pkg)) continue;
-            disablePackageIfEnabled(context, pkg, isInstalledPackage(context, pkg));
+            if (!isInstalledPackage(context, pkg)) continue;
+            batch.append("; pm disable ").append(pkg);
+        }
+        if (!RootShell.run(batch.toString())) {
+            for (int i = 0; i < disable.length; i++) {
+                String pkg = disable[i];
+                if (LauncherCompetitionPolicy.isPlatformHomePackage(pkg)) continue;
+                disablePackageIfEnabled(context, pkg, isInstalledPackage(context, pkg));
+            }
         }
     }
 
@@ -184,6 +233,10 @@ public final class LauncherDefault {
         if (LauncherSwitch.isJjInstalled(context) && TARGET_JJ.equals(target)) {
             enablePackageIfNeeded(context, JJ_PACKAGE);
         }
+        if (LauncherSwitch.isStockInstalled(context) && TARGET_STOCK.equals(target)) {
+            String stock = LauncherSwitch.stockPackageForDevice(context);
+            if (stock != null) enablePackageIfNeeded(context, stock);
+        }
     }
 
     /** ComponentName for PM preferred HOME — always the helper middle-man activity. */
@@ -202,23 +255,36 @@ public final class LauncherDefault {
         } catch (Exception ignored) {}
     }
 
-    /** Pin PackageManager preferred HOME to helper — never Rockbox/JJ/Solar activities directly. */
-    static void applyPreferredHelperHome(Context context) {
-        PackageManager pm = context.getPackageManager();
-        pm.clearPackagePreferredActivities(context.getPackageName());
-        pm.clearPackagePreferredActivities(HomeTargetPolicy.HELPER_PKG);
-        if (LauncherSwitch.isRockboxInstalled(context)) {
-            pm.clearPackagePreferredActivities(ROCKBOX_PACKAGE);
+    /**
+     * Pin PackageManager preferred HOME to helper — never Rockbox/JJ/Solar activities directly.
+     * 2026-07-08 — Public for shell_applied broadcast path (prefs mirror without Nested RootShell).
+     */
+    public static void applyPreferredHelperHome(Context context) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            pm.clearPackagePreferredActivities(context.getPackageName());
+            pm.clearPackagePreferredActivities(HomeTargetPolicy.HELPER_PKG);
+            if (LauncherSwitch.isRockboxInstalled(context)) {
+                pm.clearPackagePreferredActivities(ROCKBOX_PACKAGE);
+            }
+            if (LauncherSwitch.isJjInstalled(context)) {
+                pm.clearPackagePreferredActivities(JJ_PACKAGE);
+            }
+            if (LauncherSwitch.isStockInstalled(context)) {
+                String stock = LauncherSwitch.stockPackageForDevice(context);
+                if (stock != null) {
+                    pm.clearPackagePreferredActivities(stock);
+                }
+            }
+            ComponentName helper = helperHomeComponent();
+            IntentFilter filter = new IntentFilter(Intent.ACTION_MAIN);
+            filter.addCategory(Intent.CATEGORY_HOME);
+            filter.addCategory(Intent.CATEGORY_DEFAULT);
+            pm.addPreferredActivity(filter, IntentFilter.MATCH_CATEGORY_EMPTY,
+                    new ComponentName[] { helper }, helper);
+        } catch (Throwable t) {
+            android.util.Log.e("LauncherDefault", "applyPreferredHelperHome failed", t);
         }
-        if (LauncherSwitch.isJjInstalled(context)) {
-            pm.clearPackagePreferredActivities(JJ_PACKAGE);
-        }
-        ComponentName helper = helperHomeComponent();
-        IntentFilter filter = new IntentFilter(Intent.ACTION_MAIN);
-        filter.addCategory(Intent.CATEGORY_HOME);
-        filter.addCategory(Intent.CATEGORY_DEFAULT);
-        pm.addPreferredActivity(filter, IntentFilter.MATCH_CATEGORY_EMPTY,
-                new ComponentName[] { helper }, helper);
     }
 
     private static void disablePackageIfEnabled(Context context, String pkg, boolean installed) {

@@ -28,37 +28,37 @@ public class RadioExperimentTest {
     }
 
     @Test
-    public void fmAlwaysProduction() {
-        if (!RadioExperiment.isFmProduction()) {
-            throw new AssertionError("FM should always be production");
+    public void fmNotProductionByDefault() {
+        if (RadioExperiment.isFmProduction()) {
+            throw new AssertionError("FM should be experiment-gated (not production)");
+        }
+        if (RadioExperiment.isFmEnabled(prefs)) {
+            throw new AssertionError("FM should default off");
         }
     }
 
     @Test
-    public void netBrowseBlockedWhenExperimentOff() {
+    public void allRadioScreensBlockedWhenExperimentOff() {
         if (!RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_NET_BROWSE, prefs)) {
             throw new AssertionError("net browse should be blocked");
         }
-    }
-
-    @Test
-    public void fmScreensAllowedWhenExperimentOff() {
-        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_FM_BROWSE, prefs)) {
-            throw new AssertionError("FM browse should be allowed");
+        if (!RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO_FM_BROWSE, prefs)) {
+            throw new AssertionError("FM browse should be blocked when experiment off");
         }
-        if (RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO, prefs)) {
-            throw new AssertionError("radio hub should be allowed");
+        if (!RadioExperiment.isBlockedScreenState(MediaSuiteHost.STATE_RADIO, prefs)) {
+            throw new AssertionError("radio hub should be blocked when experiment off");
         }
-        if (!RadioExperiment.isInAppRadioUiEnabled(prefs)) {
-            throw new AssertionError("in-app FM UI should always be on");
+        if (RadioExperiment.isInAppRadioUiEnabled(prefs)) {
+            throw new AssertionError("in-app radio UI should be off by default");
         }
     }
 
     @Test
-    public void hubRedirectsToFmPlayerWhenExperimentOff() {
+    public void hubStaysRadioWhenExperimentOff() {
+        // No redirect into FM when feature is hidden.
         int target = RadioExperiment.resolveRadioHomeTarget(MediaSuiteHost.STATE_RADIO, prefs);
-        if (target != MediaSuiteHost.STATE_RADIO_FM_PLAYER) {
-            throw new AssertionError("hub should open FM player when experiment off");
+        if (target != MediaSuiteHost.STATE_RADIO) {
+            throw new AssertionError("hub should not open FM when experiment off");
         }
     }
 

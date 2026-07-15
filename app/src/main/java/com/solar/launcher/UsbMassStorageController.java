@@ -38,7 +38,19 @@ public final class UsbMassStorageController {
      * Callers starting with {@code user.} are manual UI confirms; {@code auto.} needs auto-connect pref.
      */
     public static boolean enable(Context context, String caller) {
-        if (!UsbMassStorageExperiment.isEnabled(context)) return false;
+        if (!UsbMassStorageExperiment.isEnabled(context)) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("caller", caller);
+                d.put("a5", DeviceFeatures.isA5());
+                d.put("y2", DeviceFeatures.isY2());
+                Debug1fc727Log.log(context, "UsbMassStorageController.enable",
+                        "experiment off", "H4", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return false;
+        }
         if (!isEnablePermitted(context, caller)) {
             logEnableDenied(context, caller);
             // #region agent log
@@ -47,6 +59,7 @@ public final class UsbMassStorageController {
                 d.put("caller", caller);
                 d.put("autoConnect", context != null && UsbStorageSessionFlags.isAutoConnectEnabled(context));
                 Debug266f21Log.log(context, "UsbMassStorageController.enable", "denied", "H1,H4", d);
+                Debug1fc727Log.log(context, "UsbMassStorageController.enable", "denied", "H4", d);
             } catch (Exception ignored) {}
             // #endregion
             return false;
@@ -57,10 +70,26 @@ public final class UsbMassStorageController {
             org.json.JSONObject d = Debug266f21Log.usbSnapshot();
             d.put("caller", caller);
             d.put("autoConnect", context != null && UsbStorageSessionFlags.isAutoConnectEnabled(context));
+            d.put("a5", DeviceFeatures.isA5());
+            d.put("rootCanRun", !DeviceFeatures.isA5());
             Debug266f21Log.log(context, "UsbMassStorageController.enable", "permitted", "H1,H4", d);
+            Debug1fc727Log.log(context, "UsbMassStorageController.enable", "permitted→toggle", "H1,H3", d);
         } catch (Exception ignored) {}
         // #endregion
-        return runUmsToggle(context, true);
+        boolean ok = runUmsToggle(context, true);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("caller", caller);
+            d.put("ok", ok);
+            d.put("exported", isMassStorageExported());
+            d.put("kernelUms", isKernelMassStorageMode());
+            d.put("usbConfig", readSysUsbConfig());
+            d.put("a5", DeviceFeatures.isA5());
+            Debug1fc727Log.log(context, "UsbMassStorageController.enable", "toggle done", "H1,H3", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        return ok;
     }
 
     /** User tapped Turn on / overlay confirm, or auto-connect pref is explicitly on. */
@@ -102,15 +131,14 @@ public final class UsbMassStorageController {
     }
 
     /**
-     * Y2 with UMS experiment off — force MTP if a prior UMS session left mass_storage,adb (2026-07-05).
-     * Layman: when disk mode is disabled in Debug, USB goes back to normal phone-to-PC file transfer.
-     * Tech: boot + experiment-off call {@link #disable} when kernel config still lists mass_storage.
-     * Reversal: remove if stock UsbDeviceManager always restores mtp,adb on its own.
+     * Y2 product is MTP-only — force mtp,adb if a prior session left mass_storage (2026-07-10).
+     * Layman: Y2 always does normal phone-to-PC file transfer, never disk mode.
+     * Tech: boot + experiment sync call {@link #disable} when kernel still lists mass_storage.
+     * Reversal: gate again if Y2 UMS is productized later.
      */
     public static void ensureStockMtpWhenExperimentOff(Context context) {
         if (context == null || !DeviceFeatures.isY2()) return;
-        if (UsbMassStorageExperiment.isEnabled(context)) return;
-        if (!isKernelMassStorageMode()) return;
+        if (!isKernelMassStorageMode() && !probeLunBackingBound()) return;
         disable(context);
     }
 
@@ -174,14 +202,15 @@ public final class UsbMassStorageController {
         return buildUmsShellCommand(scriptPath, enable);
     }
 
-    /** Y1/Y2 both use solar-enable/disable shell scripts (2026-07-05). */
+    /**
+     * Y1/Y2 both use solar-enable/disable shell scripts (2026-07-05).
+     * 2026-07-08 — Do not dismiss global overlay here.
+     * Was: startService DISMISS_OVERLAY on every toggle — tore down USB lock as soon as UMS enabled.
+     * Now: callers dismiss/morph (lock holds keys until Turn Off or unplug).
+     * Reversal: restore companion dismiss Intent before script if lock-tier paint regresses.
+     */
     private static boolean runUmsToggle(Context context, boolean enable) {
         if (context == null) return false;
-        try {
-            android.content.Intent dismiss = new android.content.Intent("com.solar.launcher.action.DISMISS_OVERLAY");
-            dismiss.setComponent(new android.content.ComponentName("com.solar.launcher.globalcontext", "com.solar.launcher.globalcontext.GlobalContextOverlayService"));
-            context.startService(dismiss);
-        } catch (Exception ignored) {}
         String script = resolveUmsScript(context, enable);
         if (script == null) return false;
         String cmd = buildUmsShellCommand(script, enable);
@@ -292,20 +321,12 @@ public final class UsbMassStorageController {
 
     /** Read {@code sys.usb.config} for debug session b6af9f. */
     private static String readSysUsbConfig() {
-        java.io.BufferedReader br = null;
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"getprop", "sys.usb.config"});
-            br = new java.io.BufferedReader(new java.io.InputStreamReader(p.getInputStream()));
-            String line = br.readLine();
-            return line != null ? line.trim() : "";
-        } catch (Exception ignored) {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class).invoke(null, "sys.usb.config", "");
+            return v != null ? v.toString() : "";
+        } catch (Throwable t) {
             return "";
-        } finally {
-            if (br != null) {
-                try {
-                    br.close();
-                } catch (Exception ignored) {}
-            }
         }
     }
 

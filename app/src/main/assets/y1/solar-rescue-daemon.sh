@@ -2,7 +2,7 @@
 # 2026-07-05 — Boot watchdog for GlobalOverlayTriggerMain (BACK/power hold tiers).
 # Layman: tiny root babysitter so hold-to-menu and hold-to-rescue work even if Solar crashed.
 # Technical: uses /system/app APK classpath; restarts evdev daemon every 20s if dead.
-# Hold timing: GlobalInputPolicy (420ms apps / 300ms Rockbox+JJ nav-owned) + Xposed PWM; 7s → solar-rescue-exec.sh.
+# 2026-07-08 — Hold timing: GlobalInputPolicy modal tiers + Xposed PWM; continuous 10s → solar-rescue-exec.sh (HUD ~7s).
 # 2026-07-06 — Singleton + hud-watch cmdline detect — was duplicate app_process / setprop storms.
 
 SOLAR_APK="/system/app/com.solar.launcher.apk"

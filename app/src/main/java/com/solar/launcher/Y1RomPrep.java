@@ -25,6 +25,8 @@ public final class Y1RomPrep {
 
     /** Overwrite Rockbox switch scripts from bundled assets (requires su). */
     public static void ensureSwitchScripts(Context context) {
+        // 2026-07-14 — A5 has no Solar ROM switch scripts; su prompts wreck the UI.
+        if (DeviceFeatures.isA5()) return;
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -36,6 +38,7 @@ public final class Y1RomPrep {
     /** Blocking switch-script patch — platform prep wizard waits for completion. */
     public static void ensureSwitchScriptsSync(Context context) {
         if (context == null) return;
+        if (DeviceFeatures.isA5()) return;
         try {
                     boolean legacy = isLegacyRockboxSwitchScript("/data/data/switch-to-stock.sh");
                     runSu("mkdir -p /data/data /system/etc/solar");
@@ -82,7 +85,9 @@ public final class Y1RomPrep {
                     RockboxCoexistence.ensureOnSolarStart(context);
                     RockboxDisable.ensureOnce(context);
                     LauncherSwitch.assertRockboxDisabledWhileSolarHome(context);
+                    // 2026-07-08 — Also chmod /data/data/solar-launcher-exec.sh (Rockbox delegates here).
                     runSu("chmod 755 /data/data/switch-to-stock.sh /data/data/switch-to-rockbox.sh "
+                            + "/data/data/solar-launcher-exec.sh "
                             + "/system/etc/solar/switch-to-stock.sh /system/etc/solar/switch-to-rockbox.sh "
                             + "/system/etc/solar/sync-rockbox-libs.sh /system/etc/solar/sync-y1-keymap.sh "
                             + "/system/etc/solar/disable-rockbox-for-solar.sh "

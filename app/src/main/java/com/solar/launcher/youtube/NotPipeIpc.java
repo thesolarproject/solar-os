@@ -35,6 +35,8 @@ public final class NotPipeIpc {
     public static final String CMD_POPULAR = "POPULAR";
     public static final String CMD_SEARCH = "SEARCH";
     public static final String CMD_RESOLVE_STREAM = "RESOLVE_STREAM";
+    /** Load top-level comments for a video id (notPipe Metadata.getComments). */
+    public static final String CMD_GET_COMMENTS = "GET_COMMENTS";
 
     private NotPipeIpc() {}
 }

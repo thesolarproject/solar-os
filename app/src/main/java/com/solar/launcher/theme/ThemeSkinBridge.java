@@ -8,6 +8,10 @@ import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 
+import com.solar.launcher.A5NavigationMode;
+import com.solar.launcher.A5PortraitChrome;
+import com.solar.launcher.DeviceFeatures;
+
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -35,6 +39,34 @@ public final class ThemeSkinBridge {
   /** Row selection strip width — height follows theme art aspect. */
   public static final int SKIN_SELECTION_W = 480;
   public static final int SKIN_SELECTION_H = 48;
+
+  /**
+   * 2026-07-11 / 2026-07-14 — Effective skin size.
+   * A5: portrait 240×320 / landscape 320×240. Y1/Y2 portrait experiment: live tall buffer.
+   * Was: non-A5 always 480×360. Reversal: drop usePortraitChrome branch.
+   */
+  public static int skinWallpaperW(Context ctx) {
+    if (ctx != null && DeviceFeatures.isA5()) {
+      return A5NavigationMode.isPortrait(ctx)
+              ? A5NavigationMode.portraitWidthPx() : A5NavigationMode.landscapeWidthPx();
+    }
+    // Y1/Y2 upright experiment — publish tall skin so hooked apps match.
+    if (ctx != null && A5PortraitChrome.usePortraitChrome(ctx)) {
+      return Math.max(1, ctx.getResources().getDisplayMetrics().widthPixels);
+    }
+    return SKIN_WALLPAPER_W;
+  }
+
+  public static int skinWallpaperH(Context ctx) {
+    if (ctx != null && DeviceFeatures.isA5()) {
+      return A5NavigationMode.isPortrait(ctx)
+              ? A5NavigationMode.portraitHeightPx() : A5NavigationMode.landscapeHeightPx();
+    }
+    if (ctx != null && A5PortraitChrome.usePortraitChrome(ctx)) {
+      return Math.max(1, ctx.getResources().getDisplayMetrics().heightPixels);
+    }
+    return SKIN_WALLPAPER_H;
+  }
 
   private ThemeSkinBridge() {}
 
@@ -147,14 +179,21 @@ public final class ThemeSkinBridge {
    * Returns [scaledW, scaledH, cropX, cropY, cropW, cropH].
    */
   public static int[] wallpaperScaleGeometry(int srcW, int srcH) {
-    if (srcW <= 0 || srcH <= 0) return new int[]{0, 0, 0, 0, 0, 0};
-    float scale = Math.max(SKIN_WALLPAPER_W / (float) srcW, SKIN_WALLPAPER_H / (float) srcH);
+    return wallpaperScaleGeometry(srcW, srcH, SKIN_WALLPAPER_W, SKIN_WALLPAPER_H);
+  }
+
+  /** 2026-07-11 — Same crop math with explicit target (A5 240×320 / 320×240). */
+  public static int[] wallpaperScaleGeometry(int srcW, int srcH, int targetW, int targetH) {
+    if (srcW <= 0 || srcH <= 0 || targetW <= 0 || targetH <= 0) {
+      return new int[]{0, 0, 0, 0, 0, 0};
+    }
+    float scale = Math.max(targetW / (float) srcW, targetH / (float) srcH);
     int scaledW = Math.max(1, (int) (srcW * scale));
     int scaledH = Math.max(1, (int) (srcH * scale));
-    int x = Math.max(0, (scaledW - SKIN_WALLPAPER_W) / 2);
-    int y = Math.max(0, (scaledH - SKIN_WALLPAPER_H) / 2);
-    int cropW = Math.min(SKIN_WALLPAPER_W, scaledW);
-    int cropH = Math.min(SKIN_WALLPAPER_H, scaledH);
+    int x = Math.max(0, (scaledW - targetW) / 2);
+    int y = Math.max(0, (scaledH - targetH) / 2);
+    int cropW = Math.min(targetW, scaledW);
+    int cropH = Math.min(targetH, scaledH);
     return new int[]{scaledW, scaledH, x, y, cropW, cropH};
   }
 

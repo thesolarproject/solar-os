@@ -426,6 +426,15 @@ public final class FlowScreenHost implements FlowView.Callback, FlowCoverResolve
         }
     }
 
+    /**
+     * 2026-07-14 — Touch center tap → same short Center OK as keys.
+     * Layman: poke the middle album to flip it open.
+     */
+    @Override
+    public void onTouchCenterOk() {
+        handleCenterOk();
+    }
+
     public static final class FlowBackRow {
         public final String title;
         public final String subtitle;

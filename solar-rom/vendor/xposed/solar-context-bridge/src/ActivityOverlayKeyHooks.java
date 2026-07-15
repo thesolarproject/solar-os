@@ -22,7 +22,10 @@ final class ActivityOverlayKeyHooks {
     static void install(LoadPackageParam lpparam) {
         if (lpparam == null || lpparam.packageName == null) return;
         if (lpparam.packageName.startsWith("com.solar.launcher")) return;
-        if (lpparam.packageName.startsWith("com.innioasis.")) return;
+        // 2026-07-08 — Stock Innioasis HOME needs overlay key forward; other innioasis.* still skip.
+        // Reversal: blanket startsWith("com.innioasis.") return.
+        if (com.solar.input.policy.GlobalInputPolicy.isInnioasisNonLauncherPackage(
+                lpparam.packageName)) return;
         hookActivityDispatch(lpparam);
         hookDialogDispatch(lpparam);
         hookActivityOnKey(lpparam);

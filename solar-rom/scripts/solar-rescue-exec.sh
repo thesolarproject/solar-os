@@ -23,6 +23,8 @@ REBOOT_HOLD_SEC=2
 setprop sys.solar.ime.active 0 2>/dev/null
 setprop sys.solar.ime.ui 0 2>/dev/null
 setprop sys.solar.overlay.active 0 2>/dev/null
+# 2026-07-08 — Ghost WM menu flag; clear so post-rescue BACK is normal.
+setprop sys.solar.overlay.shell_visible 0 2>/dev/null
 setprop sys.solar.handoff.active 0 2>/dev/null
 setprop sys.solar.rescue.hold_deadline 0 2>/dev/null
 setprop sys.solar.rescue.hold_kind "" 2>/dev/null

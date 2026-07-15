@@ -10,10 +10,38 @@ import java.net.URL;
 import java.util.Map;
 import java.util.Set;
 
+import static org.junit.Assert.assertEquals;
+
 public class ThemeDownloaderTest {
     @Test
     public void selfCheck() throws Exception {
         ThemeDownloader.selfCheck();
+    }
+
+    /** 2026-07-11 — Leading @ must stay in gallery paths (Habbo @Be_*, Cupertino @Cup_*). */
+    @Test
+    public void preservesLeadingAtInGalleryPaths() {
+        assertEquals("Habbo/@Be_itemBackground.png",
+                ThemeDownloader.canonicalGalleryPath("Habbo", "@Be_itemBackground.png"));
+        assertEquals("Habbo/@Be_Now Playing.png",
+                ThemeDownloader.canonicalGalleryPath("Habbo", "@Be_Now Playing.png"));
+        assertEquals("Habbo/Shutdown@1x.png",
+                ThemeDownloader.canonicalGalleryPath("Habbo", "Shutdown@1x.png"));
+        // 2026-07-11 — Cupertino uses the same @-prefix filename convention.
+        assertEquals("Cupertino/@Cup_itemBackground.png",
+                ThemeDownloader.canonicalGalleryPath("Cupertino", "@Cup_itemBackground.png"));
+        assertEquals("Cupertino/@Cup_desktop_wallpaper.png",
+                ThemeDownloader.canonicalGalleryPath("Cupertino", "@Cup_desktop_wallpaper.png"));
+        assertEquals("Habbo/Be_itemBackground.png",
+                ThemeDownloader.alternateLeadingAtPath("Habbo/@Be_itemBackground.png"));
+        assertEquals("Habbo/@Be_itemBackground.png",
+                ThemeDownloader.alternateLeadingAtPath("Habbo/Be_itemBackground.png"));
+        assertEquals("Cupertino/Cup_itemBackground.png",
+                ThemeDownloader.alternateLeadingAtPath("Cupertino/@Cup_itemBackground.png"));
+        String url = ThemeDownloader.themeFileUrlForGallery("Habbo/@Be_Now Playing.png");
+        if (!url.contains("%40Be_Now") || !url.contains("%20Playing.png")) {
+            throw new AssertionError("expected encoded @ and space in " + url);
+        }
     }
 
     @Test

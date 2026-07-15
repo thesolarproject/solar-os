@@ -31,7 +31,7 @@
       "required": true,
       "device": "y1",
       "versionCode": 1,
-      "sha256": "849542dd0927e54d0aed7c8b2ccb78e17ba16e28651056bd30bd38d6e12f57a1"
+      "sha256": "442d77e941e6dbe2e148eeca9b3bb7518e6aec675f463ac2e9872e093c1b75a0"
     },
     {
       "pkg": "com.solar.launcher.xposed.bridge.y2",
@@ -40,7 +40,7 @@
       "required": true,
       "device": "y2",
       "versionCode": 1,
-      "sha256": "2a2cfeeeb994ea57cb9b48c1bf822889c900ba0216277b595fd94669344a42fa"
+      "sha256": "01d30e647ac85ddbc36bfffa68da02906d9a4fc5d614b7049f74d5725c2fb9a2"
     },
     {
       "pkg": "com.solar.launcher.xposed.themefont",
@@ -75,8 +75,8 @@
       "systemApk": "/system/app/SolarNotPipeBridge.apk",
       "required": true,
       "device": "both",
-      "versionCode": 1,
-      "sha256": "5ddf84cd16156f10633672a9ffc93a1ace578d41db03a857c7008bdba7581902"
+      "versionCode": 3,
+      "sha256": "4c2817701bea430bd9e0cc11421b7bf843005f572f3bb2037fdd948ae948fac8"
     },
     {
       "pkg": "io.github.gohoski.notpipe",
@@ -84,8 +84,8 @@
       "systemApk": "/system/app/io.github.gohoski.notpipe.apk",
       "required": true,
       "device": "both",
-      "versionCode": 5,
-      "sha256": "fbe3bd9a4ee5e7aea21102d81b5a4e579252479db0e1834abfb2c21e5fed7243"
+      "versionCode": 9,
+      "sha256": "891f705801d009734fe3baf5b12026009cc88d8ff6c87c6234947d0e867ce642"
     },
     {
       "pkg": "com.solar.launcher.globalcontext",
@@ -94,7 +94,7 @@
       "required": true,
       "device": "both",
       "versionCode": 1,
-      "sha256": "b8582ba6c6752dd4c13e1445538ee6683992b080a3f80ecfa350c545a8c73f3e"
+      "sha256": "4cf9131aaa16c2083bd6643b8f1d683820a3602e505c44953a570d20615f0550"
     },
     {
       "pkg": "com.solar.launcher.homehelper",
@@ -124,7 +124,7 @@
       "systemApk": "/system/app/org.rockbox.apk",
       "device": "y2",
       "versionCode": 1,
-      "sha256": "0393cb736a5e8215bf3a6ec44cc9b84bbfb92938ae4f6542d75dfca0a20468a7"
+      "sha256": "7aa6c2913462600ce1c9c14881d1d50fc827939585ef795aee6c15ddaefeccb5"
     },
     "systemLib": {
       "asset": "rockbox/librockbox-system.so",

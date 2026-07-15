@@ -19,7 +19,7 @@ public final class Debug705932Log {
     private static final String SESSION = "705932";
     private static final String FILE = "debug-705932.log";
     /** 2026-07-05 — Off in release; flip true manually for short adb debug sessions. */
-    public static volatile boolean ENABLED = BuildConfig.DEBUG;
+    public static volatile boolean ENABLED = false;
 
     private Debug705932Log() {}
 

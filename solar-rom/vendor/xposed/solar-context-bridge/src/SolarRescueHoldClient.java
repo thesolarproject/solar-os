@@ -19,7 +19,7 @@ public final class SolarRescueHoldClient {
     private static final String HOLD_DEADLINE = "sys.solar.rescue.hold_deadline";
     private static final String HOLD_KIND = "sys.solar.rescue.hold_kind";
     private static final String ACTION_TICK = "com.solar.launcher.action.RESCUE_HOLD_TICK";
-    /** 2026-07-06 — Match GlobalInputPolicy rescue tier (−30% from 10s). */
+    /** 2026-07-08 — Match GlobalInputPolicy: continuous 10s rescue execute. */
     private static final long RESCUE_MS =
             com.solar.input.policy.GlobalInputPolicy.RESCUE_EXECUTE_MS;
     private static final String HUD_SECOND = "sys.solar.rescue.hud_second";
@@ -36,7 +36,7 @@ public final class SolarRescueHoldClient {
         arm(ctx, "power", 0L);
     }
 
-    /** 2026-07-06 — HUD at 7s aligned to hold DOWN (10s total from hold start). */
+    /** 2026-07-08 — HUD at 7s aligned to hold DOWN (10s total from hold start). */
     public static void armPowerFromHoldStart(Context ctx, long holdDownAtUptime) {
         arm(ctx, "power", holdDownAtUptime);
     }

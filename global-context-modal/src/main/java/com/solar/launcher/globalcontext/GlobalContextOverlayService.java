@@ -897,9 +897,42 @@ public final class GlobalContextOverlayService extends Service {
             row.setTextSize(16f);
             row.setPadding(dp(12), dp(10), dp(12), dp(10));
             row.setTag(Integer.valueOf(i));
+            final int rowIndex = i;
+            // 2026-07-14 — TextView fallback tier: swipe via ScrollView parent; two-tap confirm.
+            attachCompanionRowTap(row, rowIndex);
             rowsHost.addView(row);
         }
         refreshRowChrome();
+    }
+
+    /**
+     * 2026-07-14 — Companion TextView rows: first tap focuses, second activates.
+     * Layman: same poke-twice as Solar menus. Touchscreen feature gate (no app DeviceFeatures).
+     * Reversal: remove listener; keys only.
+     */
+    private void attachCompanionRowTap(final View row, final int index) {
+        if (row == null || index < 0) return;
+        boolean touch;
+        try {
+            touch = getPackageManager().hasSystemFeature(
+                    android.content.pm.PackageManager.FEATURE_TOUCHSCREEN);
+        } catch (Exception e) {
+            touch = false;
+        }
+        if (!touch) return;
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setFocusableInTouchMode(true);
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (focusedIndex == index) {
+                    activateFocusedRow();
+                } else {
+                    focusRow(index);
+                }
+            }
+        });
     }
 
     private void refreshRowChrome() {

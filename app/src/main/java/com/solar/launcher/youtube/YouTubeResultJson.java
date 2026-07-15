@@ -65,4 +65,18 @@ public final class YouTubeResultJson {
             this.ext = ext != null ? ext : "mp4";
         }
     }
+
+    /** Parse GET_COMMENTS payload: [{author, content}, …]. */
+    public static List<YouTubeComment> parseComments(String json) throws Exception {
+        List<YouTubeComment> out = new ArrayList<YouTubeComment>();
+        if (json == null || json.trim().isEmpty()) return out;
+        JSONArray arr = new JSONArray(json);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.getJSONObject(i);
+            out.add(new YouTubeComment(
+                    o.optString("author", ""),
+                    o.optString("content", "")));
+        }
+        return out;
+    }
 }

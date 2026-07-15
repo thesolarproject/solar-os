@@ -14,10 +14,14 @@ public final class DeezerDebugLog {
     private static final String SESSION = "172597";
     private static final String FILE = "debug-172597.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private DeezerDebugLog() {}
 
     public static void log(Context ctx, String location, String message, String hypothesisId,
             JSONObject data) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

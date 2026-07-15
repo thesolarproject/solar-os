@@ -13,14 +13,16 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-/** JVM tests for AMS crash/ANR → overlay routing policy (no Xposed on device). 2026-07-06 */
+/** JVM tests for AMS crash/ANR → overlay routing policy (no Xposed on device). 2026-07-08 */
 public class SystemErrorDialogRoutingTest {
 
     @Test
-    public void systemAnrFailsOpenToStock() {
-        assertFalse(SystemErrorDialogRouting.shouldReplaceAnr("system", true));
-        assertFalse(SystemErrorDialogRouting.shouldReplaceAnr("android", true));
+    public void systemAnrUsesOverlayWhenAvailable() {
+        // 2026-07-08 — All ANRs including system_server replace when overlay host present.
+        assertTrue(SystemErrorDialogRouting.shouldReplaceAnr("system", true));
+        assertTrue(SystemErrorDialogRouting.shouldReplaceAnr("android", true));
         assertTrue(SystemErrorDialogRouting.isSystemAnrProcess("system"));
+        assertFalse(SystemErrorDialogRouting.shouldReplaceAnr("system", false));
     }
 
     @Test

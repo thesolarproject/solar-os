@@ -6,9 +6,10 @@ import android.content.SharedPreferences;
 import org.json.JSONObject;
 
 /**
- * 2026-07-06 — Opt-in infinite (wrap) wheel navigation for Solar + global overlay lists.
+ * 2026-07-06 — Opt-in infinite (wrap) wheel navigation for Solar main lists.
  * Layman: at the bottom of a menu, wheel down jumps to the top — off by default.
- * Technical: prefs + persist.solar.nav.infinite_scroll for :overlay / companion / IME tiers.
+ * Technical: prefs + persist.solar.nav.infinite_scroll; overlay modal excluded (chips need edges).
+ * 2026-07-11 — ThemedContextMenu / context overlay never wrap; see ListNavigationPolicy.appliesToContextModal.
  * Reversal: delete pref row; lists stop at edges with edge glow again.
  */
 public final class NavigationPreferences {

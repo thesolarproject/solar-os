@@ -5,8 +5,8 @@ import android.os.Handler;
 import android.os.Looper;
 
 /**
- * 2026-07-06 — Poll saved HOME and relaunch when Rockbox/JJ drops foreground unintentionally.
- * Layman: if you picked JJ or Rockbox as home and it hiccups, this quietly reopens it.
+ * 2026-07-08 — Poll saved HOME and relaunch when Rockbox/JJ/Stock drops foreground.
+ * Layman: if you picked JJ, Rockbox, or Stock as home and it hiccups, this quietly reopens it.
  * Technical: 2.5s poll in :watchdog; skips solar HOME and home.applying window.
  * Reversal: stop LauncherWatchdogService; rely on RockboxRestartGrace crash window only.
  */
@@ -58,6 +58,10 @@ public final class PreferredLauncherEnforcer implements Runnable {
             if (LauncherSwitch.isJjDisabled(appContext)) {
                 return;
             }
+        } else if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            if (LauncherSwitch.isStockDisabled(appContext)) {
+                return;
+            }
         }
         RockboxRestartGrace.arm(appContext);
         // #region agent log
@@ -79,6 +83,9 @@ public final class PreferredLauncherEnforcer implements Runnable {
         }
         if (LauncherDefault.TARGET_JJ.equals(target)) {
             return LauncherSwitch.isJjForeground(context);
+        }
+        if (LauncherDefault.TARGET_STOCK.equals(target)) {
+            return LauncherSwitch.isStockForeground(context);
         }
         return false;
     }

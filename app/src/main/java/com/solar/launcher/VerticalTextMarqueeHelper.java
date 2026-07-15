@@ -141,7 +141,8 @@ public final class VerticalTextMarqueeHelper {
         body.setLineSpacing(messageLineSpacingPx(context), 1f);
         body.setPadding(hPad, topPad, hPad, bottomPad);
         body.setText(text != null ? text : "");
-        ThemeManager.applyThemedTextStyle(body, ThemeManager.getTextColorPrimary());
+        ThemeManager.applyReadableThemedTextStyle(body, ThemeManager.getTextColorPrimary(),
+                ThemeManager.getContextMenuPanelColor());
         // Wheel-scroll only — no horizontal or auto vertical marquee.
         body.setSingleLine(false);
         body.setEllipsize(null);

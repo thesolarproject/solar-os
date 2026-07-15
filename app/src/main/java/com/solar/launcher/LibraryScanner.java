@@ -39,7 +39,7 @@ public final class LibraryScanner {
         boolean isCancelled();
 
         /** Called roughly every {@code progressInterval} tracks that have been resolved. */
-        void onProgress(int resolvedCount);
+        void onProgress(int resolvedCount, int totalCount);
 
         /** Number of resolved tracks between progress callbacks. */
         int progressInterval();
@@ -106,7 +106,9 @@ public final class LibraryScanner {
         if (cb.isCancelled()) return emptyResult();
 
         t1 = System.currentTimeMillis();
-        List<TagResult> staleResults = readTagsParallel(staleFiles, prefs, cb);
+        int totalFiles = audioFiles.size();
+        int initialResolved = freshItems.size();
+        List<TagResult> staleResults = readTagsParallel(staleFiles, prefs, cb, initialResolved, totalFiles);
         long tagReadMs = System.currentTimeMillis() - t1;
 
         t1 = System.currentTimeMillis();
@@ -177,7 +179,7 @@ public final class LibraryScanner {
     }
 
     private static List<TagResult> readTagsParallel(List<File> files, SharedPreferences prefs,
-            Callback cb) {
+            Callback cb, int initialResolved, int totalCount) {
         if (files.isEmpty()) return Collections.emptyList();
 
         ExecutorService executor = Executors.newFixedThreadPool(TAG_THREADS,
@@ -198,6 +200,7 @@ public final class LibraryScanner {
         executor.shutdown();
 
         List<TagResult> out = new ArrayList<TagResult>(futures.size());
+        int resolved = initialResolved;
         for (Future<TagResult> future : futures) {
             if (cb.isCancelled()) break;
             try {
@@ -208,6 +211,10 @@ public final class LibraryScanner {
                 break;
             } catch (ExecutionException e) {
                 // Ignore individual tag-read failures; original scan did the same.
+            }
+            resolved++;
+            if (resolved % cb.progressInterval() == 0) {
+                cb.onProgress(resolved, totalCount);
             }
         }
 
@@ -241,12 +248,13 @@ public final class LibraryScanner {
                 fresh.size() + stale.size());
 
         int resolved = 0;
+        int total = fresh.size() + stale.size();
         for (MainActivity.SongItem item : fresh) {
             if (cb.isCancelled()) break;
             String key = metaKey(item.title, item.artist, "");
             if (!metaKeys.add(key)) continue;
             out.add(item);
-            if (++resolved % interval == 0) cb.onProgress(resolved);
+            if (++resolved % interval == 0) cb.onProgress(resolved, total);
         }
 
         for (TagResult r : stale) {
@@ -255,10 +263,10 @@ public final class LibraryScanner {
             if (!metaKeys.add(key)) continue;
             out.add(new MainActivity.SongItem(r.file, r.title, r.artist, r.album,
                     r.genre, r.albumArtist, r.trackNumber, r.year));
-            if (++resolved % interval == 0) cb.onProgress(resolved);
+            if (++resolved % interval == 0) cb.onProgress(resolved, total);
         }
 
-        if (resolved % interval != 0) cb.onProgress(resolved);
+        if (resolved % interval != 0) cb.onProgress(resolved, total);
         return out;
     }
 

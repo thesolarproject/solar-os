@@ -149,7 +149,20 @@ public final class BluetoothPairingCoordinator {
     }
 
     private static boolean showPinOverlay(Context context, String address, String name, String prefill) {
-        return startPairingOverlay(context, address, name, 0, MODE_PIN, prefill);
+        try {
+            Intent intent = new Intent(context, MainActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            intent.putExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_PROMPT, true);
+            intent.putExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_ADDRESS, address);
+            intent.putExtra(BluetoothAudioRepair.EXTRA_PAIR_PIN_NAME, name);
+            context.startActivity(intent);
+            Log.i(TAG, "pairing pin intent launched for " + address);
+            return true;
+        } catch (Exception e) {
+            Log.w(TAG, "pairing pin intent failed", e);
+            clearSession();
+            return false;
+        }
     }
 
     private static boolean showPasskeyOverlay(Context context, String address, String name,

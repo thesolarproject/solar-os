@@ -49,9 +49,17 @@ public class LauncherHomeActivity extends Activity {
         }
     }
 
-    /** 2026-07-06 — Wake Solar handoff process when routing HOME to JJ (wheel remap). */
+    /**
+     * 2026-07-06 — Wake Solar handoff process when routing HOME to JJ (wheel remap).
+     * 2026-07-08 — Stock Innioasis HOME uses the same wheel remap as JJ, so arm for it too.
+     * Best-effort: if Solar is disabled/dead this no-ops; the Xposed shim self-arms from
+     * persist.solar.home.target (see JjInputHooks) so the wheel still works without Solar.
+     * Reversal: restore TARGET_JJ-only check (stock loses root-inject wheel tier).
+     */
     private static void armJjHandoffIfNeeded(android.content.Context context, String target) {
-        if (!HomeTargetPolicy.TARGET_JJ.equals(HomeTargetPolicy.normalizeTarget(target))) return;
+        String normalized = HomeTargetPolicy.normalizeTarget(target);
+        if (!HomeTargetPolicy.TARGET_JJ.equals(normalized)
+                && !HomeTargetPolicy.TARGET_STOCK.equals(normalized)) return;
         try {
             Intent arm = new Intent("com.solar.launcher.action.ARM_JJ_HANDOFF");
             arm.setPackage(HomeTargetPolicy.SOLAR_PKG);

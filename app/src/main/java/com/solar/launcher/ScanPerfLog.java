@@ -28,6 +28,9 @@ public final class ScanPerfLog {
     }
     private static final long MAX_SIZE = 256 * 1024;
 
+    /** Off by default — logcat + SD writes during library scan (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private static final AtomicReference<LastScan> LAST = new AtomicReference<LastScan>();
 
     private ScanPerfLog() {}
@@ -59,6 +62,7 @@ public final class ScanPerfLog {
         LastScan snapshot = new LastScan(now, tracks, totalMs,
                 phases != null ? phases.toString() : "{}");
         LAST.set(snapshot);
+        if (!ENABLED) return;
 
         try {
             JSONObject o = new JSONObject();

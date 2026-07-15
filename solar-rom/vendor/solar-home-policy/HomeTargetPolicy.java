@@ -1,10 +1,10 @@
 package com.solar.home.policy;
 
 /**
- * 2026-07-06 — Shared HOME target constants for helper, Solar client, and Xposed bridge.
- * Layman: one spelling for which app is your home screen (Solar, Rockbox, JJ, or custom).
+ * 2026-07-08 — Shared HOME target constants for helper, Solar client, and Xposed bridge.
+ * Layman: one spelling for which app is home (Solar, Rockbox, JJ, Stock Innioasis, or custom).
  * Technical: pure Java policy JAR; no android imports — compiled into helper, Solar, bridge.
- * Reversal: delete JAR; restore duplicated strings in LauncherDefault + shell scripts.
+ * Reversal: remove TARGET_STOCK + Innioasis constants; restore solar/rockbox/jj/custom only.
  */
 public final class HomeTargetPolicy {
 
@@ -25,6 +25,8 @@ public final class HomeTargetPolicy {
     public static final String TARGET_SOLAR = "solar";
     public static final String TARGET_ROCKBOX = "rockbox";
     public static final String TARGET_JJ = "jj";
+    /** 2026-07-08 — Factory Innioasis HOME (y1 on Y1 hardware, y2 on Y2). */
+    public static final String TARGET_STOCK = "stock";
     public static final String TARGET_CUSTOM = "custom";
 
     public static final String HELPER_PKG = "com.solar.launcher.homehelper";
@@ -42,6 +44,11 @@ public final class HomeTargetPolicy {
     public static final String ROCKBOX_ACTIVITY = "org.rockbox.RockboxActivity";
     public static final String JJ_PKG = "com.themoon.y1";
     public static final String JJ_ACTIVITY = "com.themoon.y1.MainActivity";
+    /** 2026-07-08 — Stock firmware HOME packages — same MODE_JJ wheel inject as JJ. */
+    public static final String INNIOASIS_Y1_PKG = "com.innioasis.y1";
+    public static final String INNIOASIS_Y2_PKG = "com.innioasis.y2";
+    public static final String INNIOASIS_Y1_ACTIVITY = "com.innioasis.y1.MainActivity";
+    public static final String INNIOASIS_Y2_ACTIVITY = "com.innioasis.y2.MainActivity";
 
     public static final String COMPANION_PKG = "com.solar.launcher.globalcontext";
     /** 2026-07-07 — Cached HOME launcher packages (comma-separated) — shell disable loop reads this. */
@@ -51,10 +58,14 @@ public final class HomeTargetPolicy {
 
     private HomeTargetPolicy() {}
 
-    /** Coerce unknown target strings to solar, rockbox, jj, or custom. */
+    /**
+     * 2026-07-08 — Coerce unknown target strings to solar/rockbox/jj/stock/custom.
+     * Reversal: drop TARGET_STOCK branch.
+     */
     public static String normalizeTarget(String target) {
         if (TARGET_ROCKBOX.equals(target)) return TARGET_ROCKBOX;
         if (TARGET_JJ.equals(target)) return TARGET_JJ;
+        if (TARGET_STOCK.equals(target)) return TARGET_STOCK;
         if (TARGET_CUSTOM.equals(target)) return TARGET_CUSTOM;
         return TARGET_SOLAR;
     }
@@ -77,21 +88,30 @@ public final class HomeTargetPolicy {
         return null;
     }
 
-    /** True when target needs alternate launcher package enabled (not solar/custom-only). */
+    /**
+     * 2026-07-08 — True when target needs an alternate launcher package enabled.
+     * Reversal: rockbox||jj only.
+     */
     public static boolean isAlternateHomeTarget(String target) {
-        return TARGET_ROCKBOX.equals(target) || TARGET_JJ.equals(target);
+        String t = normalizeTarget(target);
+        return TARGET_ROCKBOX.equals(t) || TARGET_JJ.equals(t) || TARGET_STOCK.equals(t)
+                || TARGET_CUSTOM.equals(t);
     }
 
     /**
-     * 2026-07-06 — Resolve pkg/activity for the user's effective HOME (not the helper).
-     * Layman: which real app to open after the middle-man HOME button fires.
-     * Technical: custom uses persist component; unknown → Solar MainActivity.
+     * 2026-07-08 — Resolve pkg/activity for the user's effective HOME (not the helper).
+     * Layman: which real app opens after the middle-man Home press.
+     * Technical: stock prefers PROP_HOME_COMPONENT then Y1 defaults; custom uses prop; unknown → Solar.
+     * Reversal: remove TARGET_STOCK branch.
      */
     public static String[] resolveLaunchComponent(String target, String customComponentFlat) {
         String normalized = normalizeTarget(target);
-        if (TARGET_CUSTOM.equals(normalized)) {
+        if (TARGET_CUSTOM.equals(normalized) || TARGET_STOCK.equals(normalized)) {
             String[] parsed = parseComponent(customComponentFlat);
             if (parsed != null) return parsed;
+            if (TARGET_STOCK.equals(normalized)) {
+                return new String[] { INNIOASIS_Y1_PKG, INNIOASIS_Y1_ACTIVITY };
+            }
             return new String[] { SOLAR_PKG, SOLAR_ACTIVITY };
         }
         if (TARGET_ROCKBOX.equals(normalized)) {
@@ -101,6 +121,29 @@ public final class HomeTargetPolicy {
             return new String[] { JJ_PKG, JJ_ACTIVITY };
         }
         return new String[] { SOLAR_PKG, SOLAR_ACTIVITY };
+    }
+
+    /**
+     * 2026-07-08 — Stock Innioasis pkg for device family — callers pass y2 from DeviceFeatures.
+     * Reversal: always return INNIOASIS_Y1_PKG.
+     */
+    public static String stockPackageForDevice(boolean y2Device) {
+        return y2Device ? INNIOASIS_Y2_PKG : INNIOASIS_Y1_PKG;
+    }
+
+    /**
+     * 2026-07-08 — Default MainActivity for stock pkg — PM may override via PROP_HOME_COMPONENT.
+     * Reversal: delete; shell monkey -p only.
+     */
+    public static String stockActivityForPackage(String pkg) {
+        if (INNIOASIS_Y2_PKG.equals(pkg)) return INNIOASIS_Y2_ACTIVITY;
+        return INNIOASIS_Y1_ACTIVITY;
+    }
+
+    /** True when package is factory Innioasis HOME (exact y1/y2). */
+    public static boolean isInnioasisStockPackage(String pkg) {
+        if (pkg == null || pkg.length() == 0) return false;
+        return INNIOASIS_Y1_PKG.equals(pkg) || INNIOASIS_Y2_PKG.equals(pkg);
     }
 
     /** Flatten {@link #resolveLaunchComponent} as pkg/activity for shell am start -n. */

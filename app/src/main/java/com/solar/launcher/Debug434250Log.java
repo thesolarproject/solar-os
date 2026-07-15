@@ -15,7 +15,7 @@ public final class Debug434250Log {
     private static final String SESSION = "434250";
     private static final String FILE = "debug-434250.log";
     /** 2026-07-05 — Off in release; rescue poll loop checks before snapshot I/O. */
-    public static volatile boolean ENABLED = BuildConfig.DEBUG;
+    public static volatile boolean ENABLED = false;
 
     private Debug434250Log() {}
 

@@ -248,6 +248,19 @@ fi
 if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'UsbMassStorageServerHooks' >/dev/null; then
     fail "SolarContextBridgeY2.apk missing UsbMassStorageServerHooks (rebuild build-context-bridge-apk.sh)"
 fi
+# 2026-07-08 — Sole companion shell routing + system ANR replace (unification).
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'legacy_shell' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing legacy_shell rollback prop (rebuild bridge)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'globalcontext' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing companion globalcontext retarget (rebuild bridge)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'SystemErrorDialogRouting' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing SystemErrorDialogRouting (rebuild bridge)"
+fi
+if ! unzip -p "$bridge_apk" classes.dex 2>/dev/null | strings | grep 'scheduleCrashOverlayFailOpen' >/dev/null; then
+    fail "SolarContextBridgeY2.apk missing crash 2s fail-open (rebuild bridge)"
+fi
 
 chmod +x "$SCRIPT_DIR/verify-rom-app-allowlist.sh"
 if [ "$ROCKBOX_ON_ROM" = "0" ]; then

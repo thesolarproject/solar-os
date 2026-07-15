@@ -22,6 +22,15 @@ public final class NotPipeProcessWake {
         long now = android.os.SystemClock.uptimeMillis();
         if (now - lastWakeMs < 1500L) return;
         lastWakeMs = now;
+        Context app = ctx.getApplicationContext();
+        // 2026-07-14 — Prefer sticky WakeService (survives wake-only MainActivity finish).
+        // Layman: start the invisible keep-alive first; Activity nudge is backup.
+        // Reversal: Activity-only wake as before.
+        try {
+            Intent svc = new Intent();
+            svc.setClassName(NotPipeIpc.NOTPIPE_PKG, NotPipeIpc.NOTPIPE_PKG + ".SolarWakeService");
+            app.startService(svc);
+        } catch (Exception ignored) {}
         try {
             Intent wake = new Intent();
             wake.setClassName(NotPipeIpc.NOTPIPE_PKG, MAIN_ACTIVITY);
@@ -29,7 +38,7 @@ public final class NotPipeProcessWake {
                     | Intent.FLAG_ACTIVITY_NO_ANIMATION
                     | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
             wake.putExtra(NotPipeIpc.EXTRA_SOLAR_WAKE_ONLY, true);
-            ctx.getApplicationContext().startActivity(wake);
+            app.startActivity(wake);
         } catch (Exception ignored) {}
     }
 }

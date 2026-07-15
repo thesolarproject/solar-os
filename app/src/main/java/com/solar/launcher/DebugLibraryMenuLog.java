@@ -18,10 +18,14 @@ public final class DebugLibraryMenuLog {
     private static final String SESSION = "f37f3f";
     private static final String FILE = "debug-f37f3f.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private DebugLibraryMenuLog() {}
 
-    /** Always emits during f37f3f debug — library menu crash hunt. */
+    /** NDJSON for library menu crash hunt when ENABLED. */
     public static void log(String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

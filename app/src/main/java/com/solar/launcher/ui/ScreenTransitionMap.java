@@ -27,6 +27,9 @@ public final class ScreenTransitionMap {
     public static final int STATE_FLOW = 24;
     public static final int STATE_USB_STORAGE = 25;
     public static final int STATE_NAVIDROME = 26;
+    // 2026-07-14: 27–30 owned by MediaSuite (video hub / YouTube / FM player); Plex/Jellyfin follow MainActivity 31/32.
+    public static final int STATE_PLEX = 31;
+    public static final int STATE_JELLYFIN = 32;
 
     public enum Kind {
         /** No root animation — instant or in-place content swap. */
@@ -94,6 +97,7 @@ public final class ScreenTransitionMap {
         return state == STATE_BROWSER || state == STATE_PODCASTS || state == STATE_SOULSEEK
                 || state == STATE_DEEZER || state == STATE_APPS || state == STATE_MORE
                 || state == STATE_USB_STORAGE || state == STATE_NAVIDROME
+                || state == STATE_PLEX || state == STATE_JELLYFIN
                 || state == MediaSuiteHost.STATE_RADIO
                 || state == MediaSuiteHost.STATE_RADIO_FM_BROWSE
                 || state == MediaSuiteHost.STATE_RADIO_NET_BROWSE

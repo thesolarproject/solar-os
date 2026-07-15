@@ -53,6 +53,8 @@ public final class SolarImeFullscreenOverlay {
         windowManager.addView(shellRoot, lp);
         SolarImeRouteArbiter.setTrayUiVisible(true);
         ThemeManager.ensureOverlayPaintableMinimum(context);
+        // Touch attach lives on A5 real input view (SolarInputMethodService) — WM overlay
+        // is Y1/Y2 and has no touchscreen; centerPress alone would skip InputConnection commit.
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();

@@ -16,7 +16,7 @@ public final class DebugSessionLog {
     private static final String SESSION = "a4dee8";
     private static final String FILE = "debug-a4dee8.log";
     /** 2026-07-05 — Off in release; hot-path sync SD I/O only in debug builds. */
-    public static volatile boolean ENABLED = BuildConfig.DEBUG;
+    public static volatile boolean ENABLED = false;
 
     private DebugSessionLog() {}
 

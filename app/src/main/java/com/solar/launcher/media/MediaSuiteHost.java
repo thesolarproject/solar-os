@@ -50,6 +50,8 @@ import com.solar.launcher.video.VideoLibrary;
 import com.solar.launcher.video.VideoPlayerController;
 import com.solar.launcher.youtube.NotPipeClient;
 import com.solar.launcher.youtube.NotPipePmRegistrar;
+import com.solar.launcher.youtube.NotPipeProcessWake;
+import com.solar.launcher.youtube.YouTubeComment;
 import com.solar.launcher.youtube.YouTubeRecentSearches;
 import com.solar.launcher.youtube.YouTubeResultJson;
 import com.solar.launcher.youtube.YouTubeVideo;
@@ -80,6 +82,8 @@ public final class MediaSuiteHost {
     public static final int STATE_VIDEO_HUB = 27;
     public static final int STATE_YOUTUBE_BROWSE = 28;
     public static final int STATE_RADIO_FM_PLAYER = 29;
+    /** Video detail + comments (messaging-style list) — never shows notPipe UI. */
+    public static final int STATE_YOUTUBE_DETAIL = 30;
 
     /** MainActivity player screen — not owned here but used for radio handoff. */
     public static final int STATE_PLAYER = 3;
@@ -177,6 +181,9 @@ public final class MediaSuiteHost {
         /** Open wheel keyboard for YouTube search — result delivered via {@link #onYouTubeSearchSubmitted}. */
         void openYouTubeSearchKeyboard(String prefill);
 
+        /** Save YouTube stream via downloader (video or audio-only). */
+        void requestYouTubeSave(YouTubeVideo video, boolean audioOnly);
+
         /** Title + subtitle row for virtual browse lists (YouTube, podcasts pattern). */
         View createTwoLineBrowseRow(String title, String subtitle);
 
@@ -254,9 +261,21 @@ public final class MediaSuiteHost {
     private final List<YouTubeVideo> youtubeVideos = new ArrayList<YouTubeVideo>();
     private int youtubeLoadGen;
     private boolean youtubeLoading;
+    /** 2026-07-14 — Play resolve in progress (detail Play row subtitle); not browse list load. */
+    private boolean youtubeResolvingStream;
+    /** 2026-07-14 — Quality used for current/last RESOLVE_STREAM (ladder retries). */
+    private String youtubeStreamQuality;
+    /** 2026-07-14 — Prevent double quality-fallback from rapid IJK error callbacks. */
+    private boolean youtubeIjkFallbackPending;
     private String youtubePendingSearch;
     private String youtubeNowPlayingTitle;
     private String youtubeNowPlayingId;
+    /** Focused video on detail/comments screen (Solar-only; notPipe never shown). */
+    private YouTubeVideo youtubeDetailVideo;
+    private final List<YouTubeComment> youtubeComments = new ArrayList<YouTubeComment>();
+    private boolean youtubeCommentsLoading;
+    private int youtubeCommentsGen;
+    private final List<YoutubeDetailRow> youtubeDetailRows = new ArrayList<YoutubeDetailRow>();
     private VideoPlayerController videoController;
     private SurfaceRenderView videoSurface;
     private final Handler videoProgressHandler = new Handler(Looper.getMainLooper());
@@ -295,6 +314,32 @@ public final class MediaSuiteHost {
             this.kind = kind;
             this.recentQuery = recentQuery;
             this.videoIndex = videoIndex;
+        }
+    }
+
+    /**
+     * Detail screen rows — Play / Save + comment thread (Soulseek messaging feel).
+     * Layman: pick a video → chat-style comments, then Play stays in Solar.
+     */
+    private static final class YoutubeDetailRow {
+        static final int KIND_BACK = 0;
+        static final int KIND_PLAY = 1;
+        static final int KIND_SAVE_VIDEO = 2;
+        static final int KIND_SAVE_AUDIO = 3;
+        static final int KIND_HEADER = 4;
+        static final int KIND_COMMENT = 5;
+        static final int KIND_STATUS = 6;
+
+        final int kind;
+        final int commentIndex;
+
+        YoutubeDetailRow(int kind) {
+            this(kind, -1);
+        }
+
+        YoutubeDetailRow(int kind, int commentIndex) {
+            this.kind = kind;
+            this.commentIndex = commentIndex;
         }
     }
 
@@ -416,6 +461,7 @@ public final class MediaSuiteHost {
     public static boolean isMediaSuiteState(int state) {
         return (state >= STATE_RADIO && state <= STATE_PHOTO_VIEWER)
                 || state == STATE_VIDEO_HUB || state == STATE_YOUTUBE_BROWSE
+                || state == STATE_YOUTUBE_DETAIL
                 || state == STATE_RADIO_FM_PLAYER;
     }
 
@@ -425,6 +471,7 @@ public final class MediaSuiteHost {
                 || state == STATE_RADIO_FM_PLAYER
                 || state == STATE_RADIO_NET_BROWSE || state == STATE_VIDEOS
                 || state == STATE_VIDEO_HUB || state == STATE_YOUTUBE_BROWSE
+                || state == STATE_YOUTUBE_DETAIL
                 || state == STATE_PHOTOS;
     }
 
@@ -471,6 +518,9 @@ public final class MediaSuiteHost {
             case STATE_YOUTUBE_BROWSE:
                 buildYouTubeBrowseUi();
                 break;
+            case STATE_YOUTUBE_DETAIL:
+                buildYouTubeDetailUi();
+                break;
             case STATE_VIDEO_PLAYER:
                 showVideoPlayerLayer(true);
                 startVideoPlayback();
@@ -496,6 +546,12 @@ public final class MediaSuiteHost {
             case STATE_YOUTUBE_BROWSE:
                 youtubeLoadGen++;
                 youtubeLoading = false;
+                youtubeResolvingStream = false;
+                break;
+            case STATE_YOUTUBE_DETAIL:
+                youtubeCommentsGen++;
+                youtubeCommentsLoading = false;
+                youtubeResolvingStream = false;
                 break;
             case STATE_VIDEO_PLAYER:
                 releaseVideoPlayer();
@@ -543,6 +599,11 @@ public final class MediaSuiteHost {
                 return host.getString(R.string.status_videos);
             case STATE_YOUTUBE_BROWSE:
                 return host.getString(R.string.status_youtube);
+            case STATE_YOUTUBE_DETAIL:
+                if (youtubeDetailVideo != null && youtubeDetailVideo.title.length() > 0) {
+                    return youtubeDetailVideo.title;
+                }
+                return host.getString(R.string.status_youtube_detail);
             case STATE_VIDEO_PLAYER:
                 if (videoPlaybackYoutube && youtubeNowPlayingTitle != null
                         && youtubeNowPlayingTitle.length() > 0) {
@@ -583,10 +644,20 @@ public final class MediaSuiteHost {
                 showVideoPlayerLayer(false);
                 if (videoPlaybackYoutube) {
                     videoPlaybackYoutube = false;
-                    host.changeScreen(STATE_YOUTUBE_BROWSE);
+                    // Prefer detail (comments) if we opened play from there.
+                    if (youtubeDetailVideo != null) {
+                        host.changeScreen(STATE_YOUTUBE_DETAIL);
+                    } else {
+                        host.changeScreen(STATE_YOUTUBE_BROWSE);
+                    }
                 } else {
                     host.changeScreen(STATE_VIDEOS);
                 }
+                return true;
+            case STATE_YOUTUBE_DETAIL:
+                youtubeDetailVideo = null;
+                youtubeComments.clear();
+                host.changeScreen(STATE_YOUTUBE_BROWSE);
                 return true;
             case STATE_YOUTUBE_BROWSE:
                 host.changeScreen(STATE_VIDEO_HUB);
@@ -2420,26 +2491,34 @@ public final class MediaSuiteHost {
 
     // --- Video hub + YouTube ---
 
-    /** UI-thread gate after background notPipe PM register attempt (2026-07-06). */
+    /**
+     * Open Solar YouTube browse immediately — notPipe stays headless backend only.
+     * Layman: user never sees notPipe; wake + probe happen under Solar.
+     * 2026-07-14 — Clearer toast when APK missing vs bridge cold (platform prep / reboot).
+     */
     private void openYouTubeAfterNotPipeReady() {
         final boolean pmInstalled = NotPipeClient.isNotPipeInstalled(host.context());
         if (!pmInstalled) {
-            Toast.makeText(host.context(), R.string.youtube_unavailable, Toast.LENGTH_LONG).show();
+            Toast.makeText(host.context(), R.string.youtube_needs_platform_prep,
+                    Toast.LENGTH_LONG).show();
             return;
         }
+        NotPipeProcessWake.ensureAwake(host.context());
+        // Enter Solar UI first — never wait on probe in the video hub (avoids notPipe flash).
+        host.changeScreen(STATE_YOUTUBE_BROWSE);
         final int probeGen = ++youtubeLoadGen;
         NotPipeClient.getInstance(host.context()).probe(new NotPipeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
-                if (probeGen != youtubeLoadGen) return;
-                if (host.getCurrentScreenState() != STATE_VIDEO_HUB) return;
-                host.changeScreen(STATE_YOUTUBE_BROWSE);
+                // Backend ready — popular load already triggered by browse enter.
             }
 
             @Override
             public void onError(String message) {
                 if (probeGen != youtubeLoadGen) return;
-                Toast.makeText(host.context(), R.string.youtube_unavailable, Toast.LENGTH_LONG).show();
+                // Soft fail: browse can still retry popular/search; toast once.
+                Toast.makeText(host.context(), R.string.youtube_bridge_not_ready,
+                        Toast.LENGTH_LONG).show();
             }
         });
     }
@@ -2458,25 +2537,28 @@ public final class MediaSuiteHost {
                 host.changeScreen(STATE_VIDEOS);
             }
         });
-        addActionRow(host.getString(R.string.video_youtube_row), new Runnable() {
-            @Override
-            public void run() {
-                if (!host.requireInternet(R.string.toast_internet_required)) return;
-                // 2026-07-06 — PM may lag /system bake; register from asset before gate.
-                new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        NotPipePmRegistrar.ensureRegisteredBlocking(host.context());
-                        host.runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                openYouTubeAfterNotPipeReady();
-                            }
-                        });
-                    }
-                }, "YouTubeNotPipeGate").start();
-            }
-        });
+        // 2026-07-14 — Hub row when kill switch on (default); Debug can hide for A/B.
+        if (com.solar.launcher.youtube.YouTubeExperiment.isEnabled(host.prefs())) {
+            addActionRow(host.getString(R.string.video_youtube_row), new Runnable() {
+                @Override
+                public void run() {
+                    if (!host.requireInternet(R.string.toast_internet_required)) return;
+                    // 2026-07-06 — PM may lag /system bake; register from asset before gate.
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            NotPipePmRegistrar.ensureRegisteredBlocking(host.context());
+                            host.runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    openYouTubeAfterNotPipeReady();
+                                }
+                            });
+                        }
+                    }, "YouTubeNotPipeGate").start();
+                }
+            });
+        }
         focusFirstBrowserChild();
     }
 
@@ -2597,12 +2679,177 @@ public final class MediaSuiteHost {
                 break;
             case YoutubeBrowseRow.KIND_VIDEO:
                 if (row.videoIndex >= 0 && row.videoIndex < youtubeVideos.size()) {
-                    playYouTubeVideo(youtubeVideos.get(row.videoIndex));
+                    // Detail + comments first (messaging-style); Play is an action there.
+                    openYouTubeDetail(youtubeVideos.get(row.videoIndex));
                 }
                 break;
             default:
                 break;
         }
+    }
+
+    /** Open detail/comments for a video — Solar list only, notPipe invisible. */
+    private void openYouTubeDetail(YouTubeVideo video) {
+        if (video == null || video.id.isEmpty()) return;
+        youtubeDetailVideo = video;
+        youtubeComments.clear();
+        youtubeCommentsLoading = true;
+        host.changeScreen(STATE_YOUTUBE_DETAIL);
+        loadYouTubeComments(video.id);
+    }
+
+    private void buildYouTubeDetailUi() {
+        prepareVirtualListBrowse();
+        host.applyReachBrowseLayoutMode();
+        host.showReachBrowseList(true);
+        if (youtubeDetailVideo != null) {
+            host.setBrowserStatusTitle(youtubeDetailVideo.title);
+        } else {
+            host.setBrowserStatusTitle(host.getString(R.string.status_youtube_detail));
+        }
+        rebuildYouTubeDetailRows();
+        bindVirtualAdapter(new VirtualClickHandler() {
+            @Override
+            public void onClick(int position) {
+                handleYouTubeDetailRowClick(position);
+            }
+        });
+    }
+
+    /**
+     * Messaging-style layout: actions on top, then a Comments header, then author/body rows.
+     * Same wheel list pattern as Soulseek conversations (title + subtitle).
+     */
+    private void rebuildYouTubeDetailRows() {
+        virtualLabels.clear();
+        virtualSubtitles.clear();
+        youtubeDetailRows.clear();
+
+        virtualLabels.add(host.getString(R.string.common_back_short));
+        virtualSubtitles.add("");
+        youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_BACK));
+
+        if (youtubeDetailVideo != null) {
+            virtualLabels.add(host.getString(R.string.youtube_detail_play));
+            // 2026-07-14 — Show resolving hint on Play row while stream URL is fetched.
+            if (youtubeResolvingStream) {
+                virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+            } else {
+                virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
+                        ? youtubeDetailVideo.subtitle()
+                        : host.getString(R.string.youtube_detail_play_sub));
+            }
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_PLAY));
+
+            virtualLabels.add(host.getString(R.string.youtube_detail_save_video));
+            virtualSubtitles.add(youtubeDetailVideo.author);
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_VIDEO));
+
+            virtualLabels.add(host.getString(R.string.youtube_detail_save_audio));
+            virtualSubtitles.add(youtubeDetailVideo.author);
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_AUDIO));
+        }
+
+        virtualLabels.add(host.getString(R.string.youtube_comments_header));
+        virtualSubtitles.add("");
+        youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_HEADER));
+
+        if (youtubeCommentsLoading) {
+            virtualLabels.add(host.getString(R.string.youtube_comments_loading));
+            virtualSubtitles.add("");
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_STATUS));
+            return;
+        }
+
+        if (youtubeComments.isEmpty()) {
+            virtualLabels.add(host.getString(R.string.youtube_comments_empty));
+            virtualSubtitles.add("");
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_STATUS));
+            return;
+        }
+
+        for (int i = 0; i < youtubeComments.size(); i++) {
+            YouTubeComment c = youtubeComments.get(i);
+            String author = c.author.length() > 0 ? c.author : "…";
+            virtualLabels.add(author);
+            virtualSubtitles.add(c.preview(120));
+            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_COMMENT, i));
+        }
+    }
+
+    private void handleYouTubeDetailRowClick(int position) {
+        if (position < 0 || position >= youtubeDetailRows.size()) return;
+        YoutubeDetailRow row = youtubeDetailRows.get(position);
+        switch (row.kind) {
+            case YoutubeDetailRow.KIND_BACK:
+                handleBack();
+                break;
+            case YoutubeDetailRow.KIND_PLAY:
+                // 2026-07-14 — Ignore re-taps while resolve is already running.
+                if (youtubeDetailVideo != null && !youtubeResolvingStream) {
+                    playYouTubeVideo(youtubeDetailVideo);
+                }
+                break;
+            case YoutubeDetailRow.KIND_SAVE_VIDEO:
+                if (youtubeDetailVideo != null) {
+                    host.requestYouTubeSave(youtubeDetailVideo, false);
+                }
+                break;
+            case YoutubeDetailRow.KIND_SAVE_AUDIO:
+                if (youtubeDetailVideo != null) {
+                    host.requestYouTubeSave(youtubeDetailVideo, true);
+                }
+                break;
+            case YoutubeDetailRow.KIND_COMMENT:
+                // Full comment body as toast — keeps list wheel-friendly (like long message peek).
+                if (row.commentIndex >= 0 && row.commentIndex < youtubeComments.size()) {
+                    YouTubeComment c = youtubeComments.get(row.commentIndex);
+                    String body = c.content;
+                    if (body != null && body.length() > 0) {
+                        Toast.makeText(host.context(), body, Toast.LENGTH_LONG).show();
+                    }
+                }
+                break;
+            default:
+                break;
+        }
+    }
+
+    private void loadYouTubeComments(final String videoId) {
+        youtubeCommentsLoading = true;
+        final int gen = ++youtubeCommentsGen;
+        if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
+            rebuildYouTubeDetailRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        }
+        NotPipeClient.getInstance(host.context()).fetchComments(videoId, new NotPipeClient.Callback() {
+            @Override
+            public void onSuccess(String payloadJson) {
+                if (gen != youtubeCommentsGen) return;
+                youtubeCommentsLoading = false;
+                youtubeComments.clear();
+                try {
+                    youtubeComments.addAll(YouTubeResultJson.parseComments(payloadJson));
+                } catch (Exception e) {
+                    youtubeComments.clear();
+                }
+                if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
+                    buildYouTubeDetailUi();
+                }
+            }
+
+            @Override
+            public void onError(String message) {
+                if (gen != youtubeCommentsGen) return;
+                youtubeCommentsLoading = false;
+                youtubeComments.clear();
+                if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
+                    buildYouTubeDetailUi();
+                    Toast.makeText(host.context(), R.string.youtube_comments_error,
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
     }
 
     private void loadYouTubePopular() {
@@ -2674,19 +2921,44 @@ public final class MediaSuiteHost {
         });
     }
 
-    /** Solar-native playback — resolve stream via notPipe bridge, play in Solar IJK player. */
+    /**
+     * Solar-native playback — resolve stream via notPipe bridge, play in Solar IJK player.
+     * 2026-07-14 — Quality ladder + detail loading UX (was muting browse list incorrectly).
+     * Layman: ask notPipe for a playable link, try lower quality if the first fails.
+     * Reversal: single resolveStream(id) then openUrl with no fallback.
+     */
     private void playYouTubeVideo(final YouTubeVideo video) {
+        if (video == null || video.id.isEmpty()) return;
+        playYouTubeVideoAtQuality(video, NotPipeClient.preferredVideoQuality(), false);
+    }
+
+    /**
+     * 2026-07-14 — Resolve + open player at quality; optionally silent when retrying from IJK error.
+     */
+    private void playYouTubeVideoAtQuality(final YouTubeVideo video, final String quality,
+            final boolean fromIjkFallback) {
         if (video == null || video.id.isEmpty()) return;
         youtubeNowPlayingTitle = video.title;
         youtubeNowPlayingId = video.id;
+        youtubeStreamQuality = quality;
+        youtubeIjkFallbackPending = false;
         final int gen = ++youtubeLoadGen;
-        youtubeLoading = true;
-        rebuildYouTubeVirtualRows();
-        if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
-        NotPipeClient.getInstance(host.context()).resolveStream(video.id, new NotPipeClient.Callback() {
+        youtubeResolvingStream = true;
+        // Only mark browse loading when resolve started from browse (not detail).
+        if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
+            youtubeLoading = true;
+            rebuildYouTubeVirtualRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        } else if (host.getCurrentScreenState() == STATE_YOUTUBE_DETAIL) {
+            rebuildYouTubeDetailRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        }
+        NotPipeClient.getInstance(host.context()).resolveStream(video.id, quality,
+                new NotPipeClient.Callback() {
             @Override
             public void onSuccess(String payloadJson) {
                 if (gen != youtubeLoadGen) return;
+                youtubeResolvingStream = false;
                 youtubeLoading = false;
                 try {
                     youtubeStreamUrl = YouTubeResultJson.parseStreamUrl(payloadJson);
@@ -2694,10 +2966,13 @@ public final class MediaSuiteHost {
                     youtubeStreamUrl = null;
                 }
                 if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
-                    if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
-                        buildYouTubeBrowseUi();
+                    String next = NotPipeClient.fallbackVideoQuality(quality);
+                    if (next != null) {
+                        playYouTubeVideoAtQuality(video, next, fromIjkFallback);
+                        return;
                     }
-                    Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
+                    clearYouTubeResolveUi();
+                    toastYouTubePlayError(null);
                     return;
                 }
                 videoPlaybackYoutube = true;
@@ -2708,13 +2983,45 @@ public final class MediaSuiteHost {
             @Override
             public void onError(String message) {
                 if (gen != youtubeLoadGen) return;
+                youtubeResolvingStream = false;
                 youtubeLoading = false;
-                if (host.getCurrentScreenState() == STATE_YOUTUBE_BROWSE) {
-                    buildYouTubeBrowseUi();
+                String next = NotPipeClient.fallbackVideoQuality(quality);
+                if (next != null) {
+                    playYouTubeVideoAtQuality(video, next, fromIjkFallback);
+                    return;
                 }
-                Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
+                clearYouTubeResolveUi();
+                toastYouTubePlayError(message);
             }
         });
+    }
+
+    /** 2026-07-14 — Refresh browse/detail after resolve failure without yanking screen. */
+    private void clearYouTubeResolveUi() {
+        int state = host.getCurrentScreenState();
+        if (state == STATE_YOUTUBE_BROWSE) {
+            buildYouTubeBrowseUi();
+        } else if (state == STATE_YOUTUBE_DETAIL) {
+            rebuildYouTubeDetailRows();
+            if (virtualAdapter != null) virtualAdapter.notifyDataSetChanged();
+        }
+    }
+
+    /**
+     * 2026-07-14 — Short toast; append bridge reason when short enough for 2.4" display.
+     */
+    private void toastYouTubePlayError(String bridgeMessage) {
+        if (bridgeMessage != null && bridgeMessage.length() > 0
+                && bridgeMessage.length() <= 48
+                && !"timeout".equals(bridgeMessage)) {
+            Toast.makeText(host.context(),
+                    host.getString(R.string.youtube_play_error_detail, bridgeMessage),
+                    Toast.LENGTH_SHORT).show();
+        } else if ("timeout".equals(bridgeMessage)) {
+            Toast.makeText(host.context(), R.string.youtube_play_timeout, Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
+        }
     }
 
     /** Wheel keyboard submitted a YouTube search query. */
@@ -2758,6 +3065,16 @@ public final class MediaSuiteHost {
     /** Context action — play a YouTube row without OK tap. */
     public void playYouTubeFromContext(YouTubeVideo video) {
         playYouTubeVideo(video);
+    }
+
+    /** Context — open detail/comments for a browse row. */
+    public void openYouTubeDetailFromContext(YouTubeVideo video) {
+        openYouTubeDetail(video);
+    }
+
+    /** Context — video currently shown on detail screen. */
+    public YouTubeVideo getYouTubeDetailVideo() {
+        return youtubeDetailVideo;
     }
 
     // --- Videos ---
@@ -3069,12 +3386,14 @@ public final class MediaSuiteHost {
         }
     }
 
-    /** Solar IJK player — HTTP URL from notPipe RESOLVE_STREAM IPC. */
+    /**
+     * Solar IJK player — HTTP URL from notPipe RESOLVE_STREAM IPC.
+     * 2026-07-14 — OnError retries next quality or leaves player with toast (was silent black screen).
+     */
     private void startYoutubeStreamPlayback() {
         if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
             Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
-            host.changeScreen(STATE_YOUTUBE_BROWSE);
-            videoPlaybackYoutube = false;
+            leaveYouTubePlayerOnError();
             return;
         }
         host.pauseMusicPlayback();
@@ -3088,6 +3407,23 @@ public final class MediaSuiteHost {
         surfaceHost.addView(videoSurface, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         videoController = new VideoPlayerController();
+        // 2026-07-14 — Wire error → quality fallback or back to detail/browse.
+        videoController.setPlaybackListener(new VideoPlayerController.PlaybackListener() {
+            @Override
+            public void onError(int what, int extra) {
+                host.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleYoutubeIjkError();
+                    }
+                });
+            }
+
+            @Override
+            public void onCompletion() {
+                // Natural end — stay on player; user presses Back (same as local files).
+            }
+        });
         videoController.attachHolder(videoSurface.getHolder());
         try {
             videoController.openUrl(youtubeStreamUrl);
@@ -3095,8 +3431,53 @@ public final class MediaSuiteHost {
             startVideoProgressUpdates();
             updateVideoProgressUi(0);
         } catch (Exception e) {
-            Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
+            toastYouTubePlayError(null);
+            leaveYouTubePlayerOnError();
+        }
+    }
+
+    /**
+     * 2026-07-14 — IJK failed current URL; try lower quality once, else leave player.
+     * Layman: if 480p link is broken, ask for 360p; if that fails too, go back.
+     */
+    private void handleYoutubeIjkError() {
+        if (!videoPlaybackYoutube) return;
+        if (youtubeIjkFallbackPending) return;
+        final String next = NotPipeClient.fallbackVideoQuality(youtubeStreamQuality);
+        if (next != null && youtubeNowPlayingId != null && youtubeNowPlayingId.length() > 0) {
+            youtubeIjkFallbackPending = true;
+            final YouTubeVideo retry = new YouTubeVideo(youtubeNowPlayingId,
+                    youtubeNowPlayingTitle != null ? youtubeNowPlayingTitle : "", "", "");
+            releaseVideoPlayer();
             videoPlaybackYoutube = false;
+            youtubeStreamUrl = null;
+            // Stay / return to detail so resolve UX is visible, then re-enter player.
+            if (host.getCurrentScreenState() == STATE_VIDEO_PLAYER) {
+                if (youtubeDetailVideo != null
+                        && youtubeNowPlayingId.equals(youtubeDetailVideo.id)) {
+                    host.changeScreen(STATE_YOUTUBE_DETAIL);
+                } else {
+                    host.changeScreen(STATE_YOUTUBE_BROWSE);
+                }
+            }
+            playYouTubeVideoAtQuality(retry, next, true);
+            return;
+        }
+        toastYouTubePlayError(null);
+        leaveYouTubePlayerOnError();
+    }
+
+    /** 2026-07-14 — Exit video player after YouTube stream failure. */
+    private void leaveYouTubePlayerOnError() {
+        videoPlaybackYoutube = false;
+        youtubeStreamUrl = null;
+        youtubeResolvingStream = false;
+        releaseVideoPlayer();
+        if (youtubeDetailVideo != null
+                && youtubeNowPlayingId != null
+                && youtubeNowPlayingId.equals(youtubeDetailVideo.id)) {
+            host.changeScreen(STATE_YOUTUBE_DETAIL);
+        } else {
             host.changeScreen(STATE_YOUTUBE_BROWSE);
         }
     }
@@ -3508,18 +3889,19 @@ public final class MediaSuiteHost {
                     tvTitle = (android.widget.TextView) row.getChildAt(0);
                     tvSub = (android.widget.TextView) row.getChildAt(1);
                 }
-                row.setOnClickListener(new View.OnClickListener() {
-                    @Override
-                    public void onClick(View v) {
-                        if (statusRow) return;
-                        host.clickFeedback();
-                        handler.onClick(position);
-                    }
-                });
+                // 2026-07-14 — A5 two-tap on two-line YouTube/browse rows (was raw one-tap).
                 if (statusRow) {
+                    row.setOnClickListener(null);
                     row.setFocusable(false);
                     row.setEnabled(false);
                 } else {
+                    com.solar.launcher.A5FocusConfirm.setOnClickListener(row, new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            host.clickFeedback();
+                            handler.onClick(position);
+                        }
+                    });
                     row.setFocusable(true);
                     row.setEnabled(true);
                 }
@@ -3535,6 +3917,7 @@ public final class MediaSuiteHost {
             }
             btn.setText(title);
             btn.setEnabled(!statusRow);
+            // createListButton already wraps; keep assign for recycle rebinds.
             btn.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {

@@ -537,6 +537,10 @@ public final class DeezerScreen {
         int hPad = (int) (10 * host.context().getResources().getDisplayMetrics().density);
         btn.setPadding(hPad, 0, hPad, 0);
         btn.setFocusable(true);
+        // 2026-07-14 — FITM for Deezer result rows (Y1/Y2 sticky touch-mode).
+        // Layman: wheel can highlight Deezer tracks even after a poke leaves touch-mode on.
+        // Reversal: drop FITM; results stick under Search again when touchMode=true.
+        btn.setFocusableInTouchMode(true);
         btn.setSingleLine(true);
         btn.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(

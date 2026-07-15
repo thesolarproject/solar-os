@@ -60,9 +60,7 @@ public final class OtaCompanionInstaller {
             return;
         }
         OtaTlsInit(context);
-        notify(progress, "jj");
-        downloadOptional(new String[] {OtaCompanionUrls.JJ_APK_URL},
-                new File(workDir, OtaCompanionUrls.FILE_JJ), "JJ");
+        // 2026-07-11 — No longer auto-fetch JJ with Solar OTA (Get Latest JJ removed from UI).
         notify(progress, "rockbox");
         File installApk = new File(workDir, OtaCompanionUrls.FILE_ROCKBOX_INSTALL);
         downloadOptional(OtaCompanionUrls.ROCKBOX_INSTALL_URLS, installApk, "Rockbox APK");
@@ -78,7 +76,7 @@ public final class OtaCompanionInstaller {
         }
     }
 
-    /** Install downloaded artifacts — JJ then Rockbox APK then native lib sync. */
+    /** Install downloaded artifacts — Rockbox APK then native lib sync (JJ no longer batch-installed). */
     public static Result installDownloaded(Context context, File workDir, Progress progress) {
         if (context == null || workDir == null) {
             return new Result(false, false, false);
@@ -87,12 +85,9 @@ public final class OtaCompanionInstaller {
             Log.w(TAG, "companion install skipped — no root");
             return new Result(false, false, false);
         }
-        boolean jjOk = false;
         boolean rockboxApkOk = false;
         boolean rockboxLibsOk = false;
         try {
-            notify(progress, "jj_install");
-            jjOk = installJj(context, workDir);
             notify(progress, "rockbox_install");
             rockboxApkOk = installRockboxApk(workDir);
             notify(progress, "rockbox_libs");
@@ -100,8 +95,8 @@ public final class OtaCompanionInstaller {
         } catch (Exception e) {
             Log.w(TAG, "companion install error: " + e.getMessage());
         }
-        Log.i(TAG, "companion result jj=" + jjOk + " rbApk=" + rockboxApkOk + " rbLibs=" + rockboxLibsOk);
-        return new Result(jjOk, rockboxApkOk, rockboxLibsOk);
+        Log.i(TAG, "companion result rbApk=" + rockboxApkOk + " rbLibs=" + rockboxLibsOk);
+        return new Result(false, rockboxApkOk, rockboxLibsOk);
     }
 
     /**

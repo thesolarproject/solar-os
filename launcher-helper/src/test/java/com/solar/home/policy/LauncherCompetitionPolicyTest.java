@@ -19,15 +19,31 @@ public class LauncherCompetitionPolicyTest {
                 LauncherCompetitionPolicy.packageForTarget(HomeTargetPolicy.TARGET_JJ));
     }
 
+    /**
+     * 2026-07-08 — Disable matrix now includes stock Innioasis HOME packages (y1 + y2).
+     * Layman: picking a home screen parks all the other home apps, including the factory one.
+     * Reversal: expect 2/1 lengths again if Innioasis packages leave the competition lists.
+     */
     @Test
     public void packagesToDisableForTarget_neverIncludesActive() {
         String[] solarOff = LauncherCompetitionPolicy.packagesToDisableForTarget(
                 HomeTargetPolicy.TARGET_SOLAR);
-        assertEquals(2, solarOff.length);
+        // Solar active — Rockbox, JJ, and both factory Innioasis packages get parked.
+        assertEquals(4, solarOff.length);
         String[] rockboxOff = LauncherCompetitionPolicy.packagesToDisableForTarget(
                 HomeTargetPolicy.TARGET_ROCKBOX);
-        assertEquals(1, rockboxOff.length);
+        // Rockbox active — JJ + factory packages parked; Rockbox itself never in its own list.
+        assertEquals(3, rockboxOff.length);
         assertEquals(HomeTargetPolicy.JJ_PKG, rockboxOff[0]);
+        for (String pkg : rockboxOff) {
+            assertFalse(HomeTargetPolicy.ROCKBOX_PKG.equals(pkg));
+        }
+        // Stock active — factory package stays enabled; Rockbox + JJ parked.
+        String[] stockOff = LauncherCompetitionPolicy.packagesToDisableForTarget(
+                HomeTargetPolicy.TARGET_STOCK);
+        for (String pkg : stockOff) {
+            assertFalse(HomeTargetPolicy.INNIOASIS_Y1_PKG.equals(pkg));
+        }
     }
 
     @Test

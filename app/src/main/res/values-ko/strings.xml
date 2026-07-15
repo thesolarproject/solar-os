@@ -631,6 +631,7 @@
     <string name="context_action_shuffle_toggle">셔플 전환</string>
     <string name="context_action_repeat_cycle">반복 모드</string>
     <string name="context_action_play_pause">재생 / 일시정지</string>
+    <string name="context_action_scrubbing">스크러빙</string>
     <string name="context_action_start_over">처음부터</string>
     <string name="context_action_mark_played">재생 완료 표시</string>
     <string name="context_action_refresh_library">라이브러리 새로고침</string>
@@ -682,6 +683,8 @@
     <string name="context_quick_volume">볼륨</string>
     <string name="context_quick_brightness">밝기</string>
     <string name="context_hold_back_hint">뒤로 버튼 길게 눌러 옵션</string>
+    <!-- 2026-07-11 — Y2: Back or Power opens Options; matches EN context_hold_back_or_power_hint. -->
+    <string name="context_hold_back_or_power_hint">뒤로 또는 전원 길게 눌러 옵션</string>
     <string name="podcasts_saved_on_device">기기에 저장됨</string>
     <string name="podcasts_resume_badge">[이어듣기]</string>
     <string name="podcasts_empty_saved">SD 카드에 저장된 에피소드가 없습니다.</string>

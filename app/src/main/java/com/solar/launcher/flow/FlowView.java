@@ -11,8 +11,12 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
+import android.view.VelocityTracker;
 import android.view.View;
+import android.view.ViewConfiguration;
 
+import com.solar.launcher.DeviceFeatures;
 import com.solar.launcher.R;
 import com.solar.launcher.theme.ThemeManager;
 
@@ -44,6 +48,11 @@ public final class FlowView extends View {
         void scheduleCenterBakes(int center, int radius);
         /** User scrolled — drop NP handoff pin so neighbors use catalog art. */
         void onCarouselScrollStarted();
+        /**
+         * 2026-07-14 — Touch tap on center cover (front face) — same as short Center OK.
+         * Layman: poke the middle album to flip/open it. Wired to FlowScreenHost.handleCenterOk.
+         */
+        void onTouchCenterOk();
     }
 
     private final FlowEngine engine = new FlowEngine();
@@ -81,7 +90,17 @@ public final class FlowView extends View {
     /** Debug: skip floor reflection draws — compare carousel perf on device. */
     private boolean noReflections = false;
     /** Gloss peak for floor mirror — uniform via {@link #reflectionAlphaForDraw}. */
-    private static final float FLOW_REFLECTION_ALPHA = 0.50f;
+    private static final float FLOW_REFLECTION_ALPHA_Y2 = 0.50f;
+    /** 2026-07-11 — Y1 half of Y2 gloss (MT6572 / dimmer LCD); Y2 stays at {@link #FLOW_REFLECTION_ALPHA_Y2}. */
+    private static final float FLOW_REFLECTION_ALPHA_Y1 = 0.25f;
+
+    /**
+     * 2026-07-11 — Base floor-reflection opacity for Flow + NP.
+     * Y1 = half of Y2 (was shared 0.50 — too hot on Y1). Reversal: always return 0.50f.
+     */
+    public static float flowReflectionBaseAlpha() {
+        return DeviceFeatures.isY1() ? FLOW_REFLECTION_ALPHA_Y1 : FLOW_REFLECTION_ALPHA_Y2;
+    }
     /** Side slots use fewer bands — center keeps full gloss; cuts drawBitmap cost while scrolling. */
     /** Center cover reflection bands — full quality on the focused carousel slot. */
     private static final int CENTER_REFLECTION_MAX_BANDS = 36;
@@ -729,6 +748,277 @@ public final class FlowView extends View {
         }
         return moved;
     }
+
+    /**
+     * 2026-07-14 — A5 Cover Flow touch: finger-follow + inertia; back-face track scroll + side-flick dismiss.
+     * Layman: drag albums; on flipped cover, swipe tracks up/down, flick sideways to next album, tap a song to play.
+     * Tech: free-scroll front; BACK vertical → scrollBackBy; BACK horizontal → flipToFrontThenScroll; keys unchanged.
+     * Was: back-face horizontal swipe ignored (dead). Reversal: ignore BACK horizontal again; restore two-tap play.
+     */
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (!DeviceFeatures.isA5() || event == null) {
+            return super.onTouchEvent(event);
+        }
+        int action = event.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            if (touchVelocity != null) {
+                touchVelocity.recycle();
+                touchVelocity = null;
+            }
+            touchVelocity = VelocityTracker.obtain();
+            touchVelocity.addMovement(event);
+            touchDownX = event.getX();
+            touchDownY = event.getY();
+            touchLastX = touchDownX;
+            touchLastY = touchDownY;
+            touchMoved = false;
+            touchDragging = false;
+            touchAxis = TOUCH_AXIS_NONE;
+            backScrollAccumY = 0f;
+            // Grab mid-fling / mid-snap for finger-follow (front carousel only).
+            if (flip.getState() != FlowFlipController.STATE_BACK
+                    && (engine.isFreeScrolling() || engine.isCarouselScrolling())) {
+                engine.beginFreeScroll();
+                touchDragging = true;
+                touchAxis = TOUCH_AXIS_HORIZONTAL;
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            if (touchVelocity != null) touchVelocity.addMovement(event);
+            float x = event.getX();
+            float y = event.getY();
+            float dxFromDown = x - touchDownX;
+            float dyFromDown = y - touchDownY;
+            float slop = touchSlopPx();
+            if (!touchMoved && (Math.abs(dxFromDown) > slop || Math.abs(dyFromDown) > slop)) {
+                touchMoved = true;
+                if (touchAxis == TOUCH_AXIS_NONE) {
+                    touchAxis = Math.abs(dxFromDown) >= Math.abs(dyFromDown)
+                            ? TOUCH_AXIS_HORIZONTAL : TOUCH_AXIS_VERTICAL;
+                }
+            }
+            if (!touchMoved) return true;
+
+            // --- Flipped tracklist: vertical scrolls songs; horizontal reserved for dismiss flick ---
+            if (flip.getState() == FlowFlipController.STATE_BACK) {
+                if (touchAxis == TOUCH_AXIS_VERTICAL) {
+                    float dy = y - touchLastY;
+                    touchLastY = y;
+                    touchLastX = x;
+                    backScrollAccumY += dy;
+                    float stepPx = backRowStepPx();
+                    if (stepPx < 8f) stepPx = 8f;
+                    while (backScrollAccumY <= -stepPx) {
+                        // Finger up → next track (same as wheel down / +1).
+                        if (!flip.scrollBackBy(1)) break;
+                        backScrollAccumY += stepPx;
+                        invalidate();
+                    }
+                    while (backScrollAccumY >= stepPx) {
+                        // Finger down → previous track (wheel up / -1).
+                        if (!flip.scrollBackBy(-1)) break;
+                        backScrollAccumY -= stepPx;
+                        invalidate();
+                    }
+                } else {
+                    touchLastX = x;
+                    touchLastY = y;
+                }
+                return true;
+            }
+
+            if (flip.blocksCarouselScroll()) return true;
+
+            // --- Front carousel free-scroll ---
+            if (touchAxis == TOUCH_AXIS_HORIZONTAL) {
+                if (!touchDragging) {
+                    engine.beginFreeScroll();
+                    touchDragging = true;
+                    clearHandoffPin();
+                    if (callback != null) callback.onCarouselScrollStarted();
+                }
+                float dx = x - touchLastX;
+                touchLastX = x;
+                touchLastY = y;
+                engine.setViewport(viewW, viewH);
+                engine.dragByPixels(dx);
+                if (callback != null) {
+                    callback.prefetchCarouselCovers(engine.getVisualCenterIndex(), 5);
+                }
+                invalidate();
+                postAnimTick();
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            if (touchVelocity != null) touchVelocity.addMovement(event);
+            boolean cancelled = action == MotionEvent.ACTION_CANCEL;
+
+            if (flip.getState() == FlowFlipController.STATE_BACK && !cancelled) {
+                float dx = event.getX() - touchDownX;
+                float dy = event.getY() - touchDownY;
+                float minFlick = Math.max(touchSlopPx() * 2f, TOUCH_BACK_FLICK_MIN_PX);
+                // Sideways flick closes tracklist and hops to neighbor cover (wheel overflow path).
+                if (touchMoved && touchAxis == TOUCH_AXIS_HORIZONTAL
+                        && Math.abs(dx) > Math.abs(dy) && Math.abs(dx) >= minFlick) {
+                    int delta = dx < 0f ? 1 : -1;
+                    flipToFrontThenScroll(delta);
+                } else if (!touchMoved) {
+                    handleTouchTap(touchDownX, touchDownY);
+                }
+            } else if (touchDragging && !cancelled) {
+                float vx = 0f;
+                if (touchVelocity != null) {
+                    touchVelocity.computeCurrentVelocity(1000);
+                    vx = touchVelocity.getXVelocity();
+                }
+                clearHandoffPin();
+                if (callback != null) callback.onCarouselScrollStarted();
+                engine.fling(vx);
+                if (callback != null) {
+                    callback.prefetchCarouselCovers(engine.getVisualCenterIndex(), 5);
+                }
+                invalidate();
+                postAnimTick();
+            } else if (touchDragging && cancelled) {
+                engine.snapNearestAlbum();
+                invalidate();
+                postAnimTick();
+            } else if (!touchMoved && !cancelled
+                    && flip.getState() != FlowFlipController.STATE_BACK) {
+                handleTouchTap(touchDownX, touchDownY);
+            }
+
+            if (touchVelocity != null) {
+                touchVelocity.recycle();
+                touchVelocity = null;
+            }
+            touchDragging = false;
+            touchMoved = false;
+            touchAxis = TOUCH_AXIS_NONE;
+            backScrollAccumY = 0f;
+            return true;
+        }
+        return super.onTouchEvent(event);
+    }
+
+    private float touchSlopPx() {
+        try {
+            return ViewConfiguration.get(getContext()).getScaledTouchSlop();
+        } catch (Exception e) {
+            return TOUCH_SLOP_FALLBACK_PX;
+        }
+    }
+
+    /** Row height used for finger-stepping the flipped tracklist. */
+    private float backRowStepPx() {
+        CoverFlowLayout.Metrics metrics = viewportMetrics();
+        FlowEngine.SlotTransform t = centerTransformWithBackEncroach(metrics, 1f);
+        float headerH = t.height * 0.22f;
+        float menuRowH = getResources().getDimension(R.dimen.y1_menu_item_height);
+        return Math.max(menuRowH * 0.82f, (t.height - headerH) / 6f);
+    }
+
+    /**
+     * 2026-07-14 — Tap: back row → play now; side cover → center; center → host OK.
+     * Layman: poke a song on the flipped cover to play it (iPhone Cover Flow style).
+     */
+    private void handleTouchTap(float x, float y) {
+        if (flip.getState() == FlowFlipController.STATE_BACK) {
+            int row = hitTestBackRow(x, y);
+            if (row >= 0) {
+                flip.setBackIndex(row);
+                // Immediate playback — Cover Flow directness (not list two-tap).
+                handleCenterOk();
+                invalidate();
+                return;
+            }
+            return;
+        }
+        if (flip.blocksCarouselScroll()) return;
+        int hit = hitTestCoverIndex(x, y);
+        int center = engine.getVisualCenterIndex();
+        if (hit >= 0 && hit != center) {
+            // Tap side cover → animate that album to center (Cover Flow classic).
+            animateScrollToIndex(hit, null);
+            clearHandoffPin();
+            if (callback != null) callback.onCarouselScrollStarted();
+            return;
+        }
+        // Center tap / miss → short Center OK via host (flip / library).
+        if (callback != null) {
+            callback.onTouchCenterOk();
+        } else {
+            handleCenterOk();
+        }
+    }
+
+    /** Nearest visible cover whose screen AABB contains the tap (center preferred on ties). */
+    private int hitTestCoverIndex(float x, float y) {
+        if (items.isEmpty() || viewW <= 0f) return -1;
+        engine.setViewport(viewW, viewH);
+        int n = engine.fillDrawOrder(drawOrder, drawDepth);
+        int best = -1;
+        float bestDist = Float.MAX_VALUE;
+        int visual = engine.getVisualCenterIndex();
+        for (int i = 0; i < n; i++) {
+            int idx = drawOrder[i];
+            engine.slotTransformInto(drawSlotScratch, idx, viewW, viewH, 0f);
+            if (drawSlotScratch.alpha <= 0.05f) continue;
+            float halfW = drawSlotScratch.width * 0.5f;
+            float halfH = drawSlotScratch.height * 0.5f;
+            float l = drawSlotScratch.centerX - halfW;
+            float r = drawSlotScratch.centerX + halfW;
+            float t = drawSlotScratch.centerY - halfH;
+            float b = drawSlotScratch.centerY + halfH;
+            if (x < l || x > r || y < t || y > b) continue;
+            float dist = Math.abs(idx - visual);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = idx;
+            }
+        }
+        return best;
+    }
+
+    /** Visible back-face track under finger; -1 if none. */
+    private int hitTestBackRow(float x, float y) {
+        CoverFlowLayout.Metrics metrics = viewportMetrics();
+        FlowEngine.SlotTransform t = centerTransformWithBackEncroach(metrics, 1f);
+        float halfW = t.width * 0.5f;
+        float halfH = t.height * 0.5f;
+        RectF rect = new RectF(t.centerX - halfW, t.centerY - halfH,
+                t.centerX + halfW, t.centerY + halfH);
+        if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return -1;
+        float headerH = rect.height() * 0.22f;
+        float menuRowH = getResources().getDimension(R.dimen.y1_menu_item_height);
+        float rowH = Math.max(menuRowH * 0.82f, (rect.height() - headerH) / 6f);
+        if (y < rect.top + headerH) return -1;
+        int count = flip.visibleBackRowCount();
+        int start = flip.visibleBackRowStart();
+        int local = (int) ((y - rect.top - headerH) / rowH);
+        if (local < 0 || local >= count) return -1;
+        int rowIdx = start + local;
+        if (rowIdx < 0 || rowIdx >= flip.backRows().size()) return -1;
+        return rowIdx;
+    }
+
+    private static final float TOUCH_SLOP_FALLBACK_PX = 28f;
+    private static final float TOUCH_BACK_FLICK_MIN_PX = 48f;
+    private static final int TOUCH_AXIS_NONE = 0;
+    private static final int TOUCH_AXIS_HORIZONTAL = 1;
+    private static final int TOUCH_AXIS_VERTICAL = 2;
+    private float touchDownX;
+    private float touchDownY;
+    private float touchLastX;
+    private float touchLastY;
+    private float backScrollAccumY;
+    private int touchAxis;
+    private boolean touchMoved;
+    private boolean touchDragging;
+    private VelocityTracker touchVelocity;
 
     public void flipToBack(String title, String subtitle, List<FlowScreenHost.FlowBackRow> rows) {
         flip.setBackContent(title, subtitle, rows);
@@ -1696,7 +1986,7 @@ public final class FlowView extends View {
     /** Uniform reflection strength; only the global reveal fade changes it. */
     static float reflectionAlphaForSlot(float revealAlpha, boolean isVisualCenter) {
         float alpha = Math.max(0f, Math.min(1f, revealAlpha));
-        return alpha * FLOW_REFLECTION_ALPHA;
+        return alpha * flowReflectionBaseAlpha();
     }
 
     static float reflectionAlphaForDraw(float coverAlpha, float revealAlpha, boolean isVisualCenter) {

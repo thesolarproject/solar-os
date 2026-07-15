@@ -1,16 +1,18 @@
 package com.solar.launcher.xposed.notpipe;
 
 import android.app.Activity;
+import android.os.Bundle;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
- * 2026-07-06 — Finishes notPipe MainActivity when Solar only needs the process alive.
- * Layman: no touch UI flash — Solar woke notPipe for backend IPC only.
- * Technical: solar_wake_only extra → finish() in onCreate after bridge registered.
- * Reversal: remove hook; wake launches show notPipe home briefly.
+ * 2026-07-10 — Headless process wake: never show notPipe home to the user.
+ * Layman: Solar only needs notPipe awake for IPC; no home UI flash.
+ * Technical: finish MainActivity on solar_wake_only; SolarWakeService keeps process.
+ * 2026-07-14 — Rely on sticky service keep-alive (blank Activity starved main looper).
+ * Reversal: blank Activity keep-alive without finishing.
  */
 public final class NotPipeMainActivityHooks {
 
@@ -20,21 +22,36 @@ public final class NotPipeMainActivityHooks {
         try {
             Class<?> main = XposedHelpers.findClass(
                     "io.github.gohoski.notpipe.MainActivity", lpparam.classLoader);
-            XposedHelpers.findAndHookMethod(main, "onCreate",
-                    android.os.Bundle.class, new XC_MethodHook() {
+            XC_MethodHook wakeHook = new XC_MethodHook() {
                 @Override
-                protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     Activity act = (Activity) param.thisObject;
-                    if (act.getIntent() != null
-                            && act.getIntent().getBooleanExtra(
-                                    NotPipeIpc.EXTRA_SOLAR_WAKE_ONLY, false)) {
+                    if (!isWakeOnly(act)) return;
+                    try {
+                        act.setTheme(android.R.style.Theme_Translucent_NoTitleBar);
+                    } catch (Throwable ignored) {}
+                    try {
                         act.finish();
-                        SolarNotPipeBridge.log("MainActivity wake-only finished");
-                    }
+                    } catch (Throwable ignored) {}
+                    try {
+                        act.overridePendingTransition(0, 0);
+                    } catch (Throwable ignored) {}
+                    param.setResult(null);
+                    SolarNotPipeBridge.log("MainActivity wake-only finished (service keep-alive)");
                 }
-            });
+            };
+            int n = NotPipeXposedKit.hookExact(main, "onCreate", wakeHook, Bundle.class);
+            if (n == 0) {
+                n = NotPipeXposedKit.hookDeclared(main, "onCreate", wakeHook);
+            }
+            SolarNotPipeBridge.log("MainActivity.onCreate hooks=" + n);
         } catch (Throwable t) {
-            SolarNotPipeBridge.log("NotPipeMainActivityHooks failed: " + t.getMessage());
+            SolarNotPipeBridge.log("NotPipeMainActivityHooks failed: " + t);
         }
+    }
+
+    private static boolean isWakeOnly(Activity act) {
+        return act != null && act.getIntent() != null
+                && act.getIntent().getBooleanExtra(NotPipeIpc.EXTRA_SOLAR_WAKE_ONLY, false);
     }
 }

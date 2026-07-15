@@ -307,6 +307,24 @@ public final class FlowPlayerHandoff {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
 
+        // 2026-07-11 — Floor gloss rides on the flyer for the whole morph (was cover-only → vanish/reappear).
+        // Forward: Flow→NP (from=flow, to=player). Reverse: NP→Flow (from=player, to=flow).
+        final float playerReflectForHandoff;
+        if (albumContainer != null && albumContainer.getHeight() > 0) {
+            FlowAlbumArt3d.AlbumArtPose landPose =
+                    FlowAlbumArt3d.playerPose(albumContainer.getWidth(), albumContainer.getHeight());
+            playerReflectForHandoff = FlowAlbumArt3d.playerReflectHeight(albumContainer.getHeight(),
+                    landPose.drawRect);
+        } else {
+            RectF playerSide = reverse ? from : to;
+            playerReflectForHandoff = Math.min(playerSide.height() * 0.35f, playerSide.height() * 0.55f);
+        }
+        final float flowReflectForHandoff = Math.min(
+                (reverse ? to : from).height() * 0.45f,
+                (reverse ? to : from).height() * 0.55f);
+        final float fromReflectH = reverse ? playerReflectForHandoff : flowReflectForHandoff;
+        final float toReflectH = reverse ? flowReflectForHandoff : playerReflectForHandoff;
+
         handoffAnimating = true;
         final long animStartMs = System.currentTimeMillis();
         final int[] frameCount = new int[1];
@@ -321,7 +339,9 @@ public final class FlowPlayerHandoff {
 
         // Frame 0 — flyer visible at NP pose before first animation callback.
         handoffPoseAt(0f, from, morphTarget, fromRotY, toRotY, poseBuf, rotBuf);
-        flyer.setScreenPose(poseBuf, rotBuf[0], 1f);
+        float reflect0 = FlowAlbumArt3d.handoffReflectHeight(poseBuf.height(), 0f,
+                fromReflectH, toReflectH);
+        flyer.setScreenPose(poseBuf, rotBuf[0], 1f, reflect0);
         if (reverse) {
             host.onReverseFlyerMounted();
             if (!landingRectMeasured) {
@@ -376,13 +396,15 @@ public final class FlowPlayerHandoff {
 
                 float poseEased = morphT >= 1f ? 1f : eased;
                 handoffPoseAt(poseEased, from, morphTarget, fromRotY, toRotY, poseBuf, rotBuf);
+                float reflectH = FlowAlbumArt3d.handoffReflectHeight(poseBuf.height(), poseEased,
+                        fromReflectH, toReflectH);
 
                 if (reverse) {
                     // Measured landing — mirror forward: layout crossfade + opaque flyer only.
                     if (!skipDraw) {
                         float drawAlpha = landingRectMeasured ? 1f
                                 : reverseFlyerAlphaAt(morphT, landingT, false);
-                        flyer.setScreenPose(poseBuf, rotBuf[0], drawAlpha);
+                        flyer.setScreenPose(poseBuf, rotBuf[0], drawAlpha, reflectH);
                         lastDrawWallMs[0] = now;
                     }
                     if (!landingRectMeasured) {
@@ -412,7 +434,7 @@ public final class FlowPlayerHandoff {
                     }
                 } else {
                     if (!skipDraw) {
-                        flyer.setScreenPose(poseBuf, rotBuf[0], 1f);
+                        flyer.setScreenPose(poseBuf, rotBuf[0], 1f, reflectH);
                         lastDrawWallMs[0] = now;
                     }
                     if (flowLayout != null) flowLayout.setAlpha(1f - eased);
@@ -432,7 +454,9 @@ public final class FlowPlayerHandoff {
                         RectF measured = host.flowHandoffLandingRect();
                         if (measured != null && measured.width() > 0f) {
                             morphTarget.set(measured);
-                            flyer.setScreenPose(morphTarget, toRotY, 1f);
+                            float landReflect = FlowAlbumArt3d.handoffReflectHeight(
+                                    morphTarget.height(), 1f, fromReflectH, toReflectH);
+                            flyer.setScreenPose(morphTarget, toRotY, 1f, landReflect);
                         }
                     }
                     if (playerLayout != null) {
@@ -459,7 +483,9 @@ public final class FlowPlayerHandoff {
                 } else {
                     if (albumContainer != null) {
                         morphTarget.set(FlowAlbumArt3d.playerScreenRect(albumContainer));
-                        flyer.setScreenPose(morphTarget, toRotY, 1f);
+                        float landReflect = FlowAlbumArt3d.handoffReflectHeight(
+                                morphTarget.height(), 1f, fromReflectH, toReflectH);
+                        flyer.setScreenPose(morphTarget, toRotY, 1f, landReflect);
                     }
                     handoffAnimating = false;
                     host.onHandoffComplete(onComplete);
@@ -470,19 +496,28 @@ public final class FlowPlayerHandoff {
         flyer.postOnAnimation(tick);
     }
 
-    /** Full-screen overlay — draws cover in screen space via shared {@link FlowAlbumArt3d}. */
+    /**
+     * Full-screen overlay — cover + floor reflection in screen space via {@link FlowAlbumArt3d}.
+     * 2026-07-11 — Reflection travels with the morph (was drawCover only).
+     * Reversal: drop reflectH / drawReflectionFloor.
+     */
     static final class AlbumArtFlyerView extends View {
 
         private final Paint coverPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        private final Paint reflectionPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
         private final RectF screenRect = new RectF();
         private final RectF localRect = new RectF();
         private Bitmap cover;
         private float rotationYDeg;
         private float drawAlpha = 1f;
+        private float reflectHeight;
+        private int[] reflectTable;
+        private float reflectTableForH = -1f;
 
         AlbumArtFlyerView(Context context) {
             super(context);
             coverPaint.setFilterBitmap(false);
+            reflectionPaint.setFilterBitmap(true);
             setBackgroundColor(0x00000000);
         }
 
@@ -491,9 +526,15 @@ public final class FlowPlayerHandoff {
         }
 
         void setScreenPose(RectF rect, float rotY, float alpha) {
+            setScreenPose(rect, rotY, alpha, 0f);
+        }
+
+        /** Cover pose plus floor band height so gloss stays glued to the flying art. */
+        void setScreenPose(RectF rect, float rotY, float alpha, float reflectH) {
             screenRect.set(rect);
             rotationYDeg = rotY;
             drawAlpha = alpha;
+            reflectHeight = Math.max(0f, reflectH);
             invalidate();
         }
 
@@ -512,8 +553,23 @@ public final class FlowPlayerHandoff {
                     screenRect.bottom - loc[1]);
             if (localRect.width() <= 0f) return;
 
-            // Camera draw for entire flight — forward and reverse share the same pose path.
-            FlowAlbumArt3d.drawCover(canvas, cover, localRect, rotationYDeg, drawAlpha, coverPaint);
+            // 2026-07-11 — Shared Camera tilt (cover+floor) matches NP / Flow — no gap mid-flight.
+            // Reversal: drawCover(rotY) + flat drawReflectionFloor.
+            float reflectAlpha = reflectHeight > 1f
+                    ? FlowView.flowReflectionBaseAlpha() * drawAlpha : 0f;
+            int[] table = reflectHeight > 1f ? reflectTableFor(reflectHeight) : null;
+            FlowAlbumArt3d.drawPlayerCoverWithReflection(canvas, cover, localRect, rotationYDeg,
+                    drawAlpha, reflectAlpha, reflectHeight, table, coverPaint, reflectionPaint);
+        }
+
+        /** Rebuild Rockbox reflect table when flyer floor height changes. */
+        private int[] reflectTableFor(float reflectH) {
+            if (reflectTable != null && Math.abs(reflectTableForH - reflectH) < 0.5f) {
+                return reflectTable;
+            }
+            reflectTable = PictureFlowLayout.buildReflectTable(reflectH);
+            reflectTableForH = reflectH;
+            return reflectTable;
         }
     }
 }

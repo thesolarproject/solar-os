@@ -542,14 +542,96 @@ public class FlowEngineTest {
 
     @Test
     public void playerPoseUsesPositiveSlant() {
-        assertEquals(14f, FlowAlbumArt3d.PLAYER_ROT_Y_DEG, 0.01f);
-        float viewW = 200f;
-        float viewH = 280f;
-        float size = Math.min(viewW, viewH);
-        // ponytail: host JVM android.jar RectF stub may not set fields — assert layout math.
-        assertEquals(40f, (viewH - size) * 0.5f, 0.01f);
+        assertEquals(18f, FlowAlbumArt3d.PLAYER_ROT_Y_DEG, 0.01f);
+        // 2026-07-11 — 235×281 slot → 14 overshoot + 225 cover + floor; parallel to info 235×225.
+        float viewW = 235f;
+        float viewH = 281f;
+        float top = FlowAlbumArt3d.PLAYER_TOP_OVERSHOOT;
+        float size = Math.min(viewW, FlowAlbumArt3d.PLAYER_CONTENT_H);
         FlowAlbumArt3d.AlbumArtPose pose = FlowAlbumArt3d.playerPose(viewW, viewH);
         assertEquals(FlowAlbumArt3d.PLAYER_ROT_Y_DEG, pose.rotationYDeg, 0.01f);
-        assertEquals(size, Math.min(viewW, viewH), 0.01f);
+        if (pose.drawRect != null && pose.drawRect.bottom > pose.drawRect.top) {
+            assertEquals(top, pose.drawRect.top, 0.01f);
+            assertEquals(size, pose.drawRect.bottom - pose.drawRect.top, 0.01f);
+            assertEquals(FlowAlbumArt3d.PLAYER_CONTENT_H, size, 0.01f);
+            assertTrue("NP cover fills 225 content cell", size >= 224f);
+            float reflectH = FlowAlbumArt3d.playerReflectHeight(viewH, pose.drawRect);
+            assertTrue(reflectH > 0f);
+            assertEquals(viewH - (top + size), reflectH, 0.01f);
+            assertTrue(pose.drawRect.bottom + reflectH <= viewH + 0.01f);
+        }
+    }
+
+    @Test
+    public void handoffReflectHeightLerpsWithMorph() {
+        float cover = 200f;
+        float fromH = 90f;
+        float toH = 50f;
+        float mid = FlowAlbumArt3d.handoffReflectHeight(cover, 0.5f, fromH, toH);
+        assertEquals(70f, mid, 0.5f);
+        assertEquals(fromH, FlowAlbumArt3d.handoffReflectHeight(cover, 0f, fromH, toH), 0.5f);
+        assertEquals(toH, FlowAlbumArt3d.handoffReflectHeight(cover, 1f, fromH, toH), 0.5f);
+    }
+
+    /** 2026-07-14 — Touch free-scroll + fling snap; scrollBy key path still one album. */
+    @Test
+    public void freeScrollDragThenSnapNearest() {
+        FlowEngine engine = new FlowEngine();
+        engine.setViewport(480f, 360f);
+        engine.setItemCount(10);
+        engine.setFocusIndex(4);
+        engine.beginFreeScroll();
+        assertTrue(engine.isFreeScrolling());
+        float px = engine.pixelsPerAlbum();
+        // Finger right → previous albums (offset decreases).
+        engine.dragByPixels(px * 0.6f);
+        float mid = engine.getVisualOffset();
+        assertTrue("drag should leave fractional offset", mid > 3.2f && mid < 4.0f);
+        engine.snapNearestAlbum();
+        for (long t = 16; t <= 500; t += 16) engine.tick(t);
+        assertFalse(engine.isFreeScrolling());
+        assertEquals(3, engine.getFocusIndex());
+        assertFalse(engine.isAnimating());
+    }
+
+    @Test
+    public void flingCoastsThenSnaps() {
+        FlowEngine engine = new FlowEngine();
+        engine.setViewport(480f, 360f);
+        engine.setItemCount(20);
+        engine.setFocusIndex(5);
+        engine.beginFreeScroll();
+        // Finger left fast → next albums.
+        engine.fling(-1800f);
+        assertTrue(engine.isFreeScrolling() || engine.isAnimating());
+        for (long t = 16; t <= 2000; t += 16) engine.tick(t);
+        assertFalse(engine.isFreeScrolling());
+        assertTrue(engine.getFocusIndex() > 5);
+        assertEquals(engine.getFocusIndex(), engine.getVisualCenterIndex());
+    }
+
+    @Test
+    public void keyScrollByCancelsFreeScroll() {
+        FlowEngine engine = new FlowEngine();
+        engine.setViewport(480f, 360f);
+        engine.setItemCount(8);
+        engine.setFocusIndex(2);
+        engine.beginFreeScroll();
+        engine.dragByPixels(-engine.pixelsPerAlbum() * 0.4f);
+        assertTrue(engine.isFreeScrolling());
+        engine.scrollBy(1);
+        assertFalse(engine.isFreeScrolling());
+        for (long t = 16; t <= 800; t += 16) engine.tick(t);
+        assertEquals(3, engine.getFocusIndex());
+    }
+
+    @Test
+    public void scrollByStillAdvancesOneAlbum() {
+        FlowEngine engine = new FlowEngine();
+        engine.setItemCount(5);
+        engine.setFocusIndex(1);
+        assertTrue(engine.scrollByReturningMoved(1));
+        for (long t = 16; t <= 800; t += 16) engine.tick(t);
+        assertEquals(2, engine.getFocusIndex());
     }
 }

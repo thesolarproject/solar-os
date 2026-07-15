@@ -60,10 +60,17 @@ android {
 
     sourceSets {
         main {
-            java.srcDirs += "${rootDir}/solar-rom/vendor/global-input-policy"
+            // 2026-07-08 — Shared HOME target constants for launcher-picker recovery UI.
+            java.srcDirs += [
+                    "${rootDir}/solar-rom/vendor/global-input-policy",
+                    "${rootDir}/solar-rom/vendor/solar-home-policy"
+            ]
         }
         test {
-            java.srcDirs += "${rootDir}/solar-rom/vendor/global-input-policy"
+            java.srcDirs += [
+                    "${rootDir}/solar-rom/vendor/global-input-policy",
+                    "${rootDir}/solar-rom/vendor/solar-home-policy"
+            ]
         }
     }
 }

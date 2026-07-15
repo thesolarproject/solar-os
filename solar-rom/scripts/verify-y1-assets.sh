@@ -12,6 +12,8 @@ FILES=(
     sync-y1-keymap.sh
     disable-rockbox-for-solar.sh
     apply-preferred-home-boot.sh
+    # 2026-07-08 — root HOME-switch executor; was unsynced and drifted between ROM and APK.
+    solar-launcher-exec.sh
     disable-large-font-accessibility.sh
     enable-gpu-performance.sh
     solar-usb-recovery-agent.sh

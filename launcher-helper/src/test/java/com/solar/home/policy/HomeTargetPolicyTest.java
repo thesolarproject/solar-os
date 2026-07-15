@@ -4,6 +4,7 @@ import org.junit.Test;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** Unit tests for shared HOME policy constants — no device required. */
@@ -17,6 +18,8 @@ public class HomeTargetPolicyTest {
                 HomeTargetPolicy.normalizeTarget(HomeTargetPolicy.TARGET_ROCKBOX));
         assertEquals(HomeTargetPolicy.TARGET_JJ,
                 HomeTargetPolicy.normalizeTarget(HomeTargetPolicy.TARGET_JJ));
+        assertEquals(HomeTargetPolicy.TARGET_STOCK,
+                HomeTargetPolicy.normalizeTarget(HomeTargetPolicy.TARGET_STOCK));
         assertEquals(HomeTargetPolicy.TARGET_CUSTOM,
                 HomeTargetPolicy.normalizeTarget(HomeTargetPolicy.TARGET_CUSTOM));
     }
@@ -30,9 +33,11 @@ public class HomeTargetPolicyTest {
     }
 
     @Test
-    public void isAlternateHomeTarget() {
+    public void isAlternateHomeTargetIncludesStock() {
         assertTrue(HomeTargetPolicy.isAlternateHomeTarget(HomeTargetPolicy.TARGET_ROCKBOX));
         assertTrue(HomeTargetPolicy.isAlternateHomeTarget(HomeTargetPolicy.TARGET_JJ));
+        assertTrue(HomeTargetPolicy.isAlternateHomeTarget(HomeTargetPolicy.TARGET_STOCK));
+        assertFalse(HomeTargetPolicy.isAlternateHomeTarget(HomeTargetPolicy.TARGET_SOLAR));
     }
 
     @Test
@@ -46,6 +51,36 @@ public class HomeTargetPolicyTest {
         String[] jj = HomeTargetPolicy.resolveLaunchComponent("jj", "");
         assertArrayEquals(new String[] {
                 HomeTargetPolicy.JJ_PKG, HomeTargetPolicy.JJ_ACTIVITY }, jj);
+        String[] stock = HomeTargetPolicy.resolveLaunchComponent("stock", "");
+        assertArrayEquals(new String[] {
+                HomeTargetPolicy.INNIOASIS_Y1_PKG, HomeTargetPolicy.INNIOASIS_Y1_ACTIVITY }, stock);
+        String[] stockY2 = HomeTargetPolicy.resolveLaunchComponent("stock",
+                "com.innioasis.y2/com.innioasis.y2.MainActivity");
+        assertArrayEquals(new String[] {
+                HomeTargetPolicy.INNIOASIS_Y2_PKG, HomeTargetPolicy.INNIOASIS_Y2_ACTIVITY }, stockY2);
+    }
+
+    @Test
+    public void stockPackageForDeviceBranches() {
+        assertEquals(HomeTargetPolicy.INNIOASIS_Y1_PKG,
+                HomeTargetPolicy.stockPackageForDevice(false));
+        assertEquals(HomeTargetPolicy.INNIOASIS_Y2_PKG,
+                HomeTargetPolicy.stockPackageForDevice(true));
+    }
+
+    @Test
+    public void isInnioasisStockPackage() {
+        assertTrue(HomeTargetPolicy.isInnioasisStockPackage("com.innioasis.y1"));
+        assertTrue(HomeTargetPolicy.isInnioasisStockPackage("com.innioasis.y2"));
+        assertFalse(HomeTargetPolicy.isInnioasisStockPackage("com.innioasis.music"));
+    }
+
+    @Test
+    public void competitionTargetForStockPackage() {
+        assertEquals(HomeTargetPolicy.TARGET_STOCK,
+                LauncherCompetitionPolicy.targetForPackage("com.innioasis.y1"));
+        assertEquals(HomeTargetPolicy.TARGET_STOCK,
+                LauncherCompetitionPolicy.targetForPackage("com.innioasis.y2"));
     }
 
     @Test

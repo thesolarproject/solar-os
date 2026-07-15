@@ -34,6 +34,8 @@ public final class LibrarySearchHost {
         void rebuildResults();
         void openReachSearch(String query);
         void openNavidrome();
+        void openPlex();
+        void openJellyfin();
     }
 
     private LibrarySearchHost() {}
@@ -53,6 +55,17 @@ public final class LibrarySearchHost {
     public static void buildResults(Actions actions, LibrarySearch.Results results, String query,
             java.util.Map<String, Integer> visibleCounts, java.util.List<String> reachRows,
             boolean reachSearching, java.util.List<String> navidromeRows, boolean navidromeSearching,
+            Runnable onFocusFirst) {
+        buildResults(actions, results, query, visibleCounts, reachRows, reachSearching,
+                navidromeRows, navidromeSearching, null, false, null, false, onFocusFirst);
+    }
+
+    /** 2026-07-14: Full online sections — Navidrome + Plex + Jellyfin. */
+    public static void buildResults(Actions actions, LibrarySearch.Results results, String query,
+            java.util.Map<String, Integer> visibleCounts, java.util.List<String> reachRows,
+            boolean reachSearching, java.util.List<String> navidromeRows, boolean navidromeSearching,
+            java.util.List<String> plexRows, boolean plexSearching,
+            java.util.List<String> jellyfinRows, boolean jellyfinSearching,
             Runnable onFocusFirst) {
         actions.clearBrowserRows();
         actions.showBrowserScroll(true);
@@ -85,24 +98,61 @@ public final class LibrarySearchHost {
             android.widget.Button empty = actions.createListButton(actions.getString(R.string.library_search_none));
             empty.setEnabled(false);
             actions.addBrowserRow(empty);
-            if (onFocusFirst != null) onFocusFirst.run();
-            return;
+        } else {
+            appendSection(actions, "artists", actions.getString(R.string.library_search_section_artists),
+                    toStrings(results.artists), visibleCounts, new SectionHandler() {
+                @Override public void onPick(String value) { actions.openArtist(value); }
+            });
+            appendAlbumSection(actions, results.albums, visibleCounts);
+            appendSection(actions, "genres", actions.getString(R.string.library_search_section_genres),
+                    results.genres, visibleCounts, new SectionHandler() {
+                @Override public void onPick(String value) { actions.openGenre(value); }
+            });
+            appendSongSection(actions, results.songs, visibleCounts);
         }
-
-        appendSection(actions, "artists", actions.getString(R.string.library_search_section_artists),
-                toStrings(results.artists), visibleCounts, new SectionHandler() {
-            @Override public void onPick(String value) { actions.openArtist(value); }
-        });
-        appendAlbumSection(actions, results.albums, visibleCounts);
-        appendSection(actions, "genres", actions.getString(R.string.library_search_section_genres),
-                results.genres, visibleCounts, new SectionHandler() {
-            @Override public void onPick(String value) { actions.openGenre(value); }
-        });
-        appendSongSection(actions, results.songs, visibleCounts);
         appendReachSection(actions, reachRows, reachSearching, query, visibleCounts);
         appendNavidromeSection(actions, navidromeRows, navidromeSearching, visibleCounts);
+        appendOnlineServiceSection(actions, "plex",
+                actions.getString(R.string.library_search_section_plex),
+                actions.getString(R.string.library_search_searching_plex),
+                plexRows, plexSearching, visibleCounts, new Runnable() {
+                    @Override public void run() { actions.openPlex(); }
+                });
+        appendOnlineServiceSection(actions, "jellyfin",
+                actions.getString(R.string.library_search_section_jellyfin),
+                actions.getString(R.string.library_search_searching_jellyfin),
+                jellyfinRows, jellyfinSearching, visibleCounts, new Runnable() {
+                    @Override public void run() { actions.openJellyfin(); }
+                });
 
         if (onFocusFirst != null) onFocusFirst.run();
+    }
+
+    private static void appendOnlineServiceSection(Actions actions, String key, String sectionTitle,
+            String searchingLabel, java.util.List<String> rows, boolean searching,
+            java.util.Map<String, Integer> visibleCounts, final Runnable openService) {
+        if (!searching && (rows == null || rows.isEmpty())) return;
+        actions.addBrowserRow(sectionHeader(actions, sectionTitle));
+        if (searching) {
+            android.widget.Button loading = actions.createListButton(searchingLabel);
+            loading.setEnabled(false);
+            actions.addBrowserRow(loading);
+            return;
+        }
+        int visible = visibleCount(visibleCounts, key);
+        java.util.List<String> page = pageList(rows, visible);
+        for (final String label : page) {
+            android.widget.Button row = actions.createListButton(label);
+            actions.configureListButton(row);
+            row.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    actions.clickFeedback();
+                    if (openService != null) openService.run();
+                }
+            });
+            actions.addBrowserRow(row);
+        }
+        maybeShowMore(actions, key, rows.size(), visible, visibleCounts);
     }
 
     private static void appendNavidromeSection(Actions actions, java.util.List<String> navidromeRows,

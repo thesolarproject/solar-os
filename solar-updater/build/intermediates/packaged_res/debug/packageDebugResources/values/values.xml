@@ -15,7 +15,7 @@
     <string name="updater_empty">No versions found.</string>
     <string name="updater_failed">Could not load version list.</string>
     <string name="updater_get_latest_jj">Get latest JJ Launcher</string>
-    <string name="updater_get_latest_rockbox">Get latest Rockbox</string>
+    <string name="updater_get_latest_rockbox">Install latest Rockbox-Y1</string>
     <string name="updater_hint">Wheel to pick a version or companion app. OK installs.</string>
     <string name="updater_install_failed">Install failed.</string>
     <string name="updater_installed">Installed %1$s</string>

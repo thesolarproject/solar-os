@@ -19,6 +19,8 @@ public final class OverlayTierScheduler {
     /** ANR / crash / stock AlertDialog replacement — highest interactive tier. */
     public static final String TIER_NATIVE_ERROR = "native_error";
     public static final String TIER_USB = "usb";
+    /** 2026-07-08 — UMS already exported — non-dismissible lock (companion primary). */
+    public static final String TIER_USB_LOCK = "usb_lock";
     public static final String TIER_BT = "bt";
     public static final String TIER_APP_MENU = "app_menu";
     public static final String TIER_POWER = "power";

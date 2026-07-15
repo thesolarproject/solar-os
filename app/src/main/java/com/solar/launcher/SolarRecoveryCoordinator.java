@@ -128,10 +128,12 @@ public final class SolarRecoveryCoordinator {
         return "1".equals(readProp(PROP_PLATFORM_DEGRADED));
     }
 
-    /** One-time home status row until user opens Settings repair. */
+    /**
+     * Home "platform repair" banner — always off (2026-07-11).
+     * Silent prep still runs; there is no user-facing repair product, and the banner was confusing.
+     */
     public static boolean shouldShowPlatformDegradedBanner(Context context) {
-        if (context == null || !isPlatformDegraded(context)) return false;
-        return !prefs(context).getBoolean(KEY_DEGRADED_BANNER_DISMISSED, false);
+        return false;
     }
 
     public static void dismissPlatformDegradedBanner(Context context) {
@@ -210,12 +212,33 @@ public final class SolarRecoveryCoordinator {
     }
 
     private static void syncProp(String key, String value) {
-        RootShell.run("setprop " + key + " " + (value != null ? value : "0"));
+        String v = value != null ? value : "0";
+        // 2026-07-14 — Prefer SystemProperties.set; async su if set rejected (A5 su can stall).
+        // Was: RootShell.run(setprop) blocked forever when su hung.
+        // Reversal: RootShell.run("setprop …") only.
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            sp.getMethod("set", String.class, String.class).invoke(null, key, v);
+            return;
+        } catch (Throwable ignored) {}
+        RootShell.runAsync("setprop " + key + " " + v);
     }
 
+    /**
+     * 2026-07-14 — Read persist props without su.
+     * Was: RootShell.runCapture(getprop) — blocked MainActivity.onCreate on A5 (su hang).
+     * Now: android.os.SystemProperties.get only; empty on miss.
+     * Reversal: return RootShell.runCapture("getprop " + key).
+     */
     private static String readProp(String key) {
-        String out = RootShell.runCapture("getprop " + key);
-        return out != null ? out.trim() : "";
+        if (key == null || key.length() == 0) return "";
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Object v = sp.getMethod("get", String.class, String.class).invoke(null, key, "");
+            return v != null ? String.valueOf(v).trim() : "";
+        } catch (Throwable ignored) {
+            return "";
+        }
     }
 
     private static boolean isOverlayProcessRunning(Context context) {

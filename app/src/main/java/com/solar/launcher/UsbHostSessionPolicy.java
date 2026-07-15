@@ -35,11 +35,27 @@ public final class UsbHostSessionPolicy {
 
     /** Post-boot quiet window before prompting when host was connected at boot (ms). */
     private static final long BOOT_SETTLE_MS = 60_000L;
+    /**
+     * 2026-07-08 — Fresh plug while Solar already running — do not wait full boot settle.
+     * Layman: cable in after the player is up asks about disk mode right away.
+     * Tech: clears PREF_BOOT_HOST_AT_BOOT on host connect when process uptime > this.
+     * Reversal: delete markFreshHostUnlockBootSettle call — 60s settle applies to every plug.
+     */
+    private static final long FRESH_HOST_BOOT_UNLOCK_UPTIME_MS = 15_000L;
 
-    private static final Handler SETTLE_HANDLER = new Handler(Looper.getMainLooper());
     private static Runnable pendingSettleRunnable;
+    /** Lazily created — unit tests must not touch Looper at class init (2026-07-08). */
+    private static Handler settleHandler;
 
     private UsbHostSessionPolicy() {}
+
+    /** Main-thread settle/eval posts — created on first schedule only. */
+    private static Handler settleHandler() {
+        if (settleHandler == null) {
+            settleHandler = new Handler(Looper.getMainLooper());
+        }
+        return settleHandler;
+    }
 
     /**
      * Call from {@link BootReceiver} and {@link SolarApplication} once per boot.
@@ -83,11 +99,47 @@ public final class UsbHostSessionPolicy {
         long lastDisc = prefs.getLong("usb_last_disconnect_time", 0L);
         long elapsed = SystemClock.elapsedRealtime();
         boolean isFlap = lastDisc > 0L && (elapsed - lastDisc) < 3000L;
+        boolean wasActive = prefs.getBoolean(PREF_SESSION_ACTIVE, false);
+        boolean wasEvaluated = prefs.getBoolean(PREF_SESSION_PROMPT_EVALUATED, false);
+        boolean wasDismissed = prefs.getBoolean(PREF_SESSION_DISMISSED, false);
         if (isFlap) {
-            // Cable flap — keep existing session state (evaluated/dismissed)
+            // 2026-07-14 — Short unplug/replug: keep evaluated/dismissed; re-mark plug present.
+            // Was: early return without restoring active after disconnect cleared it.
+            if (!wasActive) {
+                prefs.edit().putBoolean(PREF_SESSION_ACTIVE, true).commit();
+            }
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("isFlap", true);
+                d.put("wasActive", wasActive);
+                d.put("wasEvaluated", wasEvaluated);
+                d.put("wasDismissed", wasDismissed);
+                Debug02fc83Log.log(app, "UsbHostSessionPolicy.onUsbHostConnected",
+                        "flap — keep session", "H2", d);
+            } catch (Exception ignored) {}
+            // #endregion
             return;
         }
-        // ponytail: reset and start new session since it's not a flap (avoids stuck active sessions)
+        // 2026-07-14 — Mid-cable USB_STATE storms must not re-arm; one session until unplug.
+        // Was: every USB_STATE cleared evaluated → WakeReceiver + route storm (H2 logs).
+        // Reversal: remove wasActive early-return to restore always-reset connect.
+        if (wasActive) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("wasActive", true);
+                d.put("wasEvaluated", wasEvaluated);
+                d.put("wasDismissed", wasDismissed);
+                Debug02fc83Log.log(app, "UsbHostSessionPolicy.onUsbHostConnected",
+                        "already active — skip re-arm", "H2", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return;
+        }
+        // 2026-07-08 — Fresh PC plug after Solar is already up: unlock boot-settle immediately.
+        markFreshHostUnlockBootSettle(app, prefs, elapsed);
+        // Fresh plug after real disconnect — arm one evaluation this session.
         prefs.edit()
                 .putBoolean(PREF_SESSION_ACTIVE, true)
                 .putBoolean(PREF_SESSION_DISMISSED, false)
@@ -98,20 +150,67 @@ public final class UsbHostSessionPolicy {
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("sessionActive", true);
+            d.put("bootSettleReady", isPromptAllowedAfterBootSettle(app));
+            d.put("wasActive", wasActive);
+            d.put("wasEvaluated", wasEvaluated);
+            d.put("wasDismissed", wasDismissed);
+            d.put("resetEvaluated", false);
             DebugAf054eLog.log(app, "UsbHostSessionPolicy.onUsbHostConnected",
                     "host session armed — evaluate prompt once", "USB-SESSION", d);
+            Debug02fc83Log.log(app, "UsbHostSessionPolicy.onUsbHostConnected",
+                    "session armed once", "H2", d);
         } catch (Exception ignored) {}
         // #endregion
     }
 
-    /** Cable unplug — reset host session + unlock boot-settle without waiting full window (2026-07-06). */
+    /**
+     * 2026-07-08 — If Solar process has been up past unlock uptime, drop boot-host settle gate.
+     * Layman: plugging USB into an already-running player should prompt now, not after a minute.
+     * Tech: boot-at-boot still waits full BOOT_SETTLE_MS until disconnect or settle timer.
+     * Reversal: no-op method — reconnect still blocked by stale PREF_BOOT_HOST_AT_BOOT.
+     */
+    private static void markFreshHostUnlockBootSettle(Context app, SharedPreferences prefs,
+            long elapsed) {
+        if (app == null || prefs == null) return;
+        if (!prefs.getBoolean(PREF_BOOT_HOST_AT_BOOT, false)) return;
+        if (prefs.getBoolean(PREF_HOST_DISC_SINCE_BOOT, false)) return;
+        long bootElapsed = prefs.getLong(PREF_BOOT_ELAPSED_RT, 0L);
+        if (bootElapsed <= 0L) return;
+        // Still inside early boot window — keep settle (cable was in at reboot).
+        if (elapsed - bootElapsed < FRESH_HOST_BOOT_UNLOCK_UPTIME_MS) return;
+        prefs.edit()
+                .putBoolean(PREF_BOOT_HOST_AT_BOOT, false)
+                .putBoolean(PREF_HOST_DISC_SINCE_BOOT, true)
+                .commit();
+        cancelPendingSettle();
+        syncSysprops(app, false, true, bootElapsed);
+        writeSysprop(SYSPROP_BOOT_SETTLE_READY, "1");
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("uptimeSinceBootRt", elapsed - bootElapsed);
+            d.put("unlockMs", FRESH_HOST_BOOT_UNLOCK_UPTIME_MS);
+            DebugAf054eLog.log(app, "UsbHostSessionPolicy.markFreshHostUnlockBootSettle",
+                    "fresh host unlock — prompt allowed now", "USB-SETTLE", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    /**
+     * Cable unplug — plug gone; flap window keeps dismissed/evaluated until real reconnect (2026-07-14).
+     * Layman: unplug clears "this plug is live" so the next long reconnect can ask again.
+     * Tech: clear SESSION_ACTIVE only; leave dismissed/evaluated for &lt;3s flap reconnect.
+     * Reversal: omit SESSION_ACTIVE clear and always reset on every connect (pre-02fc83).
+     */
     public static void onUsbHostDisconnected(Context context) {
         if (context == null) return;
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        prefs.edit().putLong("usb_last_disconnect_time", SystemClock.elapsedRealtime()).commit();
-        // Do not clear flags immediately, let onUsbHostConnected do it if not a flap
-        syncSessionSysprop(app, false);
+        prefs.edit()
+                .putLong("usb_last_disconnect_time", SystemClock.elapsedRealtime())
+                .putBoolean(PREF_SESSION_ACTIVE, false)
+                .commit();
+        syncSessionSysprop(app, prefs.getBoolean(PREF_SESSION_DISMISSED, false));
         if (!prefs.getBoolean(PREF_HOST_DISC_SINCE_BOOT, false)) {
             long bootElapsed = prefs.getLong(PREF_BOOT_ELAPSED_RT, 0L);
             prefs.edit().putBoolean(PREF_HOST_DISC_SINCE_BOOT, true).commit();
@@ -170,6 +269,14 @@ public final class UsbHostSessionPolicy {
                 .commit();
     }
 
+    /** True while this PC plug session is live (until unplug clears active) (2026-07-14). */
+    public static boolean hasActiveHostSession(Context context) {
+        if (context == null) return false;
+        return context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .getBoolean(PREF_SESSION_ACTIVE, false);
+    }
+
     /** True after user taps Dismiss on USB enable tier this host session. */
     public static boolean hasUserDismissedThisSession(Context context) {
         if (context == null) return false;
@@ -190,9 +297,34 @@ public final class UsbHostSessionPolicy {
      * One evaluation per host session — connect event only, not timer/resume/focus (2026-07-06).
      * Reversal: always return true and restore poll-driven {@code routeUsbHostInterceptUi}.
      */
+    /**
+     * 2026-07-14 — One evaluation per plug: host + settle + not dismissed + not already evaluated.
+     * Was: host+settle only — kept allowing route after prompt shown (H1 logs vs testHelperWouldAllow).
+     * Reversal: {@code return isPcHostConnected(context) && isPromptAllowedAfterBootSettle(context);}
+     */
     public static boolean shouldEvaluatePromptThisSession(Context context) {
         if (context == null) return false;
-        return isPcHostConnected(context) && isPromptAllowedAfterBootSettle(context);
+        boolean host = isPcHostConnected(context);
+        boolean settle = isPromptAllowedAfterBootSettle(context);
+        boolean dismissed = hasUserDismissedThisSession(context);
+        boolean evaluated = hasPromptEvaluatedThisSession(context);
+        boolean allow = host && !dismissed && !evaluated && settle;
+        // #region agent log
+        // Throttle: gate is hot; log only when decision would allow (first plug) or flips deny.
+        if (allow || evaluated || dismissed) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("host", host);
+                d.put("settle", settle);
+                d.put("dismissed", dismissed);
+                d.put("evaluated", evaluated);
+                d.put("allow", allow);
+                Debug02fc83Log.log(context, "UsbHostSessionPolicy.shouldEvaluatePromptThisSession",
+                        "gate", "H1", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
+        return allow;
     }
 
     /** Poll/HOME/recovery agent must stay off after dismiss or when Xposed owns USB (2026-07-06). */
@@ -228,14 +360,14 @@ public final class UsbHostSessionPolicy {
                 }
             }
         };
-        SETTLE_HANDLER.postDelayed(pendingHostEvalRunnable, delay);
+        settleHandler().postDelayed(pendingHostEvalRunnable, delay);
     }
 
     private static Runnable pendingHostEvalRunnable;
 
     private static void cancelPendingHostEval() {
         if (pendingHostEvalRunnable != null) {
-            SETTLE_HANDLER.removeCallbacks(pendingHostEvalRunnable);
+            settleHandler().removeCallbacks(pendingHostEvalRunnable);
             pendingHostEvalRunnable = null;
         }
     }
@@ -332,12 +464,12 @@ public final class UsbHostSessionPolicy {
                 // #endregion
             }
         };
-        SETTLE_HANDLER.postDelayed(pendingSettleRunnable, BOOT_SETTLE_MS);
+        settleHandler().postDelayed(pendingSettleRunnable, BOOT_SETTLE_MS);
     }
 
     private static void cancelPendingSettle() {
         if (pendingSettleRunnable != null) {
-            SETTLE_HANDLER.removeCallbacks(pendingSettleRunnable);
+            settleHandler().removeCallbacks(pendingSettleRunnable);
             pendingSettleRunnable = null;
         }
     }

@@ -2,6 +2,7 @@
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:clipChildren="false"
     android:background="#000000">
 
     <!-- Double-buffered wallpaper stack — animates in lockstep with screen transitions. -->
@@ -140,6 +141,7 @@
             android:layout_height="match_parent"
             android:orientation="vertical">
 
+            <!-- 2026-07-11: path trail under status bar; MainActivity gate keeps GONE. Reversal: SHOW_BROWSER_PATH_BREADCRUMB. -->
             <TextView
                 android:id="@+id/tv_browser_path"
                 android:layout_width="match_parent"
@@ -516,50 +518,78 @@
         <TextView android:id="@+id/tv_keyboard_hint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center" android:text="@string/keyboard_hint" android:textSize="@dimen/y1_menu_text_size" android:layout_marginTop="15dp"/>
     </LinearLayout>
 
+    <!-- 2026-07-11 — clipChildren false so 3D near-edge can overshoot without a flat top crop. -->
     <FrameLayout
         android:id="@+id/layout_player_mode"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
         android:visibility="gone">
-        <ImageView android:id="@+id/iv_player_bg_blur" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="centerCrop" android:src="#111111"/>
-        <View android:layout_width="match_parent" android:layout_height="match_parent" android:background="#44000000"/>
+        <ImageView android:id="@+id/iv_player_bg_blur" android:layout_width="match_parent" android:layout_height="match_parent" android:scaleType="centerCrop" android:background="@android:color/transparent"/>
+        <!-- 2026-07-11 — Scrim only for album-blur; theme NP wallpaper stays undarkened (editor parity). -->
+        <View android:id="@+id/player_bg_scrim" android:layout_width="match_parent" android:layout_height="match_parent" android:background="#44000000" android:visibility="gone"/>
 
         <LinearLayout
             android:id="@+id/player_content_row"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:orientation="horizontal"
+            android:gravity="top"
+            android:clipChildren="false"
+            android:clipToPadding="false"
             android:paddingTop="@dimen/y1_status_bar_height"
             android:paddingBottom="@dimen/y1_player_transport_height"
-            android:paddingLeft="10dp"
-            android:paddingRight="10dp">
+            android:paddingLeft="@dimen/y1_player_content_pad_left"
+            android:paddingRight="0dp">
 
+            <!-- 2026-07-11 — Art slot extends 14dp into status pad; cover at +14 aligns with info. -->
             <FrameLayout
                 android:id="@+id/player_album_container"
                 android:layout_width="@dimen/y1_player_art_width"
-                android:layout_height="match_parent"
-                android:layout_marginTop="26dp">
-                <ImageView android:id="@+id/iv_album_art" android:layout_width="match_parent" android:layout_height="200dp" android:scaleType="centerCrop" android:src="@drawable/default_album" android:background="#222222" />
+                android:layout_height="@dimen/y1_player_art_slot_height"
+                android:layout_marginTop="-14dp"
+                android:layout_gravity="top"
+                android:clipChildren="false"
+                android:clipToPadding="false">
+                <ImageView
+                    android:id="@+id/iv_album_art"
+                    android:layout_width="match_parent"
+                    android:layout_height="@dimen/y1_player_art_cover_height"
+                    android:layout_marginTop="@dimen/y1_player_art_top_overshoot"
+                    android:layout_gravity="top"
+                    android:scaleType="centerCrop"
+                    android:src="@drawable/default_album"
+                    android:background="#222222" />
                 <com.solar.launcher.flow.PlayerAlbumArt3dView
                     android:id="@+id/iv_album_art_3d"
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:visibility="gone" />
-                <ImageView android:id="@+id/iv_pause_overlay" android:layout_width="70dp" android:layout_height="70dp" android:layout_gravity="center" android:src="@android:drawable/ic_media_pause" android:visibility="gone" />
+                <ImageView
+                    android:id="@+id/iv_pause_overlay"
+                    android:layout_width="70dp"
+                    android:layout_height="70dp"
+                    android:layout_gravity="center"
+                    android:layout_marginTop="@dimen/y1_player_art_top_overshoot"
+                    android:src="@android:drawable/ic_media_pause"
+                    android:visibility="gone" />
             </FrameLayout>
 
+            <!-- 2026-07-11 — Info = 235×225; padTop so title isn't flush; width fills theme box. -->
             <LinearLayout
                 android:id="@+id/player_info_column"
                 android:layout_width="@dimen/y1_player_info_width"
-                android:layout_height="match_parent"
-                android:layout_marginLeft="8dp"
-                android:layout_marginTop="26dp"
-                android:orientation="vertical">
-                <TextView android:id="@+id/tv_player_title" android:layout_width="match_parent" android:layout_height="40dp" android:text="@string/common_title" android:textColor="#FFFFFF" android:textSize="25sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
-                <TextView android:id="@+id/tv_player_artist" android:layout_width="match_parent" android:layout_height="32dp" android:layout_marginTop="5dp" android:text="@string/common_artist" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
-                <TextView android:id="@+id/tv_player_album" android:layout_width="match_parent" android:layout_height="32dp" android:layout_marginTop="5dp" android:text="" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
-                <TextView android:id="@+id/tv_player_track_count" android:layout_width="match_parent" android:layout_height="32dp" android:layout_marginTop="5dp" android:text="— / —" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:background="#1affffff"/>
-                <LinearLayout android:id="@+id/player_status_row" android:layout_width="match_parent" android:layout_height="30dp" android:layout_marginTop="5dp" android:orientation="horizontal" android:gravity="center_vertical" android:paddingLeft="13dp" android:background="#1affffff">
+                android:layout_height="@dimen/y1_player_info_height"
+                android:layout_marginLeft="@dimen/y1_player_info_margin_left"
+                android:layout_gravity="top"
+                android:orientation="vertical"
+                android:paddingTop="8dp">
+                <TextView android:id="@+id/tv_player_title" android:layout_width="match_parent" android:layout_height="36dp" android:text="@string/common_title" android:textColor="#FFFFFF" android:textSize="25sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
+                <TextView android:id="@+id/tv_player_artist" android:layout_width="match_parent" android:layout_height="38dp" android:layout_marginTop="8dp" android:text="@string/common_artist" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
+                <TextView android:id="@+id/tv_player_album" android:layout_width="match_parent" android:layout_height="38dp" android:layout_marginTop="8dp" android:text="" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:ellipsize="marquee" android:background="#1affffff"/>
+                <TextView android:id="@+id/tv_player_track_count" android:layout_width="match_parent" android:layout_height="38dp" android:layout_marginTop="8dp" android:text="— / —" android:textColor="#FFFFFF" android:textSize="21sp" android:textStyle="bold" android:gravity="start|center_vertical" android:paddingLeft="13dp" android:singleLine="true" android:background="#1affffff"/>
+                <LinearLayout android:id="@+id/player_status_row" android:layout_width="match_parent" android:layout_height="35dp" android:layout_marginTop="8dp" android:orientation="horizontal" android:gravity="center_vertical" android:paddingLeft="13dp" android:background="#1affffff">
                     <ImageView android:id="@+id/iv_player_shuffle_status" android:layout_width="24dp" android:layout_height="24dp" android:visibility="gone" android:layout_marginRight="10dp"/>
                     <ImageView android:id="@+id/iv_player_repeat_status" android:layout_width="24dp" android:layout_height="24dp" android:visibility="gone"/>
                 </LinearLayout>
@@ -568,7 +598,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
                     android:layout_weight="1"
-                    android:layout_marginTop="5dp"
+                    android:layout_marginTop="0dp"
                     android:visibility="gone"
                     android:background="#1affffff">
                     <ListView
@@ -693,11 +723,12 @@
                 android:layout_marginTop="6dp" />
         </LinearLayout>
 
+        <!-- 2026-07-11 — Match transport height to bottom chrome band (times/scrub sit inside). -->
         <include
             android:id="@+id/player_transport_bar"
             layout="@layout/layout_media_transport_bar"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
+            android:layout_height="@dimen/y1_player_transport_height"
             android:layout_gravity="bottom" />
     </FrameLayout>
 
@@ -822,5 +853,55 @@
     </FrameLayout>
 
     <include layout="@layout/layout_flow_mode" />
+
+    <!-- 2026-07-11 — A5 portrait bottom info strip (marquee explainers); GONE on Y1/Y2. -->
+    <LinearLayout
+        android:id="@+id/layout_a5_bottom_info"
+        android:layout_width="match_parent"
+        android:layout_height="90dp"
+        android:layout_gravity="bottom"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:background="#CC111111"
+        android:visibility="gone">
+
+        <ImageView
+            android:id="@+id/iv_a5_strip_icon"
+            android:layout_width="64dp"
+            android:layout_height="64dp"
+            android:scaleType="centerCrop"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginLeft="8dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/tv_a5_strip_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:ellipsize="marquee"
+                android:marqueeRepeatLimit="marquee_forever"
+                android:textColor="#FFFFFF"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tv_a5_strip_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:singleLine="true"
+                android:ellipsize="marquee"
+                android:marqueeRepeatLimit="marquee_forever"
+                android:textColor="#AAAAAA"
+                android:textSize="12sp" />
+        </LinearLayout>
+    </LinearLayout>
 
 </FrameLayout>

@@ -9,6 +9,8 @@ import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.solar.launcher.A5NavigationMode;
+import com.solar.launcher.DeviceFeatures;
 import com.solar.launcher.R;
 
 import org.json.JSONObject;
@@ -41,11 +43,22 @@ public final class MenuPreviewLayout {
 
     private MenuPreviewLayout() {}
 
-    /** 2026-07-05: map layout dp to physical px on 480-wide panels (Y2 hdpi was upscaling preview art). */
+    /**
+     * 2026-07-05: map layout dp to physical px on 480-wide panels (Y2 hdpi was upscaling preview art).
+     * 2026-07-14 — A5 landscape: author 480-wide dp onto 320-wide panel (same 240/360 scale as chrome).
+     * Reversal: drop A5 branch; always use dm.widthPixels / 480.
+     */
     private static int physicalDim(Context ctx, int resId) {
         DisplayMetrics dm = ctx.getResources().getDisplayMetrics();
         float dp = ctx.getResources().getDimension(resId) / dm.density;
         int widthPx = dm.widthPixels > 0 ? dm.widthPixels : (int) VIEWPORT_WIDTH_DP;
+        // A5 landscape logical panel is 320 — use it when display metrics look off.
+        if (DeviceFeatures.isA5() && A5NavigationMode.isLandscape(ctx)) {
+            int logicalW = A5NavigationMode.landscapeWidthPx();
+            if (widthPx < 280 || widthPx > 360) {
+                widthPx = logicalW;
+            }
+        }
         return Math.max(1, (int) (dp * widthPx / VIEWPORT_WIDTH_DP));
     }
 

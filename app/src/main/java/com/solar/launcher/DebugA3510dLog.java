@@ -14,10 +14,14 @@ public final class DebugA3510dLog {
     private static final String SESSION = "a3510d";
     private static final String FILE = "debug-a3510d.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private DebugA3510dLog() {}
 
     /** NDJSON line — works from app context and app_process (no Context). */
     public static void log(String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         // #region agent log
         try {
             JSONObject o = new JSONObject();
@@ -44,6 +48,7 @@ public final class DebugA3510dLog {
     /** app_process-safe — no DeviceFeatures. */
     public static void logStandalone(String location, String message, String hypothesisId,
             JSONObject data) {
+        if (!ENABLED) return;
         // #region agent log
         try {
             JSONObject o = new JSONObject();

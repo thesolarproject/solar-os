@@ -18,10 +18,14 @@ public final class Debug3b26caLog {
     private static final String SESSION = "3b26ca";
     private static final String FILE = "debug-3b26ca.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    public static volatile boolean ENABLED = false;
+
     private Debug3b26caLog() {}
 
-    /** Always emits during 3b26ca debug — years + album art hunt. */
+    /** NDJSON for years + album art hunt when ENABLED. */
     public static void log(String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

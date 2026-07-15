@@ -109,8 +109,9 @@ public final class RockboxForegroundMonitor implements Runnable {
                 }
             }
         }
-        // 2026-07-06 — JJ re-registers MEDIA_BUTTON every resume; reclaim slot each poll (H2).
-        if (LauncherDefault.JJ_PACKAGE.equals(fg)) {
+        // 2026-07-08 — JJ + Stock Innioasis share MODE_JJ; reclaim MEDIA_BUTTON each poll (H2).
+        // Was: JJ_PACKAGE.equals only — Innioasis relied on chance armForForegroundPackage.
+        if (com.solar.input.policy.GlobalInputPolicy.isJjKeylayoutLauncher(fg)) {
             MediaButtonRegistrar.ensureRegistered(appContext);
             ExternalInputHandoff.armJjShim(appContext);
             // #region agent log
@@ -120,7 +121,7 @@ public final class RockboxForegroundMonitor implements Runnable {
                     d.put("fg", fg);
                     d.put("dpadMode", ExternalInputHandoff.getDpadMode());
                     DebugE93bdbLog.log("RockboxForegroundMonitor.run",
-                            "JJ fg armed handoff", "H3", d);
+                            "JJ-keylayout fg armed handoff", "H3", d);
                 } catch (Exception ignored) {}
             }
             // #endregion
@@ -143,11 +144,12 @@ public final class RockboxForegroundMonitor implements Runnable {
         handler.postDelayed(this, delay);
     }
 
-    /** Faster poll when JJ/Rockbox is effective HOME — catch first wheel ticks sooner. */
+    /** Faster poll when JJ/Rockbox/Stock is effective HOME — catch first wheel ticks sooner. */
     private static boolean isAlternateHomeTarget(Context context) {
         String target = LauncherPreference.getHomeTarget(context);
         return LauncherDefault.TARGET_JJ.equals(target)
-                || LauncherDefault.TARGET_ROCKBOX.equals(target);
+                || LauncherDefault.TARGET_ROCKBOX.equals(target)
+                || LauncherDefault.TARGET_STOCK.equals(target);
     }
 
     /** Test hook — reset poll state between cases. */

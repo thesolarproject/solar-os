@@ -1,8 +1,11 @@
 package com.solar.launcher;
 
+import com.solar.input.policy.ListNavigationPolicy;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /** 2026-07-06 — Infinite scroll wrap index math. */
@@ -20,5 +23,13 @@ public class NavigationPreferencesTest {
         assertEquals(4, NavigationPreferences.advanceIndex(0, -1, 5, true));
         assertEquals(0, NavigationPreferences.advanceIndex(4, 1, 5, true));
         assertTrue(NavigationPreferences.advanceIndex(2, 1, 5, true) == 3);
+    }
+
+    /** 2026-07-11 — Modal hosts must clamp even when the infinite-scroll pref is on. */
+    @Test
+    public void contextModal_effectiveInfiniteOffWhenPrefOn() {
+        assertFalse(ListNavigationPolicy.effectiveInfinite(true, true));
+        assertEquals(-1, NavigationPreferences.advanceIndex(0, -1, 5,
+                ListNavigationPolicy.effectiveInfinite(true, true)));
     }
 }

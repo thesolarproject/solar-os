@@ -10,7 +10,8 @@ import com.solar.input.policy.GlobalInputPolicy;
 /**
  * 2026-07-06 — IPC binder so companion overlay can read live menu rows when Solar is alive.
  * Layman: shares quick-menu data with the helper APK without starting the full Solar UI.
- * Technical: Phase 3 — Bundle snapshots + action dispatch back to Solar handlers.
+ * Technical: Bundle snapshots + action dispatch; runs in **main** process (MainActivity handler).
+ * 2026-07-08 — Left :overlay so solar_home_* dispatch reaches Home (was process split miss).
  * Reversal: delete service; companion uses bundled placeholder rows only.
  */
 public final class SolarOverlayStateService extends Service {

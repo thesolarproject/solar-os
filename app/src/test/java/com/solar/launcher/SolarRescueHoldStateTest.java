@@ -76,4 +76,11 @@ public class SolarRescueHoldStateTest {
             SolarRescueHoldState.resetHoldForTest();
         }
     }
+
+    @Test
+    public void rescueHoldMsMatchesTenSecondPolicy() {
+        assertEquals(10_000L, SolarRescueHoldState.RESCUE_HOLD_MS);
+        assertEquals(com.solar.input.policy.GlobalInputPolicy.RESCUE_EXECUTE_MS,
+                SolarRescueHoldState.RESCUE_HOLD_MS);
+    }
 }

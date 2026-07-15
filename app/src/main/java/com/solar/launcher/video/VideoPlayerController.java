@@ -12,17 +12,43 @@ import tv.danmaku.ijk.media.player.IjkMediaPlayer;
  * Owns one {@link IjkMediaPlayer}, binds {@link SurfaceHolder} lifecycle, play/pause/seek/release.
  * Call {@link #attachHolder(SurfaceHolder)} from a {@link SurfaceRenderView} or SurfaceView host.
  */
-public final class VideoPlayerController implements SurfaceHolder.Callback, IMediaPlayer.OnPreparedListener {
+public final class VideoPlayerController implements SurfaceHolder.Callback,
+        IMediaPlayer.OnPreparedListener,
+        IMediaPlayer.OnErrorListener,
+        IMediaPlayer.OnCompletionListener {
+
+    /**
+     * 2026-07-14 — Host learns when stream fails or ends (YouTube IJK path).
+     * Layman: Solar can toast and leave the player instead of a black stuck screen.
+     * Technical: wraps IJK OnError / OnCompletion; return true from onError to consume.
+     * Reversal: leave listener null — same silent-fail behaviour as pre-harden.
+     */
+    public interface PlaybackListener {
+        /** Decode / network failure — what / why for toast. */
+        void onError(int what, int extra);
+
+        /** Natural end of stream. */
+        void onCompletion();
+    }
+
     private final IjkMediaPlayer player;
     private SurfaceHolder boundHolder;
     private boolean prepared;
     private boolean playWhenSurfaceReady;
     private boolean pausedForSurfaceLoss;
     private String pendingPath;
+    private PlaybackListener playbackListener;
+    /** 2026-07-14 — Guard double error callbacks after release / retry. */
+    private boolean released;
 
     public VideoPlayerController() {
         player = SolarIjkPlayerFactory.create();
-        player.setOnPreparedListener(this);
+        wirePlayerListeners();
+    }
+
+    /** Host callback for error / end — YouTube uses this to retry quality or leave. */
+    public void setPlaybackListener(PlaybackListener listener) {
+        playbackListener = listener;
     }
 
     public IjkMediaPlayer getPlayer() {
@@ -38,7 +64,10 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
         maybePrepare();
     }
 
-    /** 2026-07-06 — HTTP stream (experimental YouTube IJK path). */
+    /**
+     * 2026-07-06 — HTTP stream (YouTube IJK path).
+     * 2026-07-14 — Shares factory HTTP options; errors go to {@link PlaybackListener}.
+     */
     public void openUrl(String url) throws IOException {
         if (url == null || url.isEmpty()) throw new IOException("no url");
         resetForNewSource();
@@ -123,10 +152,12 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
 
     /** Stop playback and release native player — call on Back / screen exit. */
     public void release() {
+        released = true;
         playWhenSurfaceReady = false;
         pausedForSurfaceLoss = false;
         prepared = false;
         pendingPath = null;
+        playbackListener = null;
         try {
             player.stop();
         } catch (IllegalStateException ignored) {}
@@ -138,12 +169,36 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
 
     @Override
     public void onPrepared(IMediaPlayer mp) {
+        if (released) return;
         prepared = true;
         if (playWhenSurfaceReady) play();
     }
 
     @Override
+    public boolean onError(IMediaPlayer mp, int what, int extra) {
+        if (released) return true;
+        prepared = false;
+        playWhenSurfaceReady = false;
+        PlaybackListener l = playbackListener;
+        if (l != null) {
+            l.onError(what, extra);
+        }
+        // Consumed — avoid IJK default completion-on-error path.
+        return true;
+    }
+
+    @Override
+    public void onCompletion(IMediaPlayer mp) {
+        if (released) return;
+        PlaybackListener l = playbackListener;
+        if (l != null) {
+            l.onCompletion();
+        }
+    }
+
+    @Override
     public void surfaceCreated(SurfaceHolder holder) {
+        if (released) return;
         boundHolder = holder;
         player.setDisplay(holder);
         maybePrepare();
@@ -155,12 +210,14 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (released) return;
         boundHolder = holder;
         player.setDisplay(holder);
     }
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+        if (released) return;
         if (prepared) {
             try {
                 if (player.isPlaying()) {
@@ -174,7 +231,7 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
     }
 
     private void maybePrepare() {
-        if (prepared || pendingPath == null || boundHolder == null) return;
+        if (released || prepared || pendingPath == null || boundHolder == null) return;
         try {
             player.prepareAsync();
         } catch (IllegalStateException ignored) {}
@@ -187,7 +244,14 @@ public final class VideoPlayerController implements SurfaceHolder.Callback, IMed
         try {
             player.reset();
             SolarIjkPlayerFactory.applyY1Options(player);
-            player.setOnPreparedListener(this);
+            wirePlayerListeners();
         } catch (IllegalStateException ignored) {}
+    }
+
+    /** Re-attach prepared / error / completion after reset (reset clears them). */
+    private void wirePlayerListeners() {
+        player.setOnPreparedListener(this);
+        player.setOnErrorListener(this);
+        player.setOnCompletionListener(this);
     }
 }

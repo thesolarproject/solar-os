@@ -12,9 +12,13 @@ final class QueueDebugLog {
     private static final String SESSION = "d4c6a7";
     private static final String LOG_PATH = "/storage/sdcard0/debug-d4c6a7.log";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    static volatile boolean ENABLED = false;
+
     private QueueDebugLog() {}
 
     static void log(String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         try {
             JSONObject o = new JSONObject();
             o.put("sessionId", SESSION);

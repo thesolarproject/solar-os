@@ -262,8 +262,9 @@ public final class Y1UsbFocusHelper {
                     return;
                 }
                 UsbHostSessionPolicy.markPromptEvaluated(activity.getApplicationContext());
-                UsbStorageOverlayReceiver.routeUsbStorageOverlay(
-                        activity.getApplicationContext(), false);
+                // 2026-07-10 — Sole funnel: Solar MainActivity (never companion overlay race).
+                UsbStorageOverlayReceiver.routeToSolar(
+                        activity.getApplicationContext(), true, false, "Y1UsbFocusHelper.fallback");
             }
         }, UsbStorageConcierge.fallbackDelayMs());
     }
@@ -290,6 +291,8 @@ public final class Y1UsbFocusHelper {
                 d.put("hostConnected", hostConnected);
                 d.put("massStorageIntercept", massStorageIntercept);
                 Debug86bbe0Log.log("Y1UsbFocusHelper.umsWatchdog", "tick", "H1", d);
+                Debug02fc83Log.log(activity, "Y1UsbFocusHelper.umsWatchdog",
+                        "tick", "H5", d);
             } catch (Exception ignored) {}
             // #endregion
             if (OverlayKeyGate.isOverlayKeysActive() || isSessionIdle() || reclaimSuspended) {

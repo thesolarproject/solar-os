@@ -24,13 +24,14 @@ import java.util.List;
 
 /**
  * 2026-07-06 — Standalone Solar version picker (recovery / rollback path).
- * Layman: pick any published Solar build or refresh JJ/Rockbox — works when Solar will not start.
- * Technical: updates.xml + OtaCompanionInstaller parity with Settings → System Update.
+ * Layman: pick any published Solar build or install Rockbox-Y1 — works when Solar will not start.
+ * Technical: updates.xml + OtaCompanionInstaller; JJ Get Latest removed 2026-07-11.
  */
 public final class UpdatePickerActivity extends Activity {
 
     private static final int FIXED_ROWS_BEFORE_SELECTABLE = 4;
-    private static final int COMPANION_ROW_COUNT = 2;
+    /** 2026-07-11 — Rockbox-Y1 only (JJ Get Latest removed from change-version / recovery picker). */
+    private static final int COMPANION_ROW_COUNT = 1;
     private static final int ROW_FIRST_RELEASE = FIXED_ROWS_BEFORE_SELECTABLE + COMPANION_ROW_COUNT;
 
     private final List<SolarUpdateClient.ReleaseInfo> releases = new ArrayList<SolarUpdateClient.ReleaseInfo>();
@@ -76,10 +77,7 @@ public final class UpdatePickerActivity extends Activity {
         companionHeader.setTag("companion_header");
         root.addView(companionHeader);
 
-        TextView jjRow = row(getString(R.string.updater_get_latest_jj), false);
-        jjRow.setTag("companion_jj");
-        root.addView(jjRow);
-
+        // Recovery path keeps Rockbox-Y1 install (no Solar prefs for experiment gate).
         TextView rockboxRow = row(getString(R.string.updater_get_latest_rockbox), false);
         rockboxRow.setTag("companion_rockbox");
         root.addView(rockboxRow);
@@ -218,8 +216,6 @@ public final class UpdatePickerActivity extends Activity {
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
             if (focusIndex == 0) {
-                installJjLatest();
-            } else if (focusIndex == 1) {
                 installRockboxLatest();
             } else {
                 int relIdx = focusIndex - COMPANION_ROW_COUNT;

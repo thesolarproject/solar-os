@@ -14,8 +14,28 @@ import android.view.View;
  */
 public final class FlowAlbumArt3d {
 
-    /** Classipod / iPod Now Playing resting Y tilt — opposite lean from carousel center. */
-    public static final float PLAYER_ROT_Y_DEG = 14f;
+    /**
+     * 2026-07-11 — Classipod NP tilt that stays inside the padded album slot.
+     * Was 26° oversize (silly / clipped bars); then 16° still filled the tall match_parent slot.
+     * Reversal: 26f + 1.12× oversize, or 14f flush-fill.
+     */
+    public static final float PLAYER_ROT_Y_DEG = 18f;
+    /**
+     * 2026-07-11 — Cover content-cell height (parallel to info 235×225). Reflection is extra below.
+     * Reversal: softCap viewH*0.62 / frac-shrink that made ~136 covers.
+     */
+    public static final float PLAYER_CONTENT_H = 225f;
+    /**
+     * 2026-07-11 — Empty px above the cover inside the art slot so perspective near-edge can grow
+     * without a flat crop (slot uses matching negative marginTop). Reversal: top=0 flush clip.
+     */
+    public static final float PLAYER_TOP_OVERSHOOT = 14f;
+    /**
+     * 2026-07-11 — Only used when the slot is shorter than content+overshoot (tight fallback).
+     * Tall slots keep a full 225 cover; floor uses leftover px via {@link #playerReflectHeight}.
+     * Reversal: always size = viewH*(1-frac) which undersized the cover.
+     */
+    public static final float PLAYER_REFLECT_FRAC = 0.12f;
     /** Idle carousel reflection peak — glossy floor reflection. */
     public static final float REFLECT_PEAK_FRAC = 0.55f;
 
@@ -62,16 +82,93 @@ public final class FlowAlbumArt3d {
                 loc[1] + t.centerY + half);
     }
 
-    /** Left-aligned, vertically centered square — Classipod / iPod Now Playing 3D slot. */
+    /**
+     * 2026-07-11 — Cover square fills the parallel 235×225 cell; floor gloss uses leftover slot.
+     * {@link #PLAYER_TOP_OVERSHOOT} pads above so tilt isn't cropped; handoff uses same geometry.
+     * Reversal: softCap / 0.98× shrink / top=0 flush (clipped near-edge).
+     */
     public static AlbumArtPose playerPose(float viewW, float viewH) {
-        float size = Math.min(viewW, viewH);
+        if (viewW <= 0f || viewH <= 0f) {
+            return new AlbumArtPose(new RectF(), PLAYER_ROT_Y_DEG);
+        }
+        // Prefer 14px headroom + 225 cover when the slot is tall enough (281).
+        float top = 0f;
+        float maxCover = PLAYER_CONTENT_H;
+        if (viewH >= PLAYER_CONTENT_H + PLAYER_TOP_OVERSHOOT + 28f) {
+            top = PLAYER_TOP_OVERSHOOT;
+        } else if (viewH < PLAYER_CONTENT_H) {
+            maxCover = viewH * (1f - PLAYER_REFLECT_FRAC);
+        }
+        float size = Math.min(viewW, maxCover);
         if (size <= 0f) {
             return new AlbumArtPose(new RectF(), PLAYER_ROT_Y_DEG);
         }
-        float top = (viewH - size) * 0.5f;
+        // Cover top aligns with info (slot marginTop cancels overshoot); gloss below.
         return new AlbumArtPose(
                 new RectF(0f, top, size, top + size),
                 PLAYER_ROT_Y_DEG);
+    }
+
+    /**
+     * 2026-07-11 — NP + flyer: one Camera.rotateY wraps cover and floor so gloss kisses the cover
+     * edge (same as Flow in-slot). Was rotate-cover-only + flat floor → visible gap under art.
+     * Softer cam distance (−18 vs default −8) reduces near-edge blowout into the status band.
+     * Reversal: drawCover(rotY) then flat drawReflectionFloor; default camera location.
+     */
+    public static void drawPlayerCoverWithReflection(Canvas canvas, Bitmap bmp, RectF rect,
+            float rotationYDeg, float coverAlpha, float reflectAlpha, float reflectHeight,
+            int[] reflectTable, Paint coverPaint, Paint reflectionPaint) {
+        if (canvas == null || bmp == null || bmp.isRecycled() || rect == null) return;
+        RectF square = squareBounds(rect);
+        if (square.width() <= 0f) return;
+
+        canvas.save();
+        float pivotX = CoverFlowLayout.pivotXForCoverFlow(rotationYDeg,
+                square.left, square.right);
+        float pivotY = square.centerY();
+        camera.save();
+        // Farther eye = gentler perspective (less top/bottom flare on the near edge).
+        camera.setLocation(0f, 0f, -18f);
+        camera.rotateY(rotationYDeg);
+        matrix.reset();
+        camera.getMatrix(matrix);
+        camera.restore();
+        matrix.preTranslate(-pivotX, -pivotY);
+        matrix.postTranslate(pivotX, pivotY);
+        canvas.concat(matrix);
+
+        // Local space after shared tilt — floor starts at square.bottom (gapless).
+        drawCover(canvas, bmp, square, 0f, coverAlpha, coverPaint);
+        if (reflectHeight > 1f && reflectionPaint != null) {
+            drawReflectionFloor(canvas, bmp, square, reflectAlpha, reflectHeight,
+                    reflectTable, reflectionPaint, null);
+        }
+        canvas.restore();
+    }
+
+    /**
+     * 2026-07-11 — Floor band under a morphing cover (Flow→NP flyer).
+     * Scales with cover size so the gloss rides with the art instead of vanishing mid-flight.
+     * Reversal: flyer drawCover only (no floor).
+     */
+    public static float handoffReflectHeight(float coverSize, float morphT, float fromReflectH,
+            float toReflectH) {
+        if (coverSize <= 0f) return 0f;
+        float t = Math.max(0f, Math.min(1f, morphT));
+        float lerped = fromReflectH + (toReflectH - fromReflectH) * t;
+        if (lerped > 0f) return Math.min(lerped, coverSize * 0.55f);
+        // Fail-open: ~half cover height like CoverFlowLayout reflect/display ratio.
+        return Math.min(coverSize * 0.45f, coverSize * 0.55f);
+    }
+
+    /**
+     * 2026-07-11 — Reflection band under NP cover (remaining floor in slot, capped ~38% of cover).
+     */
+    public static float playerReflectHeight(float viewH, RectF drawRect) {
+        if (drawRect == null || viewH <= 0f) return 0f;
+        float room = Math.max(0f, viewH - drawRect.bottom);
+        float cap = drawRect.height() * 0.38f;
+        return Math.min(room, cap);
     }
 
     /** @deprecated use {@link #playerPose(float, float)} */

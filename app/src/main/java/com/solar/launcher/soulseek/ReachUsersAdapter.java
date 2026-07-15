@@ -8,6 +8,7 @@ import android.widget.BaseAdapter;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 
+import com.solar.launcher.A5FocusConfirm;
 import com.solar.launcher.R;
 import com.solar.launcher.theme.ThemeManager;
 
@@ -168,7 +169,8 @@ public final class ReachUsersAdapter extends BaseAdapter {
                         preview, "", show, rowWidthPx, rowHeightPx, cc);
             }
         });
-        row.setOnClickListener(new View.OnClickListener() {
+        // 2026-07-14 — A5: first tap focuses user; second opens (was one-tap).
+        A5FocusConfirm.setOnClickListener(row, new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (listener != null) listener.onUserSelected(user);

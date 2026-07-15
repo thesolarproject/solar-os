@@ -54,12 +54,7 @@ public final class AppLauncher {
 
     public static boolean launch(Context context, String packageName) {
         if (context == null || packageName == null) return false;
-        String target = LauncherCompetitionPolicy.targetForPackage(packageName);
-        if (target != null) {
-            LauncherHelperClient.applyHomeTarget(context, target, "apps");
-            LauncherPreference.applyHomeTarget(context, target);
-        }
-        PackageManager pm = context.getPackageManager();
+PackageManager pm = context.getPackageManager();
         Intent launch = pm != null ? pm.getLaunchIntentForPackage(packageName) : null;
         if (launch == null) return false;
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);

@@ -149,6 +149,8 @@ public class SolarWebServer extends Thread {
                             "<h2>🎧 Solar Wireless Upload</h2>" +
                             "<p><a href='/deezer' style='color:#0ff'>Deezer account setup →</a></p>" +
                             "<p><a href='/navidrome' style='color:#0ff'>Navidrome server setup →</a></p>" +
+                            "<p><a href='/plex' style='color:#0ff'>Plex server setup →</a></p>" +
+                            "<p><a href='/jellyfin' style='color:#0ff'>Jellyfin server setup →</a></p>" +
                             "<p><a href='/scan_stats' style='color:#0ff'>Last library scan stats →</a></p>" +
                             "<div class='box'><h3>1. Create Folder</h3>" +
                             "<input type='text' id='fName' placeholder='e.g., Pop, Jazz'>" +
@@ -311,6 +313,99 @@ public class SolarWebServer extends Thread {
                             "SOLAR_SETTINGS", Context.MODE_PRIVATE);
                     com.solar.launcher.navidrome.NavidromePrefs.save(context, prefs,
                             formValue(bodyStr, "url"), formValue(bodyStr, "user"), formValue(bodyStr, "pass"));
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (path.equals("/plex") || path.startsWith("/plex?")) {
+                    if (method.equals("GET")) {
+                        writePlexSetupPage(os, null);
+                    } else if (method.equals("POST")) {
+                        byte[] body = readBody(is, contentLength);
+                        String bodyStr = new String(body, "UTF-8");
+                        SharedPreferences prefs = context.getSharedPreferences(
+                                "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                        com.solar.launcher.plex.PlexPrefs.save(context, prefs,
+                                formValue(bodyStr, "url"), formValue(bodyStr, "token"));
+                        // 2026-07-14: Saving from Wi‑Fi transfer also arms the Debug experiment.
+                        if (com.solar.launcher.plex.PlexPrefs.isConfigured(prefs)) {
+                            com.solar.launcher.plex.PlexExperiment.setEnabled(prefs, true);
+                        }
+                        String msg = com.solar.launcher.plex.PlexPrefs.isConfigured(prefs)
+                                ? "✅ Plex settings saved — Music → Plex is unlocked."
+                                : "Saved — enter URL and token.";
+                        writePlexSetupPage(os, msg);
+                    }
+                }
+                else if (method.equals("GET") && path.equals("/api/plex-settings")) {
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    try {
+                        d.put("url", prefs.getString("plex_url", ""));
+                        d.put("token", prefs.getString("plex_token", ""));
+                        d.put("experiment", com.solar.launcher.plex.PlexExperiment.isEnabled(prefs));
+                    } catch (Exception ignored) {}
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + d.toString();
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (method.equals("POST") && path.equals("/api/plex-settings")) {
+                    byte[] body = readBody(is, contentLength);
+                    String bodyStr = new String(body, "UTF-8");
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    com.solar.launcher.plex.PlexPrefs.save(context, prefs,
+                            formValue(bodyStr, "url"), formValue(bodyStr, "token"));
+                    if (com.solar.launcher.plex.PlexPrefs.isConfigured(prefs)) {
+                        com.solar.launcher.plex.PlexExperiment.setEnabled(prefs, true);
+                    }
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (path.equals("/jellyfin") || path.startsWith("/jellyfin?")) {
+                    if (method.equals("GET")) {
+                        writeJellyfinSetupPage(os, null);
+                    } else if (method.equals("POST")) {
+                        byte[] body = readBody(is, contentLength);
+                        String bodyStr = new String(body, "UTF-8");
+                        SharedPreferences prefs = context.getSharedPreferences(
+                                "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                        com.solar.launcher.jellyfin.JellyfinPrefs.save(context, prefs,
+                                formValue(bodyStr, "url"), formValue(bodyStr, "user"),
+                                formValue(bodyStr, "pass"));
+                        // 2026-07-14: Saving from Wi‑Fi transfer also arms the Debug experiment.
+                        if (com.solar.launcher.jellyfin.JellyfinPrefs.isConfigured(prefs)) {
+                            com.solar.launcher.jellyfin.JellyfinExperiment.setEnabled(prefs, true);
+                        }
+                        String msg = com.solar.launcher.jellyfin.JellyfinPrefs.isConfigured(prefs)
+                                ? "✅ Jellyfin settings saved — Music → Jellyfin is unlocked."
+                                : "Saved — enter URL and username.";
+                        writeJellyfinSetupPage(os, msg);
+                    }
+                }
+                else if (method.equals("GET") && path.equals("/api/jellyfin-settings")) {
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    try {
+                        d.put("url", prefs.getString("jellyfin_url", ""));
+                        d.put("user", prefs.getString("jellyfin_user", ""));
+                        d.put("pass", prefs.getString("jellyfin_pass", ""));
+                        d.put("experiment",
+                                com.solar.launcher.jellyfin.JellyfinExperiment.isEnabled(prefs));
+                    } catch (Exception ignored) {}
+                    String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n" + d.toString();
+                    os.write(response.getBytes("UTF-8"));
+                }
+                else if (method.equals("POST") && path.equals("/api/jellyfin-settings")) {
+                    byte[] body = readBody(is, contentLength);
+                    String bodyStr = new String(body, "UTF-8");
+                    SharedPreferences prefs = context.getSharedPreferences(
+                            "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+                    com.solar.launcher.jellyfin.JellyfinPrefs.save(context, prefs,
+                            formValue(bodyStr, "url"), formValue(bodyStr, "user"), formValue(bodyStr, "pass"));
+                    if (com.solar.launcher.jellyfin.JellyfinPrefs.isConfigured(prefs)) {
+                        com.solar.launcher.jellyfin.JellyfinExperiment.setEnabled(prefs, true);
+                    }
                     String response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
                     os.write(response.getBytes("UTF-8"));
                 }
@@ -481,6 +576,56 @@ public class SolarWebServer extends Thread {
                     "<h2>Navidrome / Subsonic</h2>" + msgHtml +
                     "<form method='POST' action='/navidrome'>" +
                     "<input name='url' placeholder='https://music.example.com' value='" + htmlEscape(url) + "'>" +
+                    "<input name='user' placeholder='Username' value='" + htmlEscape(user) + "'>" +
+                    "<input name='pass' type='password' placeholder='Password' value='" + htmlEscape(pass) + "'>" +
+                    "<button type='submit'>Save</button></form>" +
+                    "<p><a href='/'>← Back to upload</a></p></body></html>";
+            String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
+            os.write(response.getBytes("UTF-8"));
+        }
+
+        /** 2026-07-14: PC companion form — Plex URL + X-Plex-Token. */
+        private void writePlexSetupPage(OutputStream os, String message) throws java.io.IOException {
+            SharedPreferences prefs = context.getSharedPreferences(
+                    "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+            String url = prefs.getString("plex_url", "");
+            String token = prefs.getString("plex_token", "");
+            String msgHtml = message != null
+                    ? "<p style='color:" + (message.startsWith("✅") ? "#0f0" : "#f66") + "'>"
+                    + htmlEscape(message) + "</p>" : "";
+            String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>" +
+                    "<title>Plex setup</title><style>body{font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:center;}" +
+                    "input,button{font-size:16px;padding:10px;margin:5px 0;width:100%;max-width:400px;box-sizing:border-box;}" +
+                    "button{background:#00ffff;color:#000;border:none;font-weight:bold;}</style></head><body>" +
+                    "<h2>Plex Media Server</h2>" + msgHtml +
+                    "<p style='color:#aaa;font-size:14px'>Server address + X-Plex-Token. Saving turns on the Plex experiment so Music → Plex appears.</p>" +
+                    "<form method='POST' action='/plex'>" +
+                    "<input name='url' placeholder='http://192.168.x.x:32400' value='" + htmlEscape(url) + "'>" +
+                    "<input name='token' placeholder='X-Plex-Token' value='" + htmlEscape(token) + "'>" +
+                    "<button type='submit'>Save</button></form>" +
+                    "<p><a href='/'>← Back to upload</a></p></body></html>";
+            String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
+            os.write(response.getBytes("UTF-8"));
+        }
+
+        /** 2026-07-14: PC companion form — Jellyfin URL + user + password. */
+        private void writeJellyfinSetupPage(OutputStream os, String message) throws java.io.IOException {
+            SharedPreferences prefs = context.getSharedPreferences(
+                    "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+            String url = prefs.getString("jellyfin_url", "");
+            String user = prefs.getString("jellyfin_user", "");
+            String pass = prefs.getString("jellyfin_pass", "");
+            String msgHtml = message != null
+                    ? "<p style='color:" + (message.startsWith("✅") ? "#0f0" : "#f66") + "'>"
+                    + htmlEscape(message) + "</p>" : "";
+            String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>" +
+                    "<title>Jellyfin setup</title><style>body{font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:center;}" +
+                    "input,button{font-size:16px;padding:10px;margin:5px 0;width:100%;max-width:400px;box-sizing:border-box;}" +
+                    "button{background:#00ffff;color:#000;border:none;font-weight:bold;}</style></head><body>" +
+                    "<h2>Jellyfin</h2>" + msgHtml +
+                    "<p style='color:#aaa;font-size:14px'>URL, username, password. Saving turns on the Jellyfin experiment so Music → Jellyfin appears.</p>" +
+                    "<form method='POST' action='/jellyfin'>" +
+                    "<input name='url' placeholder='http://192.168.x.x:8096' value='" + htmlEscape(url) + "'>" +
                     "<input name='user' placeholder='Username' value='" + htmlEscape(user) + "'>" +
                     "<input name='pass' type='password' placeholder='Password' value='" + htmlEscape(pass) + "'>" +
                     "<button type='submit'>Save</button></form>" +

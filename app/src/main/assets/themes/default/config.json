@@ -15,11 +15,15 @@
     "appGet_Music": "Music_YS.png",
     "appPodcasts": "Audiobooks_YS.png",
     "setStatus_Bar_Text": "Clock",
-    "enableMatch_Now_Playing_To_Theme": "true",
+    "disableMatch_Now_Playing_To_Theme": "true",
+    "disableStatus_Bar_Match_Font": "true",
+    "enableNow_Playing_Backdrop": "true",
     "enableLCD_album_art": "false",
     "setArtwork_Perspective": "3D",
-    "enableStatus_Bar_Match_Font": "true",
-    "enableMenu_Transitions": "true"
+    "enableMenu_Transitions": "true",
+    "settingsMenu_Item_Padding": false,
+    "settingsShow_Now_Playing_Info": false,
+    "enableA5_Portrait_Mode": "true"
   },
   "itemConfig": {
     "itemTextColor": "#ffffff",

@@ -6,8 +6,14 @@
 SOLAR_PKG="com.solar.launcher"
 ROCKBOX_PKG="org.rockbox"
 JJ_PKG="com.themoon.y1"
+# 2026-07-08 — Factory Innioasis HOME packages (Y1 hardware ships y1; Y2 ships y2).
+INNIOASIS_Y1_PKG="com.innioasis.y1"
+INNIOASIS_Y2_PKG="com.innioasis.y2"
 HELPER_PKG="com.solar.launcher.homehelper"
 PROP_HOME_TARGET="persist.solar.home.target"
+PROP_HOME_COMPONENT="persist.solar.home.component"
+# 2026-07-08 — Wheel remap flag read by the JJ/Innioasis Xposed shim (see JjInputHooks).
+PROP_JJ_HANDOFF="sys.solar.handoff.jj"
 SET_HOME_ACTION="com.solar.launcher.action.SET_PREFERRED_HOME"
 HOME_RECEIVER="com.solar.launcher/.LauncherHomeReceiver"
 OVERLAY_KEEPALIVE="com.solar.launcher.action.OVERLAY_KEEPALIVE"
@@ -48,12 +54,45 @@ ensure_notpipe_registered() {
     fi
 }
 
+# 2026-07-08 — Now honours stock (factory Innioasis HOME) and custom targets.
+# Previously coerced stock/custom to solar every boot, silently undoing the user's launcher pick.
+# Reversal: restore rockbox|jj|*→solar case list.
 read_home_target() {
     TARGET="$(getprop "$PROP_HOME_TARGET")"
     case "$TARGET" in
         rockbox) echo rockbox ;;
         jj) echo jj ;;
+        stock) echo stock ;;
+        custom) echo custom ;;
         *) echo solar ;;
+    esac
+}
+
+# 2026-07-08 — Pick whichever factory launcher is installed (persist component wins).
+# Layman: find the built-in Innioasis home app on this device family.
+stock_pkg() {
+    _c="$(getprop "$PROP_HOME_COMPONENT")"
+    if [ -n "$_c" ]; then
+        echo "${_c%%/*}"
+        return
+    fi
+    if pm path "$INNIOASIS_Y1_PKG" >/dev/null 2>&1; then
+        echo "$INNIOASIS_Y1_PKG"
+        return
+    fi
+    echo "$INNIOASIS_Y2_PKG"
+}
+
+# 2026-07-08 — Root-side arming of the JJ/Innioasis wheel remap at boot.
+# Layman: tell the system "translate wheel keys" before any app (or Solar) starts.
+# Technical: JJ + factory launchers expect DPAD 21/22; canonical .kl emits MEDIA 126/127.
+# Setting sys.solar.handoff.jj here means the Xposed in-process shim works with zero
+# dependency on the Solar app process (which may be disabled, crashed, or LMK-killed).
+# Reversal: delete this function — arming falls back to Solar's ExternalInputHandoff only.
+sync_jj_handoff_flag() {
+    case "$1" in
+        jj|stock) setprop "$PROP_JJ_HANDOFF" 1 ;;
+        *) setprop "$PROP_JJ_HANDOFF" 0 ;;
     esac
 }
 
@@ -86,6 +125,28 @@ apply_home_target() {
                 setprop "$PROP_HOME_TARGET" solar
             fi
             ;;
+        # 2026-07-08 — Factory Innioasis HOME: enable it, park Rockbox/JJ, keep target.
+        # Reversal: delete this case — stock fell through to solar (launcher pick lost on boot).
+        stock)
+            _stock="$(stock_pkg)"
+            if pm path "$_stock" >/dev/null 2>&1; then
+                pm enable "$_stock" 2>/dev/null
+                pm disable "$ROCKBOX_PKG" 2>/dev/null
+                pm disable "$JJ_PKG" 2>/dev/null
+                setprop "$PROP_HOME_TARGET" stock
+            else
+                TARGET=solar
+                pm disable "$ROCKBOX_PKG" 2>/dev/null
+                pm disable "$JJ_PKG" 2>/dev/null
+                setprop "$PROP_HOME_TARGET" solar
+            fi
+            ;;
+        # 2026-07-08 — Custom PM-discovered HOME: trust persisted component; park known alternates.
+        custom)
+            pm disable "$ROCKBOX_PKG" 2>/dev/null
+            pm disable "$JJ_PKG" 2>/dev/null
+            setprop "$PROP_HOME_TARGET" custom
+            ;;
         *)
             TARGET=solar
             pm disable "$ROCKBOX_PKG" 2>/dev/null
@@ -93,7 +154,11 @@ apply_home_target() {
             setprop "$PROP_HOME_TARGET" solar
             ;;
     esac
-    am broadcast -a "$SET_HOME_ACTION" -n "$HOME_RECEIVER" --es target "$TARGET"
+    # 2026-07-08 — Arm/clear the wheel-remap flag for the final target (Solar-independent).
+    sync_jj_handoff_flag "$TARGET"
+    # 2026-07-08 — shell_applied: boot already did pm/props; avoid nested su on broadcast.
+    am broadcast -a "$SET_HOME_ACTION" -n "$HOME_RECEIVER" \
+        --es target "$TARGET" --ez shell_applied 1 --es source shell
     sleep 1
 }
 

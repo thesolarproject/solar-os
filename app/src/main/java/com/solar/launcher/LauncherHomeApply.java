@@ -53,7 +53,11 @@ public final class LauncherHomeApply {
             if (HomeTargetPolicy.SOLAR_PKG.equals(pkg)) continue;
             if (HomeTargetPolicy.ROCKBOX_PKG.equals(pkg)) continue;
             if (HomeTargetPolicy.JJ_PKG.equals(pkg)) continue;
+            // 2026-07-08 — Stock Innioasis has a dedicated Settings/Power row — skip Custom dup.
+            if (HomeTargetPolicy.isInnioasisStockPackage(pkg)) continue;
             if (HomeTargetPolicy.HELPER_PKG.equals(pkg)) continue;
+            // 2026-07-08 — Setup wizard is not a real home app; never offer it as launcher.
+            if ("com.android.provision".equals(pkg)) continue;
             out.add(info);
         }
         return out;

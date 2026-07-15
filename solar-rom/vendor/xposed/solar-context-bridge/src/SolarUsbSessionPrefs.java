@@ -45,10 +45,12 @@ final class SolarUsbSessionPrefs {
         return "1".equals(readSysProp(SYSPROP_BOOT_SETTLE_READY, "0"));
     }
 
-    /** Y1 always; Y2 gated on debug experiment — matches {@code UsbMassStorageExperiment}. */
+    /**
+     * Y1 always; Y2 never (MTP-only product policy 2026-07-10).
+     * Was: KitKat + experiment sysprop. Now: SDK≥19 (Y2) hard-off; ignore experiment pref.
+     */
     static boolean isUmsFeatureEnabled() {
-        if (android.os.Build.VERSION.SDK_INT >= 19
-                && !"1".equals(readSysProp(SYSPROP_Y2_UMS_EXPERIMENT, "0"))) {
+        if (android.os.Build.VERSION.SDK_INT >= 19) {
             return false;
         }
         return true;

@@ -17,7 +17,7 @@
     <string name="updater_installed">Installed %1$s</string>
     <string name="updater_hint">Wheel to pick a version or companion app. OK installs.</string>
     <string name="updater_get_latest_jj">Get latest JJ Launcher</string>
-    <string name="updater_get_latest_rockbox">Get latest Rockbox</string>
+    <string name="updater_get_latest_rockbox">Install latest Rockbox-Y1</string>
     <string name="updater_companion_jj_done">JJ Launcher updated (system app — settings kept).</string>
     <string name="updater_companion_jj_failed">JJ Launcher update failed — check Wi‑Fi and root.</string>
     <string name="updater_companion_rockbox_done">Rockbox updated (system app — settings kept).</string>

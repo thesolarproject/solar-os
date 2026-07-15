@@ -215,6 +215,20 @@ public final class FlowFlipController {
         return true;
     }
 
+    /**
+     * 2026-07-14 — Touch hit-test focuses a back-face track row.
+     * Layman: tap a song line on the flipped cover to highlight it.
+     * Reversal: use scrollBackBy only.
+     */
+    public boolean setBackIndex(int index) {
+        if (state != STATE_BACK || backRows.isEmpty()) return false;
+        if (index < 0 || index >= backRows.size()) return false;
+        if (backIndex == index) return true;
+        backIndex = index;
+        visibleBackRowStart();
+        return true;
+    }
+
     public FlowScreenHost.FlowBackRow selectedRow() {
         if (backIndex < 0 || backIndex >= backRows.size()) return null;
         return backRows.get(backIndex);

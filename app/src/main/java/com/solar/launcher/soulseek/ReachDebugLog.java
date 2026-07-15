@@ -14,9 +14,13 @@ final class ReachDebugLog {
     private static final String FILE = "debug-b0051d.log";
     private static final String SESSION = "b0051d";
 
+    /** Off by default — avoids observer-effect I/O under adb (2026-07-11). */
+    static volatile boolean ENABLED = false;
+
     private ReachDebugLog() {}
 
     static void log(Context ctx, String location, String message, String hypothesisId, JSONObject data) {
+        if (!ENABLED) return;
         try {
             long ts = System.currentTimeMillis();
             JSONObject o = new JSONObject();
