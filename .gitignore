@@ -62,3 +62,7 @@ build-ota-staging/
 build/
 .rom_extracted/
 .y2_mtk_recovery/
+
+# Cloudflare worker local setup/readme docs (ops only)
+cloudflare/**/README.md
+cloudflare/**/SETUP.md
