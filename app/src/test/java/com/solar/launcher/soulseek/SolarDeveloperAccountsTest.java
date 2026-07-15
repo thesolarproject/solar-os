@@ -80,6 +80,47 @@ public class SolarDeveloperAccountsTest {
   }
 
   @Test
+  public void autoDiagnosticHidesSolarDiagCommandsAndConfirmations() {
+    // Diagnostic command/ack lines stay out of the Solar Development conversation UI.
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(
+            SolarDeveloperAccounts.DIAG_MARKER + "file: crash.log\n")) {
+      throw new AssertionError("marker body");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText("solar_diag")) {
+      throw new AssertionError("bare command");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText("Please run solar_diag now")) {
+      throw new AssertionError("soft command");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText("solar_diag: sent (issue #12)")) {
+      throw new AssertionError("confirmation");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText("solar_diag: failed (retry later)")) {
+      throw new AssertionError("failure ack");
+    }
+    String formatted = SolarDeveloperAccounts.formatDiagConfirmation(true, 7);
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(formatted)) {
+      throw new AssertionError("formatDiagConfirmation");
+    }
+    if (!formatted.contains(SolarDeveloperAccounts.DIAG_MARKER)) {
+      throw new AssertionError("confirmation should carry DIAG_MARKER");
+    }
+    if (SolarDeveloperAccounts.isAutoDiagnosticText("Thanks for Solar!")) {
+      throw new AssertionError("normal chat must stay visible");
+    }
+    if (!SolarDeveloperAccounts.isDiagRemotePullCommand("please run solar_diag")) {
+      throw new AssertionError("pull command");
+    }
+    if (SolarDeveloperAccounts.isDiagRemotePullCommand("solar_diag: sent (issue #1)")) {
+      throw new AssertionError("confirmation must not re-trigger pull");
+    }
+    if (SolarDeveloperAccounts.isDiagRemotePullCommand(
+            SolarDeveloperAccounts.formatDiagConfirmation(true, 3))) {
+      throw new AssertionError("marked confirmation not a pull command");
+    }
+  }
+
+  @Test
   public void experimentDisabledAfterSupportUiRemoval() {
     android.content.SharedPreferences prefs = new android.content.SharedPreferences() {
       @Override public java.util.Map<String, ?> getAll() { return null; }

@@ -49,6 +49,8 @@ public final class WifiConnector {
                     }
                 } catch (Exception e) {
                     SolarLog.e(TAG, "connect " + ssid, e);
+                    com.solar.launcher.diag.SolarDiagFeatureLog.warn("wifi",
+                            "connect_exception ssid=" + ssid);
                 }
                 if (gen != WORK_GEN.get()) return;
                 final boolean result = ok;

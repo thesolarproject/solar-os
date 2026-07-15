@@ -11,13 +11,14 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * App-wide error/crash logs under /storage/sdcard0/solar/logs for user support.
- * ponytail: rotate at 512KB; also mirrors to logcat.
+ * 2026-07-16 — App-wide error/crash logs under {@code solar/logs} on every volume + app-private.
+ * Mirrored like themes (MMC/internal + MicroSD). Rotates at 512KB; also mirrors to logcat.
  */
 public final class SolarLog {
 
     private static final String TAG = "SolarLog";
-    public static final String LOG_DIR = "/storage/sdcard0/solar/logs";
+    /** @deprecated use {@link SolarLogPaths#preferredLogDir} — kept for older call sites. */
+    public static final String LOG_DIR = SolarLogPaths.LEGACY_LOG_DIR;
     private static final String CRASH_FILE = "crash.log";
     private static final String ERROR_FILE = "error.log";
     private static final long MAX_BYTES = 512 * 1024;
@@ -59,17 +60,39 @@ public final class SolarLog {
             Log.e(tag, message);
         }
         append(ERROR_FILE, formatLine("ERROR", tag, message, t));
+        // 2026-07-15 — Feed feature trail so diag bundles are dense with use-case history.
+        trailFeature("ERROR", tag, message);
+    }
+
+    /**
+     * 2026-07-15 — Same as {@link #e} without feature-trail re-entry (used by SolarDiagFeatureLog).
+     */
+    public static void eQuiet(String tag, String message, Throwable t) {
+        message = scrub(message);
+        if (t != null) {
+            Log.e(tag, message, t);
+        } else {
+            Log.e(tag, message);
+        }
+        append(ERROR_FILE, formatLine("ERROR", tag, message, t));
     }
 
     public static void w(String tag, String message) {
         message = scrub(message);
         Log.w(tag, message);
         append(ERROR_FILE, formatLine("WARN", tag, message, null));
+        trailFeature("WARN", tag, message);
     }
 
     public static void i(String tag, String message) {
         message = scrub(message);
         Log.i(tag, message);
+    }
+
+    private static void trailFeature(String level, String tag, String message) {
+        try {
+            com.solar.launcher.diag.SolarDiagFeatureLog.trailFromSolarLog(level, tag, message);
+        } catch (Throwable ignored) {}
     }
 
     private static void logCrash(Thread thread, Throwable e) {
@@ -82,6 +105,8 @@ public final class SolarLog {
             String header = "\n--- CRASH " + ts() + " thread=" + thread.getName() + " ---\n";
             append(CRASH_FILE, header + body);
             append(ERROR_FILE, header + body);
+            trailFeature("ERROR", "crash", "uncaught " + e.getClass().getSimpleName()
+                    + " thread=" + thread.getName());
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
                 d.put("thread", thread.getName());
@@ -116,23 +141,31 @@ public final class SolarLog {
         text = scrub(text);
         synchronized (LOCK) {
             try {
-                File dir = new File(LOG_DIR);
-                if (!dir.exists() && !dir.mkdirs()) {
-                    dir = new File("/data/data/com.solar.launcher/files/solar/logs");
-                    dir.mkdirs();
-                }
-                File log = new File(dir, fileName);
-                if (log.isFile() && log.length() > MAX_BYTES) {
-                    File rotated = new File(dir, fileName + ".old");
-                    log.renameTo(rotated);
-                }
-                FileOutputStream fos = new FileOutputStream(log, true);
-                fos.write((text + "\n").getBytes("UTF-8"));
-                fos.close();
+                SolarLogPaths.appendMirrored(appCtx, fileName, text, MAX_BYTES);
             } catch (Exception ex) {
                 Log.w(TAG, "append failed: " + ex.getMessage());
             }
         }
+    }
+
+    /**
+     * 2026-07-16 — Write a pre-formatted line to a log file on all mirrored roots (no extra scrub).
+     * Used for storage health lines that must not recurse through feature trails.
+     */
+    public static void appendMirroredRaw(android.content.Context context, String fileName,
+            String text, long maxBytes) {
+        updateContext(context);
+        if (text == null) return;
+        synchronized (LOCK) {
+            SolarLogPaths.appendMirrored(appCtx, fileName, text, maxBytes > 0 ? maxBytes : MAX_BYTES);
+        }
+    }
+
+    static String formatStorageLine(String severity, File path, long total, long free) {
+        return ts() + " STORAGE " + severity
+                + " path=" + (path != null ? path.getAbsolutePath() : "?")
+                + " total=" + SolarLogPaths.formatBytes(total)
+                + " free=" + SolarLogPaths.formatBytes(free);
     }
 
     private static volatile String[] cachedSensitive = new String[0];
@@ -212,18 +245,14 @@ public final class SolarLog {
             @Override
             public void run() {
                 try {
-                    scrubDir(new File("/storage/sdcard0/solar/logs"), 0);
-                    scrubDir(new File("/data/data/com.solar.launcher/files/solar/logs"), 0);
-                    scrubDir(new File("/storage/sdcard0/solar"), 0);
-                    scrubDir(new File("/storage/sdcard0"), 0);
-                    if (appCtx != null) {
-                        scrubDir(appCtx.getFilesDir(), 0);
-                        File cache = appCtx.getCacheDir();
-                        if (cache != null) scrubDir(cache, 0);
+                    // 2026-07-16 — Only tidy solar/logs trees (mirrored volumes + app-private).
+                    // Do not walk entire volume roots (avoids thrashing user media).
+                    for (File logDir : SolarLogPaths.logDirs(appCtx)) {
+                        scrubDir(logDir, 0);
                     }
-                    scrubDir(new File("/data/data/com.solar.launcher/files"), 0);
-                    scrubDir(new File("/data/data/com.solar.launcher/cache"), 0);
-                    scrubDir(new File("/storage/sdcard0/.rockbox"), 0);
+                    if (appCtx != null) {
+                        scrubDir(new File(appCtx.getFilesDir(), SolarLogPaths.REL_LOGS), 0);
+                    }
                 } catch (Exception ignored) {}
             }
         }, "SolarLogScrub").start();

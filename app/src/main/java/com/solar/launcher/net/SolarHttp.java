@@ -159,14 +159,25 @@ public final class SolarHttp {
 
     public static byte[] postJson(String urlStr, String jsonBody, String userAgent,
             String registryToken) throws IOException {
+        // 2026-07-15 — Reach directory still uses X-Reach-Token; diag uses postJsonAuth.
+        return postJsonAuth(urlStr, jsonBody, userAgent, "X-Reach-Token", registryToken);
+    }
+
+    /**
+     * 2026-07-15 — JSON POST with a named auth header (Reach token vs Solar diag ingest token).
+     * Layman: same secure pipe as other Solar HTTPS, just a different password sticker.
+     */
+    public static byte[] postJsonAuth(String urlStr, String jsonBody, String userAgent,
+            String authHeaderName, String authHeaderValue) throws IOException {
         TlsHelper.ensureSecurityProvider();
         okhttp3.MediaType json = okhttp3.MediaType.parse("application/json; charset=utf-8");
         okhttp3.RequestBody body = okhttp3.RequestBody.create(json, jsonBody != null ? jsonBody : "{}");
         Request.Builder b = new Request.Builder().url(urlStr).post(body);
         b.header("User-Agent", userAgent != null ? userAgent : DEFAULT_UA);
         b.header("Content-Type", "application/json; charset=utf-8");
-        if (registryToken != null && !registryToken.isEmpty()) {
-            b.header("X-Reach-Token", registryToken);
+        if (authHeaderName != null && !authHeaderName.isEmpty()
+                && authHeaderValue != null && !authHeaderValue.isEmpty()) {
+            b.header(authHeaderName, authHeaderValue);
         }
         Response resp = execute(b.build());
         try {
@@ -208,6 +219,12 @@ public final class SolarHttp {
             if (probeReachable(probe, url)) return true;
         }
         return false;
+    }
+
+    /** True if a single URL answers HEAD/ranged GET (YouTube CDN stream preflight). */
+    public static boolean isUrlReachable(String url) {
+        if (url == null || url.isEmpty()) return false;
+        return probeAnyReachable(new String[]{url});
     }
 
     private static boolean probeReachable(OkHttpClient client, String urlStr) {

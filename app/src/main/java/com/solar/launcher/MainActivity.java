@@ -46,6 +46,7 @@ import com.solar.launcher.soulseek.SolarDeveloperOutbox;
 import com.solar.launcher.soulseek.SolarDiagSessionManager;
 import com.solar.launcher.soulseek.SolarDevelopmentBootstrap;
 import com.solar.launcher.soulseek.SolarDiagnosticReporter;
+import com.solar.launcher.diag.SolarDiagFeatureLog;
 import com.solar.launcher.soulseek.SoulseekRoomWall;
 import com.solar.launcher.soulseek.ReachInboxAdapter;
 import com.solar.launcher.soulseek.ReachInterestsAdapter;
@@ -449,6 +450,8 @@ public class MainActivity extends Activity {
 
     private TextView tvStatusClock, tvStatusBattery;
     private ImageView ivStatusBluetooth, ivStatusWifi, ivStatusHeadphone, ivStatusPlayback, ivMainBg, ivScreenMask;
+    /** 2026-07-15 — Status-bar search loading throbber (Get Music / YouTube / podcasts / …). */
+    private ProgressBar pbStatusLoading;
     private ImageView ivMainBgIn, ivScreenMaskIn;
     private View backdropOutSlot, backdropInSlot;
     private final com.solar.launcher.ui.ScreenBackdropTransition screenBackdropTransition =
@@ -517,6 +520,11 @@ public class MainActivity extends Activity {
             new Runnable() {
                 @Override
                 public void run() {
+                    // 2026-07-15 — Coalesced rebuild may still land under typing; re-defer.
+                    if (isInputPriorityBusy()) {
+                        clockHandler.postDelayed(this, Math.max(100L, msUntilInputIdle()));
+                        return;
+                    }
                     rebuildHomeMenuIfVisible();
                 }
             };
@@ -736,6 +744,10 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (soulseekUiMode != SOULSEEK_UI_ACTION) return;
+            if (isInputPriorityBusy()) {
+                soulseekUiHandler.postDelayed(this, Math.max(500L, msUntilInputIdle()));
+                return;
+            }
             soulseekActionSuggestionOffset += 4;
             refreshSoulseekActionSuggestions();
             soulseekUiHandler.postDelayed(this, SOULSEEK_ACTION_REFRESH_MS);
@@ -762,6 +774,12 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (soulseekUiMode != SOULSEEK_UI_DOWNLOAD || soulseekActiveDownload == null) return;
+            // Download screen is foreground — keep light ticks; only yield if user is
+            // thrashing keys hard (still re-post so UI catches up after idle).
+            if (isInputPriorityBusy()) {
+                soulseekUiHandler.postDelayed(this, Math.max(1000L, msUntilInputIdle()));
+                return;
+            }
             updateSoulseekDownloadStatusUi();
             soulseekUiHandler.postDelayed(this, 1000);
         }
@@ -944,6 +962,7 @@ public class MainActivity extends Activity {
     private View playerAlbumContainer;
     private boolean centerMovePickHandled = false;
     private boolean centerQuickBarTapHandled = false;
+    private boolean centerSleepHoldHandled = false;
     private long centerKeyDownTime = 0;
     private static final long CENTER_SLEEP_HOLD_MS = 300;
     /** Hold center this long (while pressed) before pick-up move mode — must exceed a normal tap. */
@@ -1115,6 +1134,26 @@ public class MainActivity extends Activity {
             showThemedContextMenu();
         }
     };
+    /** 2026-07-15 — Sleep while pressed right at threshold, without requiring key release. */
+    private final Runnable centerSleepHoldRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (centerKeyDownTime == 0 || centerSleepHoldHandled || isScreenSleeping) return;
+            long heldMs = System.currentTimeMillis() - centerKeyDownTime;
+            if (!centerHoldShouldSleep(heldMs)) return;
+            centerSleepHoldHandled = true;
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("heldMs", heldMs);
+                d.put("screen", currentScreenState);
+                DebugAgentLog.log(MainActivity.this, "MainActivity.centerSleepHoldRunnable",
+                        "center hold triggered screen sleep before release", "H1", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            performScreenSleep(false);
+        }
+    };
     private static final long MEDIA_SKIP_LONG_PRESS_MS = 500;
     private static final int MEDIA_SCRUB_STEP_MS = 5000;
     private long mediaPrevKeyDownTime = 0;
@@ -1269,6 +1308,20 @@ public class MainActivity extends Activity {
     private final java.util.ArrayList<String> librarySearchReachRows = new java.util.ArrayList<String>();
     private boolean librarySearchReachSearching;
     private boolean librarySearchReachActive;
+    /** True while OpenRSS/Deezer podcast show search is in flight. */
+    private boolean podcastSearchLoading = false;
+    /** 2026-07-15 — Coalesce library-search Reach UI rebuild after input idle. */
+    private final Runnable librarySearchReachIdleRebuild = new Runnable() {
+        @Override
+        public void run() {
+            if (!librarySearchReachActive || currentBrowserMode != BROWSER_LIBRARY_SEARCH) return;
+            if (isInputPriorityBusy()) {
+                soulseekUiHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
+                return;
+            }
+            buildLibrarySearchUI();
+        }
+    };
     private final java.util.ArrayList<String> librarySearchNavidromeRows = new java.util.ArrayList<String>();
     private boolean librarySearchNavidromeSearching;
     private boolean librarySearchNavidromeActive;
@@ -1332,6 +1385,11 @@ public class MainActivity extends Activity {
                 wifiContextRefreshPendingResetFocus = false;
                 return;
             }
+            // Live Wi‑Fi tier: user is in that menu — refresh is for them; only soft-yield.
+            if (isInputPriorityBusy() && !wifiConnectInProgress) {
+                wifiContextRefreshHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
+                return;
+            }
             if (wifiConnectInProgress && !wifiContextRefreshPendingResetFocus) return;
             refreshContextWifiTierImmediate(wifiContextRefreshPendingResetFocus,
                     wifiContextPendingEnable || wifiContextPendingDisable);
@@ -1344,6 +1402,10 @@ public class MainActivity extends Activity {
             if (!isContextTierActive("bt") && !btContextRefreshPendingForce) {
                 btContextRefreshPendingResetFocus = false;
                 btContextRefreshPendingForce = false;
+                return;
+            }
+            if (isInputPriorityBusy() && !btContextRefreshPendingForce) {
+                btContextRefreshHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
                 return;
             }
             refreshContextBluetoothTierImmediate(btContextRefreshPendingResetFocus,
@@ -1389,12 +1451,22 @@ public class MainActivity extends Activity {
     private final Runnable connectivityUiDebounceRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-15 — Menu rebuilds wait for input idle (typing/wheel first).
+            if (isInputPriorityBusy()) {
+                connectivityUiDebounceHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
+                return;
+            }
             refreshConnectivityGatedMenusNow();
         }
     };
     private final Runnable soulseekPolicyDebounceRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-15 — Share policy / scan is disk-heavy; yield while user is busy.
+            if (isInputPriorityBusy()) {
+                soulseekPolicyDebounceHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
+                return;
+            }
             updateSoulseekSharePolicy();
         }
     };
@@ -1425,6 +1497,18 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             if (!isNetworkRescanActive()) return;
+            // 2026-07-15 — Periodic Wi‑Fi/BT scans when menus are closed fight typing latency.
+            // Keep live while user is inside Wi‑Fi/BT UI; otherwise wait for input idle.
+            boolean wifiUiLive = (themedContextMenu != null && themedContextMenu.isShowing()
+                    && isWifiTierMounted())
+                    || currentScreenState == STATE_WIFI;
+            boolean btUiLive = (themedContextMenu != null && themedContextMenu.isShowing()
+                    && isBtTierMounted())
+                    || currentScreenState == STATE_BLUETOOTH;
+            if (isInputPriorityBusy() && !wifiUiLive && !btUiLive) {
+                networkRescanHandler.postDelayed(this, Math.max(1000L, msUntilInputIdle()));
+                return;
+            }
             if (themedContextMenu != null && themedContextMenu.isShowing()
                     && isWifiTierMounted() && !contextTierConfirmOpen && isWifiContextExpanded()
                     && !wifiConnectInProgress) {
@@ -1638,6 +1722,36 @@ public class MainActivity extends Activity {
         musicUsingIjk = false;
     }
 
+    /**
+     * 2026-07-15 — One sound source before music / Deezer / stream prepare.
+     * Layman: starting a local song or Deezer must stop YouTube Music (and any video stream + FM).
+     * Technical: YouTube Audio often plays via {@link #musicIjkPlayer} (opus/webm under /youtube/);
+     * Deezer growing-file path only reset {@link #mediaPlayer} → dual play. Also kills video IJK
+     * and cancels in-flight YouTube resolve/saveAudio. Podcast already used mediaStopMusicPlayback.
+     * 2026-07-15 — Also shuts FM session (mutual exclusivity with local/Deezer/etc.).
+     * Reversal: remove call sites; YT audio + Deezer dual-play returns.
+     */
+    private void stopCompetingAudioEngines() {
+        if (mediaSuite != null) {
+            mediaSuite.stopVideoAndYoutubeStream();
+            // FM chip + Wi‑Fi session must not sit under music/Deezer.
+            if (playback.isFmActive() || mediaSuite.isFmSessionLive()) {
+                mediaSuite.shutdownFmSession();
+            }
+        }
+        releaseMusicIjkPlayer();
+        // 2026-07-15 — Stop MediaPlayer too so Deezer/local do not dual-play prior track.
+        try {
+            if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                mediaPlayer.stop();
+            }
+            if (mediaPlayer != null) {
+                mediaPlayer.reset();
+            }
+            isPausedByHand = false;
+        } catch (Exception ignored) {}
+    }
+
     private com.solar.launcher.podcast.PodcastIjkPlayer ensureMusicIjkPlayer() {
         if (musicIjkPlayer == null) {
             musicIjkPlayer = new com.solar.launcher.podcast.PodcastIjkPlayer(true);
@@ -1838,6 +1952,17 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             try {
+                // 2026-07-15 — Off-NP + user typing: skip progress thrash; wake after idle.
+                // Layman: YouTube search keys beat redrawing a hidden progress bar.
+                // Keep live updates on Now Playing / video / active Reach partial.
+                if (isInputPriorityBusy()
+                        && currentScreenState != STATE_PLAYER
+                        && currentScreenState != MediaSuiteHost.STATE_VIDEO_PLAYER
+                        && currentScreenState != MediaSuiteHost.STATE_RADIO_FM_PLAYER
+                        && !reachPartialPlaybackStarted) {
+                    progressHandler.postDelayed(this, Math.max(500L, msUntilInputIdle()));
+                    return;
+                }
                 if (podcastEpisodeLoading) {
                     progressHandler.postDelayed(this, 500);
                     return;
@@ -2015,6 +2140,7 @@ public class MainActivity extends Activity {
                 }
             } catch (Exception e) {
             }
+            // Quiet path: 500ms. Input-busy off player already returned early above.
             progressHandler.postDelayed(this, 500);
         }
     };
@@ -2036,6 +2162,8 @@ public class MainActivity extends Activity {
 
             if (Intent.ACTION_SCREEN_OFF.equals(action)) {
                 isScreenSleeping = true;
+                centerSleepHoldHandled = false;
+                clockHandler.removeCallbacks(centerSleepHoldRunnable);
                 soulseekScreenSleepArmed = false;
                 // 2026-07-15 — Sleep dismisses stuck menus/USB prompt (wake must not leave shells up).
                 dismissOverlaysAndUsbPromptForScreenSleep("SCREEN_OFF");
@@ -2054,6 +2182,8 @@ public class MainActivity extends Activity {
                 // #endregion
             } else if (Intent.ACTION_SCREEN_ON.equals(action)) {
                 isScreenSleeping = false;
+                centerSleepHoldHandled = false;
+                clockHandler.removeCallbacks(centerSleepHoldRunnable);
                 soulseekScreenSleepArmed = false;
                 cancelWifiSleepOff();
                 maybeRestoreWifiAfterSleepPolicy();
@@ -2350,7 +2480,9 @@ public class MainActivity extends Activity {
     /** Coalesce rapid home menu rebuilds from connectivity/theme callbacks. */
     private void scheduleRebuildHomeMenuIfVisible() {
         clockHandler.removeCallbacks(homeMenuRebuildRunnable);
-        clockHandler.postDelayed(homeMenuRebuildRunnable, 100L);
+        // 2026-07-15 — Don't rebuild home under the wheel; wait for input idle.
+        long delay = Math.max(100L, msUntilInputIdle());
+        clockHandler.postDelayed(homeMenuRebuildRunnable, delay);
     }
 
     /** Asset-only theme for first paint — full SD scan/copy deferred off onCreate. */
@@ -2717,6 +2849,15 @@ public class MainActivity extends Activity {
                     return trackCenterKeyDown(event, true);
                 }
                 return handleThemedContextMenuKeyDown(keyCode, event);
+            }
+        });
+        // 2026-07-15 — Touch/emulator: tap dimmed scrim outside the panel to close (phone-dialog UX).
+        themedContextMenu.setOutsideTapListener(new ThemedContextMenu.OutsideTapListener() {
+            @Override
+            public void onOutsideTapDismiss() {
+                if (otaSystemReplaceInProgress || contextMenuBlockingHint) return;
+                // Full cleanup (tiers, USB flags, volume-only) with dismiss animation.
+                dismissContextMenuAnimated();
             }
         });
         // 2026-07-15 — Touch lift/drag for play queue ribbon (OK-hold + wheel unchanged).
@@ -3400,6 +3541,23 @@ public class MainActivity extends Activity {
         ivStatusBluetooth = findViewById(R.id.iv_status_bluetooth);
         ivStatusWifi = findViewById(R.id.iv_status_wifi);
         ivStatusHeadphone = findViewById(R.id.iv_status_headphone);
+        pbStatusLoading = (ProgressBar) findViewById(R.id.pb_status_loading);
+        if (pbStatusLoading != null) {
+            // 2026-07-15 — ProgressBar is focusable by default on KitKat; it stole A5 DPAD
+            // from menus/context modals whenever the search throbber was shown (or in focus search).
+            pbStatusLoading.setFocusable(false);
+            pbStatusLoading.setFocusableInTouchMode(false);
+            pbStatusLoading.setClickable(false);
+            pbStatusLoading.setVisibility(View.GONE);
+        }
+        View statusBarRoot = findViewById(R.id.layout_status_bar);
+        if (statusBarRoot instanceof android.view.ViewGroup) {
+            // Icons/throbber must never enter DPAD focus chain (wheel / A5 face L/R).
+            ((android.view.ViewGroup) statusBarRoot).setDescendantFocusability(
+                    android.view.ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            statusBarRoot.setFocusable(false);
+            statusBarRoot.setFocusableInTouchMode(false);
+        }
         ivStatusPlayback = new ImageView(this);
         ivStatusPlayback.setVisibility(View.GONE);
         android.view.ViewGroup rightStatusGroup = (android.view.ViewGroup) ivStatusBluetooth.getParent();
@@ -3526,6 +3684,9 @@ public class MainActivity extends Activity {
         try {
             soulseekSharingEnabled = prefs.getBoolean(SoulseekAccount.PREF_SHARING_ENABLED, true);
             soulseekDiagAutoReport = SolarDiagnosticReporter.isEnabled(prefs);
+            if (!prefs.contains(SolarDiagnosticReporter.PREF_DIAG_AUTO_REPORT)) {
+                prefs.edit().putBoolean(SolarDiagnosticReporter.PREF_DIAG_AUTO_REPORT, true).apply();
+            }
             soulseekReachEnabled = prefs.getBoolean(SoulseekAccount.PREF_REACH_ENABLED, true);
             soulseekEnabled = prefs.getBoolean(SoulseekAccount.PREF_SOULSEEK_ENABLED, true);
             soulseekMessagingEnabled = prefs.getBoolean(SoulseekAccount.PREF_MESSAGING_ENABLED, true);
@@ -3679,6 +3840,8 @@ public class MainActivity extends Activity {
                 }
             }, 500);
         }
+
+        scheduleAdbOpenFmIfRequested(getIntent());
 
         if (getIntent().getBooleanExtra("solar_adb_get_music_type_search", false)) {
             getIntent().removeExtra("solar_adb_get_music_type_search");
@@ -4794,6 +4957,17 @@ public class MainActivity extends Activity {
             int primary = ThemeManager.getTextColorPrimary();
             int secondary = ThemeManager.getTextColorSecondary();
             int statusTextColor = ThemeManager.getStatusBarTextColor();
+            // Re-tint search throbber when theme changes.
+            if (pbStatusLoading != null && pbStatusLoading.getVisibility() == View.VISIBLE) {
+                try {
+                    android.graphics.drawable.Drawable d = pbStatusLoading.getIndeterminateDrawable();
+                    if (d != null) {
+                        d = d.mutate();
+                        d.setColorFilter(statusTextColor, android.graphics.PorterDuff.Mode.SRC_IN);
+                        pbStatusLoading.setIndeterminateDrawable(d);
+                    }
+                } catch (Throwable ignored) {}
+            }
 
             applyAllHomeMenuRowStyles();
             if (currentScreenState == STATE_SETTINGS) {
@@ -9007,18 +9181,12 @@ public class MainActivity extends Activity {
                 if (np != null) homeMenuEntries.add(0, np);
             }
         }
-        final boolean radioExperimentOn =
-                com.solar.launcher.radio.RadioExperiment.isEnabled(prefs);
+        // 2026-07-15 — FM production: Radio home tile always eligible (Internet still experiment).
+        // Was: strip Radio unless Debug → Radio experiment. Reversal: restore radioExperimentOn filter.
         java.util.Iterator<HomeMenuConfig.Entry> homeIt = homeMenuEntries.iterator();
         while (homeIt.hasNext()) {
             HomeMenuConfig.Entry he = homeIt.next();
             if (HomeMenuConfig.ID_NOW_PLAYING.equals(he.id) && !showNowPlaying) {
-                homeIt.remove();
-                continue;
-            }
-            // 2026-07-10 — FM/Radio home tile only when Debug → Radio experiment is on.
-            if ((HomeMenuConfig.ID_RADIO.equals(he.id) || HomeMenuConfig.ID_FM.equals(he.id))
-                    && !radioExperimentOn) {
                 homeIt.remove();
             }
         }
@@ -9355,7 +9523,7 @@ public class MainActivity extends Activity {
                     super.setOnClickListener(null);
                     return;
                 }
-                // 2026-07-14 — A5 home rows: focus then confirm.
+                // 2026-07-15 — A5 home rows: short-tap open (A5FocusConfirm touch UP).
                 super.setOnClickListener(A5FocusConfirm.wrap(this, l));
             }
         };
@@ -9644,13 +9812,12 @@ public class MainActivity extends Activity {
         } else if (HomeMenuConfig.ID_SETTINGS.equals(id)) {
             changeScreen(STATE_SETTINGS);
         } else if (HomeMenuConfig.ID_RADIO.equals(id) || HomeMenuConfig.ID_FM.equals(id)) {
-            if (!com.solar.launcher.radio.RadioExperiment.isEnabled(prefs)) {
-                Toast.makeText(this, R.string.settings_debug_radio_experiment_hint,
-                        Toast.LENGTH_SHORT).show();
-                return;
-            }
+            // 2026-07-15 — FM production (JJ path): open last station / NP; hub only if Internet experiment on.
+            // Was: toast + bail when Debug experiment off. Reversal: restore isEnabled gate.
             if (playback.isFmActive()) {
                 changeScreen(STATE_PLAYER);
+            } else if (com.solar.launcher.radio.RadioExperiment.isInternetRadioEnabled(prefs)) {
+                changeScreen(MediaSuiteHost.STATE_RADIO);
             } else if (mediaSuite != null) {
                 mediaSuite.openFmFromHome();
             } else {
@@ -9710,6 +9877,157 @@ public class MainActivity extends Activity {
             if (statusBar != null) statusBar.setAlpha(1f);
         }
         applyStatusBarTitleMarquee();
+        syncStatusBarSearchThrobber();
+    }
+
+    /**
+     * 2026-07-15 — Small indeterminate spinner beside status title while search results stream in.
+     * Layman: spinning next to “Get Music” / YouTube / Podcasts so you know the list may still grow.
+     * Technical: ProgressBar tinted with {@link ThemeManager#getStatusBarTextColor()}; not on home clock.
+     */
+    private void syncStatusBarSearchThrobber() {
+        if (pbStatusLoading == null) return;
+        boolean show = isStatusBarSearchLoading();
+        if (show) {
+            int color = ThemeManager.getStatusBarTextColor();
+            try {
+                android.graphics.drawable.Drawable d = pbStatusLoading.getIndeterminateDrawable();
+                if (d != null) {
+                    d = d.mutate();
+                    d.setColorFilter(color, android.graphics.PorterDuff.Mode.SRC_IN);
+                    pbStatusLoading.setIndeterminateDrawable(d);
+                }
+            } catch (Throwable ignored) {}
+            if (pbStatusLoading.getVisibility() != View.VISIBLE) {
+                pbStatusLoading.setVisibility(View.VISIBLE);
+            }
+        } else if (pbStatusLoading.getVisibility() != View.GONE) {
+            pbStatusLoading.setVisibility(View.GONE);
+        }
+    }
+
+    /** True when a search is still filling the active results list (wheel may still jump). */
+    private boolean isStatusBarSearchLoading() {
+        if (statusBarFlowHandoffCrossfade) return false;
+        if (!statusBarShowsTitle && currentScreenState == STATE_MENU) return false;
+        if (getMusicSearchInProgress && isGetMusicUnifiedUi()) return true;
+        if (soulseekSearchInProgress
+                && (currentScreenState == STATE_SOULSEEK || isGetMusicUnifiedUi())) {
+            return true;
+        }
+        if (currentScreenState == STATE_PODCASTS && podcastSearchLoading) return true;
+        if (currentScreenState == STATE_BROWSER
+                && currentBrowserMode == BROWSER_LIBRARY_SEARCH
+                && (librarySearchReachSearching || librarySearchNavidromeSearching
+                        || librarySearchPlexSearching || librarySearchJellyfinSearching)) {
+            return true;
+        }
+        if (currentScreenState == STATE_DEEZER && deezerScreen != null
+                && deezerScreen.searchInProgress()) {
+            return true;
+        }
+        if (mediaSuite != null && mediaSuite.isYoutubeBrowseLoading()) return true;
+        return false;
+    }
+
+    /**
+     * 2026-07-15 — Capture focused browser row identity before list mutation.
+     * @return tag key string, or null when focus is outside result rows
+     */
+    private String captureBrowserFocusKey() {
+        View foc = getCurrentFocus();
+        if (foc == null || containerBrowserItems == null) return null;
+        for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+            View row = containerBrowserItems.getChildAt(i);
+            if (row == foc || isViewDescendantOf(foc, row)) {
+                Object tag = row.getTag();
+                if (tag instanceof MusicSearchEntry) {
+                    return musicSearchEntryDebugKey((MusicSearchEntry) tag);
+                }
+                if (tag instanceof SoulseekClient.Result) {
+                    return soulseekResultKey((SoulseekClient.Result) tag);
+                }
+                if (row instanceof android.widget.TextView) {
+                    CharSequence t = ((android.widget.TextView) row).getText();
+                    return t != null ? t.toString() : null;
+                }
+                return "idx:" + i;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Restore focus/scroll after search rows rebuild when focus was lost.
+     * 2026-07-15 — Never steal the wheel: if a browser row still has focus, leave it.
+     * Was: always requestFocus(key) after append → A5 face L/R felt dead while results streamed.
+     */
+    private void restoreBrowserFocusKey(final String key, final int scrollYBefore) {
+        if (containerBrowserItems == null) return;
+        // Append-only / live focus: user already moved the highlight — do not yank it back.
+        View focNow = getCurrentFocus();
+        if (focNow != null) {
+            for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                View row = containerBrowserItems.getChildAt(i);
+                if (row == focNow || isViewDescendantOf(focNow, row)) {
+                    return;
+                }
+            }
+        }
+        if (scrollViewBrowser instanceof android.widget.ScrollView && scrollYBefore >= 0
+                && focNow == null) {
+            final android.widget.ScrollView sv = (android.widget.ScrollView) scrollViewBrowser;
+            sv.post(new Runnable() {
+                @Override
+                public void run() {
+                    sv.scrollTo(0, scrollYBefore);
+                }
+            });
+        }
+        if (key == null || key.length() == 0) return;
+        containerBrowserItems.post(new Runnable() {
+            @Override
+            public void run() {
+                if (containerBrowserItems == null) return;
+                // Re-check: a key event may have focused a row since we posted.
+                View foc = getCurrentFocus();
+                if (foc != null) {
+                    for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                        View row = containerBrowserItems.getChildAt(i);
+                        if (row == foc || isViewDescendantOf(foc, row)) {
+                            return;
+                        }
+                    }
+                }
+                View match = null;
+                for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
+                    View row = containerBrowserItems.getChildAt(i);
+                    Object tag = row.getTag();
+                    String rowKey = null;
+                    if (tag instanceof MusicSearchEntry) {
+                        rowKey = musicSearchEntryDebugKey((MusicSearchEntry) tag);
+                    } else if (tag instanceof SoulseekClient.Result) {
+                        rowKey = soulseekResultKey((SoulseekClient.Result) tag);
+                    } else if (row instanceof android.widget.TextView) {
+                        CharSequence t = ((android.widget.TextView) row).getText();
+                        rowKey = t != null ? t.toString() : null;
+                    } else if (("idx:" + i).equals(key)) {
+                        rowKey = key;
+                    }
+                    if (key.equals(rowKey)) {
+                        match = row;
+                        break;
+                    }
+                }
+                if (match != null && match.isFocusable()) {
+                    match.requestFocus();
+                    if (scrollViewBrowser instanceof android.widget.ScrollView) {
+                        FocusScrollHelper.ensureChildVisible(
+                                (android.widget.ScrollView) scrollViewBrowser, match);
+                    }
+                }
+            }
+        });
     }
 
     /** Prep status bar for reverse handoff — title swaps during reveal, not on changeScreen. */
@@ -11156,8 +11474,8 @@ public class MainActivity extends Activity {
                 return true;
             }
         }
-        // 2026-07-15 — Storm: highlight follows finger before edge/child handlers run.
-        // Layman: drag across the menu and the blue bar tracks your fingertip.
+        // 2026-07-15 — Storm drag-to-focus only on short screens (A5FocusConfirm gates scrollable).
+        // Layman: short menu — blue bar follows finger; long list — scroll, peck, tap.
         // Reversal: delete followFinger call; focus only from FITM / wheel again.
         if (ev != null && A5FocusConfirm.enabled()) {
             View decor = getWindow() != null ? getWindow().getDecorView() : null;
@@ -11169,6 +11487,13 @@ public class MainActivity extends Activity {
         if (ev != null && a5EdgeGestures != null && DeviceFeatures.isA5()) {
             if (a5EdgeGestures.process(ev)) {
                 return true;
+            }
+        }
+        // 2026-07-15 — Touch counts as interaction for InputPriorityGate (was key-only).
+        if (ev != null) {
+            int act = ev.getActionMasked();
+            if (act == MotionEvent.ACTION_DOWN || act == MotionEvent.ACTION_MOVE) {
+                resetInactivityTimer();
             }
         }
         return super.dispatchTouchEvent(ev);
@@ -12401,6 +12726,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         showContextMenuTierInPlace(peer, labels, states, null, headers, actions, focusList);
     }
 
+    /**
+     * 2026-07-15 — Incoming Reach PM as themed context menu (global popup).
+     * Layman: show who wrote, the text, and actions (reply, open chat, ignore…).
+     * Technical: reuses ThemedContextMenu tier "reach_pm" — same chrome as other Solar confirms.
+     * Hallmark: one quiet interrupt, clear actions, no toast-only path.
+     */
     private void showSoulseekPmNotification(final String fromUser, final String text) {
         if (fromUser == null || fromUser.trim().isEmpty()) return;
         if (SoulseekPeerPrefs.isIgnored(prefs, fromUser)) return;
@@ -12955,6 +13286,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         keyboardPrefill = null;
         keyboardIndex = 0;
         keyboardPpLongDoCase = true;
+        // 2026-07-15 — Reset paint caches so first frame styles input + current key.
+        keyboardLastInputShown = null;
+        keyboardLastPlaceholder = !keyboardInputIsPlaceholder(); // force style once
+        keyboardLastStyledIndex = Integer.MIN_VALUE;
         if (tvKeyboardSsid != null) {
             tvKeyboardSsid.setText(getKeyboardScreenTitle());
         }
@@ -12998,7 +13333,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     public void setIndex(int idx) {
                         if (idx < 0 || idx >= KEYBOARD_CHARS.length) return;
                         keyboardIndex = idx;
-                        updateKeyboardUI();
+                        // 2026-07-15 — Wheel only: letters strip, not full theme restyle.
+                        updateKeyboardKeyStripTexts();
                     }
 
                     @Override
@@ -13011,7 +13347,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         int len = KEYBOARD_CHARS.length;
                         if (len <= 0) return;
                         keyboardIndex = (keyboardIndex + steps % len + len) % len;
-                        updateKeyboardUI();
+                        updateKeyboardKeyStripTexts();
                     }
                 });
     }
@@ -13572,6 +13908,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void startDeezerPlayFromPartial(File partial, String meta, long trackId) {
         saveCurrentPodcastResume();
         stopPodcastDownloadFully();
+        // 2026-07-15 — YouTube Music (musicIjkPlayer) kept playing under Deezer MediaPlayer.
+        stopCompetingAudioEngines();
         clearReachStreamAlbumArt();
         playback.playDeezerAfterCurrent(partial, meta, trackId);
         reachPartialPlaybackStarted = true;
@@ -13776,98 +14114,171 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         changeScreen(STATE_WIFI_KEYBOARD);
     }
 
+    /** Cached keyboard paint state — avoid redraw thrash while typing (Hallmark: cut motion). */
+    private String keyboardLastInputShown;
+    private boolean keyboardLastPlaceholder = true;
+    private int keyboardLastStyledIndex = Integer.MIN_VALUE;
+
+    /**
+     * 2026-07-15 — Full keyboard refresh (open / theme change).
+     * Layman: repaint letters + what you typed.
+     * Tech: key strip texts + input line; styles only when index/placeholder flips.
+     */
     private void updateKeyboardUI() {
         if (tvKeyPprev == null || tvKeyPrev == null || tvKeyCurrent == null
                 || tvKeyNext == null || tvKeyNnext == null || tvKeyboardInput == null) {
             return;
         }
+        if (keyboardPurpose == KEYBOARD_WIFI && isTargetWifiOpen) {
+            keyboardIndex = KEYBOARD_CHARS.length - 1;
+        }
+        updateKeyboardKeyStripTexts();
+        updateKeyboardInputDisplay();
+    }
+
+    /**
+     * 2026-07-15 — Wheel letter slots only (cheap path for scroll).
+     * Layman: spin the alphabet without re-theming the whole page.
+     */
+    private void updateKeyboardKeyStripTexts() {
+        if (tvKeyPprev == null || tvKeyPrev == null || tvKeyCurrent == null
+                || tvKeyNext == null || tvKeyNnext == null) {
+            return;
+        }
         int len = KEYBOARD_CHARS.length;
-        int idxPprev = (keyboardIndex - 2 + len) % len;
-        int idxPrev = (keyboardIndex - 1 + len) % len;
-        int idxNext = (keyboardIndex + 1) % len;
-        int idxNnext = (keyboardIndex + 2) % len;
-        tvKeyPprev.setText(keyboardDisplayChar(KEYBOARD_CHARS[idxPprev]));
-        tvKeyPrev.setText(keyboardDisplayChar(KEYBOARD_CHARS[idxPrev]));
-        tvKeyCurrent.setText(keyboardDisplayChar(KEYBOARD_CHARS[keyboardIndex]));
-        tvKeyNext.setText(keyboardDisplayChar(KEYBOARD_CHARS[idxNext]));
-        tvKeyNnext.setText(keyboardDisplayChar(KEYBOARD_CHARS[idxNnext]));
-        if (keyboardPurpose == KEYBOARD_WIFI && isTargetWifiOpen) {
-            tvKeyboardInput.setText(getString(R.string.wifi_open_network));
-            keyboardIndex = len - 1;
-            tvKeyCurrent.setText(KEYBOARD_CHARS[keyboardIndex]);
-        } else if (keyboardPurpose == KEYBOARD_WIFI) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_enter_wifi_password) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) {
-            tvKeyboardInput.setText(typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_SEARCH) {
-            int hint = getMusicFromEntryPoint
-                    ? R.string.get_music_type_search : R.string.soulseek_type_search;
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(hint) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_FIND) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_find_user) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_MSG) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_compose_message) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_CONTACT) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_add_contact) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM_WALL) {
-            tvKeyboardInput.setText(typedPassword.length() == 0
-                    ? getString(R.string.soulseek_room_wall_set) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_room_new_message) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_INTEREST) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_soulseek_interest) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_PEER_NOTE) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_user_note_hint) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM_SEARCH) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.soulseek_chat_rooms_search_hint) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_PODCAST_SEARCH) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.podcasts_type_search) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_PLAYLIST_NAME) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_playlist_name) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_BT_PAIRING_PIN) {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? "0000" : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_LIBRARY_SEARCH) {
-            tvKeyboardInput.setText(typedPassword.length() == 0
-                    ? getString(R.string.keyboard_library_search) : typedPassword);
-        } else if (keyboardPurpose == KEYBOARD_YOUTUBE_SEARCH) {
-            tvKeyboardInput.setText(typedPassword.length() == 0
-                    ? getString(R.string.youtube_search_title) : typedPassword);
-        } else {
-            tvKeyboardInput.setText(typedPassword.length() == 0 ? getString(R.string.keyboard_enter_password) : typedPassword);
+        if (len <= 0) return;
+        int idx = keyboardIndex;
+        tvKeyPprev.setText(keyboardDisplayChar(KEYBOARD_CHARS[(idx - 2 + len) % len]));
+        tvKeyPrev.setText(keyboardDisplayChar(KEYBOARD_CHARS[(idx - 1 + len) % len]));
+        tvKeyCurrent.setText(keyboardDisplayChar(KEYBOARD_CHARS[idx]));
+        tvKeyNext.setText(keyboardDisplayChar(KEYBOARD_CHARS[(idx + 1) % len]));
+        tvKeyNnext.setText(keyboardDisplayChar(KEYBOARD_CHARS[(idx + 2) % len]));
+        // Restyle current-key chrome only when the focused letter changes.
+        if (keyboardLastStyledIndex != idx) {
+            styleKeyboardCurrentKey();
+            keyboardLastStyledIndex = idx;
         }
-        boolean inputPlaceholder = typedPassword.length() == 0
-                && keyboardPurpose != KEYBOARD_WIFI;
-        if (keyboardPurpose == KEYBOARD_WIFI && isTargetWifiOpen) {
-            inputPlaceholder = false;
-        } else if (keyboardPurpose == KEYBOARD_WIFI) {
-            inputPlaceholder = typedPassword.length() == 0;
+    }
+
+    /**
+     * 2026-07-15 — Typed buffer / hint line; skip setText + style when unchanged.
+     * Layman: only rewrite the text field when a character actually changed.
+     */
+    private void updateKeyboardInputDisplay() {
+        if (tvKeyboardInput == null) return;
+        String display = keyboardInputDisplayText();
+        if (keyboardLastInputShown == null || !keyboardLastInputShown.equals(display)) {
+            tvKeyboardInput.setText(display);
+            keyboardLastInputShown = display;
         }
-        styleKeyboardInputField(inputPlaceholder);
-        styleKeyboardCurrentKey();
+        boolean inputPlaceholder = keyboardInputIsPlaceholder();
+        if (inputPlaceholder != keyboardLastPlaceholder) {
+            styleKeyboardInputField(inputPlaceholder);
+            keyboardLastPlaceholder = inputPlaceholder;
+        }
+    }
+
+    /** Placeholder when buffer empty (open Wi‑Fi has fixed label, not a hint). */
+    private boolean keyboardInputIsPlaceholder() {
+        if (keyboardPurpose == KEYBOARD_WIFI && isTargetWifiOpen) return false;
+        if (keyboardPurpose == KEYBOARD_WIFI) return typedPassword.length() == 0;
+        return typedPassword.length() == 0;
+    }
+
+    /** Visible string for the keyboard input row (hint or typed). */
+    private String keyboardInputDisplayText() {
+        if (keyboardPurpose == KEYBOARD_WIFI && isTargetWifiOpen) {
+            return getString(R.string.wifi_open_network);
+        }
+        if (typedPassword.length() > 0) {
+            return typedPassword;
+        }
+        if (keyboardPurpose == KEYBOARD_WIFI) {
+            return getString(R.string.keyboard_enter_wifi_password);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) {
+            return typedPassword;
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_SEARCH) {
+            return getString(getMusicFromEntryPoint
+                    ? R.string.get_music_type_search : R.string.soulseek_type_search);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_FIND) {
+            return getString(R.string.soulseek_find_user);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_MSG) {
+            return getString(R.string.soulseek_compose_message);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_CONTACT) {
+            return getString(R.string.soulseek_add_contact);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM_WALL) {
+            return getString(R.string.soulseek_room_wall_set);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM) {
+            return getString(R.string.soulseek_room_new_message);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_INTEREST) {
+            return getString(R.string.keyboard_soulseek_interest);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_PEER_NOTE) {
+            return getString(R.string.soulseek_user_note_hint);
+        }
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_ROOM_SEARCH) {
+            return getString(R.string.soulseek_chat_rooms_search_hint);
+        }
+        if (keyboardPurpose == KEYBOARD_PODCAST_SEARCH) {
+            return getString(R.string.podcasts_type_search);
+        }
+        if (keyboardPurpose == KEYBOARD_PLAYLIST_NAME) {
+            return getString(R.string.keyboard_playlist_name);
+        }
+        if (keyboardPurpose == KEYBOARD_BT_PAIRING_PIN) {
+            return "0000";
+        }
+        if (keyboardPurpose == KEYBOARD_LIBRARY_SEARCH) {
+            return getString(R.string.keyboard_library_search);
+        }
+        if (keyboardPurpose == KEYBOARD_YOUTUBE_SEARCH) {
+            return getString(R.string.youtube_search_title);
+        }
+        if (keyboardPurpose == KEYBOARD_DEEZER_SEARCH) {
+            return getString(R.string.deezer_type_search);
+        }
+        return getString(R.string.keyboard_enter_password);
     }
 
     private void handleKeyboardInput() {
         String selectedChar = KEYBOARD_CHARS[keyboardIndex];
+        // 2026-07-15 — Haptic already throttled (30ms) in clickFeedback — keep for key feel.
+        boolean isConn = selectedChar.equals("[CONN]");
         clickFeedback();
         if (selectedChar.equals("[DEL]")) {
             applySoulseekUsernameDel();
-        } else if (selectedChar.equals("[CONN]")) {
+            updateKeyboardInputDisplay();
+            return;
+        }
+        if (isConn) {
             handleKeyboardEnter();
-        } else if (selectedChar.equals("[SPC]")) {
+            return;
+        }
+        if (selectedChar.equals("[SPC]")) {
             typedPassword += " ";
             if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) soulseekUsernameAutoPhase = false;
-        } else {
-            typedPassword += selectedChar;
-            if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) soulseekUsernameAutoPhase = false;
-            if (selectedChar.length() == 1) {
-                char ch = selectedChar.charAt(0);
-                if (ch >= 'A' && ch <= 'Z') {
-                    keyboardIndex = KeyboardCharset.lowercaseIndexForChar(ch);
-                    keyboardPpLongDoCase = true;
-                }
+            updateKeyboardInputDisplay();
+            return;
+        }
+        typedPassword += selectedChar;
+        if (keyboardPurpose == KEYBOARD_SOULSEEK_USER) soulseekUsernameAutoPhase = false;
+        if (selectedChar.length() == 1) {
+            char ch = selectedChar.charAt(0);
+            if (ch >= 'A' && ch <= 'Z') {
+                keyboardIndex = KeyboardCharset.lowercaseIndexForChar(ch);
+                keyboardPpLongDoCase = true;
+                updateKeyboardKeyStripTexts();
             }
         }
-        updateKeyboardUI();
+        updateKeyboardInputDisplay();
     }
 
     /** One DEL/prevtrack clears prefilled auto username; per-char delete after user types. */
@@ -13904,13 +14315,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } else if (typedPassword.length() > 0) {
             typedPassword = typedPassword.substring(0, typedPassword.length() - 1);
         }
-        updateKeyboardUI();
+        // 2026-07-15 — Input-only paint (was full strip restyle every delete).
+        updateKeyboardInputDisplay();
     }
 
     private void handleKeyboardMediaSpace() {
         clickFeedback();
         typedPassword += " ";
-        updateKeyboardUI();
+        updateKeyboardInputDisplay();
     }
 
     private void handleKeyboardEnter() {
@@ -17177,9 +17589,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             centerMovePickHandled = false;
             centerQuickBarTapHandled = false;
             centerLongPressHandled = false;
+            centerSleepHoldHandled = false;
             centerKeyDownTime = System.currentTimeMillis();
             clockHandler.removeCallbacks(centerMovePickRunnable);
             clockHandler.removeCallbacks(centerLongPressRunnable);
+            clockHandler.removeCallbacks(centerSleepHoldRunnable);
             clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
             if (isKeyboardDelSelected()) {
                 clockHandler.postDelayed(keyboardDelRepeatRunnable, 80);
@@ -17187,6 +17601,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 clockHandler.postDelayed(centerMovePickRunnable, CENTER_MOVE_HOLD_MS);
             } else if (y2CenterOpensContextMenu()) {
                 clockHandler.postDelayed(centerLongPressRunnable, CENTER_LONG_PRESS_MS);
+            } else if (centerHoldShouldSleep(CENTER_SLEEP_HOLD_MS)) {
+                clockHandler.postDelayed(centerSleepHoldRunnable, CENTER_SLEEP_HOLD_MS);
             }
         }
         return true;
@@ -17208,8 +17624,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         long heldMs = centerKeyDownTime > 0 ? System.currentTimeMillis() - centerKeyDownTime : 0;
         clockHandler.removeCallbacks(centerMovePickRunnable);
         clockHandler.removeCallbacks(centerLongPressRunnable);
+        clockHandler.removeCallbacks(centerSleepHoldRunnable);
         clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
         centerKeyDownTime = 0;
+        if (centerSleepHoldHandled) {
+            centerSleepHoldHandled = false;
+            return true;
+        }
         if (fromContextMenu) {
             suppressListClickUntil = System.currentTimeMillis() + CONTEXT_MENU_CLICK_SUPPRESS_MS;
             if (centerQuickBarTapHandled) {
@@ -18419,9 +18840,48 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     // --- Inactivity auto-shutdown ---
 
-    /** Reset the inactivity timer — call on any user interaction. */
+    /**
+     * Reset the inactivity timer — call on any user interaction.
+     * 2026-07-15 — Also drives {@link InputPriorityGate} (background work waits 3s idle).
+     */
     private void resetInactivityTimer() {
         lastUserInteractionMs = System.currentTimeMillis();
+    }
+
+    /** True while keys/touch are active (within {@link InputPriorityGate#IDLE_MS}). */
+    private boolean isInputPriorityBusy() {
+        return InputPriorityGate.shouldDefer(System.currentTimeMillis(), lastUserInteractionMs);
+    }
+
+    /** Ms until background work may run (0 = now). */
+    private long msUntilInputIdle() {
+        return InputPriorityGate.msUntilAllowed(System.currentTimeMillis(), lastUserInteractionMs);
+    }
+
+    /**
+     * 2026-07-15 — Post work only after input has been idle; re-check when fired.
+     * Layman: heavy jobs wait until you stop touching the player for 3 seconds.
+     * Use for optional UI rebuilds / scans — never for PM popups or key handling.
+     */
+    private void postWhenInputIdle(final Handler handler, final Runnable work) {
+        if (handler == null || work == null) return;
+        final Runnable gate = new Runnable() {
+            @Override
+            public void run() {
+                long wait = msUntilInputIdle();
+                if (wait > 0L) {
+                    handler.postDelayed(this, wait);
+                    return;
+                }
+                work.run();
+            }
+        };
+        long wait = msUntilInputIdle();
+        if (wait > 0L) {
+            handler.postDelayed(gate, wait);
+        } else {
+            handler.post(gate);
+        }
     }
 
     /** Start the periodic inactivity check loop. */
@@ -21210,6 +21670,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         showThemedConfirm(title, message, confirmLabel, cancelLabel, onConfirm, onCancel);
     }
 
+    /** 2026-07-15 — Media suite RDS / thrash yields while typing (InputPriorityGate). */
+    public boolean mediaIsInputPriorityBusy() {
+        return isInputPriorityBusy();
+    }
+
+    public long mediaMsUntilInputIdle() {
+        return msUntilInputIdle();
+    }
+
     /** 2026-07-06 — Open stock MTK FMRadio with MODE_FM wheel handoff (experiment off). */
     private void launchMtkFmRadioApp() {
         com.solar.launcher.radio.fm.FmRadioLauncher.launch(
@@ -23913,9 +24382,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         NavidromeDownloader.downloadAlbum(MainActivity.this, ar, al,
                                 java.util.Collections.singletonList(navSong),
                                 new NavidromeDownloader.Callback() {
-                            @Override public void onProgress(int done, int total) {
+                            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                                 setBlockingLoading(true);
-                                setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                                String text = getString(R.string.navidrome_downloading, done, total);
+                                if (bytesRead > 0 && totalBytes > 0) {
+                                    int percent = (int) (bytesRead * 100 / totalBytes);
+                                    text = text + " " + percent + "%";
+                                }
+                                setLoadingOverlayText(text);
                             }
                             @Override public void onComplete(int saved) {
                                 setBlockingLoading(false);
@@ -23928,6 +24402,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                             }
                         });
+                    }
+                });
+                addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                    @Override public void run() {
+                        openAddNavidromeTrackToLocalPlaylistFlow(navSong);
                     }
                 });
             }
@@ -23960,9 +24439,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         PlexDownloader.downloadAlbum(MainActivity.this, ar, al,
                                 java.util.Collections.singletonList(plexSong),
                                 new PlexDownloader.Callback() {
-                            @Override public void onProgress(int done, int total) {
+                            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                                 setBlockingLoading(true);
-                                setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                                String text = getString(R.string.plex_downloading, done, total);
+                                if (bytesRead > 0 && totalBytes > 0) {
+                                    int percent = (int) (bytesRead * 100 / totalBytes);
+                                    text = text + " " + percent + "%";
+                                }
+                                setLoadingOverlayText(text);
                             }
                             @Override public void onComplete(int saved) {
                                 setBlockingLoading(false);
@@ -23975,6 +24459,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                             }
                         });
+                    }
+                });
+                addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                    @Override public void run() {
+                        openAddPlexTrackToLocalPlaylistFlow(plexSong);
                     }
                 });
             }
@@ -24007,9 +24496,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(MainActivity.this, ar, al,
                                 java.util.Collections.singletonList(jfSong),
                                 new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
-                            @Override public void onProgress(int done, int total) {
+                            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                                 setBlockingLoading(true);
-                                setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                                String text = getString(R.string.jellyfin_downloading, done, total);
+                                if (bytesRead > 0 && totalBytes > 0) {
+                                    int percent = (int) (bytesRead * 100 / totalBytes);
+                                    text = text + " " + percent + "%";
+                                }
+                                setLoadingOverlayText(text);
                             }
                             @Override public void onComplete(int saved) {
                                 setBlockingLoading(false);
@@ -24022,6 +24516,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                             }
                         });
+                    }
+                });
+                addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                    @Override public void run() {
+                        openAddJellyfinTrackToLocalPlaylistFlow(jfSong);
                     }
                 });
             }
@@ -25609,9 +26108,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             com.solar.launcher.navidrome.NavidromeAlbum album,
             java.util.List<com.solar.launcher.navidrome.NavidromeSong> songs) {
         NavidromeDownloader.downloadAlbum(this, ar, album, songs, new NavidromeDownloader.Callback() {
-            @Override public void onProgress(int done, int total) {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                 setBlockingLoading(true);
-                setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                String text = getString(R.string.navidrome_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
             }
             @Override public void onComplete(int saved) {
                 setBlockingLoading(false);
@@ -25630,9 +26134,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             com.solar.launcher.plex.PlexAlbum album,
             java.util.List<com.solar.launcher.plex.PlexSong> songs) {
         PlexDownloader.downloadAlbum(this, ar, album, songs, new PlexDownloader.Callback() {
-            @Override public void onProgress(int done, int total) {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                 setBlockingLoading(true);
-                setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                String text = getString(R.string.plex_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
             }
             @Override public void onComplete(int saved) {
                 setBlockingLoading(false);
@@ -25653,9 +26162,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(
                 this, ar, album, songs,
                 new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
-            @Override public void onProgress(int done, int total) {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                 setBlockingLoading(true);
-                setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                String text = getString(R.string.jellyfin_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
             }
             @Override public void onComplete(int saved) {
                 setBlockingLoading(false);
@@ -25861,9 +26375,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             ar.name = entry.navidromeAlbum.artist != null ? entry.navidromeAlbum.artist : "";
             NavidromeDownloader.downloadAlbum(this, ar, entry.navidromeAlbum, songs,
                     new NavidromeDownloader.Callback() {
-                @Override public void onProgress(int done, int total) {
+                @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                     setBlockingLoading(true);
-                    setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                    String text = getString(R.string.navidrome_downloading, done, total);
+                    if (bytesRead > 0 && totalBytes > 0) {
+                        int percent = (int) (bytesRead * 100 / totalBytes);
+                        text = text + " " + percent + "%";
+                    }
+                    setLoadingOverlayText(text);
                 }
                 @Override public void onComplete(int saved) {
                     setBlockingLoading(false);
@@ -25889,9 +26408,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             ar.name = entry.plexAlbum.artist != null ? entry.plexAlbum.artist : "";
             PlexDownloader.downloadAlbum(this, ar, entry.plexAlbum, songs,
                     new PlexDownloader.Callback() {
-                @Override public void onProgress(int done, int total) {
+                @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                     setBlockingLoading(true);
-                    setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                    String text = getString(R.string.plex_downloading, done, total);
+                    if (bytesRead > 0 && totalBytes > 0) {
+                        int percent = (int) (bytesRead * 100 / totalBytes);
+                        text = text + " " + percent + "%";
+                    }
+                    setLoadingOverlayText(text);
                 }
                 @Override public void onComplete(int saved) {
                     setBlockingLoading(false);
@@ -25919,9 +26443,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(
                     this, ar, entry.jellyfinAlbum, songs,
                     new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
-                @Override public void onProgress(int done, int total) {
+                @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                     setBlockingLoading(true);
-                    setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                    String text = getString(R.string.jellyfin_downloading, done, total);
+                    if (bytesRead > 0 && totalBytes > 0) {
+                        int percent = (int) (bytesRead * 100 / totalBytes);
+                        text = text + " " + percent + "%";
+                    }
+                    setLoadingOverlayText(text);
                 }
                 @Override public void onComplete(int saved) {
                     setBlockingLoading(false);
@@ -25962,9 +26491,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     NavidromeDownloader.downloadAlbum(MainActivity.this, ar, al,
                             java.util.Collections.singletonList(song),
                             new NavidromeDownloader.Callback() {
-                        @Override public void onProgress(int done, int total) {
+                        @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                             setBlockingLoading(true);
-                            setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                            String text = getString(R.string.navidrome_downloading, done, total);
+                            if (bytesRead > 0 && totalBytes > 0) {
+                                int percent = (int) (bytesRead * 100 / totalBytes);
+                                text = text + " " + percent + "%";
+                            }
+                            setLoadingOverlayText(text);
                         }
                         @Override public void onComplete(int saved) {
                             setBlockingLoading(false);
@@ -25977,6 +26511,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                         }
                     });
+                }
+            });
+            addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                @Override public void run() {
+                    openAddNavidromeTrackToLocalPlaylistFlow(song);
                 }
             });
             return;
@@ -26014,9 +26553,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     PlexDownloader.downloadAlbum(MainActivity.this, ar, al,
                             java.util.Collections.singletonList(song),
                             new PlexDownloader.Callback() {
-                        @Override public void onProgress(int done, int total) {
+                        @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                             setBlockingLoading(true);
-                            setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                            String text = getString(R.string.plex_downloading, done, total);
+                            if (bytesRead > 0 && totalBytes > 0) {
+                                int percent = (int) (bytesRead * 100 / totalBytes);
+                                text = text + " " + percent + "%";
+                            }
+                            setLoadingOverlayText(text);
                         }
                         @Override public void onComplete(int saved) {
                             setBlockingLoading(false);
@@ -26029,6 +26573,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                         }
                     });
+                }
+            });
+            addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                @Override public void run() {
+                    openAddPlexTrackToLocalPlaylistFlow(song);
                 }
             });
             return;
@@ -26058,9 +26607,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             MainActivity.this, ar, al,
                             java.util.Collections.singletonList(song),
                             new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
-                        @Override public void onProgress(int done, int total) {
+                        @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                             setBlockingLoading(true);
-                            setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                            String text = getString(R.string.jellyfin_downloading, done, total);
+                            if (bytesRead > 0 && totalBytes > 0) {
+                                int percent = (int) (bytesRead * 100 / totalBytes);
+                                text = text + " " + percent + "%";
+                            }
+                            setLoadingOverlayText(text);
                         }
                         @Override public void onComplete(int saved) {
                             setBlockingLoading(false);
@@ -26073,6 +26627,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
                         }
                     });
+                }
+            });
+            addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                @Override public void run() {
+                    openAddJellyfinTrackToLocalPlaylistFlow(song);
                 }
             });
             return;
@@ -26528,6 +27087,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (currentScreenState == STATE_PLAYER) {
+            // 2026-07-15 — FM Now Playing: Back lands on FM shell (Exit confirm lives there).
+            if (playback.isFmActive() && mediaSuite != null) {
+                mediaSuite.leaveFmNowPlayingToShell();
+                return;
+            }
             returnFromPlayer();
             return;
         }
@@ -26984,8 +27548,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             @Override
             public boolean onLongClick(View v) {
                 try {
-                    // Focus first so populateContextMenu reads the row under the finger.
-                    v.requestFocus();
+                    // 2026-07-15 — Require a deliberate hold on an already-focused row.
+                    // Was: long-press after first-tap focus-DOWN opened context on slightly long taps.
+                    // Layman: light the row first; hold again (or hold on the lit row) for options.
+                    if (v != null && !v.isFocused()) {
+                        v.requestFocus();
+                        try {
+                            v.cancelLongPress();
+                        } catch (Throwable ignored) {}
+                        return true; // consume: focus only, no menu
+                    }
                     if (themedContextMenu != null && themedContextMenu.isShowing()) {
                         return true;
                     }
@@ -29718,6 +30290,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return soulseekReachEnabled && soulseekEnabled;
     }
 
+    /**
+     * 2026-07-15 — Package hook for {@link SessionLifecycle}: keep Reach client for PM popups.
+     * Layman: Session leave code asks "is chat still allowed to run?"
+     */
+    boolean soulseekActiveForSession() {
+        return soulseekActive();
+    }
+
     /** Reach master on and Deezer service enabled. */
     private boolean deezerActive() {
         return soulseekReachEnabled && deezerEnabled;
@@ -31144,6 +31724,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private final Runnable reachDirectoryHeartbeatRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-15 — Directory presence is best-effort; never fight typing latency.
+            if (isInputPriorityBusy()) {
+                clockHandler.postDelayed(this, Math.max(5000L, msUntilInputIdle()));
+                return;
+            }
             if (ConnectivityHelper.isReachLoginOk() && soulseekActive()) {
                 SoulseekAccount account = SoulseekAccount.load(prefs, MainActivity.this);
                 ReachDirectoryClient.registerAsync(MainActivity.this, account.username);
@@ -37615,6 +38200,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 && requireInternet(R.string.soulseek_wifi_required)) {
             librarySearchReachActive = true;
             librarySearchReachSearching = true;
+            syncStatusBarSearchThrobber();
             ensureSoulseekClient().search(librarySearchQuery);
         }
         if (NavidromePrefs.isConfigured(prefs) && requireInternet(R.string.navidrome_wifi_required)) {
@@ -38507,6 +39093,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         saveCurrentPodcastResume();
         stopPodcastDownloadFully();
         finalizeReachStreamHandoff();
+        // 2026-07-15 — Kill YouTube Music IJK / video before playlist transfer starts.
+        stopCompetingAudioEngines();
         playback.clearQueue();
         try {
             if (mediaPlayer != null) mediaPlayer.reset();
@@ -39177,6 +39765,222 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 });
             }
         }, "DeezerLocalPl").start();
+    }
+
+    /**
+     * 2026-07-15 — Download-if-needed then open local playlist picker (Navidrome track).
+     * Layman: same as Deezer "Add to local playlist" — save offline first if missing.
+     * Reversal: remove helper + context menu call sites.
+     */
+    private void openAddNavidromeTrackToLocalPlaylistFlow(
+            final com.solar.launcher.navidrome.NavidromeSong song) {
+        if (song == null) return;
+        final File dest = localRemoteTrackFile("Navidrome", song.artist, song.album, song.title, song.suffix);
+        if (dest != null && dest.exists() && dest.length() > 1024L) {
+            openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+            return;
+        }
+        if (!requireInternet(R.string.navidrome_wifi_required)) return;
+        Toast.makeText(this, getString(R.string.get_music_loading_container), Toast.LENGTH_SHORT).show();
+        com.solar.launcher.navidrome.NavidromeAlbum al = new com.solar.launcher.navidrome.NavidromeAlbum();
+        al.name = song.album != null && song.album.length() > 0 ? song.album : song.title;
+        al.artist = song.artist != null ? song.artist : "";
+        com.solar.launcher.navidrome.NavidromeArtist ar = new com.solar.launcher.navidrome.NavidromeArtist();
+        ar.name = al.artist;
+        NavidromeDownloader.downloadAlbum(this, ar, al,
+                java.util.Collections.singletonList(song),
+                new NavidromeDownloader.Callback() {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
+                setBlockingLoading(true);
+                String text = getString(R.string.navidrome_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                if (dest != null && dest.exists() && dest.length() > 1024L) {
+                    openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.navidrome_download_done, saved),
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * 2026-07-15 — Download-if-needed then open local playlist picker (Plex track).
+     * Reversal: remove helper + context menu call sites.
+     */
+    private void openAddPlexTrackToLocalPlaylistFlow(final com.solar.launcher.plex.PlexSong song) {
+        if (song == null) return;
+        final File dest = localRemoteTrackFile("Plex", song.artist, song.album, song.title, song.suffix);
+        if (dest != null && dest.exists() && dest.length() > 1024L) {
+            openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+            return;
+        }
+        if (!requireInternet(R.string.plex_wifi_required)) return;
+        Toast.makeText(this, getString(R.string.get_music_loading_container), Toast.LENGTH_SHORT).show();
+        com.solar.launcher.plex.PlexAlbum al = new com.solar.launcher.plex.PlexAlbum();
+        al.name = song.album != null && song.album.length() > 0 ? song.album : song.title;
+        al.artist = song.artist != null ? song.artist : "";
+        com.solar.launcher.plex.PlexArtist ar = new com.solar.launcher.plex.PlexArtist();
+        ar.name = al.artist;
+        PlexDownloader.downloadAlbum(this, ar, al,
+                java.util.Collections.singletonList(song),
+                new PlexDownloader.Callback() {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
+                setBlockingLoading(true);
+                String text = getString(R.string.plex_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                if (dest != null && dest.exists() && dest.length() > 1024L) {
+                    openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.plex_download_done, saved),
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * 2026-07-15 — Download-if-needed then open local playlist picker (Jellyfin track).
+     * Reversal: remove helper + context menu call sites.
+     */
+    private void openAddJellyfinTrackToLocalPlaylistFlow(
+            final com.solar.launcher.jellyfin.JellyfinSong song) {
+        if (song == null) return;
+        final File dest = localRemoteTrackFile("Jellyfin", song.artist, song.album, song.title, song.suffix);
+        if (dest != null && dest.exists() && dest.length() > 1024L) {
+            openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+            return;
+        }
+        if (!requireInternet(R.string.jellyfin_wifi_required)) return;
+        Toast.makeText(this, getString(R.string.get_music_loading_container), Toast.LENGTH_SHORT).show();
+        com.solar.launcher.jellyfin.JellyfinAlbum al = new com.solar.launcher.jellyfin.JellyfinAlbum();
+        al.name = song.album != null && song.album.length() > 0 ? song.album : song.title;
+        al.artist = song.artist != null ? song.artist : "";
+        com.solar.launcher.jellyfin.JellyfinArtist ar = new com.solar.launcher.jellyfin.JellyfinArtist();
+        ar.name = al.artist;
+        com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(this, ar, al,
+                java.util.Collections.singletonList(song),
+                new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
+            @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
+                setBlockingLoading(true);
+                String text = getString(R.string.jellyfin_downloading, done, total);
+                if (bytesRead > 0 && totalBytes > 0) {
+                    int percent = (int) (bytesRead * 100 / totalBytes);
+                    text = text + " " + percent + "%";
+                }
+                setLoadingOverlayText(text);
+            }
+            @Override public void onComplete(int saved) {
+                setBlockingLoading(false);
+                if (dest != null && dest.exists() && dest.length() > 1024L) {
+                    openAddToPlaylistFlow(java.util.Collections.singletonList(dest));
+                } else {
+                    Toast.makeText(MainActivity.this,
+                            getString(R.string.jellyfin_download_done, saved),
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this, message, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * 2026-07-15 — Save audio-if-needed then open local playlist picker (YouTube).
+     * Layman: uses the audio file under Music/YouTube so playlist rows stay music tracks.
+     * Reversal: remove helper + context menu call sites.
+     */
+    private void openAddYouTubeTrackToLocalPlaylistFlow(final YouTubeVideo video) {
+        if (video == null || video.id == null || video.id.isEmpty()) return;
+        File existing = YouTubeSavePaths.findSavedAudio(this, video);
+        if (existing != null && existing.length() > 1024L) {
+            openAddToPlaylistFlow(java.util.Collections.singletonList(existing));
+            return;
+        }
+        if (!requireInternet(R.string.toast_internet_required)) return;
+        Toast.makeText(this, getString(R.string.get_music_loading_container), Toast.LENGTH_SHORT).show();
+        setBlockingLoading(true);
+        setLoadingOverlayText(getString(R.string.youtube_save_resolving));
+        YouTubeDownloader.saveAudio(this, video, new YouTubeDownloader.Callback() {
+            @Override
+            public void onProgress(String phase, int percent, long doneBytes, long totalBytes) {
+                setBlockingLoading(true);
+                if ("resolve".equals(phase)) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_resolving));
+                    return;
+                }
+                if (percent >= 0) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_pct, percent));
+                } else if (doneBytes > 0L) {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_bytes,
+                            formatYoutubeSaveBytes(doneBytes)));
+                } else {
+                    setLoadingOverlayText(getString(R.string.youtube_save_progress_pct, 0));
+                }
+            }
+            @Override public void onComplete(File savedFile) {
+                setBlockingLoading(false);
+                if (savedFile != null && savedFile.exists() && savedFile.length() > 1024L) {
+                    openAddToPlaylistFlow(java.util.Collections.singletonList(savedFile));
+                } else {
+                    Toast.makeText(MainActivity.this, R.string.youtube_save_done, Toast.LENGTH_SHORT).show();
+                }
+            }
+            @Override public void onError(String message) {
+                setBlockingLoading(false);
+                Toast.makeText(MainActivity.this,
+                        getString(R.string.youtube_save_failed,
+                                message != null ? message : "error"),
+                        Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
+    /**
+     * Expected on-disk path for a single Navidrome/Plex/Jellyfin track (mirrors *Downloader).
+     * Layman: Artist/Album/Title.ext under the service folder on media storage.
+     */
+    private File localRemoteTrackFile(String serviceRoot, String artist, String album,
+            String title, String suffix) {
+        if (serviceRoot == null || serviceRoot.isEmpty()) return null;
+        String artistDir = safeRemoteMediaName(artist);
+        String albumName = album != null && album.length() > 0 ? album : title;
+        String albumDir = safeRemoteMediaName(albumName);
+        String ext = suffix != null && suffix.length() > 0 ? suffix : "mp3";
+        File dir = new File(new File(new File(DeviceFeatures.getNewMediaRoot(this), serviceRoot),
+                artistDir), albumDir);
+        return new File(dir, safeRemoteMediaName(title) + "." + ext.toLowerCase(java.util.Locale.US));
+    }
+
+    private static String safeRemoteMediaName(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return "Unknown";
+        return raw.trim().replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
     private void openAddToDeezerPlaylistFlow(final DeezerResult track) {
@@ -40048,6 +40852,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void returnFromPlayer() {
+        // 2026-07-15 — FM playback: leave NP to FM shell; Exit confirm powers down hardware.
+        if (playback.isFmActive() && mediaSuite != null) {
+            mediaSuite.leaveFmNowPlayingToShell();
+            return;
+        }
         // Cancel in-flight NP↔Flow crossfade — Back must not wait on a stuck animator.
         com.solar.launcher.ui.ScreenTransition.cancel();
         if (layoutFlowMode != null) layoutFlowMode.animate().cancel();
@@ -40970,6 +41779,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     startYouTubeSave(target, true);
                 }
             });
+            addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+                @Override public void run() {
+                    openAddYouTubeTrackToLocalPlaylistFlow(target);
+                }
+            });
             java.io.File savedAudio = YouTubeSavePaths.findSavedAudio(this, target);
             if (savedAudio != null && savedAudio.length() > 1024L) {
                 addContextAction(getString(R.string.youtube_ctx_play_saved), new Runnable() {
@@ -40990,6 +41804,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             @Override public void run() {
                 if (!requireInternet(R.string.toast_internet_required)) return;
                 startYouTubeSave(target, true);
+            }
+        });
+        addContextAction(getString(R.string.context_add_to_local_playlist), new Runnable() {
+            @Override public void run() {
+                openAddYouTubeTrackToLocalPlaylistFlow(target);
             }
         });
         java.io.File savedVideo = YouTubeSavePaths.findSavedVideo(this, target);
@@ -41107,6 +41926,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         podcastShows.clear();
         cancelPodcastEpisodeProbe();
+        podcastSearchLoading = true;
+        syncStatusBarSearchThrobber();
         buildPodcastShowsShell();
         final int gen = podcastUiGen;
         final String searchTerm = query.trim();
@@ -41136,6 +41957,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             @Override
                             public void run() {
                                 if (gen != podcastUiGen || !isPodcastUiActive()) return;
+                                podcastSearchLoading = false;
+                                syncStatusBarSearchThrobber();
                                 removePodcastProbeStatusRow();
                                 Toast.makeText(MainActivity.this, getString(R.string.podcasts_no_results),
                                         Toast.LENGTH_SHORT).show();
@@ -41152,8 +41975,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 @Override
                                 public void run() {
                                     if (gen != podcastUiGen || !isPodcastUiActive()) return;
+                                    final String focusKey = captureBrowserFocusKey();
+                                    final int scrollY = scrollViewBrowser instanceof android.widget.ScrollView
+                                            ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
                                     podcastShows.add(podcast);
                                     appendPodcastShowRow(podcast);
+                                    restoreBrowserFocusKey(focusKey, scrollY);
                                 }
                             });
                         }
@@ -41164,11 +41991,17 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 @Override
                                 public void run() {
                                     if (gen != podcastUiGen || !isPodcastUiActive()) return;
+                                    podcastSearchLoading = false;
+                                    syncStatusBarSearchThrobber();
                                     removePodcastProbeStatusRow();
+                                    final String focusKey = captureBrowserFocusKey();
+                                    final int scrollY = scrollViewBrowser instanceof android.widget.ScrollView
+                                            ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
                                     for (OpenRssClient.Podcast dp : deezerOnly) {
                                         podcastShows.add(dp);
                                         appendPodcastShowRow(dp);
                                     }
+                                    restoreBrowserFocusKey(focusKey, scrollY);
                                     int hidden = totalCount - playableCount;
                                     if (hidden > 0) {
                                         Toast.makeText(MainActivity.this,
@@ -41188,6 +42021,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     runOnUiThreadSafe(new Runnable() {
                         @Override
                         public void run() {
+                            podcastSearchLoading = false;
+                            syncStatusBarSearchThrobber();
                             if (gen != podcastUiGen || !isPodcastUiActive()) return;
                             removePodcastProbeStatusRow();
                             Toast.makeText(MainActivity.this, getString(R.string.podcasts_search_failed),
@@ -41695,6 +42530,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return !isFinishing() && currentScreenState == STATE_SOULSEEK;
     }
 
+    /**
+     * 2026-07-15 — True only while the user is staring at Reach/Get Music search results.
+     * Layman: if you left that list, we ignore new result spam.
+     * Technical: STATE_SOULSEEK + RESULTS mode (or library search Reach branch).
+     */
+    private boolean isSoulseekSearchResultsScreenActive() {
+        if (isFinishing()) return false;
+        if (librarySearchReachActive && currentBrowserMode == BROWSER_LIBRARY_SEARCH
+                && currentScreenState == STATE_BROWSER) {
+            return true;
+        }
+        return currentScreenState == STATE_SOULSEEK && soulseekUiMode == SOULSEEK_UI_RESULTS;
+    }
+
     private SoulseekClient ensureSoulseekClient() {
         if (!soulseekActive()) return null;
         if (soulseekClient != null && soulseekClient.isShutDown()) {
@@ -41733,6 +42582,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 return;
             }
         }
+        // 2026-07-15 — Full-library share walk is expensive; never start under active input.
+        if (isInputPriorityBusy()) {
+            soulseekPolicyDebounceHandler.postDelayed(soulseekPolicyDebounceRunnable,
+                    Math.max(500L, msUntilInputIdle()));
+            return;
+        }
         soulseekShareRescanPending = false;
         soulseekShareScanRunning = true;
         final SoulseekAccount account = SoulseekAccount.load(prefs, MainActivity.this);
@@ -41743,10 +42598,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
         }
         final java.util.Map<String, Integer> durations = shareDurationCache();
-        new Thread(new Runnable() {
+        Thread shareScan = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
+                    // Background disk walk — stay below UI/input priority.
+                    try {
+                        android.os.Process.setThreadPriority(
+                                android.os.Process.THREAD_PRIORITY_BACKGROUND);
+                    } catch (Throwable ignored) {}
                     soulseekShareIndex.scanPodcastRoots(account.username, rootFolder,
                             PodcastLibrary.getPodcastRootsSafe(),
                             durations, musicFiles);
@@ -41777,7 +42637,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     }
                 }
             }
-        }, "ShareScan").start();
+        }, "ShareScan");
+        shareScan.start();
     }
 
     /** ponytail: debug-only breakdown of why screen sleep may be blocked. */
@@ -41973,6 +42834,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (SolarDeveloperAccounts.isDiagHandle(fromUser)) {
                 return;
             }
+            // Developer diagnostic command/ack — process pull if needed; do not show in chat.
+            if (SolarDeveloperAccounts.isDeveloper(fromUser)
+                    && SolarDeveloperAccounts.isAutoDiagnosticText(text)) {
+                if (SolarDeveloperAccounts.isDiagRemotePullCommand(text)) {
+                    SolarDiagFeatureLog.event("diag", "remote_pull from=" + fromUser);
+                    SolarDiagnosticReporter.shipOnRemoteDiagCommand(
+                            MainActivity.this, prefs, fromUser, null);
+                }
+                return;
+            }
+            if (SolarDeveloperAccounts.isAutoDiagnosticText(text)) {
+                return;
+            }
             SoulseekAccount acct = SoulseekAccount.load(prefs, MainActivity.this);
             final boolean persist = ReachIntroMessage.shouldPersistForReachClient(
                     text, fromUser, acct.username, prefs);
@@ -41985,18 +42859,27 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 public void run() {
                     if (!persist) return;
                     if (ReachIntroMessage.isIntro(text)) return;
+                    // 2026-07-15 — PMs always use context-menu popup (Reply / Open / Dismiss / …).
+                    // Layman: a chat bubble over whatever you were doing — not a silent list refresh.
+                    // Exception: already inside that peer's thread → just append the line.
                     boolean downloadActive = soulseekUiMode == SOULSEEK_UI_DOWNLOAD
                             && soulseekActiveDownload != null;
-                    boolean samePeer = downloadActive && fromUser != null
+                    boolean samePeerDownload = downloadActive && fromUser != null
                             && fromUser.equalsIgnoreCase(soulseekActiveDownload.username);
-                    if (samePeer) {
-                        showReachDownloadMessageInterstitial(fromUser, text);
-                    } else if (SettingsScreens.SOULSEEK_MESSAGES_THREAD.equals(settingsSubScreenKey)
+                    boolean inThreadWithPeer =
+                            SettingsScreens.SOULSEEK_MESSAGES_THREAD.equals(settingsSubScreenKey)
                             && fromUser != null
-                            && fromUser.equalsIgnoreCase(soulseekMessagePeer)) {
+                            && fromUser.equalsIgnoreCase(soulseekMessagePeer);
+                    if (inThreadWithPeer) {
                         refreshConversationThreadList();
-                    } else if (SettingsScreens.SOULSEEK_MESSAGES.equals(settingsSubScreenKey)) {
+                        return;
+                    }
+                    if (SettingsScreens.SOULSEEK_MESSAGES.equals(settingsSubScreenKey)) {
                         refreshSoulseekMessagesListIfVisible();
+                    }
+                    if (samePeerDownload) {
+                        // Download-active peer: same modal family + Retry action.
+                        showReachDownloadMessageInterstitial(fromUser, text);
                     } else {
                         showSoulseekPmNotification(fromUser, text);
                     }
@@ -42235,6 +43118,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         public void onSearchResult(final SoulseekClient.Result result) {
             if (soulseekClient != null && soulseekClient.isPeerDenied(result.username)) return;
             if (soulseekHideHighBitrate && result.isOverBitrateThreshold()) return;
+            // 2026-07-15 — Drop late packets when user left results (Hallmark: no off-screen work).
+            // Layman: no country lookups or list rebuilds if you're not looking at search.
             if (librarySearchReachActive && currentBrowserMode == BROWSER_LIBRARY_SEARCH) {
                 String label = formatLibrarySearchReachLabel(result);
                 synchronized (librarySearchReachRows) {
@@ -42246,13 +43131,25 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
                 runOnUiThreadSafe(new Runnable() {
                     @Override public void run() {
-                        if (librarySearchReachActive && currentBrowserMode == BROWSER_LIBRARY_SEARCH) {
-                            buildLibrarySearchUI();
+                        if (!librarySearchReachActive || currentBrowserMode != BROWSER_LIBRARY_SEARCH) {
+                            return;
                         }
+                        // 2026-07-15 — Don't rebuild library search under every Reach packet while typing.
+                        if (isInputPriorityBusy()) {
+                            soulseekUiHandler.removeCallbacks(librarySearchReachIdleRebuild);
+                            soulseekUiHandler.postDelayed(librarySearchReachIdleRebuild,
+                                    Math.max(200L, msUntilInputIdle()));
+                            return;
+                        }
+                        buildLibrarySearchUI();
                     }
                 });
                 return;
             }
+            if (!isSoulseekSearchResultsScreenActive()) {
+                return;
+            }
+            // Peer country only while results are on screen (username “polling”).
             watchSoulseekPeer(result.username);
             synchronized (soulseekPendingUi) {
                 soulseekPendingUi.add(result);
@@ -42272,6 +43169,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     if (librarySearchReachActive && currentBrowserMode == BROWSER_LIBRARY_SEARCH) {
                         librarySearchReachSearching = false;
                         librarySearchReachActive = false;
+                        syncStatusBarSearchThrobber();
                         buildLibrarySearchUI();
                         return;
                     }
@@ -42327,6 +43225,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 @Override
                                 public void run() {
                                     soulseekSearchInProgress = false;
+                                    syncStatusBarSearchThrobber();
                                     soulseekResults.clear();
                                     soulseekResultKeys.clear();
                                     for (SoulseekClient.Result r : toSort) {
@@ -42381,7 +43280,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 public void run() {
                     if (soulseekActiveDownload == null) return;
                     long now = android.os.SystemClock.uptimeMillis();
-                    if (now - soulseekLastProgressUiMs < 150 && total > 0 && done < total) return;
+                    // 2026-07-15 — Coarser progress UI while user is interacting off download/NP.
+                    long minGap = 150L;
+                    if (isInputPriorityBusy()
+                            && soulseekUiMode != SOULSEEK_UI_DOWNLOAD
+                            && currentScreenState != STATE_PLAYER) {
+                        minGap = 800L;
+                    }
+                    if (now - soulseekLastProgressUiMs < minGap && total > 0 && done < total) return;
                     soulseekLastProgressUiMs = now;
                     if (done > 0) {
                         soulseekDownloadStalled = false;
@@ -42470,6 +43376,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private final Runnable soulseekUiFlushRunnable = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-15 — Batching search rows rebuilds the list; wait out typing.
+            if (isInputPriorityBusy()) {
+                soulseekUiHandler.postDelayed(this, Math.max(200L, msUntilInputIdle()));
+                return;
+            }
             flushSoulseekResultsUi(false);
         }
     };
@@ -42676,21 +43587,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** Rebuild visible result rows from ranked soulseekResults — not arrival order. */
     private void refreshSoulseekVisibleResults(boolean fullRebuild) {
         if (!isSoulseekUiActive() || soulseekUiMode != SOULSEEK_UI_RESULTS) return;
-        // #region agent log
-        View focBefore = getCurrentFocus();
-        int focusedIdxBefore = -1;
-        if (containerBrowserItems != null && focBefore != null) {
-            for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
-                View row = containerBrowserItems.getChildAt(i);
-                if (row == focBefore || isViewDescendantOf(focBefore, row)) {
-                    focusedIdxBefore = i;
-                    break;
-                }
-            }
-        }
-        // #endregion
+        // 2026-07-15 — Keep wheel focus while results stream in.
+        final String focusKey = captureBrowserFocusKey();
+        final int scrollBefore = scrollViewBrowser instanceof android.widget.ScrollView
+                ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
         if (!fullRebuild) {
+            // Append only — never requestFocus (keeps A5 wheel / face L/R responsive).
             appendSoulseekResultRowsInner();
+            syncStatusBarSearchThrobber();
             return;
         }
         java.util.ArrayList<View> toRemove = new java.util.ArrayList<View>();
@@ -42702,21 +43606,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         for (View v : toRemove) containerBrowserItems.removeView(v);
         soulseekResultUiCount = 0;
         appendSoulseekResultRowsInner();
-        // #region agent log
-        try {
-            View focAfter = getCurrentFocus();
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("runId", "pre-fix");
-            d.put("fullRebuild", true);
-            d.put("removed", toRemove.size());
-            d.put("uiCount", soulseekResultUiCount);
-            d.put("focusIdxBefore", focusedIdxBefore);
-            d.put("focusLost", focBefore != null && (focAfter == null || focAfter != focBefore));
-            d.put("searching", soulseekSearchInProgress);
-            Debug701426Log.log(this, "MainActivity.refreshSoulseekVisibleResults",
-                    "Soulseek full rebuild stripped rows", "A", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        restoreBrowserFocusKey(focusKey, scrollBefore);
+        syncStatusBarSearchThrobber();
     }
 
     private int soulseekResultInsertIndex() {
@@ -42869,6 +43760,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         getMusicSearchGen++;
         final int gen = getMusicSearchGen;
         getMusicSearchInProgress = true;
+        syncStatusBarSearchThrobber();
         getMusicDeezerDone = false;
         getMusicDeezerTracksReady = false;
         getMusicDeezerArtistsFetched = false;
@@ -43092,6 +43984,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (gen != getMusicSearchGen) return;
         getMusicSearchInProgress = false;
         soulseekSearchInProgress = false;
+        syncStatusBarSearchThrobber();
         getMusicTopLevelEntries.clear();
         java.util.List<MusicSearchEntry> mergedReach = new java.util.ArrayList<MusicSearchEntry>(getMusicEntries);
         mergedReach.addAll(getMusicNavidromeEntries);
@@ -43171,46 +44064,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void refreshGetMusicResultsVisible(boolean fullRebuild) {
         if (!isSoulseekUiActive() || soulseekUiMode != SOULSEEK_UI_RESULTS || !isGetMusicUnifiedUi()) return;
-        // #region agent log
-        View focBefore = getCurrentFocus();
-        int scrollBefore = scrollViewBrowser instanceof android.widget.ScrollView
+        // 2026-07-15 — Preserve focus/scroll while Get Music results stream in.
+        final String focusKey = captureBrowserFocusKey();
+        final int scrollBefore = scrollViewBrowser instanceof android.widget.ScrollView
                 ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
-        int focusedIdxBefore = -1;
-        String focusedKeyBefore = "";
-        if (containerBrowserItems != null && focBefore != null) {
-            for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
-                View row = containerBrowserItems.getChildAt(i);
-                if (row == focBefore || isViewDescendantOf(focBefore, row)) {
-                    focusedIdxBefore = i;
-                    Object tag = row.getTag();
-                    if (tag instanceof MusicSearchEntry) {
-                        focusedKeyBefore = musicSearchEntryDebugKey((MusicSearchEntry) tag);
-                    } else if (tag instanceof SoulseekClient.Result) {
-                        focusedKeyBefore = soulseekResultKey((SoulseekClient.Result) tag);
-                    } else if (row instanceof android.widget.TextView) {
-                        focusedKeyBefore = String.valueOf(((android.widget.TextView) row).getText());
-                    }
-                    break;
-                }
-            }
-        }
-        // #endregion
         if (!fullRebuild) {
+            // Append only — do not restore focus (user may be wheeling through rows).
             appendGetMusicResultRowsInner();
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("runId", "pre-fix");
-                d.put("fullRebuild", false);
-                d.put("uiCount", getMusicEntryUiCount);
-                d.put("focusIdxBefore", focusedIdxBefore);
-                d.put("focusKeyBefore", focusedKeyBefore);
-                d.put("scrollY", scrollBefore);
-                d.put("searching", getMusicSearchInProgress);
-                Debug701426Log.log(this, "MainActivity.refreshGetMusicResultsVisible",
-                        "append-only refresh", "A,E", d);
-            } catch (Exception ignored) {}
-            // #endregion
+            syncStatusBarSearchThrobber();
             return;
         }
         java.util.ArrayList<View> toRemove = new java.util.ArrayList<View>();
@@ -43221,46 +44082,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         for (View v : toRemove) containerBrowserItems.removeView(v);
         getMusicEntryUiCount = 0;
         appendGetMusicResultRowsInner();
-        // #region agent log
-        try {
-            View focAfter = getCurrentFocus();
-            int focusedIdxAfter = -1;
-            String focusedKeyAfter = "";
-            if (containerBrowserItems != null && focAfter != null) {
-                for (int i = 0; i < containerBrowserItems.getChildCount(); i++) {
-                    View row = containerBrowserItems.getChildAt(i);
-                    if (row == focAfter || isViewDescendantOf(focAfter, row)) {
-                        focusedIdxAfter = i;
-                        Object tag = row.getTag();
-                        if (tag instanceof MusicSearchEntry) {
-                            focusedKeyAfter = musicSearchEntryDebugKey((MusicSearchEntry) tag);
-                        } else if (row instanceof android.widget.TextView) {
-                            focusedKeyAfter = String.valueOf(((android.widget.TextView) row).getText());
-                        }
-                        break;
-                    }
-                }
-            }
-            int scrollAfter = scrollViewBrowser instanceof android.widget.ScrollView
-                    ? ((android.widget.ScrollView) scrollViewBrowser).getScrollY() : -1;
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("runId", "pre-fix");
-            d.put("fullRebuild", true);
-            d.put("removed", toRemove.size());
-            d.put("uiCount", getMusicEntryUiCount);
-            d.put("children", containerBrowserItems != null ? containerBrowserItems.getChildCount() : -1);
-            d.put("focusIdxBefore", focusedIdxBefore);
-            d.put("focusKeyBefore", focusedKeyBefore);
-            d.put("focusIdxAfter", focusedIdxAfter);
-            d.put("focusKeyAfter", focusedKeyAfter);
-            d.put("focusLost", focBefore != null && (focAfter == null || focAfter != focBefore));
-            d.put("scrollYBefore", scrollBefore);
-            d.put("scrollYAfter", scrollAfter);
-            d.put("searching", getMusicSearchInProgress);
-            Debug701426Log.log(this, "MainActivity.refreshGetMusicResultsVisible",
-                    "full rebuild stripped result rows", "A,B", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        restoreBrowserFocusKey(focusKey, scrollBefore);
+        syncStatusBarSearchThrobber();
     }
 
     /** 2026-07-15 — Stable-ish debug id for a Get Music row (not for UI). */
@@ -43834,6 +44657,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         soulseekLastQuery = query.trim();
         SoulseekSearchHistory.remember(prefs, soulseekLastQuery);
         soulseekSearchInProgress = true;
+        syncStatusBarSearchThrobber();
         soulseekResultsVisibleCount = SOULSEEK_PAGE_SIZE;
         soulseekResults.clear();
         soulseekResultKeys.clear();
@@ -45430,6 +46254,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             reachGrowingSeekMs = seekMs;
             reachGrowingPreparedBytes = growingFile.length();
             if (seekMs <= 0) reachGrowingFinalReprepareDone = false;
+            // 2026-07-15 — Growing stream uses MediaPlayer only; stop music IJK (YT audio) first.
+            // Was: mediaPlayer.reset only → YouTube Music kept playing through musicIjkPlayer.
+            releaseMusicIjkPlayer();
+            if (mediaSuite != null) mediaSuite.stopVideoAndYoutubeStream();
             int previousSessionId = mediaPlayer != null ? mediaPlayer.getAudioSessionId() : 0;
             if (mediaPlayer == null) mediaPlayer = new MediaPlayer();
             else mediaPlayer.reset();
@@ -45604,11 +46432,26 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 && isSoulseekKeyboardPurpose();
     }
 
+    /**
+     * 2026-07-15 — Leave Reach search UI without killing the chat connection.
+     * Layman: stop drawing results and stop the network search; still hear new PMs.
+     * Technical: cancel FileSearch + flush queue + gen-bump; client stays for SocialListener.
+     */
     void pauseSoulseekUiOnly() {
         soulseekUiHandler.removeCallbacks(soulseekUiFlushRunnable);
         stopSoulseekDownloadUiRunnables();
         soulseekUiFlushScheduled = false;
+        soulseekSearchInProgress = false;
+        getMusicSearchInProgress = false;
+        getMusicSearchGen++;
+        getMusicReachDone = true;
+        synchronized (soulseekPendingUi) {
+            soulseekPendingUi.clear();
+        }
         if (soulseekClient != null) soulseekClient.cancelSearch();
+        // Library Reach side-search ends when user left that browser mode.
+        librarySearchReachSearching = false;
+        librarySearchReachActive = false;
     }
 
     boolean shouldDeferSoulseekOffScreenCleanup() {
@@ -47225,6 +48068,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         saveCurrentPodcastResume();
         stopPodcastDownloadFully();
         finalizeReachStreamHandoff();
+        // 2026-07-15 — Local song must silence YouTube Music IJK / video before prepare.
+        stopCompetingAudioEngines();
         captureFlowPlaybackOrigin(playlist, startIndex, activePlaylistName);
         playback.activateMusic(playlist, startIndex, isShuffleMode);
         playback.setMusicActivePlaylistName(activePlaylistName);
@@ -47269,6 +48114,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         saveCurrentPodcastResume();
         stopPodcastDownloadFully();
         finalizeReachStreamHandoff();
+        stopCompetingAudioEngines();
         captureFlowPlaybackOrigin(playlist, startIndex, activePlaylistName);
         playback.activateMusic(playlist, startIndex, isShuffleMode);
         playback.setMusicActivePlaylistName(activePlaylistName);
@@ -47314,14 +48160,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void prepareMusicTrack(int index) {
         PlayQueue.QueueItem navItem = playback.currentItem();
         if (navItem != null && navItem.kind == PlayQueue.ItemKind.NAVIDROME_STREAM) {
+            // 2026-07-15 — Stream URL path uses MediaPlayer; stop YouTube Music IJK first.
+            stopCompetingAudioEngines();
             prepareNavidromeStream(navItem);
             return;
         }
         if (navItem != null && navItem.kind == PlayQueue.ItemKind.PLEX_STREAM) {
+            stopCompetingAudioEngines();
             preparePlexStream(navItem);
             return;
         }
         if (navItem != null && navItem.kind == PlayQueue.ItemKind.JELLYFIN_STREAM) {
+            stopCompetingAudioEngines();
             prepareJellyfinStream(navItem);
             return;
         }
@@ -47347,6 +48197,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         playback.setMusicIndex(index);
         final File track = playback.musicPlaylist().get(index);
+        // 2026-07-15 — Drop prior music IJK when this track will use MediaPlayer (not IJK).
+        // tryPrepareMusicViaIjk rebuilds a fresh session when opus/YouTube/software-EQ needs IJK.
+        com.solar.launcher.eq.SolarEqController.get().ensureLoaded(this);
+        if (!prefersIjkLocalDecode(track)
+                && !com.solar.launcher.eq.SolarEqController.get().needsSoftwareEq()) {
+            releaseMusicIjkPlayer();
+            if (mediaSuite != null) mediaSuite.stopVideoAndYoutubeStream();
+        }
         audiobookPendingResumeMs = com.solar.launcher.audiobook.AudiobookBookmarks.resumeMs(this, track);
         // 2026-07-15 — Refresh chapter list when preparing an audiobook file.
         refreshAudiobookChaptersForTrack(track);
@@ -48008,19 +48866,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (playback.isRadioActive() && mediaSuite != null) {
                 if (playback.isFmActive()) {
                     mediaSuite.ensureFmRdsPolling();
-                } else {
-                    mediaSuite.stopFmRdsPolling();
+                    // 2026-07-15 — FM: light bind (skips unchanged text/art). Heavy status icons
+                    // only when not mid-wheel (status indicators rebuild drawables).
+                    mediaSuite.bindRadioNowPlayingUi();
+                    if (mediaSuite.radioScrubMode
+                            == com.solar.launcher.radio.RadioScrubMode.TUNE_FM) {
+                        syncFmTuneScrubUi();
+                    } else {
+                        // Track count N/M rare for pure FM; skip status icon thrash on every call.
+                        updateMusicTrackCountUi();
+                    }
+                    return;
                 }
+                mediaSuite.stopFmRdsPolling();
                 mediaSuite.bindRadioNowPlayingUi();
                 updateMusicTrackCountUi();
                 updatePlayerStatusIndicators();
                 updatePlaybackStatusIcon();
-                // 2026-07-06 — any NP refresh must re-show FM tune knob if wheel mode is armed.
-                if (playback.isFmActive()
-                        && mediaSuite.radioScrubMode
-                                == com.solar.launcher.radio.RadioScrubMode.TUNE_FM) {
-                    syncFmTuneScrubUi();
-                }
                 return;
             }
             if (mediaSuite != null) {
@@ -49119,52 +49981,45 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return true;
     }
 
-    /** ponytail: active audio stream — STREAM_FM (10) for FM Radio, STREAM_MUSIC otherwise. */
+    /**
+     * Active media volume stream.
+     * 2026-07-15 — Solar FM uses STREAM_MUSIC (stock MTK) or STREAM_FM (JJ fallback) from FmAudioRouter.
+     * Was: hard-coded 10 for any FM → volume wheel adjusted silent STREAM_FM while audio was on MUSIC.
+     * Reversal: return 10 when isFmActive().
+     */
     private int activeVolumeStream() {
-        return (playback != null && playback.isFmActive()) ? 10 : AudioManager.STREAM_MUSIC;
+        if (playback != null && playback.isFmActive() && mediaSuite != null
+                && mediaSuite.fmEngine() != null) {
+            return mediaSuite.fmEngine().audioStreamType();
+        }
+        if (playback != null && playback.isFmActive()) {
+            return AudioManager.STREAM_MUSIC;
+        }
+        return AudioManager.STREAM_MUSIC;
     }
 
     private void adjustVolume(boolean up) {
-        // #region agent log
-        int streamBefore = activeVolumeStream();
-        int volBefore = audioManager != null ? audioManager.getStreamVolume(streamBefore) : -1;
-        boolean y2 = DeviceFeatures.isY2();
-        // #endregion
-        int stream = streamBefore;
-        long volT0 = android.os.SystemClock.uptimeMillis();
+        int stream = activeVolumeStream();
         int currentVol = MediaVolumeControl.adjustStream(this, stream, up);
-        long volT1 = android.os.SystemClock.uptimeMillis();
         int maxVol = MediaVolumeControl.getMaxVolume(this, stream);
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("up", up);
-            d.put("y2", y2);
-            d.put("volBefore", volBefore);
-            d.put("volAfter", currentVol);
-            d.put("max", maxVol);
-            d.put("stream", stream);
-            d.put("screen", currentScreenState);
-            d.put("changed", volBefore != currentVol);
-            d.put("adjustMs", volT1 - volT0);
-            Debug62b1bbLog.log("MainActivity.adjustVolume", "volume step", "H-VOL-1", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        // 2026-07-15 — Pulse transport only; never full refreshPlayerUi (FM NP was jamming on wheel).
         if (currentScreenState == STATE_PLAYER) {
             if (themedContextMenu != null && themedContextMenu.isShowing() && contextMenuInVolumeSlider
                     && !contextMenuVolumeOnly) {
                 refreshContextVolumeSliderUi();
             } else if (playerTransport != null) {
-                int max = audioManager.getStreamMaxVolume(stream);
-                int cur = audioManager.getStreamVolume(stream);
+                int max = maxVol > 0 ? maxVol
+                        : (audioManager != null ? audioManager.getStreamMaxVolume(stream) : 1);
+                int cur = currentVol;
                 playerTransport.showVolumePulse(cur, max);
             }
         } else if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER && videoTransport != null) {
-            int max = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-            int cur = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+            int max = audioManager != null
+                    ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 1;
+            int cur = audioManager != null
+                    ? audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
             videoTransport.showVolumeInTrack(cur, max);
         }
-        // 2026-07-06 — menus/browse/FM lists: adjust level only; no legacy center HUD (blocked custom overlay).
     }
 
     private String formatTime(int ms) {
@@ -49422,13 +50277,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
             if (Y1InputKeys.isWheelUp(keyCode)) {
                 keyboardIndex = (keyboardIndex - 1 + KEYBOARD_CHARS.length) % KEYBOARD_CHARS.length;
-                updateKeyboardUI();
+                // 2026-07-15 — Wheel: key strip only (Hallmark cut motion; was full restyle).
+                updateKeyboardKeyStripTexts();
                 clickFeedback();
                 return true;
             }
             if (Y1InputKeys.isWheelDown(keyCode)) {
                 keyboardIndex = (keyboardIndex + 1) % KEYBOARD_CHARS.length;
-                updateKeyboardUI();
+                updateKeyboardKeyStripTexts();
                 clickFeedback();
                 return true;
             }
@@ -50044,6 +50900,64 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
             }, 500);
         }
+        // 2026-07-15 — singleTop bring-to-front still needs FM lab open (onCreate may not re-run).
+        scheduleAdbOpenFmIfRequested(intent);
+    }
+
+    /**
+     * 2026-07-15 — Lab: adb --ez solar_adb_open_fm true [--ez solar_adb_fm_speaker true].
+     * Opens in-app FM, forces airplane off, reports SolarFmAdb / SolarAdbTest lines.
+     */
+    private void scheduleAdbOpenFmIfRequested(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra("solar_adb_open_fm", false)) return;
+        final boolean forceSpeaker = intent.getBooleanExtra("solar_adb_fm_speaker", false);
+        intent.removeExtra("solar_adb_open_fm");
+        intent.removeExtra("solar_adb_fm_speaker");
+        new Handler().postDelayed(new Runnable() {
+            @Override public void run() {
+                try {
+                    com.solar.launcher.radio.fm.FmAirplaneModeHelper.beginSolarSession(
+                            MainActivity.this);
+                    if (mediaSuite == null) {
+                        SolarAdbTest.fail("fm_no_media_suite");
+                        return;
+                    }
+                    if (forceSpeaker && mediaSuite.fmEngine() != null) {
+                        mediaSuite.fmEngine().setSpeaker(true);
+                    }
+                    mediaSuite.openFmFromHome();
+                    new Handler().postDelayed(new Runnable() {
+                        @Override public void run() {
+                            boolean powered = mediaSuite.fmEngine() != null
+                                    && mediaSuite.fmEngine().isPowerUp();
+                            boolean audio = mediaSuite.fmEngine() != null
+                                    && mediaSuite.fmEngine().isAudioPlaying();
+                            boolean fmActive = playback != null && playback.isFmActive();
+                            String err = mediaSuite.fmEngine() != null
+                                    ? mediaSuite.fmEngine().lastError() : "no_engine";
+                            int air = -1;
+                            try {
+                                air = android.provider.Settings.Global.getInt(
+                                        getContentResolver(),
+                                        android.provider.Settings.Global.AIRPLANE_MODE_ON, -1);
+                            } catch (Exception ignored) {}
+                            String detail = "powered=" + powered + " audio=" + audio
+                                    + " queueFm=" + fmActive + " air=" + air
+                                    + " err=" + err;
+                            android.util.Log.i("SolarFmAdb", detail);
+                            if (powered && (audio || fmActive)) {
+                                SolarAdbTest.pass("fm_ok " + detail);
+                            } else {
+                                SolarAdbTest.fail("fm_fail " + detail);
+                            }
+                        }
+                    }, 3500);
+                } catch (Throwable t) {
+                    SolarAdbTest.fail("fm_ex " + t.getClass().getSimpleName()
+                            + ": " + t.getMessage());
+                }
+            }
+        }, 1200);
     }
 
     @Override
@@ -50075,6 +50989,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (getIntent() != null
                 && getIntent().getBooleanExtra("solar_adb_open_soulseek_messages", false)) {
             scheduleAdbOpenSoulseekMessagesIfRequested();
+        }
+        if (getIntent() != null && getIntent().getBooleanExtra("solar_adb_open_fm", false)) {
+            scheduleAdbOpenFmIfRequested(getIntent());
         }
         scheduleAdbFlowCarouselIfRequested();
         LandscapeOrientationGuard.recoverIfPortrait(this);
@@ -51930,7 +52847,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     public boolean mediaRequireInternet(int toastRes) { return requireInternet(toastRes); }
 
     public void mediaPauseMusicPlayback() {
+        // 2026-07-15 — Pause music IJK too (YouTube Audio / opus); was MediaPlayer-only.
         try {
+            if (isMusicIjkActive() && musicIjkPlayer != null && musicIjkPlayer.isPlaying()) {
+                musicIjkPlayer.pause();
+                isPausedByHand = true;
+                return;
+            }
             if (mediaPlayer != null && mediaPlayer.isPlaying()) {
                 mediaPlayer.pause();
                 isPausedByHand = true;
@@ -51959,11 +52882,40 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 isPausedByHand = false;
             }
         } catch (Exception ignored) {}
-        // 2026-07-06 — Music takes audio focus; FM chip must power down (JJ mutex).
-        if (mediaSuite != null && playback.isFmActive()) {
-            mediaSuite.fmEngine().powerDown();
-            playback.stopRadio();
+        // 2026-07-06 / 2026-07-15 — Music takes audio focus; full FM session shutdown (Wi‑Fi restore).
+        if (mediaSuite != null && (playback.isFmActive() || mediaSuite.isFmSessionLive())) {
+            mediaSuite.shutdownFmSession();
         }
+    }
+
+    /**
+     * 2026-07-15 — Before FM starts: stop music/Deezer/podcast/YouTube/video (not the FM chip).
+     * Layman: only one thing should play; FM is about to take over.
+     */
+    public void mediaStopNonFmPlayback() {
+        stopPodcastDownloadFully();
+        try {
+            saveCurrentPodcastResume();
+        } catch (Exception ignored) {}
+        if (mediaSuite != null) {
+            try {
+                mediaSuite.stopVideoAndYoutubeStream();
+            } catch (Exception ignored) {}
+        }
+        try {
+            releaseMusicIjkPlayer();
+        } catch (Exception ignored) {}
+        try {
+            if (mediaPlayer != null) {
+                if (mediaPlayer.isPlaying()) mediaPlayer.stop();
+                mediaPlayer.reset();
+                isPausedByHand = false;
+            }
+        } catch (Exception ignored) {}
+        // 2026-07-15 — Do NOT clearQueue here. startFmStation calls this before playStation;
+        // on FM failure the music/podcast queue must remain (user can resume). Successful FM
+        // replaces the queue in finishFmStationStart → startRadioStation. Reversal: clearQueue
+        // when isMusicActive||isPodcastActive (wipes session if FM fails to power).
     }
 
     public void mediaExitToHomeMenu() { changeScreen(STATE_MENU); }
@@ -51977,7 +52929,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         changeScreen(STATE_BROWSER);
     }
 
+    /**
+     * 2026-07-15 — FM NP: bind + progress only (was full UI thrash every RDS/volume tick).
+     * Layman: update station text without redrawing the whole Now Playing chrome.
+     */
     public void mediaRefreshPlayerUi() {
+        if (playback.isFmActive() && mediaSuite != null && currentScreenState == STATE_PLAYER) {
+            mediaSuite.bindRadioNowPlayingUi();
+            if (mediaSuite.radioScrubMode == com.solar.launcher.radio.RadioScrubMode.TUNE_FM) {
+                syncFmTuneScrubUi();
+            }
+            return;
+        }
         updatePlayerUI();
         if (playback.isRadioActive() && mediaSuite != null) {
             mediaSuite.updateRadioPlayerProgress();
@@ -52565,9 +53528,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     java.util.List<com.solar.launcher.navidrome.NavidromeSong> trackList) {
                 NavidromeDownloader.downloadAlbum(MainActivity.this, artist, album, trackList,
                         new NavidromeDownloader.Callback() {
-                    @Override public void onProgress(int done, int total) {
+                    @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                         setBlockingLoading(true);
-                        setLoadingOverlayText(getString(R.string.navidrome_downloading, done, total));
+                        String text = getString(R.string.navidrome_downloading, done, total);
+                        if (bytesRead > 0 && totalBytes > 0) {
+                            int percent = (int) (bytesRead * 100 / totalBytes);
+                            text = text + " " + percent + "%";
+                        }
+                        setLoadingOverlayText(text);
                     }
                     @Override public void onComplete(int saved) {
                         setBlockingLoading(false);
@@ -52662,9 +53630,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     java.util.List<com.solar.launcher.plex.PlexSong> trackList) {
                 PlexDownloader.downloadAlbum(MainActivity.this, artist, album, trackList,
                         new PlexDownloader.Callback() {
-                    @Override public void onProgress(int done, int total) {
+                    @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                         setBlockingLoading(true);
-                        setLoadingOverlayText(getString(R.string.plex_downloading, done, total));
+                        String text = getString(R.string.plex_downloading, done, total);
+                        if (bytesRead > 0 && totalBytes > 0) {
+                            int percent = (int) (bytesRead * 100 / totalBytes);
+                            text = text + " " + percent + "%";
+                        }
+                        setLoadingOverlayText(text);
                     }
                     @Override public void onComplete(int saved) {
                         setBlockingLoading(false);
@@ -52759,9 +53732,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     java.util.List<com.solar.launcher.jellyfin.JellyfinSong> trackList) {
                 com.solar.launcher.jellyfin.JellyfinDownloader.downloadAlbum(MainActivity.this, artist, album, trackList,
                         new com.solar.launcher.jellyfin.JellyfinDownloader.Callback() {
-                    @Override public void onProgress(int done, int total) {
+                    @Override public void onProgress(int done, int total, long bytesRead, long totalBytes) {
                         setBlockingLoading(true);
-                        setLoadingOverlayText(getString(R.string.jellyfin_downloading, done, total));
+                        String text = getString(R.string.jellyfin_downloading, done, total);
+                        if (bytesRead > 0 && totalBytes > 0) {
+                            int percent = (int) (bytesRead * 100 / totalBytes);
+                            text = text + " " + percent + "%";
+                        }
+                        setLoadingOverlayText(text);
                     }
                     @Override public void onComplete(int saved) {
                         setBlockingLoading(false);

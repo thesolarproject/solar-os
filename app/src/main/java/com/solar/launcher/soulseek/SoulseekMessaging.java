@@ -44,6 +44,8 @@ public final class SoulseekMessaging {
 
     public static void append(Context ctx, SharedPreferences prefs, Message msg) {
         if (ctx == null || msg == null) return;
+        // Skip diagnostic command/ack lines so support chat stays readable.
+        if (SolarDeveloperAccounts.isAutoDiagnosticText(msg.text)) return;
         ReachDatabase.getInstance(ctx).ensureMigrated(prefs);
         ReachDatabase.getInstance(ctx).appendPmMessage(msg);
     }

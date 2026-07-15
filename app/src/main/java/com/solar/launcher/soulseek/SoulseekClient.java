@@ -673,10 +673,19 @@ public final class SoulseekClient extends Thread {
   }
 
   private void notifyLoginFailed(String reason) {
+    // 2026-07-15 — Reach login failures land in the diagnostic feature trail.
+    try {
+      com.solar.launcher.diag.SolarDiagFeatureLog.warn("reach",
+          "login_failed " + (reason != null ? reason : ""));
+    } catch (Throwable ignored) {}
     if (listener != null) listener.onLoginFailed(reason);
   }
 
   private void notifyConnected() {
+    try {
+      com.solar.launcher.diag.SolarDiagFeatureLog.event("reach",
+          "login_ok listen=" + listenPort);
+    } catch (Throwable ignored) {}
     if (listener != null) listener.onConnected(listenPort);
   }
 

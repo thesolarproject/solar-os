@@ -163,6 +163,14 @@ public class SolarApplication extends Application {
         SolarImeDismiss.recoverOnBoot(this);
         SolarImeBootstrap.ensureDefaultIme(this);
         SolarLog.scrubExistingLogs(this);
+        // 2026-07-16 — Feature trail + MicroSD capacity probe + optional diagnostic boot scan.
+        try {
+            com.solar.launcher.diag.SolarDiagFeatureLog.init(this);
+            com.solar.launcher.diag.SolarDiagFeatureLog.event("app",
+                    "bootstrap family=" + DeviceFeatures.deviceFamily()
+                            + " sdk=" + android.os.Build.VERSION.SDK_INT);
+            SolarLogPaths.probeMicroSdCapacityAndLog(this);
+        } catch (Throwable ignored) {}
         SolarDiagnosticReporter.onProcessStart(this);
         HearingSafetyVolume.syncFromPrefs(this);
         LargeFontAccessibilitySuppressor.ensureNormalFontScale(this);

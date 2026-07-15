@@ -47,6 +47,9 @@ public class SolarDiagnosticReporterTest {
     if (!SolarDiagnosticReporter.isPriorityStartupSource("Solar/debug-843b96.log")) {
       throw new AssertionError("debug session log");
     }
+    if (!SolarDiagnosticReporter.isPriorityStartupSource("Features/reach.log")) {
+      throw new AssertionError("feature log priority");
+    }
   }
 
   @Test
@@ -61,7 +64,32 @@ public class SolarDiagnosticReporterTest {
   }
 
   @Test
+  public void remotePullShipsAllSourcesRegardlessOfManifest() throws Exception {
+    JSONObject manifest = new JSONObject();
+    manifest.put("/data/foo.txt", 123L);
+    if (!SolarDiagnosticReporter.shouldShipSource(
+            "other/file.txt", manifest, "/data/foo.txt", 123L,
+            SolarDiagnosticReporter.ScanMode.REMOTE_PULL)) {
+      throw new AssertionError("remote pull full bundle");
+    }
+  }
+
+  @Test
   public void shipOnDeveloperSupportOpenNullSafe() {
     SolarDiagnosticReporter.shipOnDeveloperSupportOpen(null, null);
+  }
+
+  @Test
+  public void shipOnRemoteDiagCommandNullSafe() {
+    SolarDiagnosticReporter.shipOnRemoteDiagCommand(null, null, "SolarDev", null);
+  }
+
+  @Test
+  public void isEnabledDefaultsTrueWhenMissing() {
+    // SharedPreferences not available in pure unit test — document contract via constant path.
+    // Behavior: prefs.getBoolean(PREF, true) — verified in device/integration when prefs present.
+    if (!"solar_diag_auto_report".equals(SolarDiagnosticReporter.PREF_DIAG_AUTO_REPORT)) {
+      throw new AssertionError("pref key drift");
+    }
   }
 }

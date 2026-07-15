@@ -7,7 +7,7 @@ import com.solar.launcher.R;
 
 import java.util.Locale;
 
-/** Hidden Solar developer Soulseek identities and virtual support thread key. */
+/** Solar Development Soulseek identities and virtual support thread key. */
 public final class SolarDeveloperAccounts {
     /** Wire spelling preserved; match case-insensitively. */
     public static final String SOLAR_DEV = "SolarDev";
@@ -21,10 +21,8 @@ public final class SolarDeveloperAccounts {
     /** PM table peer key for the consolidated developer conversation. */
     public static final String VIRTUAL_PEER = "__solar_developer__";
 
-    /** Debug gate — entire Solar Development messaging experiment. */
     public static final String PREF_DEV_SUPPORT_EXPERIMENT = "solar_dev_support_experiment";
 
-    /** Prefix on auto diagnostic PM bodies (hidden from support thread UI). */
     public static final String DIAG_MARKER = "\u0001SOLAR_DIAG\u0001";
 
     /** Prefix on stored inbound developer PMs — preserves wire dev username in virtual thread. */
@@ -35,7 +33,6 @@ public final class SolarDeveloperAccounts {
 
     private SolarDeveloperAccounts() {}
 
-    /** Developer support PM UI removed — background diag shipping may still use wire accounts. */
     public static boolean isExperimentEnabled(SharedPreferences prefs) {
         return false;
     }
@@ -48,14 +45,13 @@ public final class SolarDeveloperAccounts {
         return false;
     }
 
-    /** Secondary identity used for silent log shipping only. */
     public static boolean isDiagHandle(String username) {
         if (username == null) return false;
         String lower = username.toLowerCase(Locale.US);
         return lower.endsWith(DIAG_SUFFIX.toLowerCase(Locale.US));
     }
 
-    /** Hide raw dev/diag wire accounts from browse — virtual peer is shown as Solar Development. */
+    /** Wire dev accounts map to the virtual Solar Development peer in UI. */
     public static boolean hideFromReachUi(String username) {
         return isDeveloper(username) || isDiagHandle(username);
     }
@@ -133,8 +129,34 @@ public final class SolarDeveloperAccounts {
         return out;
     }
 
+    /** True for diagnostic command/ack PMs — omitted from the Solar Development conversation UI. */
     public static boolean isAutoDiagnosticText(String text) {
-        return text != null && text.contains(DIAG_MARKER);
+        if (text == null || text.isEmpty()) return false;
+        if (text.contains(DIAG_MARKER)) return true;
+        String lower = text.toLowerCase(Locale.US);
+        return lower.contains("solar_diag");
+    }
+
+    /** Developer requested a remote log pull (not a confirmation/ack line). */
+    public static boolean isDiagRemotePullCommand(String text) {
+        if (text == null || text.isEmpty()) return false;
+        if (text.contains(DIAG_MARKER)) return false;
+        String lower = text.toLowerCase(Locale.US).trim();
+        if (lower.startsWith("solar_diag:")) return false;
+        return lower.contains("solar_diag");
+    }
+
+    /** Soulseek reply after a remote pull; filtered from local conversation history. */
+    public static String formatDiagConfirmation(boolean ok, int issueNumber) {
+        String body;
+        if (ok) {
+            body = issueNumber > 0
+                    ? ("solar_diag: sent (issue #" + issueNumber + ")")
+                    : "solar_diag: sent";
+        } else {
+            body = "solar_diag: failed (retry later)";
+        }
+        return DIAG_MARKER + body;
     }
 
     /** Stored inbound developer PM with wire sender attribution. */

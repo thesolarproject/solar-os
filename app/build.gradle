@@ -57,8 +57,8 @@ android {
         applicationId "com.solar.launcher"
         minSdk 17
         targetSdk 35
-        versionCode 3438376
-        versionName "20260715-1816"
+        versionCode 3438665
+        versionName "nightly-20260715-2305"
         buildConfigField "boolean", "FEATURE_OTA_UPDATE", "true"
         buildConfigField "String", "OTA_UPDATES_URL", "\"https://thesolarproject.github.io/solar-update/updates.xml\""
         def podcastIndexKey = project.findProperty("PODCAST_INDEX_API_KEY") ?: ""
@@ -70,6 +70,12 @@ android {
         def reachDirectoryToken = project.findProperty("REACH_DIRECTORY_TOKEN") ?: ""
         buildConfigField "String", "REACH_DIRECTORY_URL", "\"${reachDirectoryUrl}\""
         buildConfigField "String", "REACH_DIRECTORY_TOKEN", "\"${reachDirectoryToken}\""
+
+        // 2026-07-16 — Worker in cloudflare/solar-diag/; issues on thesolarproject/solar-diag. Ingest token only.
+        def solarDiagUrl = project.findProperty("SOLAR_DIAG_URL") ?: ""
+        def solarDiagToken = project.findProperty("SOLAR_DIAG_TOKEN") ?: ""
+        buildConfigField "String", "SOLAR_DIAG_URL", "\"${solarDiagUrl}\""
+        buildConfigField "String", "SOLAR_DIAG_TOKEN", "\"${solarDiagToken}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
