@@ -503,6 +503,8 @@
     <string name="home_screen_move">Move</string>
     <string name="home_screen_settings_move_only">Settings can\'t be hidden. Use Arrange to change its position.</string>
     <string name="home_screen_move_mode">Wheel to move</string>
+    <!-- 2026-07-15 — A5/touch: place with OK (no scroll wheel). -->
+    <string name="home_screen_move_mode_ok">OK to confirm</string>
     <string name="home_screen_move_grip">✥</string>
     <string name="home_screen_hint_internet">Requires internet</string>
     <string name="home_screen_hint_network">Requires Wi‑Fi or local network</string>
@@ -1691,9 +1693,13 @@
     <string name="youtube_play_timeout">Stream took too long — check Wi‑Fi and try again.</string>
     <string name="youtube_ctx_play">Play</string>
     <string name="youtube_ctx_open">Open video</string>
+    <!-- 2026-07-15 — Music→YouTube context (audio-only hub). Was: Open video. Reversal: use youtube_ctx_open. -->
+    <string name="youtube_ctx_open_audio">Open</string>
     <string name="youtube_ctx_comments">Comments</string>
     <string name="youtube_ctx_save_video">Save video</string>
     <string name="youtube_ctx_save_audio">Save audio only</string>
+    <!-- 2026-07-15 — Music hub single Save action (audio). Was: Save audio only. Reversal: youtube_ctx_save_audio. -->
+    <string name="youtube_ctx_save">Save</string>
     <string name="youtube_ctx_play_saved">Play saved copy</string>
     <string name="youtube_save_progress">Saving… %1$d / %2$d</string>
     <string name="youtube_save_resolving">Finding stream…</string>
@@ -1703,9 +1709,14 @@
     <string name="youtube_save_failed">Could not save: %1$s</string>
     <string name="youtube_already_saved">Already saved on device.</string>
     <string name="youtube_detail_play">Play video</string>
-    <string name="youtube_detail_play_sub">Stream in Solar — notPipe stays in the background</string>
+    <!-- 2026-07-15 — Music→YouTube play row. Was: Play video. Reversal: youtube_detail_play. -->
+    <string name="youtube_detail_play_audio">Play</string>
+    <string name="youtube_detail_play_sub">Stream in Solar</string>
+    <string name="youtube_detail_play_audio_sub">Play in Now Playing</string>
     <string name="youtube_detail_save_video">Save video</string>
     <string name="youtube_detail_save_audio">Save audio only</string>
+    <!-- 2026-07-15 — Music hub sole save row. Was: Save video + Save audio only. Reversal: those two rows. -->
+    <string name="youtube_detail_save">Save</string>
     <string name="youtube_comments_header">Comments</string>
     <string name="youtube_comments_loading">Loading comments…</string>
     <string name="youtube_comments_empty">No comments available for this video.</string>

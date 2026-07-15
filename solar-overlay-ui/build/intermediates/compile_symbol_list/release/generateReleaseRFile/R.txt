@@ -21,7 +21,9 @@ int drawable ic_wifi 0x0
 int drawable ic_wifi_signal_1 0x0
 int drawable ic_wifi_signal_2 0x0
 int drawable ic_wifi_signal_3 0x0
+int drawable ic_zzz 0x0
 int string context_action_lock_screen 0x0
+int string context_action_sleep 0x0
 int string context_back 0x0
 int string context_bluetooth_off 0x0
 int string context_bluetooth_on 0x0

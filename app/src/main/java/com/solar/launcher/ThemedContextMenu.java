@@ -2373,6 +2373,8 @@ public final class ThemedContextMenu {
         } catch (Exception ignored) {}
         // #endregion
         queueMoveFrom = moveFrom;
+        // 2026-07-15 — Queue ribbon move arms touch-reorder session (A5 edge suppress + debug).
+        MoveRibbonTouch.setSessionActive(moveFrom >= 0);
         if (moveFrom >= 0) {
             focusIndex = moveFrom;
             focusZone = FocusZone.TIER_CONTENT;

@@ -2752,24 +2752,42 @@ public final class MediaSuiteHost {
         youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_BACK));
 
         if (youtubeDetailVideo != null) {
-            virtualLabels.add(host.getString(R.string.youtube_detail_play));
-            // 2026-07-14 — Show resolving hint on Play row while stream URL is fetched.
-            if (youtubeResolvingStream) {
-                virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+            // 2026-07-15 — Music hub is audio-only; Videos hub keeps Play/Save video rows.
+            // Was: always "Play video" + Save video + Save audio. Reversal: drop youtubeAudioMode branches.
+            if (youtubeAudioMode) {
+                virtualLabels.add(host.getString(R.string.youtube_detail_play_audio));
+                if (youtubeResolvingStream) {
+                    virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+                } else {
+                    virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
+                            ? youtubeDetailVideo.subtitle()
+                            : host.getString(R.string.youtube_detail_play_audio_sub));
+                }
+                youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_PLAY));
+
+                virtualLabels.add(host.getString(R.string.youtube_detail_save));
+                virtualSubtitles.add(youtubeDetailVideo.author);
+                youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_AUDIO));
             } else {
-                virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
-                        ? youtubeDetailVideo.subtitle()
-                        : host.getString(R.string.youtube_detail_play_sub));
+                virtualLabels.add(host.getString(R.string.youtube_detail_play));
+                // 2026-07-14 — Show resolving hint on Play row while stream URL is fetched.
+                if (youtubeResolvingStream) {
+                    virtualSubtitles.add(host.getString(R.string.youtube_resolving_stream));
+                } else {
+                    virtualSubtitles.add(youtubeDetailVideo.subtitle().length() > 0
+                            ? youtubeDetailVideo.subtitle()
+                            : host.getString(R.string.youtube_detail_play_sub));
+                }
+                youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_PLAY));
+
+                virtualLabels.add(host.getString(R.string.youtube_detail_save_video));
+                virtualSubtitles.add(youtubeDetailVideo.author);
+                youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_VIDEO));
+
+                virtualLabels.add(host.getString(R.string.youtube_detail_save_audio));
+                virtualSubtitles.add(youtubeDetailVideo.author);
+                youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_AUDIO));
             }
-            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_PLAY));
-
-            virtualLabels.add(host.getString(R.string.youtube_detail_save_video));
-            virtualSubtitles.add(youtubeDetailVideo.author);
-            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_VIDEO));
-
-            virtualLabels.add(host.getString(R.string.youtube_detail_save_audio));
-            virtualSubtitles.add(youtubeDetailVideo.author);
-            youtubeDetailRows.add(new YoutubeDetailRow(YoutubeDetailRow.KIND_SAVE_AUDIO));
         }
 
         virtualLabels.add(host.getString(R.string.youtube_comments_header));
@@ -3164,6 +3182,14 @@ public final class MediaSuiteHost {
         }
         return new YouTubeVideo(youtubeNowPlayingId,
                 youtubeNowPlayingTitle != null ? youtubeNowPlayingTitle : "", "", "");
+    }
+
+    /**
+     * 2026-07-15 — True when browse/detail came from Music→YouTube (audio Now Playing path).
+     * Layman: Music hub YouTube, not Videos. Technical: youtubeAudioMode flag for labels/ctx.
+     */
+    public boolean isYouTubeAudioMode() {
+        return youtubeAudioMode;
     }
 
     public boolean isYouTubePlaybackActive() {

@@ -371,6 +371,7 @@
     <string name="home_screen_move">이동</string>
     <string name="home_screen_settings_move_only">설정은 숨길 수 없습니다. 배열 메뉴에서 위치를 변경하세요.</string>
     <string name="home_screen_move_mode">휠로 이동</string>
+    <string name="home_screen_move_mode_ok">확인하려면 OK</string>
     <string name="home_screen_move_grip">✥</string>
     <string name="home_screen_hint_internet">인터넷 필요</string>
     <string name="home_screen_hint_network">Wi‑Fi 또는 로컬 네트워크 필요</string>

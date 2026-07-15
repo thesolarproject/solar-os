@@ -23,7 +23,9 @@ drawable ic_wifi
 drawable ic_wifi_signal_1
 drawable ic_wifi_signal_2
 drawable ic_wifi_signal_3
+drawable ic_zzz
 string context_action_lock_screen
+string context_action_sleep
 string context_back
 string context_bluetooth_off
 string context_bluetooth_on

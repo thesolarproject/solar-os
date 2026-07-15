@@ -65,6 +65,8 @@ final class LibraryMoveRibbon {
         lastMoveSlot = PlaylistMoveWindow.moveSlot(pickIndex, binder.itemCount());
         ribbonActive = false;
         animating = false;
+        // 2026-07-15 — Mark touch-reorder session so A5 edge gestures can yield (debug + suppress).
+        MoveRibbonTouch.setSessionActive(true);
         enterRibbon();
         animateRibbonEnter();
     }
@@ -78,6 +80,7 @@ final class LibraryMoveRibbon {
         ribbonActive = false;
         moveFrom = -1;
         lastMoveSlot = -1;
+        MoveRibbonTouch.setSessionActive(false);
         if (host != null) host.removeAllViews();
     }
 

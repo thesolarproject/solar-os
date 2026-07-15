@@ -81,6 +81,20 @@ public final class A5EdgeGestures {
         @Override
         public void run() {
             if (!tracking || holdFired || deferHoldToChild || host == null) return;
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("reorderSession", MoveRibbonTouch.isSessionActive());
+                d.put("edge", String.valueOf(downEdge));
+                android.content.Context c = null;
+                try {
+                    View root = host.a5GestureRoot();
+                    if (root != null) c = root.getContext();
+                } catch (Exception ignored) {}
+                com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                        "A5EdgeGestures.holdContext", "hold-still OPEN_CONTEXT fire", "B", d);
+            } catch (Exception ignored) {}
+            // #endregion
             // Hold-still anywhere (including edges) opens context — user asked for one-spot hold.
             holdFired = true;
             consumeNextUp = true;
@@ -99,9 +113,32 @@ public final class A5EdgeGestures {
      */
     public boolean process(MotionEvent event) {
         if (event == null || host == null) return false;
+        // 2026-07-15 — Reorder owns the finger; edge swipe/hold must not steal vertical drag.
+        // Layman: while you rearrange a row, side gestures stay off until you finish.
+        // Was: edge L/R capture + hold-context raced MoveRibbonTouch. Reversal: drop early return.
+        if (MoveRibbonTouch.isSessionActive()) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("action", event.getActionMasked());
+                d.put("skipped", true);
+                android.content.Context c = null;
+                try {
+                    View root = host.a5GestureRoot();
+                    if (root != null) c = root.getContext();
+                } catch (Exception ignored) {}
+                com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                        "A5EdgeGestures.process", "skip — reorder session", "A,C", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return false;
+        }
         int w = host.viewportWidth();
         int h = host.viewportHeight();
         int action = event.getActionMasked();
+        // #region agent log
+        boolean reorderSession = false;
+        // #endregion
         if (action == MotionEvent.ACTION_DOWN) {
             downX = event.getX();
             downY = event.getY();
@@ -121,6 +158,28 @@ public final class A5EdgeGestures {
             if (!capturingLeftRightEdge && shouldArmHoldContext(deferHoldToChild)) {
                 handler.postDelayed(holdContext, HOLD_CONTEXT_MS);
             }
+            // #region agent log
+            if (reorderSession || capturingLeftRightEdge || downEdge != Edge.NONE) {
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("action", "DOWN");
+                    d.put("edge", String.valueOf(downEdge));
+                    d.put("captureLR", capturingLeftRightEdge);
+                    d.put("reorderSession", reorderSession);
+                    d.put("deferHold", deferHoldToChild);
+                    d.put("armHold", !capturingLeftRightEdge && shouldArmHoldContext(deferHoldToChild));
+                    d.put("x", (int) downX);
+                    d.put("y", (int) downY);
+                    android.content.Context c = null;
+                    try {
+                        View root = host.a5GestureRoot();
+                        if (root != null) c = root.getContext();
+                    } catch (Exception ignored) {}
+                    com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                            "A5EdgeGestures.process", "edge DOWN", "A,B,C", d);
+                } catch (Exception ignored) {}
+            }
+            // #endregion
             return capturingLeftRightEdge;
         }
         if (!tracking) return false;
@@ -130,6 +189,25 @@ public final class A5EdgeGestures {
             if (Math.abs(dx) > HOLD_SLOP_PX || Math.abs(dy) > HOLD_SLOP_PX) {
                 handler.removeCallbacks(holdContext);
             }
+            // #region agent log
+            if (reorderSession && capturingLeftRightEdge) {
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("action", "MOVE");
+                    d.put("captureLR", true);
+                    d.put("reorderSession", true);
+                    d.put("dx", (int) dx);
+                    d.put("dy", (int) dy);
+                    android.content.Context c = null;
+                    try {
+                        View root = host.a5GestureRoot();
+                        if (root != null) c = root.getContext();
+                    } catch (Exception ignored) {}
+                    com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                            "A5EdgeGestures.process", "edge steals MOVE during reorder", "A", d);
+                } catch (Exception ignored) {}
+            }
+            // #endregion
             return capturingLeftRightEdge;
         }
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
@@ -143,11 +221,45 @@ public final class A5EdgeGestures {
             capturingLeftRightEdge = false;
             if (holdFired || consumeNextUp) {
                 consumeNextUp = false;
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("action", cancel ? "CANCEL" : "UP");
+                    d.put("holdFired", holdFired);
+                    d.put("reorderSession", reorderSession);
+                    d.put("path", "holdContextConsumed");
+                    android.content.Context c = null;
+                    try {
+                        View root = host.a5GestureRoot();
+                        if (root != null) c = root.getContext();
+                    } catch (Exception ignored) {}
+                    com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                            "A5EdgeGestures.process", "hold context ate UP during/after reorder", "B", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 return true;
             }
             if (cancel) return captured;
             Gesture g = classify(downEdge, dx, dy);
             if (g == Gesture.NONE) return captured;
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("action", "UP");
+                d.put("gesture", String.valueOf(g));
+                d.put("edge", String.valueOf(downEdge));
+                d.put("reorderSession", reorderSession);
+                d.put("dx", (int) dx);
+                d.put("dy", (int) dy);
+                android.content.Context c = null;
+                try {
+                    View root = host.a5GestureRoot();
+                    if (root != null) c = root.getContext();
+                } catch (Exception ignored) {}
+                com.solar.launcher.debug.Debug31d3d8Log.log(c,
+                        "A5EdgeGestures.process", "edge gesture applied", "A,C", d);
+            } catch (Exception ignored) {}
+            // #endregion
             apply(g);
             return true;
         }

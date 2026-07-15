@@ -20,6 +20,14 @@ public final class MoveRibbonTouch {
     public static final long LIFT_HOLD_MS = 450L;
 
     /**
+     * 2026-07-15 — True while touch lift/drag reorder owns the finger (A5 edge gestures must yield).
+     * Layman: “I’m moving a strip — don’t open Home or the options menu from this drag.”
+     * Tech: set on lift / active-drag DOWN; clear on confirm/cancel/clear(). Instrumentation + suppress gate.
+     */
+    private static volatile boolean sessionActive;
+    private static volatile int sessionGen;
+
+    /**
      * Host implements step/confirm for queue, playlist, FM, or home strip.
      * delta is +1 (down the list) or -1 (up).
      */
@@ -35,6 +43,17 @@ public final class MoveRibbonTouch {
     }
 
     private MoveRibbonTouch() {}
+
+    /** True while a touch reorder gesture owns input. */
+    public static boolean isSessionActive() {
+        return sessionActive;
+    }
+
+    /** Begin / end touch-reorder ownership (idempotent). */
+    public static void setSessionActive(boolean active) {
+        sessionActive = active;
+        if (active) sessionGen++;
+    }
 
     /**
      * Long-press on a browse row to enter move (OK-hold equivalent).
@@ -54,6 +73,16 @@ public final class MoveRibbonTouch {
                 if (lifted[0]) return;
                 lifted[0] = true;
                 disallowParentIntercept(row, true);
+                setSessionActive(true);
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("gen", sessionGen);
+                    d.put("holdMs", holdMs);
+                    com.solar.launcher.debug.Debug31d3d8Log.log(row.getContext(),
+                            "MoveRibbonTouch.lift", "touch reorder lift", "B", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 callbacks.onLift();
             }
         };
@@ -105,6 +134,8 @@ public final class MoveRibbonTouch {
         final float[] accY = new float[] { 0f };
         final float[] lastY = new float[] { 0f };
         final boolean[] tracking = new boolean[] { false };
+        // Ribbon already in move mode — keep session armed for edge-gesture suppress.
+        setSessionActive(true);
         moverRow.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
@@ -114,7 +145,17 @@ public final class MoveRibbonTouch {
                         tracking[0] = true;
                         accY[0] = 0f;
                         lastY[0] = event.getRawY();
+                        setSessionActive(true);
                         disallowParentIntercept(v, true);
+                        // #region agent log
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("gen", sessionGen);
+                            d.put("slotH", slotH);
+                            com.solar.launcher.debug.Debug31d3d8Log.log(v.getContext(),
+                                    "MoveRibbonTouch.dragDown", "active drag start", "A,C", d);
+                        } catch (Exception ignored) {}
+                        // #endregion
                         return true;
                     case MotionEvent.ACTION_MOVE:
                         if (!tracking[0]) return false;
@@ -135,13 +176,31 @@ public final class MoveRibbonTouch {
                         if (tracking[0]) {
                             tracking[0] = false;
                             disallowParentIntercept(v, false);
+                            // #region agent log
+                            try {
+                                org.json.JSONObject d = new org.json.JSONObject();
+                                d.put("gen", sessionGen);
+                                com.solar.launcher.debug.Debug31d3d8Log.log(v.getContext(),
+                                        "MoveRibbonTouch.dragUp", "active drag confirm", "A,B", d);
+                            } catch (Exception ignored) {}
+                            // #endregion
                             callbacks.onConfirm();
+                            setSessionActive(false);
                             return true;
                         }
                         return false;
                     case MotionEvent.ACTION_CANCEL:
                         tracking[0] = false;
                         disallowParentIntercept(v, false);
+                        setSessionActive(false);
+                        // #region agent log
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("gen", sessionGen);
+                            com.solar.launcher.debug.Debug31d3d8Log.log(v.getContext(),
+                                    "MoveRibbonTouch.dragCancel", "active drag cancel", "A,C", d);
+                        } catch (Exception ignored) {}
+                        // #endregion
                         return true;
                     default:
                         return false;
@@ -152,6 +211,7 @@ public final class MoveRibbonTouch {
 
     /** Clear a previously attached OnTouchListener (end of move). */
     public static void clear(View view) {
+        setSessionActive(false);
         if (view != null) view.setOnTouchListener(null);
     }
 

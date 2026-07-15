@@ -11156,6 +11156,13 @@ public class MainActivity extends Activity {
                 return true;
             }
         }
+        // 2026-07-15 — Storm: highlight follows finger before edge/child handlers run.
+        // Layman: drag across the menu and the blue bar tracks your fingertip.
+        // Reversal: delete followFinger call; focus only from FITM / wheel again.
+        if (ev != null && A5FocusConfirm.enabled()) {
+            View decor = getWindow() != null ? getWindow().getDecorView() : null;
+            A5FocusConfirm.followFinger(decor, ev);
+        }
         // 2026-07-14 — A5 edge swipe Back/Home + hold-still context (see A5EdgeGestures).
         // Was: touch only on NP art. Now: activity-wide for portrait A5.
         // Reversal: delete block; A5 touch only NP gestures.
@@ -11248,6 +11255,26 @@ public class MainActivity extends Activity {
         // Was: only 4 and 86 rewrite; NP face also wheeled volume; landscape kept portrait sense.
         // Reversal: drop face-nav / landscape from gate; NP face becomes wheel volume again.
         if (event != null && DeviceFeatures.isA5()) {
+            // #region agent log
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("rawCode", event.getKeyCode());
+                    d.put("scan", event.getScanCode());
+                    d.put("screen", currentScreenState);
+                    d.put("reorderSession", MoveRibbonTouch.isSessionActive());
+                    d.put("homeMove", homeEditorMoveFrom >= 0);
+                    d.put("playlistMove", isPlaylistMoveActive());
+                    d.put("ctxShowing", themedContextMenu != null && themedContextMenu.isShowing());
+                    d.put("overlayUi", OverlayKeyGate.isOverlayUiVisible());
+                    d.put("overlayActive", OverlayKeyGate.isOverlayKeysActive());
+                    d.put("passthrough", A5InputKeys.isRemapPassthrough());
+                    d.put("remapDepth", debug391149A5RemapDepth);
+                    com.solar.launcher.debug.Debug31d3d8Log.log(MainActivity.this,
+                            "MainActivity.dispatchKeyEvent", "A5 key DOWN", "D,E", d);
+                } catch (Exception ignored) {}
+            }
+            // #endregion
             // 2026-07-14 — Side power → Back with scan 0 (never face-mid 158→OK).
             // Was: MEDIA_STOP→BACK preserving scan 116, then any BACK→CENTER on old builds /
             // lost scancode. Now: dedicated bypass before needsRemap.
@@ -11341,6 +11368,17 @@ public class MainActivity extends Activity {
                     // Mid/power only: swallow unmapped to avoid Recents / unexpected sleep.
                     // Face nav miss must fall through so menus keep wheel (do not swallow DPAD).
                     if (A5InputKeys.isA5HardwareKey(event.getKeyCode())) {
+                        // #region agent log
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("rawCode", event.getKeyCode());
+                            d.put("scan", event.getScanCode());
+                            d.put("mappedNull", remapped == null);
+                            d.put("path", "swallowUnmappedA5Hardware");
+                            com.solar.launcher.debug.Debug31d3d8Log.log(MainActivity.this,
+                                    "MainActivity.dispatchKeyEvent", "A5 key swallowed", "D", d);
+                        } catch (Exception ignored) {}
+                        // #endregion
                         return true;
                     }
                 }
@@ -34562,6 +34600,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         homeEditorMoveIds = null;
         homeEditorMoveFrom = -1;
+        MoveRibbonTouch.setSessionActive(false);
         buildHomeScreenEditorUI();
     }
 
@@ -34613,7 +34652,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
         // 2026-07-15 — Move mode: paper-strip reorder of enabled home tiles.
         if (homeEditorMoveFrom >= 0 && homeEditorMoveIds != null) {
-            createCategoryHeader(getString(R.string.home_screen_move_mode));
+            // A5/touch: OK confirms place; Y1/Y2 copy still says wheel (status/header).
+            MoveRibbonTouch.setSessionActive(true);
+            createCategoryHeader(getString(
+                    MoveRibbonTouch.touchReorderEnabled()
+                            ? R.string.home_screen_move_mode_ok
+                            : R.string.home_screen_move_mode));
             homeEditorMoveHost = new LinearLayout(this);
             homeEditorMoveHost.setOrientation(LinearLayout.VERTICAL);
             containerSettingsItems.addView(homeEditorMoveHost);
@@ -40900,8 +40944,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (video == null || video.id == null || video.id.isEmpty()) return;
         final YouTubeVideo target = video;
+        // 2026-07-15 — Music→YouTube context is audio-only (no Save video / Open video).
+        // Was: always Play + Save video + Save audio. Reversal: drop audioMode branches.
+        final boolean audioMode = mediaSuite != null && mediaSuite.isYouTubeAudioMode();
         if (currentScreenState == MediaSuiteHost.STATE_YOUTUBE_BROWSE) {
-            addContextAction(getString(R.string.youtube_ctx_open), new Runnable() {
+            addContextAction(getString(audioMode
+                    ? R.string.youtube_ctx_open_audio
+                    : R.string.youtube_ctx_open), new Runnable() {
                 @Override public void run() {
                     if (!requireInternet(R.string.toast_internet_required)) return;
                     mediaSuite.openYouTubeDetailFromContext(target);
@@ -40914,6 +40963,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 mediaSuite.playYouTubeFromContext(target);
             }
         });
+        if (audioMode) {
+            addContextAction(getString(R.string.youtube_ctx_save), new Runnable() {
+                @Override public void run() {
+                    if (!requireInternet(R.string.toast_internet_required)) return;
+                    startYouTubeSave(target, true);
+                }
+            });
+            java.io.File savedAudio = YouTubeSavePaths.findSavedAudio(this, target);
+            if (savedAudio != null && savedAudio.length() > 1024L) {
+                addContextAction(getString(R.string.youtube_ctx_play_saved), new Runnable() {
+                    @Override public void run() {
+                        mediaSuite.playYouTubeFromContext(target);
+                    }
+                });
+            }
+            return;
+        }
         addContextAction(getString(R.string.youtube_ctx_save_video), new Runnable() {
             @Override public void run() {
                 if (!requireInternet(R.string.toast_internet_required)) return;
