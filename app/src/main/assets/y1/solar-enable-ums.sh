@@ -6,7 +6,14 @@
 # Reversal: restore UmsEnabler-only path in UsbMassStorageController if shell enable is retired.
 
 MODEL="$(getprop ro.product.model 2>/dev/null)"
-VOLS="/storage/sdcard0"
+# Default export list — Y1/A5 dual-volume when both mounts exist (2026-07-15).
+# Layman: share every SD the player has, same idea as DeviceFeatures.getUmsExportVolumePaths.
+# Was: only /storage/sdcard0 for non-Y2 — skipped Y1 Internal (sdcard1) / A5 peer card.
+VOLS=""
+[ -d /storage/sdcard1 ] && VOLS="$VOLS /storage/sdcard1"
+[ -d /storage/sdcard0 ] && VOLS="$VOLS /storage/sdcard0"
+VOLS="${VOLS# }"
+[ -z "$VOLS" ] && VOLS="/storage/sdcard0"
 case "$MODEL" in
   Y2|*Y2*) VOLS="/storage/sdcard0 /storage/sdcard1" ;;
 esac
@@ -217,17 +224,45 @@ wait_lun_bound() {
 }
 
 # Direct LUN bind when vdc share never populated lun/file (Y1 API17 fallback).
+# 2026-07-15 — Bind every export volume (Y1/A5 dual) before declaring success.
+# Was: return after first lun — PC only saw one disk when Internal+MicroSD present.
 bind_fallback() {
+  any=0
   for vol in $VOLS; do
     blk="$(block_for_volume "$vol")"
     if [ -n "$blk" ] && bind_block_to_lun "$blk"; then
-      sleep 1
-      if wait_lun_bound; then
-        return 0
-      fi
+      any=1
+      sleep 0.5
     fi
   done
+  if [ "$any" = "1" ] && wait_lun_bound; then
+    return 0
+  fi
   return 1
+}
+
+# After vdc share, still bind any volume that has no LUN yet (dual Y1/A5).
+bind_remaining_volumes() {
+  for vol in $VOLS; do
+    blk="$(block_for_volume "$vol")"
+    [ -n "$blk" ] || continue
+    # Skip if this block is already on a LUN.
+    already=0
+    for lun in \
+        /sys/class/android_usb/android0/f_mass_storage/lun/file \
+        /sys/class/android_usb/android0/f_mass_storage/lun0/file \
+        /sys/class/android_usb/android0/f_mass_storage/lun1/file; do
+      [ -r "$lun" ] || continue
+      cur="$(cat "$lun" 2>/dev/null)"
+      if [ "$cur" = "$blk" ]; then
+        already=1
+        break
+      fi
+    done
+    [ "$already" = "1" ] && continue
+    bind_block_to_lun "$blk"
+    sleep 0.5
+  done
 }
 
 # Resolve Solar APK for app_process — pm/data first; stale /system copy last (2026-07-05).
@@ -329,6 +364,8 @@ enable_setprop_vdc() {
     return 2
   fi
   share_all_volumes
+  # 2026-07-15 — Always try peer LUN bind so dual-volume Y1/A5 export both disks.
+  bind_remaining_volumes
   if wait_lun_bound; then
     dbg_705932 "solar-enable-ums.enable_setprop_vdc" "ok" "H3" "\"model\":\"$MODEL\""
     return 0

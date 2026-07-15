@@ -5,12 +5,21 @@
 # Y2: unshare + USB=mtp,adb (product uses MTP; UMS not supported).
 
 MODEL="$(getprop ro.product.model 2>/dev/null)"
-VOLS="/storage/sdcard0"
+# Match enable script volume discovery (2026-07-15).
+VOLS=""
+[ -d /storage/sdcard1 ] && VOLS="$VOLS /storage/sdcard1"
+[ -d /storage/sdcard0 ] && VOLS="$VOLS /storage/sdcard0"
+VOLS="${VOLS# }"
+[ -z "$VOLS" ] && VOLS="/storage/sdcard0"
 USB_AFTER="adb"
 case "$MODEL" in
   Y2|*Y2*)
     VOLS="/storage/sdcard0 /storage/sdcard1"
     USB_AFTER="mtp,adb"
+    ;;
+  A5|*A5*)
+    # A5 Solar product — same as Y1: adb-only after Turn Off (disk mode is the PC path).
+    USB_AFTER="adb"
     ;;
 esac
 

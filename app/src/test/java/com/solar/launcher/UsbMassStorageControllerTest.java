@@ -81,4 +81,17 @@ public class UsbMassStorageControllerTest {
             throw new AssertionError("host CI should not have bound mass-storage LUN");
         }
     }
+
+    @Test
+    public void disconnectGraceProtectsOnlyArmedSession() {
+        if (UsbMassStorageController.isWithinDisconnectGraceForTest(false, 100L, 200L, 4000L)) {
+            throw new AssertionError("inactive session must not protect disconnect");
+        }
+        if (!UsbMassStorageController.isWithinDisconnectGraceForTest(true, 100L, 500L, 4000L)) {
+            throw new AssertionError("armed session within grace must protect");
+        }
+        if (UsbMassStorageController.isWithinDisconnectGraceForTest(true, 100L, 5000L, 4000L)) {
+            throw new AssertionError("armed session past grace must not protect");
+        }
+    }
 }

@@ -30,9 +30,12 @@ public class UsbMassStorageExperimentTest {
     }
 
     @Test
-    public void connectionsUsbVisibleOnY1Always() {
-        if (!UsbMassStorageExperiment.connectionsUsbMenuVisibleForFamily("y1", false)) {
-            throw new AssertionError("Y1 Connections USB submenu must stay visible");
+    public void a5FamilyAllowsUmsLikeY1() {
+        if (!UsbMassStorageExperiment.isEnabledForFamily("a5", false)) {
+            throw new AssertionError("A5 must allow UMS (same MT6572 disk path as Y1)");
+        }
+        if (!UsbMassStorageExperiment.connectionsUsbMenuVisibleForFamily("a5", false)) {
+            throw new AssertionError("A5 Connections USB submenu must stay visible");
         }
     }
 }

@@ -3,6 +3,8 @@ package com.solar.launcher;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.Handler;
+import android.os.Looper;
 
 /**
  * Wakes Solar when a USB host (PC) connects while the process is not running.
@@ -14,6 +16,15 @@ import android.content.Intent;
 public final class UsbHostWakeReceiver extends BroadcastReceiver {
 
     static final String ACTION_USB_STATE = "android.hardware.usb.action.USB_STATE";
+
+    /**
+     * 2026-07-15 — Debounce disconnect UMS teardown (mass_storage setprop re-enumerates USB).
+     * Layman: flipping into disk mode briefly looks like unplug — wait before Turn Off.
+     * Reversal: set to 0L to restore immediate disableIfExported on connected=false.
+     */
+    private static final long DISCONNECT_DISABLE_DEBOUNCE_MS = 2500L;
+    private static Handler sHandler;
+    private static Runnable sPendingDisconnectDisable;
 
     static boolean isUsbHostIntent(Intent intent) {
         if (intent == null || !ACTION_USB_STATE.equals(intent.getAction())) return false;
@@ -32,6 +43,21 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
                 && !intent.getBooleanExtra("connected", false);
     }
 
+    private static Handler handler() {
+        if (sHandler == null) {
+            sHandler = new Handler(Looper.getMainLooper());
+        }
+        return sHandler;
+    }
+
+    /** Cancel a pending disconnect disable (USB came back after re-enum). */
+    private static void cancelPendingDisconnectDisable() {
+        if (sPendingDisconnectDisable != null) {
+            handler().removeCallbacks(sPendingDisconnectDisable);
+            sPendingDisconnectDisable = null;
+        }
+    }
+
     @Override
     public void onReceive(Context context, Intent intent) {
         // #region agent log
@@ -41,28 +67,53 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
             d.put("connected", intent != null && intent.getBooleanExtra("connected", false));
             d.put("hostConnected", intent != null && intent.getBooleanExtra("host_connected", false));
             d.put("massStorageExtra", intent != null && intent.getBooleanExtra("mass_storage", false));
+            d.put("userSession", UsbMassStorageController.isUserSessionActive());
             Debug705932Log.log("UsbHostWakeReceiver.onReceive", "usb broadcast", "H1,H4", d);
         } catch (Exception ignored) {}
         // #endregion
         if (isUsbDisconnectIntent(intent)) {
+            // 2026-07-15 — mass_storage setprop blips connected=false; do not clear session/LUN yet.
+            // Was: immediate dismiss + disableIfExported → empty LUN while kernel stayed mass_storage.
+            if (UsbMassStorageController.shouldIgnoreDisconnectDisable()) {
+                return;
+            }
             UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(context);
             UsbStorageConcierge.clearOnUsbDisconnect();
             UsbHostSessionPolicy.onUsbHostDisconnected(context);
             final android.content.BroadcastReceiver.PendingResult pending = goAsync();
             final Context app = context.getApplicationContext();
-            new Thread(new Runnable() {
+            cancelPendingDisconnectDisable();
+            sPendingDisconnectDisable = new Runnable() {
                 @Override
                 public void run() {
-                    try {
-                        UsbMassStorageController.disableIfExported(app);
-                    } finally {
-                        pending.finish();
-                    }
+                    sPendingDisconnectDisable = null;
+                    new Thread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                if (UsbMassStorageController.shouldIgnoreDisconnectDisable()) {
+                                    return;
+                                }
+                                // Sticky still disconnected?
+                                Intent sticky = app.registerReceiver(null,
+                                        new android.content.IntentFilter(ACTION_USB_STATE));
+                                if (sticky != null && sticky.getBooleanExtra("connected", false)) {
+                                    return;
+                                }
+                                UsbMassStorageController.disableIfExported(app);
+                                UsbMassStorageController.clearUserSession();
+                            } finally {
+                                pending.finish();
+                            }
+                        }
+                    }, "UsbDisconnectUmsOff").start();
                 }
-            }, "UsbDisconnectUmsOff").start();
+            };
+            handler().postDelayed(sPendingDisconnectDisable, DISCONNECT_DISABLE_DEBOUNCE_MS);
             return;
         }
         if (!isUsbHostIntent(intent)) return;
+        cancelPendingDisconnectDisable();
         boolean dismissed = UsbHostSessionPolicy.hasUserDismissedThisSession(context);
         boolean evaluated = UsbHostSessionPolicy.hasPromptEvaluatedThisSession(context);
         // #region agent log

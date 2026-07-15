@@ -33,6 +33,10 @@ public final class UsbUnauthorizedUmsGuard {
         if (UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
             return false;
         }
+        // 2026-07-15 — User/auto Turn on armed this plug — never treat as silent disk mode.
+        if (UsbMassStorageController.isUserSessionActive()) {
+            return false;
+        }
         if (!UsbMassStorageController.isKernelMassStorageMode()) {
             return true;
         }
