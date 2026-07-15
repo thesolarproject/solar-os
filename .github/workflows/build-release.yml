@@ -65,7 +65,7 @@ jobs:
       - name: Install SDK packages
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "platforms;android-19" "build-tools;35.0.0"
 
       - name: Install ROM build dependencies
         run: |
