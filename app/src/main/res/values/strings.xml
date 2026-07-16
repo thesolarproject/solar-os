@@ -761,6 +761,12 @@
     <string name="datetime_day">Day</string>
     <string name="datetime_hour">Hour (24H)</string>
     <string name="datetime_minute">Minute</string>
+    <string name="datetime_auto_internet">Internet Time</string>
+    <string name="datetime_timezone">Time Zone</string>
+    <string name="datetime_sync_now">Sync Time Now</string>
+    <string name="datetime_sync_started">Syncing time…</string>
+    <string name="datetime_auto_on">Sets the clock from the internet when Wi‑Fi is online. Time zone is your choice below.</string>
+    <string name="datetime_auto_off">Manual date and time only.</string>
 
     <!-- System update -->
     <string name="update_current_version">Current Version</string>

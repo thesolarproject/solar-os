@@ -3712,6 +3712,9 @@ public class MainActivity extends Activity {
         if (hasInternetConnection() && soulseekReachEnabled) {
             SolarDiagnosticReporter.onReachInternetAvailable(this, prefs);
         }
+        if (hasInternetConnection()) {
+            SolarAutoTime.onInternetAvailable(this);
+        }
         deezerScreen = new DeezerScreen(deezerHost);
         if (deezerActive() && DeezerAccount.hasArl(prefs)) {
             new Thread(new Runnable() {
@@ -7233,6 +7236,9 @@ public class MainActivity extends Activity {
         refreshConnectivityGatedMenus();
         if (hasInternetConnection() && soulseekReachEnabled) {
             SolarDiagnosticReporter.onReachInternetAvailable(this, prefs);
+        }
+        if (hasInternetConnection()) {
+            SolarAutoTime.onInternetAvailable(this);
         }
         scheduleSoulseekSharePolicyRefresh();
     }
@@ -16827,6 +16833,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (RowKeys.SOULSEEK_ACCOUNT.equals(rowKey) && SettingsScreens.isSoulseek(settingsSubScreenKey)) {
             return SoulseekAccount.displayLabel(SoulseekAccount.load(prefs));
+        }
+        if (RowKeys.DT_AUTO_INTERNET.equals(rowKey)) {
+            return stateOnOff(SolarAutoTime.isAutoEnabled(prefs));
+        }
+        if (RowKeys.DT_TIMEZONE.equals(rowKey)) {
+            return SolarAutoTime.displayTimezoneLabel(SolarAutoTime.timezoneId(prefs));
         }
         if (RowKeys.DT_YEAR.equals(rowKey)) return String.valueOf(dtYear);
         if (RowKeys.DT_MONTH.equals(rowKey)) return String.format(Locale.US, "%02d", dtMonth);
@@ -51399,6 +51411,57 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         setSettingsSubScreen(SettingsScreens.DATETIME);
         updateStatusBarTitle();
         containerSettingsItems.removeAllViews();
+
+        // 2026-07-16 — Internet time (default on) + user timezone (geo only picks NTP pool).
+        final LinearLayout rowAuto = createSettingsRow(RowKeys.DT_AUTO_INTERNET,
+                R.string.datetime_auto_internet, false);
+        rowAuto.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean next = !SolarAutoTime.isAutoEnabled(prefs);
+                SolarAutoTime.setAutoEnabled(prefs, next);
+                refreshSettingsPreview(RowKeys.DT_AUTO_INTERNET);
+                if (next) {
+                    SolarAutoTime.requestSyncNow(MainActivity.this);
+                    Toast.makeText(MainActivity.this, R.string.datetime_sync_started,
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
+        containerSettingsItems.addView(rowAuto);
+
+        final LinearLayout rowTz = createSettingsRow(RowKeys.DT_TIMEZONE,
+                R.string.datetime_timezone, false);
+        rowTz.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                String[] ids = SolarAutoTime.commonTimezoneIds();
+                int idx = SolarAutoTime.indexOfTimezone(SolarAutoTime.timezoneId(prefs));
+                int next = (idx + 1) % ids.length;
+                SolarAutoTime.setTimezoneId(prefs, ids[next]);
+                refreshSettingsPreview(RowKeys.DT_TIMEZONE);
+                // Re-sync clock instant so local display matches new zone with same UTC.
+                if (SolarAutoTime.isAutoEnabled(prefs)) {
+                    SolarAutoTime.requestSyncNow(MainActivity.this);
+                }
+            }
+        });
+        containerSettingsItems.addView(rowTz);
+
+        final LinearLayout rowSync = createSettingsRow(RowKeys.DT_SYNC_NOW,
+                R.string.datetime_sync_now, true);
+        rowSync.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                SolarAutoTime.requestSyncNow(MainActivity.this);
+                Toast.makeText(MainActivity.this, R.string.datetime_sync_started,
+                        Toast.LENGTH_SHORT).show();
+            }
+        });
+        containerSettingsItems.addView(rowSync);
 
         final LinearLayout rowYear = createSettingsRow(RowKeys.DT_YEAR, R.string.datetime_year, false);
         rowYear.setOnClickListener(new View.OnClickListener() {

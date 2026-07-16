@@ -36,6 +36,12 @@ public class SolarApplication extends Application {
     public void onCreate() {
         super.onCreate();
         sApp = this;
+        // 2026-07-16 — Auto internet clock (rooted): brief Wi‑Fi wake if needed, restore radio.
+        if (!isOverlayProcess()) {
+            try {
+                SolarAutoTime.onProcessStart(this);
+            } catch (Throwable ignored) {}
+        }
         // #region agent log
         try {
             boolean a5 = DeviceFeatures.isA5();

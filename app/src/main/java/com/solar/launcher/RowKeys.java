@@ -171,6 +171,9 @@ public final class RowKeys {
     public static final String NOW_PLAYING_ALBUM_BLUR = "settings.now_playing.album_blur";
     public static final String CLEAR_CACHE = "settings.clear_cache";
     public static final String DATETIME = "settings.datetime";
+    public static final String DT_AUTO_INTERNET = "datetime.auto_internet";
+    public static final String DT_TIMEZONE = "datetime.timezone";
+    public static final String DT_SYNC_NOW = "datetime.sync_now";
     public static final String LANGUAGE = "settings.language";
     public static final String RADIO = "settings.radio";
     public static final String RADIO_FM = "settings.radio.fm";
@@ -443,6 +446,9 @@ public final class RowKeys {
         if (UPDATE_STABLE.equals(rowKey)) return R.string.update_latest_stable;
         if (UPDATE_NIGHTLY.equals(rowKey)) return R.string.update_latest_nightly;
         if (UPDATE_LATEST.equals(rowKey)) return R.string.update_latest_version;
+        if (DT_AUTO_INTERNET.equals(rowKey)) return R.string.datetime_auto_internet;
+        if (DT_TIMEZONE.equals(rowKey)) return R.string.datetime_timezone;
+        if (DT_SYNC_NOW.equals(rowKey)) return R.string.datetime_sync_now;
         if (DT_YEAR.equals(rowKey)) return R.string.datetime_year;
         if (DT_MONTH.equals(rowKey)) return R.string.datetime_month;
         if (DT_DAY.equals(rowKey)) return R.string.datetime_day;
