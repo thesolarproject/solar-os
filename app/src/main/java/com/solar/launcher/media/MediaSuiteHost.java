@@ -3849,6 +3849,12 @@ public final class MediaSuiteHost {
                     playYouTubeVideoAtQuality(video, next, fromIjkFallback);
                     return;
                 }
+                // Final quality exhausted — high-impact stream failure (buffered resolve already waited).
+                try {
+                    com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                            host.context(), "youtube",
+                            message != null ? message : "stream resolve failed");
+                } catch (Throwable ignored) {}
                 clearYouTubeResolveUi();
                 toastYouTubePlayError(message);
             }
@@ -4387,6 +4393,12 @@ public final class MediaSuiteHost {
 
             @Override
             public void onReadyToPlay() {
+                if (videoPlaybackYoutube) {
+                    try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaOk(
+                                host.context(), "youtube", "playback started");
+                    } catch (Throwable ignored) {}
+                }
                 host.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -4440,6 +4452,12 @@ public final class MediaSuiteHost {
                             "E", d);
                 } catch (Exception ignored) {}
                 // #endregion
+                // During playback/buffering — natural wait window; damped one-liner to SolarDev.
+                try {
+                    com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                            host.context(), "youtube",
+                            "playback what=" + what + " extra=" + extra);
+                } catch (Throwable ignored) {}
                 host.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {

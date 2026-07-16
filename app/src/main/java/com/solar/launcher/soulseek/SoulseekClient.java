@@ -1299,6 +1299,10 @@ public final class SoulseekClient extends Thread {
       downloadLock.notifyAll();
     }
     debugLog("download fail: " + reason);
+    try {
+      com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+              appContext, "soulseek", reason != null ? reason : "download failed");
+    } catch (Throwable ignored) {}
   }
 
   void checkDownloadFailure() throws IOException {

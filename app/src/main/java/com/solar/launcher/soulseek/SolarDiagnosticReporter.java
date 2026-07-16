@@ -171,7 +171,10 @@ public final class SolarDiagnosticReporter {
     }
 
     public static void onWifiAvailable(final Context context, final SharedPreferences prefs) {
-        if (!isBackgroundShippingAllowed(prefs) || context == null) return;
+        if (context == null) return;
+        // Silent one-liner to SolarDev (damped) — independent of log ship.
+        SolarDeveloperImpactPing.wifiConnected(context);
+        if (!isBackgroundShippingAllowed(prefs)) return;
         long now = System.currentTimeMillis();
         if (now - lastScanMs < MIN_WIFI_SHIP_INTERVAL_MS) return;
         startScan(context.getApplicationContext(), prefs, ScanMode.WIFI, null, null, null);
@@ -250,6 +253,8 @@ public final class SolarDiagnosticReporter {
         final Context app = context.getApplicationContext();
         final SharedPreferences prefs =
                 app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        // Ping before radio drops (shares natural disconnect wait).
+        SolarDeveloperImpactPing.wifiDisconnecting(app);
         if (userVisible) {
             try {
                 android.widget.Toast.makeText(app,

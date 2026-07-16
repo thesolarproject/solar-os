@@ -172,6 +172,16 @@ public class SolarDeveloperAccountsTest {
   }
 
   @Test
+  public void impactPingIsAutoDiagnosticHidden() {
+    String ping = SolarDeveloperAccounts.formatImpactPing("alice", "A5", "youtube failed: 404");
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(ping)) {
+      throw new AssertionError("impact ping should hide from conversation");
+    }
+    if (!ping.contains("alice@A5:")) throw new AssertionError("ping=" + ping);
+    if (!ping.contains("youtube failed")) throw new AssertionError("msg missing");
+  }
+
+  @Test
   public void wireRecipientsDevSenderSkipsSelf() {
     String[] t = SolarDeveloperAccounts.wireRecipientsForSender("SolarDev");
     if (t.length != 2) throw new AssertionError("count=" + t.length);

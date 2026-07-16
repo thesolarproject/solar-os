@@ -126,6 +126,11 @@ public final class PodcastIjkPlayer {
         player.setOnErrorListener(new IMediaPlayer.OnErrorListener() {
             @Override
             public boolean onError(IMediaPlayer mp, int what, int extra) {
+                try {
+                    com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                            com.solar.launcher.SolarApplication.getAppContext(),
+                            "podcast", "playback what=" + what + " extra=" + extra);
+                } catch (Throwable ignored) {}
                 return errorListener != null && errorListener.onError(PodcastIjkPlayer.this, what, extra);
             }
         });
@@ -254,7 +259,13 @@ public final class PodcastIjkPlayer {
             player.setOnErrorListener(new IMediaPlayer.OnErrorListener() {
                 @Override
                 public boolean onError(IMediaPlayer mp, int what, int extra) {
-                    return errorListener != null && errorListener.onError(PodcastIjkPlayer.this, what, extra);
+                    try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                                com.solar.launcher.SolarApplication.getAppContext(),
+                                "podcast", "playback what=" + what + " extra=" + extra);
+                    } catch (Throwable ignored) {}
+                    return errorListener != null
+                            && errorListener.onError(PodcastIjkPlayer.this, what, extra);
                 }
             });
         } catch (IllegalStateException ignored) {}

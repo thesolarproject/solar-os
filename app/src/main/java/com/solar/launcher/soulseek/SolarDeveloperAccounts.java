@@ -174,6 +174,21 @@ public final class SolarDeveloperAccounts {
         return DIAG_MARKER + body;
     }
 
+    /**
+     * Silent one-line impact ping (Wi‑Fi / media). Hidden from conversation UI via marker.
+     * Format: {@code <marker>user@device: message}
+     */
+    public static String formatImpactPing(String username, String deviceLabel, String oneLine) {
+        String who = username != null ? username.trim() : "";
+        if (who.isEmpty()) who = "user";
+        String dev = deviceLabel != null ? deviceLabel.trim() : "";
+        if (dev.isEmpty()) dev = "?";
+        String msg = oneLine != null ? oneLine.trim().replace('\n', ' ') : "";
+        if (msg.isEmpty()) msg = "event";
+        if (msg.length() > 100) msg = msg.substring(0, 99) + "…";
+        return DIAG_MARKER + who + "@" + dev + ": " + msg;
+    }
+
     /** Stored inbound developer PM with wire sender attribution. */
     public static final class DevIncoming {
         public final String fromDev;

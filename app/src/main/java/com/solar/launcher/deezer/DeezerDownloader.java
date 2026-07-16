@@ -80,8 +80,14 @@ public final class DeezerDownloader {
                     }
                     streamDecrypt(cdnUrl, dest, String.valueOf(track.sngId), listener, track);
                 } catch (Exception e) {
+                    String msg = e.getMessage() != null ? e.getMessage() : "Download failed";
+                    try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                                com.solar.launcher.SolarApplication.getAppContext(),
+                                "deezer", msg);
+                    } catch (Throwable ignored) {}
                     if (listener != null) {
-                        listener.onError(e.getMessage() != null ? e.getMessage() : "Download failed");
+                        listener.onError(msg);
                     }
                 }
             }
@@ -120,8 +126,14 @@ public final class DeezerDownloader {
                     ext = dot > 0 ? ext.substring(dot + 1) : "mp3";
                     streamDecrypt(cdnUrl, dest, String.valueOf(track.sngId), listener, track);
                 } catch (Exception e) {
+                    String msg = e.getMessage() != null ? e.getMessage() : "Download failed";
+                    try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
+                                com.solar.launcher.SolarApplication.getAppContext(),
+                                "deezer", msg);
+                    } catch (Throwable ignored) {}
                     if (listener != null) {
-                        listener.onError(e.getMessage() != null ? e.getMessage() : "Download failed");
+                        listener.onError(msg);
                     }
                 }
             }
@@ -215,6 +227,11 @@ public final class DeezerDownloader {
                 listener.onProgress(read, total > 0 ? total : read);
                 listener.onComplete(dest, track);
             }
+            try {
+                com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaOk(
+                        com.solar.launcher.SolarApplication.getAppContext(),
+                        "deezer", "download complete");
+            } catch (Throwable ignored) {}
         } catch (Exception e) {
             if (dest.exists()) dest.delete();
             throw new IOException(e.getMessage());

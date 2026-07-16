@@ -25,9 +25,17 @@ import com.solar.launcher.platform.PlatformPrepLauncher;
  * Reversal: remove PlatformPrepLauncher call; remove bootstrap thread platform repair steps.
  */
 public class SolarApplication extends Application {
+    private static volatile Application sApp;
+
+    /** Application context for background helpers (diag pings, etc.). */
+    public static android.content.Context getAppContext() {
+        return sApp;
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
+        sApp = this;
         // #region agent log
         try {
             boolean a5 = DeviceFeatures.isA5();
