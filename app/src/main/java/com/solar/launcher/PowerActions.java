@@ -19,30 +19,46 @@ public final class PowerActions {
 
     /**
      * 2026-07-15 — Power off via root.
-     * Was: RootShell only (A5 always no-ops). Now: silent su on A5, RootShell elsewhere.
-     * Reversal: always RootShell.run("reboot -p").
+     * 2026-07-16 — When {@code ctx} is set: toast "Getting ready…", ship diagnostics if online,
+     * silently notify Solar Development on Soulseek, then power off.
      */
     public static void shutdown() {
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                runPowerShell("reboot -p");
-            }
-        }, "SolarShutdown").start();
+        shutdown(null);
+    }
+
+    public static void shutdown(Context ctx) {
+        runPowerWithDiagPrep(ctx, false);
     }
 
     /**
      * 2026-07-15 — Reboot via root.
-     * Was: RootShell only (A5 always no-ops). Now: silent su on A5, RootShell elsewhere.
-     * Reversal: always RootShell.run("reboot").
+     * 2026-07-16 — Same prep path as {@link #shutdown(Context)} (diag ship + silent notice).
      */
     public static void restart() {
-        new Thread(new Runnable() {
+        restart(null);
+    }
+
+    public static void restart(Context ctx) {
+        runPowerWithDiagPrep(ctx, true);
+    }
+
+    /**
+     * User-initiated power transition: optional log export + silent Soulseek notice, then shell.
+     * Immediate when offline or ctx null (e.g. inactivity auto-shutdown should call shell path only).
+     */
+    private static void runPowerWithDiagPrep(final Context ctx, final boolean restart) {
+        final Runnable shell = new Runnable() {
             @Override
             public void run() {
-                runPowerShell("reboot");
+                runPowerShell(restart ? "reboot" : "reboot -p");
             }
-        }, "SolarRestart").start();
+        };
+        if (ctx == null) {
+            new Thread(shell, restart ? "SolarRestart" : "SolarShutdown").start();
+            return;
+        }
+        com.solar.launcher.soulseek.SolarDiagnosticReporter.runWithPowerDiagPrep(
+                ctx, restart, shell);
     }
 
     /**

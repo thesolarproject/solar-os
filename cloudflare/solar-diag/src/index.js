@@ -64,15 +64,20 @@ async function handleReport(request, env) {
   const feature = safeStr(body.feature, "");
   const trigger = safeStr(body.trigger, "routine").toLowerCase();
   const device = body.device && typeof body.device === "object" ? body.device : {};
-  const model = safeStr(device.model || device.device, "unknown");
+  // Prefer Solar family (A5/Y1/Y2) over stock Build.MODEL (A5 ROMs often still say Y1).
+  const model = displayModel(device);
   const sdk = device.sdk != null ? String(device.sdk) : "?";
   const versionName = safeStr(device.versionName, "");
   const summary = safeStr(body.summary, "");
   const titleHint = safeStr(body.title, "");
+  // Quoted text from Report Issue / Solar Development message (optional).
+  const userMessage = safeStr(body.user_message, "");
 
-  // Soulseek username only when the developer pulled logs remotely — never invent for other triggers.
+  // Soulseek username for remote pull + user-reported issues (never invent for routine).
   const soulseekUsername =
-    trigger === "remote_pull" ? safeStr(body.soulseek_username, "") : "";
+    trigger === "remote_pull" || trigger === "user_message"
+      ? safeStr(body.soulseek_username, "")
+      : "";
 
   const title = buildTitle({
     type,
@@ -82,15 +87,19 @@ async function handleReport(request, env) {
     versionName,
     soulseekUsername,
     titleHint,
+    userMessage,
+    trigger,
   });
-  const labels = buildLabels(type, feature, trigger);
+  const labels = buildLabels(type, feature, trigger, device);
   const issueBody = buildIssueBody({
     type,
     feature,
     trigger,
     soulseekUsername,
     device,
+    model,
     summary,
+    userMessage,
     fileCount: Array.isArray(body.files) ? body.files.length : 0,
   });
 
@@ -141,12 +150,30 @@ async function handleReport(request, env) {
   );
 }
 
-function buildTitle({ type, feature, model, sdk, versionName, soulseekUsername, titleHint }) {
+function buildTitle({
+  type,
+  feature,
+  model,
+  sdk,
+  versionName,
+  soulseekUsername,
+  titleHint,
+  userMessage,
+  trigger,
+}) {
   const ver = versionName ? ` ${versionName}` : "";
+  if (type === "user_report" || type === "user-report") {
+    const who = soulseekUsername ? `@${soulseekUsername} ` : "";
+    const hint = titleHint || (userMessage ? userMessage.replace(/\s+/g, " ").trim() : "");
+    if (hint) {
+      return truncate(`[user-report] ${who}${hint} — ${model} sdk${sdk}${ver}`, 240);
+    }
+    return truncate(`[user-report] ${who}${model} sdk${sdk}${ver}`, 240);
+  }
   if (titleHint) {
     return truncate(`[${type}] ${titleHint} ${model} sdk${sdk}${ver}`, 240);
   }
-  if (type === "diag_pull" || (type === "diag_pull".length && soulseekUsername)) {
+  if (type === "diag_pull") {
     const who = soulseekUsername ? `@${soulseekUsername} ` : "";
     return truncate(`[diag-pull] ${who}${model} sdk${sdk}${ver}`, 240);
   }
@@ -159,39 +186,98 @@ function buildTitle({ type, feature, model, sdk, versionName, soulseekUsername, 
   if (type === "startup") {
     return truncate(`[startup] ${model} sdk${sdk}${ver}`, 240);
   }
+  if (type === "wifi") {
+    return truncate(`[wifi/${trigger || "event"}] ${model} sdk${sdk}${ver}`, 240);
+  }
+  if (type === "power") {
+    return truncate(`[power/${trigger || "event"}] ${model} sdk${sdk}${ver}`, 240);
+  }
   if (type === "rockbox") {
     return truncate(`[rockbox] ${model} sdk${sdk}${ver}`, 240);
   }
   return truncate(`[${type}] ${model} sdk${sdk}${ver}`, 240);
 }
 
-function buildLabels(type, feature, trigger) {
+function buildLabels(type, feature, trigger, device) {
   const out = [];
   const known = [
     "crash",
     "error",
     "diag-pull",
+    "user-report",
     "reach",
     "playback",
     "rockbox",
     "theme",
     "radio",
     "startup",
+    "wifi",
+    "power",
     "other",
     "deezer",
     "podcasts",
+    "y1",
+    "y2",
+    "a5",
   ];
   if (type === "diag_pull") out.push("diag-pull");
+  else if (type === "user_report" || type === "user-report") out.push("user-report");
   else if (known.indexOf(type) >= 0) out.push(type);
   else out.push("other");
   if (feature && known.indexOf(feature) >= 0 && out.indexOf(feature) < 0) {
     out.push(feature);
   }
   if (trigger === "remote_pull" && out.indexOf("diag-pull") < 0) out.push("diag-pull");
+  if (trigger === "user_message" && out.indexOf("user-report") < 0) out.push("user-report");
+  if (trigger === "wifi_off" || trigger === "wifi_connect") {
+    if (out.indexOf("wifi") < 0) out.push("wifi");
+  }
+  if (trigger === "power_off" || trigger === "restart") {
+    if (out.indexOf("power") < 0) out.push("power");
+  }
+  // Device family label so A5 issues are filterable even when Build.MODEL is stock Y1.
+  const fam = normalizeFamily(
+    (device && (device.familyLabel || device.family || device.model)) || ""
+  );
+  if (fam && out.indexOf(fam) < 0) out.push(fam);
   return out.slice(0, 8);
 }
 
-function buildIssueBody({ type, feature, trigger, soulseekUsername, device, summary, fileCount }) {
+/** Solar family for titles/labels — A5 must not appear as stock Y1. */
+function displayModel(device) {
+  if (!device || typeof device !== "object") return "unknown";
+  const fam = normalizeFamily(device.familyLabel || device.family || "");
+  if (fam === "a5") return "A5";
+  if (fam === "y2") return "Y2";
+  if (fam === "y1") return "Y1";
+  const label = safeStr(device.familyLabel, "");
+  if (label) return label;
+  const model = safeStr(device.model, "");
+  if (model) return model;
+  return safeStr(device.device, "unknown");
+}
+
+function normalizeFamily(v) {
+  const s = String(v || "")
+    .trim()
+    .toLowerCase();
+  if (s === "a5" || s === "timmkoo a5") return "a5";
+  if (s === "y2") return "y2";
+  if (s === "y1") return "y1";
+  return "";
+}
+
+function buildIssueBody({
+  type,
+  feature,
+  trigger,
+  soulseekUsername,
+  device,
+  model,
+  summary,
+  userMessage,
+  fileCount,
+}) {
   const lines = [];
   lines.push("## Solar diagnostic report");
   lines.push("");
@@ -200,11 +286,22 @@ function buildIssueBody({ type, feature, trigger, soulseekUsername, device, summ
   lines.push(`| type | \`${esc(type)}\` |`);
   if (feature) lines.push(`| feature | \`${esc(feature)}\` |`);
   lines.push(`| trigger | \`${esc(trigger)}\` |`);
-  // Username only on remote developer pull — other mediums omit this row entirely.
-  if (trigger === "remote_pull" && soulseekUsername) {
+  // Username on remote developer pull and user-reported issues.
+  if (
+    (trigger === "remote_pull" || trigger === "user_message") &&
+    soulseekUsername
+  ) {
     lines.push(`| soulseek_username | \`${esc(soulseekUsername)}\` |`);
   }
-  lines.push(`| model | \`${esc(device.model || "")}\` |`);
+  lines.push(`| model | \`${esc(model || device.model || "")}\` |`);
+  if (device.family || device.familyLabel) {
+    lines.push(
+      `| family | \`${esc(device.familyLabel || device.family || "")}\` |`
+    );
+  }
+  if (device.buildModel) {
+    lines.push(`| buildModel | \`${esc(device.buildModel)}\` |`);
+  }
   lines.push(`| device | \`${esc(device.device || "")}\` |`);
   lines.push(`| brand | \`${esc(device.brand || "")}\` |`);
   lines.push(`| sdk | \`${esc(device.sdk)}\` |`);
@@ -214,6 +311,13 @@ function buildIssueBody({ type, feature, trigger, soulseekUsername, device, summ
   lines.push(`| fingerprint | \`${esc(device.fingerprint || "")}\` |`);
   lines.push(`| files | ${fileCount} |`);
   lines.push(`| received_at | ${new Date().toISOString()} |`);
+  if (userMessage) {
+    lines.push("");
+    lines.push("### User message");
+    lines.push("");
+    lines.push("> " + userMessage.replace(/\r?\n/g, "\n> "));
+    lines.push("");
+  }
   if (summary) {
     lines.push("");
     lines.push("### Summary");

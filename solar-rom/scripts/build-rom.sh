@@ -473,6 +473,13 @@ install_solar_boot_assets() {
     local base_dir="$1"
     local sys_mount="$2"
 
+    # 2026-07-16 — A5: never touch logo.bin, boot.img, or bootanimation.
+    # Y1 Solar logo/boot assets can brick or brick-loop g368_nyx (wrong panel timing / kernel).
+    if [ "$TYPE" = "a5" ]; then
+        echo "==> A5: keeping stock boot assets (logo.bin, boot.img, bootanimation) — no Solar overlays"
+        return 0
+    fi
+
     if [ -f "$SOLAR_SYS/media/bootanimation.zip" ]; then
         echo "==> Install Solar boot animation (system/media/bootanimation.zip)"
         sudo mkdir -p "$sys_mount/media"
@@ -494,10 +501,10 @@ install_solar_boot_assets() {
     fi
 
     if [ -f "$SOLAR_SYS/boot.img" ]; then
-        # Y2 ATA = MT6582 stock kernel; A5 ATA = own MT6572 board — never overlay Y1 rockbox boot.img.
-        # Was: replace boot for every non-y2. Now: only Y1 type a/b get Solar boot.img.
-        if [ "$TYPE" = "y2" ] || [ "$TYPE" = "a5" ]; then
-            echo "==> Keeping ${TYPE} stock boot.img (Solar boot animation is on /system)"
+        # Y2 ATA = MT6582 stock kernel — never overlay Y1 rockbox boot.img.
+        # Only Y1 type a/b get Solar boot.img.
+        if [ "$TYPE" = "y2" ]; then
+            echo "==> Keeping y2 stock boot.img (Solar boot animation is on /system)"
         else
             echo "==> Replace boot.img in ROM archive"
             cp "$SOLAR_SYS/boot.img" "$base_dir/boot.img"
@@ -506,10 +513,7 @@ install_solar_boot_assets() {
         die "missing $SOLAR_SYS/boot.img"
     fi
 
-    # 2026-07-15 — A5 keeps stock logo (Y1 logo.bin may not match g368_nyx panel timing).
-    if [ "$TYPE" = "a5" ]; then
-        echo "==> Keeping A5 stock logo.bin"
-    elif [ -f "$SOLAR_SYS/logo.bin" ]; then
+    if [ -f "$SOLAR_SYS/logo.bin" ]; then
         echo "==> Replace logo.bin in ROM archive"
         cp "$SOLAR_SYS/logo.bin" "$base_dir/logo.bin"
     else
@@ -1012,14 +1016,18 @@ audit_rom_contents() {
         errors=$((errors + 1))
     fi
 
-    if [ ! -f "$sys_mount/media/bootanimation.zip" ]; then
-        echo "audit fail: /system/media/bootanimation.zip missing" >&2
-        errors=$((errors + 1))
-    fi
-
-    if [ ! -f "$sys_mount/bin/bootanimation" ]; then
-        echo "audit fail: /system/bin/bootanimation missing" >&2
-        errors=$((errors + 1))
+    # A5 keeps stock bootanimation/logo — do not require Solar boot assets.
+    if [ "$TYPE" != "a5" ]; then
+        if [ ! -f "$sys_mount/media/bootanimation.zip" ]; then
+            echo "audit fail: /system/media/bootanimation.zip missing" >&2
+            errors=$((errors + 1))
+        fi
+        if [ ! -f "$sys_mount/bin/bootanimation" ]; then
+            echo "audit fail: /system/bin/bootanimation missing" >&2
+            errors=$((errors + 1))
+        fi
+    else
+        echo "audit note: A5 keeps stock logo.bin / boot.img / bootanimation (no Solar overlay)"
     fi
 
     if [ ! -f "$base_dir/boot.img" ]; then
@@ -1191,9 +1199,18 @@ normalize_firmware_layout
 pad_ext4_image_if_short "$BASE_DIR/system.img"
 pad_ext4_image_if_short "$BASE_DIR/userdata.img"
 
-if [ "$TYPE" = "y2" ] && [ ! -f "$BASE_DIR/EBR2" ]; then
-    echo "==> Bundling EBR2 (missing from Y2 ATA base — required for SP Flash index 14)"
-    cp "$REPO_ROOT/solar-rom/vendor/y2-flash/EBR2" "$BASE_DIR/EBR2"
+if [ "$TYPE" = "y2" ]; then
+    if [ ! -f "$BASE_DIR/EBR2" ]; then
+        echo "==> Bundling EBR2 (missing from Y2 ATA base — required for SP Flash index 14)"
+        cp "$REPO_ROOT/solar-rom/vendor/y2-flash/EBR2" "$BASE_DIR/EBR2"
+    fi
+    # Upstream y2-ata scatter often has ANDROID at 0x6500000; MTKclient wo + y2-mtk-flash-manifest
+    # require the vendored offsets (ANDROID 0x6580000). Always overwrite with canonical scatter.
+    Y2_SCATTER_VENDOR="$REPO_ROOT/solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt"
+    [ -f "$Y2_SCATTER_VENDOR" ] \
+        || die "missing $Y2_SCATTER_VENDOR (canonical MT6582 scatter for flash tools)"
+    echo "==> Installing canonical MT6582 scatter (MTKclient wo linear_start_addr)"
+    cp "$Y2_SCATTER_VENDOR" "$BASE_DIR/MT6582_Android_scatter.txt"
 fi
 
 [ -f "$BASE_DIR/system.img" ] || die "system.img not found under $BASE_DIR after unzip"
@@ -1541,6 +1558,11 @@ if [ "$TYPE" = "y2" ]; then
             preloader_eastaeon82_wet_kk.bin; do
         [ -f "$PRISTINE_DIR/$_restore" ] && cp -a "$PRISTINE_DIR/$_restore" "$BASE_DIR/$_restore"
     done
+    # Re-assert canonical scatter after pristine restore (never ship base ATA 0x6500000 ANDROID).
+    Y2_SCATTER_VENDOR="$REPO_ROOT/solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt"
+    if [ -f "$Y2_SCATTER_VENDOR" ]; then
+        cp "$Y2_SCATTER_VENDOR" "$BASE_DIR/MT6582_Android_scatter.txt"
+    fi
 else
     finalize_image_after_mount "$BASE_DIR/system.img" "$SYSTEM_MOUNT_SRC"
     finalize_image_after_mount "$BASE_DIR/userdata.img" "$USERDATA_MOUNT_SRC"

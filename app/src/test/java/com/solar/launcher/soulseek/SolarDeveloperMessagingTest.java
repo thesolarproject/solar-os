@@ -63,4 +63,19 @@ public class SolarDeveloperMessagingTest {
     if (!SolarDeveloperAccounts.SOLAR_PHONE.equals(devs[1])) throw new AssertionError("dev1");
     if (!SolarDeveloperAccounts.SOLAR_Y1.equals(devs[2])) throw new AssertionError("dev2");
   }
+
+  @Test
+  public void formatUserSupportWireBodyIncludesUserAndDevice() {
+    String body = SolarDeveloperMessaging.formatUserSupportWireBody(null, null, "broken scroll");
+    if (body == null || !body.contains("broken scroll")) {
+      throw new AssertionError("body=" + body);
+    }
+    if (!body.contains("[Solar support]")) throw new AssertionError("prefix missing");
+  }
+
+  @Test
+  public void onThreadOpenedIsNoOpWithoutShip() {
+    // Must not throw; ship-on-open is intentionally disabled for performance.
+    SolarDeveloperMessaging.onThreadOpened(null, null);
+  }
 }

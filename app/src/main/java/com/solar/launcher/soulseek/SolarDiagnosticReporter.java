@@ -29,33 +29,48 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * 2026-07-16 — Ships crash/error logs to the solar-diag worker (TLS 1.2).
- * Tuned for calm device load: rare background ships, light bundles, no Wi‑Fi thrash.
- * Developer remote pull still gets a full packet.
+ * Event-only background ships on low-priority threads so UX stays smooth:
+ * startup, Wi‑Fi connect, pre-Wi‑Fi-off flush, crash, power-off/restart,
+ * user Report Issue, remote solar_diag pull. No periodic spam.
  */
 public final class SolarDiagnosticReporter {
     public static final String PREF_DIAG_AUTO_REPORT = "solar_diag_auto_report";
     public static final String PREF_DIAG_SENT_MANIFEST = "solar_diag_sent_manifest";
     public static final String PREF_FEATURE_COOLDOWN = "solar_diag_feature_cooldown";
 
-    /** Routine scan at most once per 45 minutes when already online. */
-    private static final long MIN_SCAN_INTERVAL_MS = 45L * 60L * 1000L;
-    private static final long MIN_RECONNECT_INTERVAL_MS = 30L * 60L * 1000L;
-    private static final long SESSION_RETRY_MS = 15L * 60L * 1000L;
-    private static final long FEATURE_ERROR_COOLDOWN_MS = 3L * 60L * 60L * 1000L;
-    private static final int LOGCAT_LINES = 80;
-    private static final int LOGCAT_LINES_FULL = 250;
-    private static final int MAX_FILE_BYTES = 96 * 1024;
-    private static final int MAX_FILE_BYTES_FULL = 192 * 1024;
-    private static final int MAX_TOTAL_BYTES = 400 * 1024;
-    private static final int MAX_TOTAL_BYTES_FULL = 900 * 1024;
-    /** Single delayed boot attempt — only if a recent crash exists. */
-    private static final long[] BOOT_RETRY_MS = {90_000L, 300_000L};
+    /** Min gap between Wi‑Fi-connect ships (frequent enough, not thrashy). */
+    private static final long MIN_WIFI_SHIP_INTERVAL_MS = 45L * 60L * 1000L;
+    private static final long SESSION_RETRY_MS = 30L * 60L * 1000L;
+    private static final long FEATURE_ERROR_COOLDOWN_MS = 6L * 60L * 60L * 1000L;
+    /** Max wait for log export before power-off/restart proceeds. */
+    private static final long POWER_SHIP_TIMEOUT_MS = 12_000L;
+    /** Max wait before Wi‑Fi radio is allowed to drop (keep UX snappy). */
+    private static final long WIFI_OFF_SHIP_TIMEOUT_MS = 8_000L;
+    private static final int LOGCAT_LINES_FULL = 200;
+    private static final int MAX_FILE_BYTES = 48 * 1024;
+    private static final int MAX_FILE_BYTES_FULL = 160 * 1024;
+    private static final int MAX_TOTAL_BYTES = 200 * 1024;
+    private static final int MAX_TOTAL_BYTES_FULL = 750 * 1024;
+    /** Boot/startup ship retries while waiting for connectivity. */
+    private static final long[] BOOT_RETRY_MS = {90_000L, 240_000L};
 
     public enum ScanMode {
         STARTUP,
+        /** @deprecated unused — kept so old callers compile; no-ops if started. */
         ROUTINE,
+        /** @deprecated no longer auto-shipped on thread open. */
         SUPPORT_OPEN,
-        REMOTE_PULL
+        REMOTE_PULL,
+        /** User typed a Report Issue / Solar Development message. */
+        USER_REPORT,
+        /** Wi‑Fi association while auto-report is on (light). */
+        WIFI,
+        /** Flush before radio off (user or auto sleep policy) — light, time-boxed. */
+        WIFI_OFF,
+        /** User chose Shut Down from on-device menus. */
+        POWER_OFF,
+        /** User chose Restart from on-device menus. */
+        RESTART
     }
 
     public interface RemotePullCallback {
@@ -79,9 +94,29 @@ public final class SolarDiagnosticReporter {
         return isEnabled(prefs);
     }
 
+    /**
+     * @deprecated Opening the Solar Development thread no longer ships diagnostics.
+     * Prefer {@link #shipUserReport} when the user actually sends a message.
+     */
     public static void shipOnDeveloperSupportOpen(final Context context, final SharedPreferences prefs) {
-        if (!isEnabled(prefs) || context == null) return;
-        startScan(context.getApplicationContext(), prefs, ScanMode.SUPPORT_OPEN, null, null);
+        // No-op: ship-on-open caused routine-like storms when users browsed the thread.
+    }
+
+    /**
+     * User Report Issue / message to Solar Development — full diagnostics + quoted text.
+     * Always allowed (does not require auto-report pref); needs network.
+     */
+    public static void shipUserReport(final Context context, final SharedPreferences prefs,
+            final String userMessage, final RemotePullCallback callback) {
+        if (context == null) {
+            if (callback != null) callback.onComplete(false, 0, "", "no_context");
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        final SharedPreferences p = prefs != null ? prefs
+                : app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        startScan(app, p, ScanMode.USER_REPORT, null, callback,
+                userMessage != null ? userMessage : "");
     }
 
     public static void shipOnRemoteDiagCommand(final Context context, final SharedPreferences prefs,
@@ -93,7 +128,7 @@ public final class SolarDiagnosticReporter {
         final Context app = context.getApplicationContext();
         final SharedPreferences p = prefs != null ? prefs
                 : app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
-        startScan(app, p, ScanMode.REMOTE_PULL, replyToDev, callback);
+        startScan(app, p, ScanMode.REMOTE_PULL, replyToDev, callback, null);
     }
 
     public static void reportFeatureError(Context context, String feature, String message,
@@ -106,8 +141,7 @@ public final class SolarDiagnosticReporter {
             if (last != null && now - last < FEATURE_ERROR_COOLDOWN_MS) return;
             featureCooldown.put(key, now);
         }
-        // 2026-07-16 — Feature errors only log locally; no immediate HTTPS/Wi‑Fi work.
-        // Background ship happens on calm ROUTINE/STARTUP schedules only.
+        // Feature errors only log locally; ships on next event (startup/wifi/power/user report).
         if (context == null) return;
         SolarDiagFeatureLog.event("diag", "feature_error queued " + key);
     }
@@ -117,11 +151,10 @@ public final class SolarDiagnosticReporter {
         final Context app = context.getApplicationContext();
         final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         SolarDiagFeatureLog.event("app", "process_start sdk=" + Build.VERSION.SDK_INT
-                + " model=" + Build.MODEL);
-        // Only schedule boot ship when a crash log exists — avoids empty wake-ups every boot.
-        if (hasRecentCrashLog()) {
-            scheduleBootScan(app, prefs);
-        }
+                + " model=" + Build.MODEL
+                + (hasRecentCrashLog() ? " crash_pending=1" : ""));
+        // App / process start → one delayed STARTUP ship when online (crash or clean boot).
+        scheduleBootScan(app, prefs);
     }
 
     public static void onReachInternetAvailable(final Context context, final SharedPreferences prefs) {
@@ -129,39 +162,180 @@ public final class SolarDiagnosticReporter {
         if (!isBackgroundShippingAllowed(prefs)) return;
         if (!firstInternetScanDone) {
             firstInternetScanDone = true;
-            // First online: only if crash pending; otherwise wait for routine interval.
-            if (hasRecentCrashLog()) {
-                startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null);
-            }
+            // First online after process start = system/app startup ship.
+            startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null, null);
             return;
         }
-        scheduleIfNeeded(context, prefs);
+        // Later connectivity restores count as Wi‑Fi connection events.
+        onWifiAvailable(context, prefs);
     }
 
     public static void onWifiAvailable(final Context context, final SharedPreferences prefs) {
         if (!isBackgroundShippingAllowed(prefs) || context == null) return;
         long now = System.currentTimeMillis();
-        if (now - lastScanMs < MIN_RECONNECT_INTERVAL_MS) return;
-        // Wi‑Fi bounce: do not ship unless there is something crash-priority to send.
-        if (!hasRecentCrashLog()) return;
-        scheduleIfNeeded(context, prefs);
+        if (now - lastScanMs < MIN_WIFI_SHIP_INTERVAL_MS) return;
+        startScan(context.getApplicationContext(), prefs, ScanMode.WIFI, null, null, null);
     }
 
+    /**
+     * @deprecated Periodic routine ships removed — use event hooks only.
+     * Kept as a no-op so older call sites do not reintroduce spam.
+     */
     public static void scheduleIfNeeded(final Context context, final SharedPreferences prefs) {
-        if (!isBackgroundShippingAllowed(prefs) || context == null) return;
-        long now = System.currentTimeMillis();
-        if (now - lastScanMs < MIN_SCAN_INTERVAL_MS) return;
-        startScan(context.getApplicationContext(), prefs, ScanMode.ROUTINE, null, null);
+        // Intentionally empty: diagnostics are event-bundled only.
     }
 
     public static void scheduleUrgent(final Context context, final SharedPreferences prefs) {
         if (context == null) return;
-        startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null);
+        startScan(context.getApplicationContext(), prefs, ScanMode.STARTUP, null, null, null);
+    }
+
+    /**
+     * User chose Shut Down / Restart from menus: toast, optional log ship, silent Soulseek
+     * notice to developers (hidden from conversation UI), then {@code powerAction}.
+     */
+    public static void runWithPowerDiagPrep(final Context context, final boolean restart,
+            final Runnable powerAction) {
+        if (context == null) {
+            if (powerAction != null) powerAction.run();
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        final SharedPreferences prefs =
+                app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        try {
+            android.widget.Toast.makeText(app, com.solar.launcher.R.string.diag_getting_ready,
+                    android.widget.Toast.LENGTH_LONG).show();
+        } catch (Exception ignored) {}
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (ConnectivityHelper.isOnline(app)) {
+                        final ScanMode mode = restart ? ScanMode.RESTART : ScanMode.POWER_OFF;
+                        if (isBackgroundShippingAllowed(prefs) && SolarDiagClient.isConfigured()) {
+                            awaitShip(app, prefs, mode, POWER_SHIP_TIMEOUT_MS);
+                        }
+                        // Silent notice even when auto-report is off (if online).
+                        notifyDevelopersPoweredOff(app, prefs, restart);
+                    }
+                } catch (Exception e) {
+                    SolarDiagFeatureLog.warn("diag", "power_prep " + e.getMessage());
+                } finally {
+                    if (powerAction != null) {
+                        try {
+                            powerAction.run();
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+        }, restart ? "SolarPowerRestartDiag" : "SolarPowerOffDiag");
+        t.setPriority(Thread.NORM_PRIORITY - 1);
+        t.start();
+    }
+
+    /**
+     * Before Wi‑Fi radio off (user toggle or auto sleep): light log flush while still online.
+     * User path may show {@code disconnecting} toast — never mentions diagnostics.
+     * Always runs {@code disableWifi} after a short timeout (or immediately if offline/busy).
+     *
+     * @param userVisible when true, show a neutral "Disconnecting…" toast
+     */
+    public static void runBeforeWifiDisable(final Context context, final boolean userVisible,
+            final Runnable disableWifi) {
+        if (context == null) {
+            if (disableWifi != null) disableWifi.run();
+            return;
+        }
+        final Context app = context.getApplicationContext();
+        final SharedPreferences prefs =
+                app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        if (userVisible) {
+            try {
+                android.widget.Toast.makeText(app,
+                        com.solar.launcher.R.string.toast_wifi_disconnecting,
+                        android.widget.Toast.LENGTH_SHORT).show();
+            } catch (Exception ignored) {}
+        }
+        // Offline or auto-report off: drop radio immediately (no hang).
+        if (!ConnectivityHelper.isOnline(app)
+                || !isBackgroundShippingAllowed(prefs)
+                || !SolarDiagClient.isConfigured()) {
+            if (disableWifi != null) disableWifi.run();
+            return;
+        }
+        Thread t = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    awaitShip(app, prefs, ScanMode.WIFI_OFF, WIFI_OFF_SHIP_TIMEOUT_MS);
+                } catch (Exception e) {
+                    SolarDiagFeatureLog.warn("diag", "wifi_off_prep " + e.getMessage());
+                } finally {
+                    if (disableWifi != null) {
+                        try {
+                            disableWifi.run();
+                        } catch (Exception ignored) {}
+                    }
+                }
+            }
+        }, "SolarWifiOffDiag");
+        t.setPriority(Thread.MIN_PRIORITY);
+        t.start();
+    }
+
+    /** Time-boxed ship for power / wifi-off prep (does not block forever). */
+    private static void awaitShip(Context app, SharedPreferences prefs, ScanMode mode,
+            long timeoutMs) {
+        final java.util.concurrent.CountDownLatch latch =
+                new java.util.concurrent.CountDownLatch(1);
+        startScan(app, prefs, mode, null, new RemotePullCallback() {
+            @Override
+            public void onComplete(boolean ok, int issueNumber, String htmlUrl, String error) {
+                latch.countDown();
+            }
+        }, null);
+        try {
+            latch.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {}
+    }
+
+    /** Silent Soulseek PMs to developer accounts — never stored in virtual conversation. */
+    static void notifyDevelopersPoweredOff(Context context, SharedPreferences prefs,
+            boolean restart) {
+        if (context == null || prefs == null) return;
+        try {
+            SoulseekAccount acct = SoulseekAccount.load(prefs, context);
+            String username = acct != null ? acct.username : "";
+            String body = SolarDeveloperAccounts.formatPoweredOffNotice(username, restart);
+            String[] devs = SolarDeveloperAccounts.developerUsernames();
+            SoulseekClient client = null;
+            try {
+                client = com.solar.launcher.MainActivity.getActiveSoulseekClient();
+            } catch (Throwable ignored) {}
+            if (client != null && client.isLoggedIn()) {
+                for (int i = 0; i < devs.length; i++) {
+                    if (devs[i] == null || devs[i].isEmpty()) continue;
+                    try {
+                        client.sendPrivateMessageSync(devs[i], body);
+                    } catch (Exception ignored) {}
+                    if (i + 1 < devs.length) {
+                        try { Thread.sleep(1500L); } catch (InterruptedException ignored) {}
+                    }
+                }
+                return;
+            }
+            // Fallback: -diag session (no local thread append).
+            SolarDiagSessionManager.sendToRecipients(context, prefs, devs, body);
+        } catch (Exception e) {
+            SolarDiagFeatureLog.warn("diag", "power_notice " + e.getMessage());
+        }
     }
 
     private static void scheduleBootScan(final Context context, final SharedPreferences prefs) {
         if (!bootScanPending) return;
         bootScanPending = false;
+        if (!isBackgroundShippingAllowed(prefs)) return;
         final int gen = retryGeneration.incrementAndGet();
         new Thread(new Runnable() {
             @Override
@@ -174,7 +348,9 @@ public final class SolarDiagnosticReporter {
                         return;
                     }
                     if (!ConnectivityHelper.isOnline(context)) continue;
-                    startScan(context, prefs, ScanMode.STARTUP, null, null);
+                    // If first-online already shipped STARTUP, skip duplicate.
+                    if (firstInternetScanDone && !hasRecentCrashLog()) return;
+                    startScan(context, prefs, ScanMode.STARTUP, null, null, null);
                     return;
                 }
             }
@@ -182,7 +358,8 @@ public final class SolarDiagnosticReporter {
     }
 
     private static void startScan(final Context context, final SharedPreferences prefs,
-            final ScanMode mode, final String replyToDev, final RemotePullCallback callback) {
+            final ScanMode mode, final String replyToDev, final RemotePullCallback callback,
+            final String userMessage) {
         if (context == null || prefs == null) {
             if (callback != null) callback.onComplete(false, 0, "", "bad_args");
             return;
@@ -192,20 +369,25 @@ public final class SolarDiagnosticReporter {
             return;
         }
         lastScanMs = System.currentTimeMillis();
-        new Thread(new Runnable() {
+        Thread t = new Thread(new Runnable() {
             @Override
             public void run() {
                 try {
-                    runScan(context, prefs, mode, replyToDev, callback);
+                    runScan(context, prefs, mode, replyToDev, callback, userMessage);
                 } finally {
                     scanRunning.set(false);
                 }
             }
-        }, "SolarDiagScan").start();
+        }, "SolarDiagScan");
+        // Background event ships yield CPU to UI/audio; user/remote keep default priority.
+        if (mode != ScanMode.USER_REPORT && mode != ScanMode.REMOTE_PULL) {
+            t.setPriority(Thread.MIN_PRIORITY);
+        }
+        t.start();
     }
 
     static void runScan(Context context, SharedPreferences prefs, ScanMode mode,
-            String replyToDev, RemotePullCallback callback) {
+            String replyToDev, RemotePullCallback callback, String userMessage) {
         if (!SolarDiagClient.isConfigured()) {
             if (callback != null) callback.onComplete(false, 0, "", "not_configured");
             return;
@@ -216,31 +398,36 @@ public final class SolarDiagnosticReporter {
                 return;
             }
         }
-        if (mode == ScanMode.STARTUP && !isEnabled(prefs) && !hasRecentCrashLog()) {
+        if ((mode == ScanMode.STARTUP || mode == ScanMode.WIFI || mode == ScanMode.WIFI_OFF
+                || mode == ScanMode.POWER_OFF || mode == ScanMode.RESTART)
+                && !isEnabled(prefs) && !(mode == ScanMode.STARTUP && hasRecentCrashLog())) {
             if (callback != null) callback.onComplete(false, 0, "", "disabled");
             return;
         }
+        // USER_REPORT and REMOTE_PULL always allowed when configured.
 
-        boolean remote = mode == ScanMode.REMOTE_PULL;
-        boolean full = remote || mode == ScanMode.SUPPORT_OPEN
+        boolean full = mode == ScanMode.REMOTE_PULL
+                || mode == ScanMode.USER_REPORT
+                || mode == ScanMode.SUPPORT_OPEN
+                || mode == ScanMode.POWER_OFF
+                || mode == ScanMode.RESTART
                 || (mode == ScanMode.STARTUP && hasRecentCrashLog());
-        // Never toggle Wi‑Fi: remote pull only runs after a Soulseek PM (already online);
-        // crash/routine wait for natural connectivity and retry later if offline.
+        // Never toggle Wi‑Fi: ships only while already online.
         if (!ConnectivityHelper.isOnline(context)) {
             if (callback != null) callback.onComplete(false, 0, "", "offline");
-            if (mode != ScanMode.REMOTE_PULL) {
+            if (mode == ScanMode.USER_REPORT || mode == ScanMode.REMOTE_PULL) {
+                SolarDiagFeatureLog.warn("diag", mode.name() + " offline — ship deferred");
+            } else if (mode != ScanMode.WIFI_OFF && mode != ScanMode.POWER_OFF
+                    && mode != ScanMode.RESTART) {
                 scheduleSessionRetry(context, prefs, mode);
-            } else {
-                SolarDiagFeatureLog.warn("diag",
-                        "remote_pull offline — unexpected after Soulseek PM; reply will fail ship");
             }
             return;
         }
-        runScanOnline(context, prefs, mode, replyToDev, callback, full);
+        runScanOnline(context, prefs, mode, replyToDev, callback, full, userMessage);
     }
 
     private static void runScanOnline(Context context, SharedPreferences prefs, ScanMode mode,
-            String replyToDev, RemotePullCallback callback, boolean full) {
+            String replyToDev, RemotePullCallback callback, boolean full, String userMessage) {
         SoulseekAccount main = SoulseekAccount.load(prefs, context);
         List<LogSource> sources = collectSources(context, prefs, full);
         JSONObject manifest = loadManifest(prefs);
@@ -258,12 +445,21 @@ public final class SolarDiagnosticReporter {
         List<SolarDiagClient.FilePart> parts = new ArrayList<SolarDiagClient.FilePart>();
         int budget = maxTotal;
 
+        String userMsg = mode == ScanMode.USER_REPORT ? userMessage : null;
+        if (userMsg != null && !userMsg.isEmpty()) {
+            parts.add(new SolarDiagClient.FilePart("Diag/user-message.txt", userMsg));
+            budget -= userMsg.length();
+        }
+
         String env = full
                 ? SolarDiagContextCollector.collectEnvironment(context)
                 : SolarDiagContextCollector.collectEnvironmentLight(context);
         parts.add(new SolarDiagClient.FilePart("Diag/environment.txt", env));
         budget -= env.length();
-        String account = SolarDiagContextCollector.collectAccountContext(context, prefs);
+        // Full ARL dump only on user report / remote pull / crash — routine gets redacted.
+        String account = full
+                ? SolarDiagContextCollector.collectAccountContext(context, prefs)
+                : SolarDiagContextCollector.collectAccountContextLight(context, prefs);
         parts.add(new SolarDiagClient.FilePart("Diag/account-context.txt", account));
         budget -= account.length();
         String ring = SolarDiagFeatureLog.dumpRing();
@@ -272,7 +468,12 @@ public final class SolarDiagnosticReporter {
             budget -= ring.length();
         }
 
-        boolean forceAll = mode == ScanMode.REMOTE_PULL || mode == ScanMode.SUPPORT_OPEN;
+        boolean forceAll = mode == ScanMode.REMOTE_PULL
+                || mode == ScanMode.USER_REPORT
+                || mode == ScanMode.SUPPORT_OPEN
+                || mode == ScanMode.POWER_OFF
+                || mode == ScanMode.RESTART
+                || mode == ScanMode.WIFI_OFF;
         int shippedFiles = 0;
         for (LogSource src : sources) {
             if (src == null || src.file == null || !src.file.isFile()) continue;
@@ -302,24 +503,59 @@ public final class SolarDiagnosticReporter {
             } catch (Exception ignored) {}
         }
 
+        // Connect/startup with nothing new: skip HTTPS (env-only issues were flooding solar-diag).
+        // WIFI_OFF still ships light env/ring so pre-sleep flush always has a heartbeat.
+        if ((mode == ScanMode.ROUTINE || mode == ScanMode.WIFI || mode == ScanMode.STARTUP)
+                && shippedFiles == 0 && !hasRecentCrashLog()) {
+            SolarDiagFeatureLog.event("diag", mode.name().toLowerCase(Locale.US) + "_skip no_new_logs");
+            if (callback != null) callback.onComplete(true, 0, "", "skipped_empty");
+            return;
+        }
+
         String type = typeForMode(mode, sources);
         String feature = "";
         String trigger = triggerForMode(mode);
         String usernameForIssue = null;
+        String titleHint = null;
         if (mode == ScanMode.REMOTE_PULL) {
             type = "diag_pull";
             trigger = "remote_pull";
             usernameForIssue = main != null ? main.username : null;
+        } else if (mode == ScanMode.USER_REPORT) {
+            type = "user_report";
+            trigger = "user_message";
+            usernameForIssue = main != null ? main.username : null;
+            titleHint = titleFromUserMessage(userMsg);
         } else if (mode == ScanMode.STARTUP && hasRecentCrashLog()) {
             type = "crash";
             trigger = "crash";
+        } else if (mode == ScanMode.WIFI) {
+            type = "wifi";
+            trigger = "wifi_connect";
+        } else if (mode == ScanMode.WIFI_OFF) {
+            type = "wifi";
+            trigger = "wifi_off";
+        } else if (mode == ScanMode.POWER_OFF) {
+            type = "power";
+            trigger = "power_off";
+        } else if (mode == ScanMode.RESTART) {
+            type = "power";
+            trigger = "restart";
         }
 
         String summary = "mode=" + mode.name() + " files=" + shippedFiles
-                + " sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL;
+                + " sdk=" + Build.VERSION.SDK_INT
+                + " model=" + DeviceFeatures.deviceModelLabel()
+                + " family=" + DeviceFeatures.deviceFamily();
+        if (userMsg != null && !userMsg.isEmpty()) {
+            String oneLine = userMsg.replace('\n', ' ').trim();
+            if (oneLine.length() > 200) oneLine = oneLine.substring(0, 200) + "…";
+            summary = summary + "\nuser_message: " + oneLine;
+        }
         JSONObject device = SolarDiagContextCollector.deviceJson(context);
         SolarDiagClient.Result result = SolarDiagClient.submit(
-                type, feature, trigger, usernameForIssue, device, summary, null, parts);
+                type, feature, trigger, usernameForIssue, device, summary, titleHint,
+                userMsg, parts);
 
         if (result.ok) {
             prefs.edit().putString(PREF_DIAG_SENT_MANIFEST, updated.toString()).apply();
@@ -328,7 +564,9 @@ public final class SolarDiagnosticReporter {
         } else {
             SolarDiagFeatureLog.warn("diag", "ship_failed mode=" + mode.name()
                     + " err=" + result.error);
-            if (mode != ScanMode.REMOTE_PULL) {
+            if (mode != ScanMode.REMOTE_PULL && mode != ScanMode.USER_REPORT
+                    && mode != ScanMode.WIFI_OFF && mode != ScanMode.POWER_OFF
+                    && mode != ScanMode.RESTART) {
                 scheduleSessionRetry(context, prefs, mode);
             }
         }
@@ -340,6 +578,14 @@ public final class SolarDiagnosticReporter {
         if (mode == ScanMode.REMOTE_PULL && replyToDev != null && !replyToDev.isEmpty()) {
             sendDiagConfirmation(replyToDev, result);
         }
+    }
+
+    private static String titleFromUserMessage(String msg) {
+        if (msg == null) return null;
+        String t = msg.trim().replace('\n', ' ');
+        if (t.isEmpty()) return null;
+        if (t.length() > 80) t = t.substring(0, 80) + "…";
+        return t;
     }
 
     private static void sendDiagConfirmation(String replyToDev, SolarDiagClient.Result result) {
@@ -359,14 +605,22 @@ public final class SolarDiagnosticReporter {
     private static String typeForMode(ScanMode mode, List<LogSource> sources) {
         if (mode == ScanMode.STARTUP) return hasRecentCrashLog() ? "crash" : "startup";
         if (mode == ScanMode.REMOTE_PULL) return "diag_pull";
+        if (mode == ScanMode.USER_REPORT) return "user_report";
+        if (mode == ScanMode.WIFI || mode == ScanMode.WIFI_OFF) return "wifi";
+        if (mode == ScanMode.POWER_OFF || mode == ScanMode.RESTART) return "power";
         if (mode == ScanMode.SUPPORT_OPEN) return "other";
         return "other";
     }
 
     private static String triggerForMode(ScanMode mode) {
         if (mode == ScanMode.REMOTE_PULL) return "remote_pull";
-        if (mode == ScanMode.STARTUP) return hasRecentCrashLog() ? "crash" : "routine";
-        return "routine";
+        if (mode == ScanMode.USER_REPORT) return "user_message";
+        if (mode == ScanMode.WIFI) return "wifi_connect";
+        if (mode == ScanMode.WIFI_OFF) return "wifi_off";
+        if (mode == ScanMode.POWER_OFF) return "power_off";
+        if (mode == ScanMode.RESTART) return "restart";
+        if (mode == ScanMode.STARTUP) return hasRecentCrashLog() ? "crash" : "startup";
+        return "event";
     }
 
     private static boolean hasRecentCrashLog() {
@@ -379,7 +633,11 @@ public final class SolarDiagnosticReporter {
 
     static boolean shouldShipSource(String label, JSONObject manifest, String path, long mtime,
             ScanMode mode) {
-        if (mode == ScanMode.SUPPORT_OPEN || mode == ScanMode.REMOTE_PULL) return true;
+        if (mode == ScanMode.SUPPORT_OPEN || mode == ScanMode.REMOTE_PULL
+                || mode == ScanMode.USER_REPORT || mode == ScanMode.WIFI_OFF
+                || mode == ScanMode.POWER_OFF || mode == ScanMode.RESTART) {
+            return true;
+        }
         if (mode == ScanMode.STARTUP && isPriorityStartupSource(label)) return true;
         return manifest.optLong(path, -1) != mtime;
     }
@@ -405,7 +663,7 @@ public final class SolarDiagnosticReporter {
                 if (gen != retryGeneration.get()) return;
                 if (mode == ScanMode.ROUTINE && !isEnabled(prefs)) return;
                 if (!ConnectivityHelper.isOnline(context)) return;
-                startScan(context, prefs, mode, null, null);
+                startScan(context, prefs, mode, null, null, null);
             }
         }, "SolarDiagRetry").start();
     }
@@ -488,10 +746,10 @@ public final class SolarDiagnosticReporter {
                 collectRockboxLogs(new File(root, ".rockbox"), out, "Rockbox/" + root.getName());
             }
             addDeviceSnapshot(out);
+            // logcat -d is expensive on KitKat; only full ships (user report / pull / crash).
             addLogcatSnapshot(out, LOGCAT_LINES_FULL);
-        } else {
-            addLogcatSnapshot(out, LOGCAT_LINES);
         }
+        // Light/routine: no logcat snapshot — ring + crash/error tails are enough.
         return out;
     }
 

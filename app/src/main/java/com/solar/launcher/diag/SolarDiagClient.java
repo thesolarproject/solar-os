@@ -59,25 +59,36 @@ public final class SolarDiagClient {
 
     /**
      * Blocking POST — call from a worker thread only.
-     * @param soulseekUsername only for remote_pull; pass null/empty otherwise
+     * @param soulseekUsername for remote_pull and user_message only; null otherwise
+     * @param userMessage optional quoted support message (user_report)
      */
     public static Result submit(String type, String feature, String trigger,
             String soulseekUsername, JSONObject device, String summary,
             String titleHint, List<FilePart> files) {
+        return submit(type, feature, trigger, soulseekUsername, device, summary, titleHint,
+                null, files);
+    }
+
+    public static Result submit(String type, String feature, String trigger,
+            String soulseekUsername, JSONObject device, String summary,
+            String titleHint, String userMessage, List<FilePart> files) {
         if (!isConfigured()) return Result.fail("not_configured");
         try {
             JSONObject body = new JSONObject();
             body.put("type", type != null ? type : "other");
             if (feature != null && !feature.isEmpty()) body.put("feature", feature);
             body.put("trigger", trigger != null ? trigger : "routine");
-            // Username only when developer remote-pulls logs — other triggers omit the field.
-            if ("remote_pull".equals(trigger) && soulseekUsername != null
-                    && !soulseekUsername.trim().isEmpty()) {
+            // Username when developer remote-pulls or the user reports via Solar Development.
+            if (("remote_pull".equals(trigger) || "user_message".equals(trigger))
+                    && soulseekUsername != null && !soulseekUsername.trim().isEmpty()) {
                 body.put("soulseek_username", soulseekUsername.trim());
             }
             if (device != null) body.put("device", device);
             if (summary != null && !summary.isEmpty()) body.put("summary", summary);
             if (titleHint != null && !titleHint.isEmpty()) body.put("title", titleHint);
+            if (userMessage != null && !userMessage.trim().isEmpty()) {
+                body.put("user_message", userMessage.trim());
+            }
             JSONArray arr = new JSONArray();
             if (files != null) {
                 for (FilePart f : files) {

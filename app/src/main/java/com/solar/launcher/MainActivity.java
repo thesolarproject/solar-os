@@ -7278,11 +7278,14 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {}
     }
 
-    /** Silent Wi-Fi off for sleep policy — no toast while screen is off. */
+    /**
+     * Silent Wi-Fi off for sleep policy — light diag flush first (no "sending logs" UX).
+     * Screen is usually off; no toast. Radio drops after a short time-boxed ship.
+     */
     private void tryWifiSleepPowerOff() {
         if (!isWifiSleepPowerOffEnabled()) return;
         if (!isScreenSleeping || soulseekCharging) return;
-        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        final WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wm == null || !wm.isWifiEnabled()) return;
         if (wifiSleepBlockedByActiveUse()) {
             // ponytail: retry while playback / transfers / upload server still need the radio.
@@ -7293,18 +7296,28 @@ public class MainActivity extends Activity {
         wifiContextPendingEnable = false;
         wifiContextPendingDisable = true;
         cancelWifiContextScanFollowUps();
-        wm.setWifiEnabled(false);
-        wifiDisabledBySleepPolicy = true;
-        if (prefs != null) {
-            prefs.edit().putBoolean(WifiSleepPolicy.PREF_DISABLED_BY_POLICY, true).commit();
-        }
-        // #region agent log
-        try {
-            org.json.JSONObject d = soulseekSleepDecisionSnapshot();
-            d.put("wifiWasEnabled", true);
-            DebugSessionLog.log("MainActivity.tryWifiSleepPowerOff", "wifi sleep off", "H-WIFI", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        // 2026-07-16 — Ship light logs while still online, then drop radio (no log-ship toast).
+        SolarDiagnosticReporter.runBeforeWifiDisable(this, false, new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    if (wm.isWifiEnabled()) {
+                        wm.setWifiEnabled(false);
+                    }
+                } catch (Exception ignored) {}
+                wifiDisabledBySleepPolicy = true;
+                if (prefs != null) {
+                    prefs.edit().putBoolean(WifiSleepPolicy.PREF_DISABLED_BY_POLICY, true).commit();
+                }
+                // #region agent log
+                try {
+                    org.json.JSONObject d = soulseekSleepDecisionSnapshot();
+                    d.put("wifiWasEnabled", true);
+                    DebugSessionLog.log("MainActivity.tryWifiSleepPowerOff", "wifi sleep off", "H-WIFI", d);
+                } catch (Exception ignored) {}
+                // #endregion
+            }
+        });
     }
 
     /** Real transfers only — not {@link SoulseekClient#isBusy()} policy keep-alive. */
@@ -15267,16 +15280,28 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     if (wm != null) {
                         boolean isCurrentlyOn = wm.isWifiEnabled();
                         if (isCurrentlyOn) {
-                            Toast.makeText(MainActivity.this, getString(R.string.toast_wifi_turning_off), Toast.LENGTH_SHORT).show();
-                            wm.setWifiEnabled(false);
+                            TextView tvRight = (TextView) btnToggle.getChildAt(1);
+                            tvRight.setText("Wait...");
+                            if (!btnToggle.hasFocus())
+                                ThemeManager.applyThemedTextStyle(tvRight, y1RowTextColorSelected(Y1_ROW_MENU));
+                            // "Disconnecting…" + light log flush, then radio off.
+                            SolarDiagnosticReporter.runBeforeWifiDisable(MainActivity.this, true,
+                                    new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            try {
+                                                wm.setWifiEnabled(false);
+                                            } catch (Exception ignored) {}
+                                        }
+                                    });
                         } else {
                             Toast.makeText(MainActivity.this, getString(R.string.toast_wifi_turning_on), Toast.LENGTH_SHORT).show();
                             wm.setWifiEnabled(true);
+                            TextView tvRight = (TextView) btnToggle.getChildAt(1);
+                            tvRight.setText("Wait...");
+                            if (!btnToggle.hasFocus())
+                                ThemeManager.applyThemedTextStyle(tvRight, y1RowTextColorSelected(Y1_ROW_MENU));
                         }
-                        TextView tvRight = (TextView) btnToggle.getChildAt(1);
-                        tvRight.setText("Wait...");
-                        if (!btnToggle.hasFocus())
-                            ThemeManager.applyThemedTextStyle(tvRight, y1RowTextColorSelected(Y1_ROW_MENU));
                     }
                 }
             });
@@ -18781,7 +18806,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 new Runnable() {
                     @Override
                     public void run() {
-                        performDeviceShutdown();
+                        // User menu path: getting-ready toast + log ship + silent Soulseek notice.
+                        PowerActions.shutdown(MainActivity.this);
                     }
                 });
     }
@@ -18794,7 +18820,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 new Runnable() {
                     @Override
                     public void run() {
-                        performDeviceRestart();
+                        PowerActions.restart(MainActivity.this);
                     }
                 });
     }
@@ -25475,7 +25501,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void applyWifiPowerState(boolean enable) {
-        WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        final WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wm == null) return;
         if (enable) {
             wifiDisabledBySleepPolicy = false;
@@ -25499,14 +25525,26 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             wifiContextPendingEnable = false;
             wifiContextPendingDisable = true;
             cancelWifiContextScanFollowUps();
-            Toast.makeText(this, getString(R.string.toast_wifi_turning_off), Toast.LENGTH_SHORT).show();
-            wm.setWifiEnabled(false);
-            if (themedContextMenu != null && themedContextMenu.isShowing()
-                    && isContextTierActive("wifi")) {
-                contextTierConfirmOpen = false;
-                cancelPendingContextWifiRefresh();
-                refreshContextWifiTierImmediate(true, true);
-            }
+            // User-facing: "Disconnecting…" only — light diag flush then radio off.
+            SolarDiagnosticReporter.runBeforeWifiDisable(this, true, new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        wm.setWifiEnabled(false);
+                    } catch (Exception ignored) {}
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (themedContextMenu != null && themedContextMenu.isShowing()
+                                    && isContextTierActive("wifi")) {
+                                contextTierConfirmOpen = false;
+                                cancelPendingContextWifiRefresh();
+                                refreshContextWifiTierImmediate(true, true);
+                            }
+                        }
+                    });
+                }
+            });
         }
     }
 
@@ -33539,7 +33577,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             restoreSettingsAfterSoulseekAccount();
             return;
         }
-        if (isDeveloperSupportMessageCompose()) {
+        // Solar Development virtual peer OR direct wire PM to a developer account.
+        if (isDeveloperSupportMessageCompose() || SolarDeveloperAccounts.isDeveloper(to)) {
             final String quote = soulseekReplyQuoteText != null ? soulseekReplyQuoteText.trim() : "";
             soulseekReplyQuoteText = "";
             final String outbound = quote.isEmpty()
@@ -33557,6 +33596,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {
+                            Toast.makeText(MainActivity.this,
+                                    R.string.report_issue_sent_hint, Toast.LENGTH_SHORT).show();
                             finishPmComposeNavigation(SolarDeveloperAccounts.VIRTUAL_PEER);
                         }
                     });
@@ -34011,13 +34052,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return span;
     }
 
-    /** GitHub Issues URL — copy/type on a PC; no in-app browser. 2026-07-05 */
+    /**
+     * Report Issue → Solar Development conversation (Soulseek-style PM).
+     * Sending a message fans out to developer accounts and ships full diagnostics
+     * + the quoted text to the solar-diag worker → GitHub issue.
+     * 2026-07-16
+     */
     private void buildReportIssueUI() {
+        if (canOpenDeveloperSupport()) {
+            openSolarDevelopmentThread();
+            return;
+        }
+        // Offline / Reach not signed in — explain and offer the old GitHub URL fallback.
         setSettingsAboutFullWidth(true);
         setSettingsSubScreen(SettingsScreens.REPORT_ISSUE);
         updateStatusBarTitle();
         updateScreenBackground(STATE_SETTINGS);
         containerSettingsItems.removeAllViews();
+        addSettingsInfoParagraph(getString(R.string.report_issue_needs_reach));
         addSettingsInfoParagraph(getString(R.string.support_link_report_issue_intro));
         addSettingsInfoParagraph(SolarSupportLinks.githubIssuesUrlForDisplay());
     }

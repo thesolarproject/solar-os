@@ -71,6 +71,9 @@
     <string name="settings_our_donors">Our Donors</string>
     <string name="settings_sub_our_donors">Settings: Our Donors</string>
     <string name="support_link_report_issue_intro">Report bugs or request features. Open this address in a browser on your computer:</string>
+    <string name="report_issue_needs_reach">Connect to Wi‑Fi and sign in to Reach to message Solar Development. Your message is sent to the developers and opens a private diagnostic report with logs from this device.</string>
+    <string name="report_issue_sent_hint">Message queued — diagnostics are being uploaded for the developers.</string>
+    <string name="diag_getting_ready">Getting ready…</string>
     <string name="support_link_kofi_intro">Thank you for supporting Solar. Open this page in a browser to donate:</string>
     <string name="donors_loading">Loading donors…</string>
     <string name="donors_empty">No donors listed yet.</string>
@@ -1553,7 +1556,8 @@
     <string name="toast_already_connected">Already connected: %1$s</string>
     <string name="toast_pairing">Pairing: %1$s</string>
     <string name="toast_audio_connect_failed">Audio connect failed.</string>
-    <string name="toast_wifi_turning_off">Turning Wi-Fi OFF…</string>
+    <string name="toast_wifi_turning_off">Disconnecting…</string>
+    <string name="toast_wifi_disconnecting">Disconnecting…</string>
     <string name="toast_wifi_turning_on">Turning Wi-Fi ON…</string>
     <string name="toast_wifi_already_connected">Already connected.</string>
     <string name="toast_wifi_saved_connecting">Connecting to saved network…</string>

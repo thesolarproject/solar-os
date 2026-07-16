@@ -71,11 +71,11 @@ public final class PowerMenuRowCatalog {
         if (index >= rows.size()) return false;
         String token = rows.get(index).actionToken;
         if (ACTION_RESTART.equals(token)) {
-            PowerActions.restart();
+            PowerActions.restart(ctx);
             return true;
         }
         if (ACTION_SHUTDOWN.equals(token)) {
-            PowerActions.shutdown();
+            PowerActions.shutdown(ctx);
             return true;
         }
         return false;

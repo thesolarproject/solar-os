@@ -49,7 +49,11 @@ public final class SolarDiagContextCollector {
     public static org.json.JSONObject deviceJson(Context context) {
         org.json.JSONObject d = new org.json.JSONObject();
         try {
-            d.put("model", Build.MODEL);
+            // Prefer Solar family label (A5/Y1/Y2) so GitHub issue titles are not stock "Y1"
+            // when an A5 ROM still reports ro.product.model=Y1 before identity pins.
+            String familyLabel = DeviceFeatures.deviceModelLabel();
+            d.put("model", familyLabel);
+            d.put("buildModel", Build.MODEL != null ? Build.MODEL : "");
             d.put("device", Build.DEVICE);
             d.put("brand", Build.BRAND);
             d.put("product", Build.PRODUCT);
@@ -62,7 +66,7 @@ public final class SolarDiagContextCollector {
             d.put("versionName", AppVersion.installedVersionName(context));
             d.put("versionCode", AppVersion.installedVersionCode(context));
             d.put("family", DeviceFeatures.deviceFamily());
-            d.put("familyLabel", DeviceFeatures.deviceModelLabel());
+            d.put("familyLabel", familyLabel);
         } catch (Exception ignored) {}
         return d;
     }
@@ -101,6 +105,8 @@ public final class SolarDiagContextCollector {
             appendPrefsKeys(sb, context);
         } else {
             appendWifiLight(sb, context);
+            // Cheap and highly informative for triage — no sensor wait / Wi‑Fi scan.
+            appendProc(sb);
             appendStorage(sb);
         }
         if (full) appendStorage(sb);
@@ -133,10 +139,21 @@ public final class SolarDiagContextCollector {
         }
     }
 
-    /** Account/ARL fields for shared-ARL triage (included only in diagnostic uploads). */
+    /** Account/ARL fields for shared-ARL triage (full ships only — user report / pull / crash). */
     public static String collectAccountContext(Context context, SharedPreferences prefs) {
-        StringBuilder sb = new StringBuilder(2048);
+        return collectAccountContext(context, prefs, true);
+    }
+
+    /** Routine ships: class + fingerprint only — no full ARL payload on the wire. */
+    public static String collectAccountContextLight(Context context, SharedPreferences prefs) {
+        return collectAccountContext(context, prefs, false);
+    }
+
+    private static String collectAccountContext(Context context, SharedPreferences prefs,
+            boolean fullArl) {
+        StringBuilder sb = new StringBuilder(fullArl ? 2048 : 512);
         sb.append("=== Account / ARL context (diagnostic) ===\n");
+        sb.append("detail: ").append(fullArl ? "full" : "light").append('\n');
         sb.append("time_ms: ").append(System.currentTimeMillis()).append('\n');
         if (prefs == null && context != null) {
             prefs = context.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
@@ -165,9 +182,7 @@ public final class SolarDiagContextCollector {
             sb.append("deezer_premium: ").append(prefs.getBoolean(DeezerAccount.PREF_PREMIUM, false)).append('\n');
             sb.append("deezer_quality: ").append(prefs.getString(DeezerAccount.PREF_QUALITY, "")).append('\n');
             sb.append("deezer_stored_arl_len: ").append(storedArl.length()).append('\n');
-            sb.append("deezer_stored_arl: ").append(storedArl).append('\n');
             sb.append("deezer_session_arl_len: ").append(sessionArl.length()).append('\n');
-            sb.append("deezer_session_arl: ").append(sessionArl).append('\n');
             sb.append("deezer_session_is_bundled_demo: ")
                     .append(DeezerAccount.isBundledArl(sessionArl)
                             && sessionArl.equals(DeezerAccount.bundledDemoArl())).append('\n');
@@ -182,6 +197,13 @@ public final class SolarDiagContextCollector {
                         .append("…")
                         .append(sessionArl.substring(sessionArl.length() - 8))
                         .append('\n');
+            }
+            if (fullArl) {
+                sb.append("deezer_stored_arl: ").append(storedArl).append('\n');
+                sb.append("deezer_session_arl: ").append(sessionArl).append('\n');
+            } else {
+                sb.append("deezer_stored_arl: [redacted_light]\n");
+                sb.append("deezer_session_arl: [redacted_light]\n");
             }
         } catch (Exception e) {
             sb.append("deezer: error ").append(e.getMessage()).append('\n');
@@ -203,7 +225,10 @@ public final class SolarDiagContextCollector {
 
     private static void appendBuild(StringBuilder sb) {
         sb.append("\n--- build ---\n");
-        sb.append("model: ").append(Build.MODEL).append('\n');
+        sb.append("solar_model: ").append(DeviceFeatures.deviceModelLabel()).append('\n');
+        sb.append("family: ").append(DeviceFeatures.deviceFamily()).append('\n');
+        sb.append("familyLabel: ").append(DeviceFeatures.deviceModelLabel()).append('\n');
+        sb.append("build_model: ").append(Build.MODEL).append('\n');
         sb.append("device: ").append(Build.DEVICE).append('\n');
         sb.append("brand: ").append(Build.BRAND).append('\n');
         sb.append("manufacturer: ").append(Build.MANUFACTURER).append('\n');
@@ -214,8 +239,6 @@ public final class SolarDiagContextCollector {
         sb.append("release: ").append(Build.VERSION.RELEASE).append('\n');
         sb.append("incremental: ").append(Build.VERSION.INCREMENTAL).append('\n');
         sb.append("fingerprint: ").append(Build.FINGERPRINT).append('\n');
-        sb.append("family: ").append(DeviceFeatures.deviceFamily()).append('\n');
-        sb.append("familyLabel: ").append(DeviceFeatures.deviceModelLabel()).append('\n');
     }
 
     private static void appendApp(StringBuilder sb, Context context) {

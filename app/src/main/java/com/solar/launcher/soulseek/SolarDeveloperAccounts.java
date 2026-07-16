@@ -33,8 +33,12 @@ public final class SolarDeveloperAccounts {
 
     private SolarDeveloperAccounts() {}
 
+    /**
+     * Solar Development / Report Issue support is always on.
+     * Pref remains for Debug UI visibility but does not gate the feature.
+     */
     public static boolean isExperimentEnabled(SharedPreferences prefs) {
-        return false;
+        return true;
     }
 
     public static boolean isDeveloper(String username) {
@@ -156,6 +160,17 @@ public final class SolarDeveloperAccounts {
         } else {
             body = "solar_diag: failed (retry later)";
         }
+        return DIAG_MARKER + body;
+    }
+
+    /**
+     * Silent notice to developer accounts on user power-off/restart.
+     * Always includes {@link #DIAG_MARKER} so conversation UI and local history omit it.
+     */
+    public static String formatPoweredOffNotice(String username, boolean restart) {
+        String who = username != null ? username.trim() : "";
+        if (who.isEmpty()) who = "user";
+        String body = restart ? (who + " is restarting") : (who + " has powered off");
         return DIAG_MARKER + body;
     }
 

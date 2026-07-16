@@ -1753,7 +1753,7 @@ public final class OverlayModalHost {
                         context.getString(R.string.context_restart_message),
                         context.getString(R.string.context_restart_confirm),
                         new Runnable() {
-                            @Override public void run() { PowerActions.restart(); }
+                            @Override public void run() { PowerActions.restart(context); }
                         });
             }
         });
@@ -1767,7 +1767,7 @@ public final class OverlayModalHost {
                         context.getString(R.string.context_shutdown_message),
                         context.getString(R.string.context_shutdown_confirm),
                         new Runnable() {
-                            @Override public void run() { PowerActions.shutdown(); }
+                            @Override public void run() { PowerActions.shutdown(context); }
                         });
             }
         });

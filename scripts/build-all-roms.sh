@@ -154,8 +154,10 @@ scatter_ok "\$DIST/rom_y2.zip" MT6582_Android_scatter.txt \
     || { echo "ERROR: rom_y2.zip missing MT6582 scatter" >&2; exit 1; }
 _ft=\$(unzip -l "\$DIST/rom_y2.zip" 2>/dev/null | grep -ciE 'flash_tool\.exe|FlashToolLib' || true)
 [ "\${_ft:-0}" -ge 1 ] || { echo "ERROR: rom_y2.zip missing SP Flash Tool" >&2; exit 1; }
+# Flash geometry first (scatter offsets) — contents/xposed are heavier secondary checks.
 "\$ROOT/solar-rom/scripts/verify-y2-rom-flash.sh" "\$DIST/rom_y2.zip"
 "\$ROOT/solar-rom/scripts/verify-y2-rom-contents.sh" "\$DIST/rom_y2.zip"
+# Xposed paths already audited inside build-rom; keep one lightweight API-level check only.
 "\$ROOT/solar-rom/scripts/verify-xposed-rom-contents.sh" "\$DIST/rom_y2.zip" 19
 cp -f "\$DIST/rom_y2.zip" "\$ROOT/rom_y2.zip"
 

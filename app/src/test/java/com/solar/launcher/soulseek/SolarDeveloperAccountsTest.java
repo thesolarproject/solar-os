@@ -135,8 +135,9 @@ public class SolarDeveloperAccountsTest {
       @Override public void registerOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {}
       @Override public void unregisterOnSharedPreferenceChangeListener(OnSharedPreferenceChangeListener listener) {}
     };
-    if (SolarDeveloperAccounts.isExperimentEnabled(prefs)) {
-      throw new AssertionError("developer support PM UI should be off");
+    // 2026-07-16 — Report Issue / Solar Development is always on (not experiment-gated).
+    if (!SolarDeveloperAccounts.isExperimentEnabled(prefs)) {
+      throw new AssertionError("developer support should be always on");
     }
   }
 
@@ -154,6 +155,20 @@ public class SolarDeveloperAccountsTest {
             SolarDeveloperAccounts.parseDevIncoming("plain text");
     if (!plain.fromDev.isEmpty()) throw new AssertionError("plain from");
     if (!"plain text".equals(plain.body)) throw new AssertionError("plain body");
+  }
+
+  @Test
+  public void poweredOffNoticeIsAutoDiagnosticHidden() {
+    String off = SolarDeveloperAccounts.formatPoweredOffNotice("alice", false);
+    String restart = SolarDeveloperAccounts.formatPoweredOffNotice("alice", true);
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(off)) {
+      throw new AssertionError("power off should hide from conversation");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(restart)) {
+      throw new AssertionError("restart should hide from conversation");
+    }
+    if (!off.contains("has powered off")) throw new AssertionError("off body=" + off);
+    if (!restart.contains("is restarting")) throw new AssertionError("restart body=" + restart);
   }
 
   @Test

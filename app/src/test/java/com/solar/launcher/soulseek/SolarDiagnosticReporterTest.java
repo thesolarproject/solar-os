@@ -79,8 +79,40 @@ public class SolarDiagnosticReporterTest {
   }
 
   @Test
+  public void userReportShipsAllSourcesRegardlessOfManifest() throws Exception {
+    JSONObject manifest = new JSONObject();
+    manifest.put("/data/foo.txt", 123L);
+    if (!SolarDiagnosticReporter.shouldShipSource(
+            "other/file.txt", manifest, "/data/foo.txt", 123L,
+            SolarDiagnosticReporter.ScanMode.USER_REPORT)) {
+      throw new AssertionError("user report full bundle");
+    }
+  }
+
+  @Test
+  public void wifiOffShipsAllSourcesRegardlessOfManifest() throws Exception {
+    JSONObject manifest = new JSONObject();
+    manifest.put("/data/foo.txt", 123L);
+    if (!SolarDiagnosticReporter.shouldShipSource(
+            "other/file.txt", manifest, "/data/foo.txt", 123L,
+            SolarDiagnosticReporter.ScanMode.WIFI_OFF)) {
+      throw new AssertionError("wifi_off flush bundle");
+    }
+  }
+
+  @Test
+  public void runBeforeWifiDisableNullSafe() {
+    SolarDiagnosticReporter.runBeforeWifiDisable(null, true, null);
+  }
+
+  @Test
   public void shipOnDeveloperSupportOpenNullSafe() {
     SolarDiagnosticReporter.shipOnDeveloperSupportOpen(null, null);
+  }
+
+  @Test
+  public void shipUserReportNullSafe() {
+    SolarDiagnosticReporter.shipUserReport(null, null, "hello", null);
   }
 
   @Test
