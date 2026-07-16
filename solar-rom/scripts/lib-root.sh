@@ -34,12 +34,10 @@ EOF
             chmod 755 "$askpass_path" 2>/dev/null || true
             export SUDO_ASKPASS="$askpass_path"
         fi
-        if [ ! -t 0 ] || [ -n "${USE_SUDO_ASKPASS:-}" ]; then
-            sudo() {
-                command sudo -A "$@"
-            }
-            export -f sudo 2>/dev/null || true
-        fi
+        sudo() {
+            command sudo -A "$@"
+        }
+        export -f sudo 2>/dev/null || true
     fi
 }
 
