@@ -115,7 +115,11 @@ public final class Y1UsbFocusHelper {
         final boolean extraHost = intent.getBooleanExtra(EXTRA_HOST_CONNECTED, false);
         final boolean extraMassStorage = intent.getBooleanExtra("mass_storage", false);
         final boolean extraPcKnow = intent.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
-        final boolean host = extraHost || extraMassStorage || extraPcKnow;
+        // 2026-07-16 — Prefer OEM host signals; configured+connected = PC finished enumerating.
+        // Wall chargers are often connected without configured → charger-only path.
+        final boolean configured = intent.getBooleanExtra("configured", false);
+        final boolean host = extraHost || extraMassStorage || extraPcKnow
+                || (connected && configured);
         // #region agent log
         try {
             JSONObject d = new JSONObject();

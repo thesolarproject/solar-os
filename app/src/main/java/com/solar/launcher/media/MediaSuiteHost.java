@@ -3709,10 +3709,11 @@ public final class MediaSuiteHost {
     }
 
     /**
-     * 2026-07-15 — Music YouTube Audio: resolve/save audio → music STATE_PLAYER (not video IJK).
-     * Layman: download the soundtrack and play it like a normal song.
-     * Technical: YouTubeDownloader.saveAudio (uses resolveAudioStream) then playTrackList.
-     * Reversal: playYouTubeVideo; Files remain on disk under Music/YouTube.
+     * 2026-07-15 — Music YouTube Audio: resolve → music STATE_PLAYER (not video IJK).
+     * 2026-07-16 — Play uses app play-cache only; permanent Music/YouTube is Save only.
+     * Layman: Play buffers for the queue; Save keeps a library copy.
+     * Technical: YouTubeDownloader.cacheAudioForPlay then playTrackList; purged off-queue.
+     * Reversal: saveAudio + findSavedAudio so Play wrote permanent library files again.
      */
     private void playYouTubeAudio(final YouTubeVideo video) {
         if (video == null || video.id == null || video.id.isEmpty()) return;
@@ -3722,16 +3723,9 @@ public final class MediaSuiteHost {
         youtubeResolvingStream = true;
         setYoutubeResolveStatus(host.getString(R.string.youtube_resolve_looking_up));
         refreshYouTubeResolveUi();
-        File existing = YouTubeSavePaths.findSavedAudio(host.context(), video);
-        if (existing != null && existing.length() > 1024L) {
-            youtubeResolvingStream = false;
-            youtubeLoading = false;
-            youtubeResolveStatus = "";
-            clearYouTubeResolveUi();
-            host.playAudioFileInNowPlaying(existing);
-            return;
-        }
-        YouTubeDownloader.saveAudio(host.context(), video, new YouTubeDownloader.Callback() {
+        // Prefer prior explicit Save only — not a leftover Play download under Music/YouTube.
+        // (Legacy Play wrote permanent files; do not treat those as intentional library saves.)
+        YouTubeDownloader.cacheAudioForPlay(host.context(), video, new YouTubeDownloader.Callback() {
             @Override
             public void onProgress(String phase, int percent, long doneBytes, long totalBytes) {
                 if (gen != youtubeLoadGen) return;

@@ -64,6 +64,9 @@ public final class UsbHostSessionPolicy {
     public static void onBootCompleted(Context context) {
         if (context == null) return;
         final Context app = context.getApplicationContext();
+        // 2026-07-16 — Drop sticky dismiss/evaluated from prior process so a PC cable
+        // can show USB Connection after Solar restarts (ADB left session flags stuck).
+        clearStaleSessionForNewProcess(app);
         boolean hostAtBoot = probeHostConnectedAtBoot(app);
         long elapsed = SystemClock.elapsedRealtime();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -103,20 +106,27 @@ public final class UsbHostSessionPolicy {
         boolean wasEvaluated = prefs.getBoolean(PREF_SESSION_PROMPT_EVALUATED, false);
         boolean wasDismissed = prefs.getBoolean(PREF_SESSION_DISMISSED, false);
         if (isFlap) {
-            // 2026-07-14 — Short unplug/replug: keep evaluated/dismissed; re-mark plug present.
-            // Was: early return without restoring active after disconnect cleared it.
-            if (!wasActive) {
-                prefs.edit().putBoolean(PREF_SESSION_ACTIVE, true).commit();
+            // 2026-07-14/16 — Short unplug/replug: re-apply user dismiss if they dismissed this plug.
+            // Disconnect now clears dismissed; flap restores it from usb_flap_keep_dismiss.
+            boolean keepDismiss = prefs.getBoolean("usb_flap_keep_dismiss", false);
+            SharedPreferences.Editor ed = prefs.edit().putBoolean(PREF_SESSION_ACTIVE, true);
+            if (keepDismiss) {
+                ed.putBoolean(PREF_SESSION_DISMISSED, true)
+                        .putBoolean(PREF_SESSION_PROMPT_EVALUATED, true);
+            } else {
+                ed.putBoolean(PREF_SESSION_DISMISSED, false)
+                        .putBoolean(PREF_SESSION_PROMPT_EVALUATED, false);
             }
+            ed.commit();
+            syncSessionSysprop(app, keepDismiss);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
                 d.put("isFlap", true);
                 d.put("wasActive", wasActive);
-                d.put("wasEvaluated", wasEvaluated);
-                d.put("wasDismissed", wasDismissed);
+                d.put("keepDismiss", keepDismiss);
                 Debug02fc83Log.log(app, "UsbHostSessionPolicy.onUsbHostConnected",
-                        "flap — keep session", "H2", d);
+                        "flap — restore session", "H2", d);
             } catch (Exception ignored) {}
             // #endregion
             return;
@@ -197,20 +207,27 @@ public final class UsbHostSessionPolicy {
     }
 
     /**
-     * Cable unplug — plug gone; flap window keeps dismissed/evaluated until real reconnect (2026-07-14).
-     * Layman: unplug clears "this plug is live" so the next long reconnect can ask again.
-     * Tech: clear SESSION_ACTIVE only; leave dismissed/evaluated for &lt;3s flap reconnect.
-     * Reversal: omit SESSION_ACTIVE clear and always reset on every connect (pre-02fc83).
+     * Cable unplug — plug gone; next long reconnect can ask again (2026-07-14 / 2026-07-16).
+     * Layman: unplug forgets "this plug" so the next PC connect can show USB Connection.
+     * Tech: clear active + dismissed + evaluated. Flap (&lt;3s) reconnect re-applies dismiss via
+     * {@link #onUsbHostConnected} isFlap path reading last disconnect time only when
+     * PREF_FLAP_KEEP_DISMISS was set.
+     * Reversal: leave dismissed/evaluated set on disconnect (stuck prompts with ADB).
      */
     public static void onUsbHostDisconnected(Context context) {
         if (context == null) return;
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        boolean wasDismissed = prefs.getBoolean(PREF_SESSION_DISMISSED, false);
         prefs.edit()
                 .putLong("usb_last_disconnect_time", SystemClock.elapsedRealtime())
                 .putBoolean(PREF_SESSION_ACTIVE, false)
+                .putBoolean(PREF_SESSION_DISMISSED, false)
+                .putBoolean(PREF_SESSION_PROMPT_EVALUATED, false)
+                // Remember user dismiss for short flap only.
+                .putBoolean("usb_flap_keep_dismiss", wasDismissed)
                 .commit();
-        syncSessionSysprop(app, prefs.getBoolean(PREF_SESSION_DISMISSED, false));
+        syncSessionSysprop(app, false);
         if (!prefs.getBoolean(PREF_HOST_DISC_SINCE_BOOT, false)) {
             long bootElapsed = prefs.getLong(PREF_BOOT_ELAPSED_RT, 0L);
             prefs.edit().putBoolean(PREF_HOST_DISC_SINCE_BOOT, true).commit();
@@ -222,10 +239,30 @@ public final class UsbHostSessionPolicy {
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("reason", "session_reset");
+            d.put("wasDismissed", wasDismissed);
             DebugAf054eLog.log(app, "UsbHostSessionPolicy.onUsbHostDisconnected",
                     "host disconnect — session cleared", "USB-SESSION", d);
         } catch (Exception ignored) {}
         // #endregion
+    }
+
+    /**
+     * 2026-07-16 — New process: forget plug session so the first host detect can evaluate.
+     * Layman: restarting Solar does not inherit a permanent "don't ask about USB".
+     * Tech: clears active/dismissed/evaluated; boot settle still delays reboot-with-cable.
+     * Reversal: no-op; sticky prefs blocked prompts until manual unplug forever.
+     */
+    public static void clearStaleSessionForNewProcess(Context context) {
+        if (context == null) return;
+        Context app = context.getApplicationContext();
+        SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        prefs.edit()
+                .putBoolean(PREF_SESSION_ACTIVE, false)
+                .putBoolean(PREF_SESSION_DISMISSED, false)
+                .putBoolean(PREF_SESSION_PROMPT_EVALUATED, false)
+                .putBoolean("usb_flap_keep_dismiss", false)
+                .commit();
+        syncSessionSysprop(app, false);
     }
 
     /** User chose Turn on USB storage — clear dismiss idle for this plug (2026-07-06). */

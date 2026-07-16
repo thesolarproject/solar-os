@@ -41,20 +41,31 @@ public final class YouTubeDownloader {
     private YouTubeDownloader() {}
 
     public static void saveVideo(final Context ctx, final YouTubeVideo video, final Callback cb) {
-        save(ctx, video, false, cb);
+        save(ctx, video, false, false, cb);
     }
 
     public static void saveAudio(final Context ctx, final YouTubeVideo video, final Callback cb) {
-        save(ctx, video, true, cb);
+        save(ctx, video, true, false, cb);
+    }
+
+    /**
+     * 2026-07-16 — Play-only audio: app cache, not Music/YouTube library.
+     * Layman: tapping Play on a search hit buffers for the queue; Save keeps a permanent copy.
+     * Reversal: call {@link #saveAudio} from playYouTubeAudio again.
+     */
+    public static void cacheAudioForPlay(final Context ctx, final YouTubeVideo video,
+            final Callback cb) {
+        save(ctx, video, true, true, cb);
     }
 
     private static void save(final Context ctx, final YouTubeVideo video,
-            final boolean audioOnly, final Callback cb) {
+            final boolean audioOnly, final boolean playCacheOnly, final Callback cb) {
         if (video == null || video.id == null || video.id.isEmpty()) {
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
                 d.put("audioOnly", audioOnly);
+                d.put("playCacheOnly", playCacheOnly);
                 d.put("nullVideo", video == null);
                 com.solar.launcher.Debug88eea4Log.log(ctx, "YouTubeDownloader.save",
                         "reject no video", "E", d);
@@ -67,32 +78,57 @@ public final class YouTubeDownloader {
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("audioOnly", audioOnly);
+            d.put("playCacheOnly", playCacheOnly);
             d.put("videoId", video.id);
             d.put("titleLen", video.title != null ? video.title.length() : 0);
             com.solar.launcher.Debug88eea4Log.log(ctx, "YouTubeDownloader.save",
                     "save start", "A,D", d);
         } catch (Exception ignored) {}
         // #endregion
-        File existing = audioOnly
-                ? YouTubeSavePaths.findSavedAudio(ctx, video)
-                : YouTubeSavePaths.findSavedVideo(ctx, video);
-        if (existing != null && existing.length() > 1024L) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("audioOnly", audioOnly);
-                d.put("path", existing.getAbsolutePath());
-                d.put("len", existing.length());
-                com.solar.launcher.Debug88eea4Log.log(ctx, "YouTubeDownloader.save",
-                        "already on disk", "C", d);
-            } catch (Exception ignored) {}
-            // #endregion
-            main.post(new Runnable() {
-                @Override public void run() {
-                    if (cb != null) cb.onComplete(existing);
+        // Permanent library hits only for explicit Save — never promote Play into Music/YouTube.
+        if (!playCacheOnly) {
+            File existing = audioOnly
+                    ? YouTubeSavePaths.findSavedAudio(ctx, video)
+                    : YouTubeSavePaths.findSavedVideo(ctx, video);
+            if (existing != null && existing.length() > 1024L) {
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("audioOnly", audioOnly);
+                    d.put("path", existing.getAbsolutePath());
+                    d.put("len", existing.length());
+                    com.solar.launcher.Debug88eea4Log.log(ctx, "YouTubeDownloader.save",
+                            "already on disk", "C", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                main.post(new Runnable() {
+                    @Override public void run() {
+                        if (cb != null) cb.onComplete(existing);
+                    }
+                });
+                return;
+            }
+        } else {
+            // Reuse existing play-cache file for this video id if still present.
+            File playDir = YouTubePlayCache.dir(ctx);
+            if (playDir != null) {
+                File[] cached = playDir.listFiles();
+                String idPrefix = video.id.replaceAll("[^A-Za-z0-9_-]", "") + "_";
+                if (cached != null) {
+                    for (int i = 0; i < cached.length; i++) {
+                        File f = cached[i];
+                        if (f.isFile() && f.length() > 1024L && f.getName().startsWith(idPrefix)) {
+                            final File hit = f;
+                            main.post(new Runnable() {
+                                @Override public void run() {
+                                    if (cb != null) cb.onComplete(hit);
+                                }
+                            });
+                            return;
+                        }
+                    }
                 }
-            });
-            return;
+            }
         }
         // 2026-07-15 — Show "Finding stream…" before resolve so Save doesn't look stuck.
         postProgress(cb, "resolve", 0, 0L, 0L);
@@ -120,6 +156,7 @@ public final class YouTubeDownloader {
                     try {
                         org.json.JSONObject d = new org.json.JSONObject();
                         d.put("audioOnly", audioOnly);
+                        d.put("playCacheOnly", playCacheOnly);
                         d.put("ext", stream.ext != null ? stream.ext : "");
                         d.put("urlPrefix", stream.url.length() > 80
                                 ? stream.url.substring(0, 80) : stream.url);
@@ -129,9 +166,18 @@ public final class YouTubeDownloader {
                                 "YouTubeDownloader.resolveCb", "resolve ok", "YT1", "post-fix", d);
                     } catch (Exception ignored) {}
                     // #endregion
-                    final File dest = audioOnly
-                            ? YouTubeSavePaths.destAudioFile(ctx, video, stream.ext)
-                            : YouTubeSavePaths.destVideoFile(ctx, video, stream.ext);
+                    final File dest;
+                    if (playCacheOnly && audioOnly) {
+                        dest = YouTubePlayCache.destAudioFile(ctx, video, stream.ext);
+                    } else if (audioOnly) {
+                        dest = YouTubeSavePaths.destAudioFile(ctx, video, stream.ext);
+                    } else {
+                        dest = YouTubeSavePaths.destVideoFile(ctx, video, stream.ext);
+                    }
+                    if (dest == null) {
+                        postError(cb, "no dest");
+                        return;
+                    }
                     downloadResolved(ctx, stream.url, dest, cb);
                 } catch (Exception e) {
                     postError(cb, e.getMessage());

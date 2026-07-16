@@ -42893,8 +42893,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /**
      * 2026-07-15 — YouTube Audio: open music Now Playing with a local file.
-     * Layman: play the saved track like any song. Technical: playTrackList singleton → STATE_PLAYER.
-     * Reversal: remove call site; file stays on disk.
+     * 2026-07-16 — Play-cache files stay only while queued; replaced by playTrackList purge.
+     * Layman: play the buffered track like any song. Technical: playTrackList singleton → STATE_PLAYER.
+     * Reversal: remove call site.
      */
     public void mediaPlayAudioFileInNowPlaying(File file) {
         if (file == null || !file.isFile()) return;
@@ -46151,6 +46152,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             keep.add(deezerScreen.growingFile());
         }
         DeezerCache.purgeUnreferenced(streamAppCacheRoot(), keep);
+        // 2026-07-16 — YouTube Play temps die with the queue (Save still uses Music/YouTube).
+        com.solar.launcher.youtube.YouTubePlayCache.purgeUnreferenced(streamAppCacheRoot(), keep);
         StreamTempCache.purgePodcastStream(streamAppCacheRoot(),
                 podcastGrowingCacheFile, podcastGrowingCacheFinal);
     }
