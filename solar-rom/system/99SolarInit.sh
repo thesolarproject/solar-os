@@ -79,15 +79,37 @@ fi
 #fi
 setprop persist.solar.home.target solar
 # 2026-07-15 — A5 ROM bakes A5-mtk.kl; pin family before keymap sync so Y1 wheel maps never win.
-# Was: sync used model alone (stock A5 reports Y1 → wrong keys). Now: A5 files force family a5.
+# 2026-07-16 — Also pin a5 from panel size (stock A5 claims model=Y1). Display beats stale y1 pin.
+# Was: sync used model alone (stock A5 reports Y1 → wrong keys). Now: A5 files + QVGA force family a5.
 if [ -f /system/etc/solar/A5-mtk.kl ] && [ -f /system/etc/solar/A5.kl ]; then
     setprop persist.solar.device_family a5 2>/dev/null
 fi
+if [ -r /sys/class/graphics/fb0/virtual_size ]; then
+    VS="$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr ',' ' ')"
+    set -- $VS
+    _W="${1:-0}"; _H="${2:-0}"
+    case "$_W" in ''|*[!0-9]*) _W=0 ;; esac
+    case "$_H" in ''|*[!0-9]*) _H=0 ;; esac
+    if [ "$_W" -gt 0 ] && [ "$_H" -gt 0 ]; then
+        if [ "$_W" -le "$_H" ]; then _A=$_W; _B=$_H; else _A=$_H; _B=$_W; fi
+        # 240×320 ±20 → A5
+        if [ "$_A" -ge 220 ] && [ "$_A" -le 260 ] && [ "$_B" -ge 300 ] && [ "$_B" -le 340 ]; then
+            setprop persist.solar.device_family a5 2>/dev/null
+        fi
+    fi
+fi
 if [ -f /system/etc/solar/sync-rockbox-libs.sh ]; then
-    sh /system/etc/solar/sync-rockbox-libs.sh
+    # Skip heavy Rockbox codec sync on A5 — no Rockbox product path.
+    case "$(getprop persist.solar.device_family 2>/dev/null)" in
+        a5) ;;
+        *) sh /system/etc/solar/sync-rockbox-libs.sh ;;
+    esac
 fi
 if [ -f /system/etc/solar/sync-rockbox-assets.sh ]; then
-    sh /system/etc/solar/sync-rockbox-assets.sh
+    case "$(getprop persist.solar.device_family 2>/dev/null)" in
+        a5) ;;
+        *) sh /system/etc/solar/sync-rockbox-assets.sh ;;
+    esac
 fi
 if [ -f /system/etc/solar/sync-y1-keymap.sh ]; then
     sh /system/etc/solar/sync-y1-keymap.sh

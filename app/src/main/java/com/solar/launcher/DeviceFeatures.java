@@ -561,10 +561,27 @@ public final class DeviceFeatures {
         if (cachedFamily != null) return cachedFamily;
         synchronized (DeviceFeatures.class) {
             if (cachedFamily != null) return cachedFamily;
-            // 2026-07-11 — Lab/emulator pin before hardware probe.
+            int[] px = readDisplayPixels();
+            // 2026-07-16 — Clear panel size beats a wrong persist.solar.device_family pin.
+            // Was: prop y1 on A5 (from Y1 keymap sync) short-circuited probe → isA5 false forever
+            // and A5InputKeys never remapped. Now: 240×320 → a5, 480×360 → y1 even if prop lies.
+            // Lab pins still win when display is unknown (0×0) or when prop matches panel.
+            if (looksLikeA5Display(px[0], px[1])) {
+                cachedFamily = "a5";
+                logDetected(cachedFamily, px);
+                return cachedFamily;
+            }
+            if (looksLikeY1Display(px[0], px[1])) {
+                // Do not let a stale a5 pin stick on real Y1 hardware.
+                cachedFamily = "y1";
+                logDetected(cachedFamily, px);
+                return cachedFamily;
+            }
+            // 2026-07-11 — Lab/emulator pin when display geometry is unknown.
             String prop = readSystemProperty(PROP_DEVICE_FAMILY);
             if ("a5".equals(prop) || "y1".equals(prop) || "y2".equals(prop)) {
                 cachedFamily = prop;
+                logDetected(cachedFamily, px);
                 return cachedFamily;
             }
             String board = (Build.HARDWARE != null ? Build.HARDWARE : "")
@@ -572,25 +589,30 @@ public final class DeviceFeatures {
             String manu = (Build.MANUFACTURER != null ? Build.MANUFACTURER : "")
                     + " " + (Build.BRAND != null ? Build.BRAND : "")
                     + " " + (Build.PRODUCT != null ? Build.PRODUCT : "");
-            int[] px = readDisplayPixels();
             cachedFamily = probeFamily(readProcCpuHardware(), board, Build.VERSION.SDK_INT,
                     Build.MODEL != null ? Build.MODEL : "", manu, px[0], px[1]);
-            try {
-                Log.i(TAG, "detected device family: " + cachedFamily
-                        + " hw=" + Build.HARDWARE + " board=" + Build.BOARD
-                        + " sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL
-                        + " manu=" + Build.MANUFACTURER
-                        + " display=" + px[0] + "x" + px[1]);
-            } catch (Throwable ignored) {}
+            logDetected(cachedFamily, px);
             return cachedFamily;
         }
+    }
+
+    private static void logDetected(String family, int[] px) {
+        try {
+            Log.i(TAG, "detected device family: " + family
+                    + " hw=" + Build.HARDWARE + " board=" + Build.BOARD
+                    + " sdk=" + Build.VERSION.SDK_INT + " model=" + Build.MODEL
+                    + " manu=" + Build.MANUFACTURER
+                    + " display=" + (px != null ? px[0] + "x" + px[1] : "?"));
+        } catch (Throwable ignored) {}
     }
 
     /**
      * 2026-07-11 — A5 tokens before SDK/Y1 defaults so KitKat-class A5 never becomes Y2.
      * 2026-07-15 — Display size beats lying model=Y1 (A5 is 240×320; Y1 is 480×360).
-     * Was: model containing "y1" blocked A5 forever; mt6572 → y1 swallowed real A5s.
-     * Now: QVGA portrait display → a5; then model a5 tokens; then MT6582/MT6572; then SDK.
+     * 2026-07-16 — SoC (MT6582/MT6572) before Y1 panel size: Y2 shares ~360×480 and was
+     * mislabeled family=y1 in solar-diag. A5 QVGA stays first (unique panel).
+     * Was: model containing "y1" blocked A5 forever; mt6572 → y1 swallowed real A5s;
+     * Y1 display returned y1 before MT6582. Now: A5 display/model → SoC → Y1 display → SDK/model.
      */
     private static String probeFamily(String cpuHardware, String boardHardware, int sdkInt,
             String model, String manufacturer, int displayW, int displayH) {
@@ -602,10 +624,11 @@ public final class DeviceFeatures {
         if (looksLikeA5Display(displayW, displayH)) return "a5";
         // Explicit A5 model string (lab / future ROMs).
         if (looksLikeA5ModelOrManu(m, manu)) return "a5";
-        // Y1 landscape panel — even if brand is Timmkoo (same OEM as A5).
-        if (looksLikeY1Display(displayW, displayH)) return "y1";
+        // SoC before shared landscape panel — Y2 is MT6582, Y1 is MT6572.
         if (cpu.contains("mt6582") || board.contains("mt6582")) return "y2";
         if (cpu.contains("mt6572") || board.contains("mt6572")) return "y1";
+        // Y1 landscape panel when SoC unknown — even if brand is Timmkoo (same OEM as A5).
+        if (looksLikeY1Display(displayW, displayH)) return "y1";
         if (sdkInt >= 19) return "y2";
         if (sdkInt <= 16) return "y1";
         if (m.contains("y2")) return "y2";

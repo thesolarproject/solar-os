@@ -1,30 +1,79 @@
 #!/system/bin/sh
 # 2026-07-06 — Generic/Stock/Rockbox = canonical Y1-Rockbox.kl or Y2-Rockbox.kl; mtk mirrors per family.
 # 2026-07-15 — A5: restore A5-mtk.kl / A5.kl (not Y1 wheel maps). Family pin / model A5 / Timmkoo.
-# Pick family from persist.solar.device_family then ro.product.model — never from which .kl files exist.
-# Reversal: drop A5 branch; A5 boot would reapply Y1-Rockbox.kl and break face/volume keys.
+# 2026-07-16 — Detect A5 by panel size (240×320) when model props lie as Y1; never treat bare Timmkoo as A5.
+# Pick family from display → persist.solar.device_family → model — never from which .kl files exist.
+# Reversal: drop display probe + A5 branch; A5 boot would reapply Y1-Rockbox.kl and break face/volume keys.
 
 FAM="$(getprop persist.solar.device_family 2>/dev/null | tr 'A-Z' 'a-z')"
 MODEL="$(getprop ro.product.model 2>/dev/null)"
 MANU="$(getprop ro.product.manufacturer 2>/dev/null)"
 
+# Panel size: fb0 "W,H" or dumpsys fallback. A5 is ~240×320; Y1 is ~480×360.
+DISP_W=0
+DISP_H=0
+if [ -r /sys/class/graphics/fb0/virtual_size ]; then
+    # shellcheck disable=SC2039
+    VS="$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr ',' ' ')"
+    # virtual_size is "width,height"
+    set -- $VS
+    DISP_W="${1:-0}"
+    DISP_H="${2:-0}"
+fi
+if [ "$DISP_W" = "0" ] || [ -z "$DISP_W" ]; then
+    # Fallback: dumpsys window init=WxH (slower; boot path may skip if busy).
+    WIN="$(dumpsys window 2>/dev/null | tr -d '\r' | grep -o 'init=[0-9]*x[0-9]*' | head -1)"
+    WIN="${WIN#init=}"
+    DISP_W="${WIN%x*}"
+    DISP_H="${WIN#*x}"
+fi
+# Normalize empties
+case "$DISP_W" in ''|*[!0-9]*) DISP_W=0 ;; esac
+case "$DISP_H" in ''|*[!0-9]*) DISP_H=0 ;; esac
+
+looks_a5_display() {
+    w="$1"; h="$2"
+    [ "$w" -gt 0 ] 2>/dev/null || return 1
+    [ "$h" -gt 0 ] 2>/dev/null || return 1
+    # min/max for order independence
+    if [ "$w" -le "$h" ]; then a=$w; b=$h; else a=$h; b=$w; fi
+    # 240×320 ±20
+    [ "$a" -ge 220 ] && [ "$a" -le 260 ] && [ "$b" -ge 300 ] && [ "$b" -le 340 ]
+}
+
+looks_y1_display() {
+    w="$1"; h="$2"
+    [ "$w" -gt 0 ] 2>/dev/null || return 1
+    [ "$h" -gt 0 ] 2>/dev/null || return 1
+    if [ "$w" -le "$h" ]; then a=$w; b=$h; else a=$h; b=$w; fi
+    # 360×480 ±20
+    [ "$a" -ge 340 ] && [ "$a" -le 380 ] && [ "$b" -ge 460 ] && [ "$b" -le 500 ]
+}
+
 IS_Y2=0
 IS_A5=0
-case "$FAM" in
-    y2) IS_Y2=1 ;;
-    a5) IS_A5=1 ;;
-esac
+# Display first — stock A5 ROM claims model=Y1.
+if looks_a5_display "$DISP_W" "$DISP_H"; then
+    IS_A5=1
+elif looks_y1_display "$DISP_W" "$DISP_H"; then
+    IS_A5=0
+    # real Y1 panel — keep Y1 maps even if a stale a5 pin remains
+    case "$FAM" in a5) FAM=y1 ;; esac
+fi
+if [ "$IS_A5" = "0" ]; then
+    case "$FAM" in
+        y2) IS_Y2=1 ;;
+        a5) IS_A5=1 ;;
+    esac
+fi
 if [ "$IS_Y2" = "0" ] && [ "$IS_A5" = "0" ]; then
     case "$MODEL" in
         *[Yy]2*) IS_Y2=1 ;;
         *[Aa]5*) IS_A5=1 ;;
     esac
 fi
-if [ "$IS_Y2" = "0" ] && [ "$IS_A5" = "0" ]; then
-    case "$MANU" in
-        *[Tt]immkoo*) IS_A5=1 ;;
-    esac
-fi
+# 2026-07-16 — Do NOT treat bare manufacturer Timmkoo as A5 (Y1 is also Timmkoo).
+# Was: *[Tt]immkoo*) IS_A5=1 — reclassified every Y1 as A5 when A5-mtk.kl present.
 
 mount -o remount,rw /system 2>/dev/null || true
 

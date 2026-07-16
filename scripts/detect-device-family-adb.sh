@@ -47,11 +47,7 @@ read_display_wh() {
 classify_serial() {
   local s="$1"
   local prop model brand wh w h
-  prop="$("$ADB" -s "$s" shell getprop persist.solar.device_family 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
-  if [[ "$prop" == "a5" || "$prop" == "y1" || "$prop" == "y2" ]]; then
-    echo "$prop"
-    return 0
-  fi
+  # 2026-07-16 — Display first (same as DeviceFeatures): stale family pin must not win.
   wh="$(read_display_wh "$s")"
   w="${wh%% *}"
   h="${wh##* }"
@@ -61,6 +57,11 @@ classify_serial() {
   fi
   if looks_y1 "$w" "$h"; then
     echo "y1"
+    return 0
+  fi
+  prop="$("$ADB" -s "$s" shell getprop persist.solar.device_family 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$prop" == "a5" || "$prop" == "y1" || "$prop" == "y2" ]]; then
+    echo "$prop"
     return 0
   fi
   model="$("$ADB" -s "$s" shell getprop ro.product.model 2>/dev/null | tr -d '\r' | tr '[:upper:]' '[:lower:]')"

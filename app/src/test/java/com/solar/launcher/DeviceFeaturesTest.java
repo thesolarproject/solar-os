@@ -14,6 +14,14 @@ public class DeviceFeaturesTest {
     }
 
     @Test
+    public void mt6582BeatsY1DisplaySize() {
+        // 2026-07-16 — Y2 shares ~360×480 with Y1; SoC must win (solar-diag family=y1 bug).
+        String family = DeviceFeatures.detectFamilyForTest(
+                "MT6582", "mt6582", 19, "Y2", "Y2", 360, 480);
+        if (!"y2".equals(family)) throw new AssertionError("expected y2 got " + family);
+    }
+
+    @Test
     public void mt6572MapsToY1() {
         String family = DeviceFeatures.detectFamilyForTest("MT6572", "mt6572", 19, "Y2");
         if (!"y1".equals(family)) throw new AssertionError("expected y1 got " + family);
@@ -233,5 +241,13 @@ public class DeviceFeaturesTest {
         if (!DeviceFeatures.looksLikeY1Display(480, 360)) {
             throw new AssertionError("480x360 Y1");
         }
+    }
+
+    @Test
+    public void a5DisplayBeatsY1FamilyPropInProbe() {
+        // probeFamily does not read sysprops — display path must still win for model=Y1.
+        String family = DeviceFeatures.detectFamilyForTest(
+                "MT6572", "mt6572", 17, "Y1", "Timmkoo", 240, 320);
+        if (!"a5".equals(family)) throw new AssertionError("display must beat lying model got " + family);
     }
 }
