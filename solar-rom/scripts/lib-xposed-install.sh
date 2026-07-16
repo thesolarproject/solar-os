@@ -120,6 +120,8 @@ xposed_vendor_dir() {
     esac
 }
 
+# Build helpers print progress on stdout; when resolving APK paths via $(...),
+# redirect that noise to stderr so only the path is captured.
 xposed_installer_apk() {
     local script_dir="${1:?script dir}"
     local apk="$script_dir/../vendor/xposed/XposedInstaller.apk"
@@ -128,7 +130,7 @@ xposed_installer_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-xposed-installer-apk.sh" ]; then
-        "$script_dir/build-xposed-installer-apk.sh"
+        "$script_dir/build-xposed-installer-apk.sh" >&2
         [ -f "$apk" ] && echo "$apk" && return 0
     fi
     echo "missing $apk (run solar-rom/scripts/build-xposed-installer-apk.sh)" >&2
@@ -149,7 +151,7 @@ xposed_context_bridge_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-context-bridge-apk.sh" ]; then
-        "$script_dir/build-context-bridge-apk.sh"
+        "$script_dir/build-context-bridge-apk.sh" >&2
         [ -f "$out" ] && echo "$out" && return 0
     fi
     echo "missing $out (run solar-rom/scripts/build-context-bridge-apk.sh)" >&2
@@ -183,7 +185,7 @@ xposed_theme_font_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-theme-font-apk.sh" ]; then
-        "$script_dir/build-theme-font-apk.sh"
+        "$script_dir/build-theme-font-apk.sh" >&2
         [ -f "$out" ] && echo "$out" && return 0
     fi
     echo "missing $out (run solar-rom/scripts/build-theme-font-apk.sh)" >&2
@@ -199,7 +201,7 @@ xposed_rockbox_ime_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-rockbox-xposed-apks.sh" ]; then
-        "$script_dir/build-rockbox-xposed-apks.sh"
+        "$script_dir/build-rockbox-xposed-apks.sh" >&2
         [ -f "$out" ] && echo "$out" && return 0
     fi
     echo "missing $out (run solar-rom/scripts/build-rockbox-xposed-apks.sh)" >&2
@@ -215,7 +217,7 @@ xposed_rockbox_compat_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-rockbox-xposed-apks.sh" ]; then
-        "$script_dir/build-rockbox-xposed-apks.sh"
+        "$script_dir/build-rockbox-xposed-apks.sh" >&2
         [ -f "$out" ] && echo "$out" && return 0
     fi
     echo "missing $out (run solar-rom/scripts/build-rockbox-xposed-apks.sh)" >&2
@@ -223,6 +225,7 @@ xposed_rockbox_compat_apk() {
 }
 
 # Resolve or build SolarNotPipeBridge.apk (Y1 + Y2).
+# Note: NotPipe bridge is ROM-bake only (not in app self-heal assets); CI always builds on demand.
 xposed_notpipe_bridge_apk() {
     local script_dir="${1:?script dir}"
     local out="$script_dir/../vendor/xposed/solar-notpipe-bridge/SolarNotPipeBridge.apk"
@@ -231,7 +234,8 @@ xposed_notpipe_bridge_apk() {
         return 0
     fi
     if [ -x "$script_dir/build-notpipe-bridge-apk.sh" ]; then
-        "$script_dir/build-notpipe-bridge-apk.sh"
+        # Must not capture build progress on stdout — install would receive multi-line garbage.
+        "$script_dir/build-notpipe-bridge-apk.sh" >&2
         [ -f "$out" ] && echo "$out" && return 0
     fi
     echo "missing $out (run solar-rom/scripts/build-notpipe-bridge-apk.sh)" >&2
