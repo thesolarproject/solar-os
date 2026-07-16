@@ -73,21 +73,47 @@ public final class MediaVolumeControl {
         return HearingSafetyVolume.adjustStreamIndex(ctx, streamType, up);
     }
 
-    /** Brief gate so Xposed volume hooks ignore Solar in-app slider adjustments. */
+    /**
+     * Brief gate so Xposed volume hooks ignore Solar in-app slider adjustments.
+     * 2026-07-16 — Never call {@link RootShell#canRun()} here (that was a sync {@code su -c id}
+     * on every wheel tick → multi-second NP volume lag). Prefer reflection SystemProperties;
+     * root setprop only as async fallback.
+     */
     static void markInternalVolumeAdjust() {
-        if (!RootShell.canRun()) return;
-        // Async + coalesced — sync su per wheel tick caused multi-second volume lag (session 62b1bb).
+        // Layman: tell the system “Solar is moving the volume knob itself” without waking root.
+        if (setSystemPropertyFast(PROP_INTERNAL_ADJUST, "1")) {
+            scheduleInternalAdjustClear();
+            return;
+        }
+        // Async only — never block the volume wheel on su.
         RootShell.runAsync("setprop " + PROP_INTERNAL_ADJUST + " 1");
         scheduleInternalAdjustClear();
     }
 
     private static final android.os.Handler INTERNAL_ADJUST_HANDLER;
     private static volatile long internalAdjustClearAtMs;
+    private static java.lang.reflect.Method sSystemPropertiesSet;
 
     static {
         android.os.HandlerThread ht = new android.os.HandlerThread("SolarVolInternal");
         ht.start();
         INTERNAL_ADJUST_HANDLER = new android.os.Handler(ht.getLooper());
+    }
+
+    /** 2026-07-16 — In-process setprop when allowed (no su spawn on volume wheel). */
+    private static boolean setSystemPropertyFast(String key, String value) {
+        try {
+            java.lang.reflect.Method set = sSystemPropertiesSet;
+            if (set == null) {
+                Class<?> sp = Class.forName("android.os.SystemProperties");
+                set = sp.getMethod("set", String.class, String.class);
+                sSystemPropertiesSet = set;
+            }
+            set.invoke(null, key, value);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     /** Extend clear deadline on rapid wheel steps — one setprop 0 after burst ends. */
@@ -105,6 +131,7 @@ public final class MediaVolumeControl {
                         internalAdjustClearAtMs - android.os.SystemClock.uptimeMillis());
                 return;
             }
+            if (setSystemPropertyFast(PROP_INTERNAL_ADJUST, "0")) return;
             RootShell.runAsync("setprop " + PROP_INTERNAL_ADJUST + " 0");
         }
     };

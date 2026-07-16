@@ -79,11 +79,16 @@ fi
 #fi
 setprop persist.solar.home.target solar
 # 2026-07-15 — A5 ROM bakes A5-mtk.kl; pin family before keymap sync so Y1 wheel maps never win.
-# 2026-07-16 — Also pin a5 from panel size (stock A5 claims model=Y1). Display beats stale y1 pin.
-# Was: sync used model alone (stock A5 reports Y1 → wrong keys). Now: A5 files + QVGA force family a5.
+# 2026-07-16 — Pin family for Reach usernames / UI: A5 QVGA unique; 360p disambiguated by
+#   SDK (4.4.x=y2, 4.2.x=y1) and SoC (mt6582/mt6572). Align with DeviceFeatures.detectFamily.
+# Was: only A5 pinned; Y1/Y2 relied on runtime SDK alone; 360p short-circuit mislabeled Y2.
 if [ -f /system/etc/solar/A5-mtk.kl ] && [ -f /system/etc/solar/A5.kl ]; then
     setprop persist.solar.device_family a5 2>/dev/null
 fi
+_CPU="$(cat /proc/cpuinfo 2>/dev/null | grep -i '^Hardware' | head -1 | sed 's/.*:[[:space:]]*//' | tr 'A-Z' 'a-z')"
+_BOARD="$(getprop ro.product.board 2>/dev/null | tr 'A-Z' 'a-z')"
+_SDK="$(getprop ro.build.version.sdk 2>/dev/null)"
+case "$_SDK" in ''|*[!0-9]*) _SDK=0 ;; esac
 if [ -r /sys/class/graphics/fb0/virtual_size ]; then
     VS="$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr ',' ' ')"
     set -- $VS
@@ -92,12 +97,53 @@ if [ -r /sys/class/graphics/fb0/virtual_size ]; then
     case "$_H" in ''|*[!0-9]*) _H=0 ;; esac
     if [ "$_W" -gt 0 ] && [ "$_H" -gt 0 ]; then
         if [ "$_W" -le "$_H" ]; then _A=$_W; _B=$_H; else _A=$_H; _B=$_W; fi
-        # 240×320 ±20 → A5
+        # 240×320 ±20 → A5 (beats stale y1 pin / model=Y1)
         if [ "$_A" -ge 220 ] && [ "$_A" -le 260 ] && [ "$_B" -ge 300 ] && [ "$_B" -le 340 ]; then
             setprop persist.solar.device_family a5 2>/dev/null
         fi
     fi
 fi
+# SoC pins when family still unset (or reinforce after A5-only paths).
+case "$(getprop persist.solar.device_family 2>/dev/null)" in
+    a5) ;;
+    *)
+        case "$_CPU$_BOARD" in
+            *mt6582*) setprop persist.solar.device_family y2 2>/dev/null ;;
+            *mt6572*) setprop persist.solar.device_family y1 2>/dev/null ;;
+            *)
+                # Shared 360p without SoC string: SDK 19+ → y2, SDK ≤17 → y1.
+                if [ -r /sys/class/graphics/fb0/virtual_size ]; then
+                    VS="$(cat /sys/class/graphics/fb0/virtual_size 2>/dev/null | tr ',' ' ')"
+                    set -- $VS
+                    _W="${1:-0}"; _H="${2:-0}"
+                    case "$_W" in ''|*[!0-9]*) _W=0 ;; esac
+                    case "$_H" in ''|*[!0-9]*) _H=0 ;; esac
+                    if [ "$_W" -gt 0 ] && [ "$_H" -gt 0 ]; then
+                        if [ "$_W" -le "$_H" ]; then _A=$_W; _B=$_H; else _A=$_H; _B=$_W; fi
+                        if [ "$_A" -ge 340 ] && [ "$_A" -le 380 ] && [ "$_B" -ge 460 ] && [ "$_B" -le 500 ]; then
+                            if [ "$_SDK" -ge 19 ]; then
+                                setprop persist.solar.device_family y2 2>/dev/null
+                            elif [ "$_SDK" -le 17 ]; then
+                                setprop persist.solar.device_family y1 2>/dev/null
+                            fi
+                        fi
+                    fi
+                fi
+                # Last resort: kitkat-class images without panel sysfs.
+                case "$(getprop persist.solar.device_family 2>/dev/null)" in
+                    y1|y2|a5) ;;
+                    *)
+                        if [ "$_SDK" -ge 19 ]; then
+                            setprop persist.solar.device_family y2 2>/dev/null
+                        elif [ "$_SDK" -le 17 ] && [ "$_SDK" -gt 0 ]; then
+                            setprop persist.solar.device_family y1 2>/dev/null
+                        fi
+                        ;;
+                esac
+                ;;
+        esac
+        ;;
+esac
 if [ -f /system/etc/solar/sync-rockbox-libs.sh ]; then
     # Skip heavy Rockbox codec sync on A5 — no Rockbox product path.
     case "$(getprop persist.solar.device_family 2>/dev/null)" in

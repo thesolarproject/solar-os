@@ -75,7 +75,8 @@ public final class SoulseekMessagingSession {
             ensureConnected();
             for (int i = 0; i < recipients.length; i++) {
                 if (i > 0) {
-                    try { Thread.sleep(75_000L); } catch (InterruptedException ignored) {}
+                    // 8s between PMs — match main Reach fan-out; 75s starved probe replies.
+                    try { Thread.sleep(8_000L); } catch (InterruptedException ignored) {}
                 }
                 String to = recipients[i];
                 if (to == null || to.isEmpty()) {

@@ -227,27 +227,12 @@
   reserve: 0x00
 
 - partition_index: SYS14
-  partition_name: EBR2
-  file_name: EBR2
-  is_download: true
-  type: NORMAL_ROM
-  linear_start_addr: 0x5b00000
-  physical_start_addr: 0x4700000
-  partition_size: 0x80000
-  region: EMMC_USER
-  storage: HW_STORAGE_EMMC
-  boundary_check: true
-  is_reserved: false
-  operation_type: UPDATE
-  reserve: 0x00
-
-- partition_index: SYS15
   partition_name: EXPDB
   file_name: NONE
   is_download: false
   type: NONE
-  linear_start_addr: 0x5b80000
-  physical_start_addr: 0x4780000
+  linear_start_addr: 0x5b00000
+  physical_start_addr: 0x4700000
   partition_size: 0xa00000
   region: EMMC_USER
   storage: HW_STORAGE_EMMC
@@ -256,13 +241,13 @@
   operation_type: INVISIBLE
   reserve: 0x00
 
-- partition_index: SYS16
+- partition_index: SYS15
   partition_name: ANDROID
   file_name: system.img
   is_download: true
   type: YAFFS_IMG
-  linear_start_addr: 0x6580000
-  physical_start_addr: 0x5180000
+  linear_start_addr: 0x6500000
+  physical_start_addr: 0x5100000
   partition_size: 0x33400000
   region: EMMC_USER
   storage: HW_STORAGE_EMMC
@@ -271,13 +256,13 @@
   operation_type: UPDATE
   reserve: 0x00
 
-- partition_index: SYS17
+- partition_index: SYS16
   partition_name: CACHE
   file_name: cache.img
   is_download: true
   type: YAFFS_IMG
-  linear_start_addr: 0x39980000
-  physical_start_addr: 0x38580000
+  linear_start_addr: 0x39900000
+  physical_start_addr: 0x38500000
   partition_size: 0x7e00000
   region: EMMC_USER
   storage: HW_STORAGE_EMMC
@@ -286,13 +271,13 @@
   operation_type: UPDATE
   reserve: 0x00
 
-- partition_index: SYS18
+- partition_index: SYS17
   partition_name: USRDATA
   file_name: userdata.img
   is_download: true
   type: YAFFS_IMG
-  linear_start_addr: 0x41780000
-  physical_start_addr: 0x40380000
+  linear_start_addr: 0x41700000
+  physical_start_addr: 0x40300000
   partition_size: 0x32000000
   region: EMMC_USER
   storage: HW_STORAGE_EMMC
@@ -301,22 +286,7 @@
   operation_type: UPDATE
   reserve: 0x00
 
-- partition_index: SYS19
-  partition_name: FAT
-  file_name: fat_sparse.img
-  is_download: false
-  type: NONE
-  linear_start_addr: 0x73780000
-  physical_start_addr: 0x72380000
-  partition_size: 0x0
-  region: EMMC_USER
-  storage: HW_STORAGE_EMMC
-  boundary_check: true
-  is_reserved: false
-  operation_type: INVISIBLE
-  reserve: 0x00
-
-- partition_index: SYS20
+- partition_index: SYS18
   partition_name: BMTPOOL
   file_name: NONE
   is_download: false

@@ -43,11 +43,16 @@ public final class AudioTagWriter {
         return base;
     }
 
-    /** Gate before touching jaudiotagger — plain WAV has no reliable embed path. */
+    /**
+     * Gate before touching jaudiotagger — plain WAV has no reliable embed path.
+     * 2026-07-16 — FLAC skipped on API ≤17: FlacTagWriter hits VerifyError (NIO) on 4.2.2.
+     * Sidecar / SQLite overlay still applies. Reversal: allow .flac on all SDK levels.
+     */
     public static boolean supportsEmbedding(File track) {
         if (track == null) return false;
         String name = track.getName().toLowerCase(Locale.US);
         if (name.endsWith(".wav") || name.endsWith(".ape") || name.endsWith(".wma")) return false;
+        if (name.endsWith(".flac") && android.os.Build.VERSION.SDK_INT <= 17) return false;
         return name.endsWith(".mp3") || name.endsWith(".flac") || name.endsWith(".m4a")
                 || name.endsWith(".aac") || name.endsWith(".ogg") || name.endsWith(".opus");
     }

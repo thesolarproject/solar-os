@@ -22,6 +22,37 @@ public class DeviceFeaturesTest {
     }
 
     @Test
+    public void shared360pSdkDisambiguatesY1VsY2() {
+        // 360p + 4.2.x (SDK 17) → Y1; 360p + 4.4.x (SDK 19) → Y2 when SoC unknown.
+        String y1 = DeviceFeatures.detectFamilyForTest("", "", 17, "", "", 360, 480);
+        if (!"y1".equals(y1)) throw new AssertionError("360p sdk17 → y1 got " + y1);
+        String y2 = DeviceFeatures.detectFamilyForTest("", "", 19, "", "", 360, 480);
+        if (!"y2".equals(y2)) throw new AssertionError("360p sdk19 → y2 got " + y2);
+    }
+
+    @Test
+    public void a5QvgaBeatsModelY1() {
+        String family = DeviceFeatures.detectFamilyForTest(
+                "", "", 17, "Y1", "Timmkoo", 240, 320);
+        if (!"a5".equals(family)) throw new AssertionError("expected a5 got " + family);
+    }
+
+    @Test
+    public void socBeatsStaleFamilyPin() {
+        // MT6582 must win even if pin or model says y1.
+        String family = DeviceFeatures.detectFamilyForTest(
+                "MT6582", "mt6582", 19, "Y1", "", 360, 480, "y1");
+        if (!"y2".equals(family)) throw new AssertionError("soc beats pin got " + family);
+    }
+
+    @Test
+    public void pinUsedWhenSocAndPanelAmbiguous() {
+        String family = DeviceFeatures.detectFamilyForTest(
+                "", "", 18, "", "", 0, 0, "y2");
+        if (!"y2".equals(family)) throw new AssertionError("pin y2 got " + family);
+    }
+
+    @Test
     public void mt6572MapsToY1() {
         String family = DeviceFeatures.detectFamilyForTest("MT6572", "mt6572", 19, "Y2");
         if (!"y1".equals(family)) throw new AssertionError("expected y1 got " + family);

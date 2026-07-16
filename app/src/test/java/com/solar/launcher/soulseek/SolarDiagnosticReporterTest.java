@@ -24,19 +24,48 @@ public class SolarDiagnosticReporterTest {
   }
 
   @Test
-  public void startupPrioritySourcesBypassManifest() throws Exception {
+  public void startupPriorityShipsWhenFingerprintNew() throws Exception {
     JSONObject manifest = new JSONObject();
     manifest.put("/storage/sdcard0/solar/logs/crash.log", 999L);
+    // New content fingerprint → ship even if mtime matches prior ship.
     if (!SolarDiagnosticReporter.shouldShipSource(
             "SolarLog/crash.log", manifest, "/storage/sdcard0/solar/logs/crash.log", 999L,
-            SolarDiagnosticReporter.ScanMode.STARTUP)) {
-      throw new AssertionError("crash.log startup");
+            SolarDiagnosticReporter.ScanMode.STARTUP, "100:abc")) {
+      throw new AssertionError("crash.log new fingerprint");
     }
     if (SolarDiagnosticReporter.shouldShipSource(
             "SolarLog/crash.log", manifest, "/storage/sdcard0/solar/logs/crash.log", 999L,
             SolarDiagnosticReporter.ScanMode.ROUTINE)) {
       throw new AssertionError("crash.log routine skip");
     }
+  }
+
+  @Test
+  public void startupPrioritySkipsUnchangedFingerprint() throws Exception {
+    // 2026-07-16 — Stop re-shipping identical crash tails every boot.
+    JSONObject manifest = new JSONObject();
+    String path = "/storage/sdcard0/solar/logs/crash.log";
+    manifest.put(path, 999L);
+    manifest.put(SolarDiagnosticReporter.fpKey(path), "42:deadbeef");
+    if (SolarDiagnosticReporter.shouldShipSource(
+            "SolarLog/crash.log", manifest, path, 999L,
+            SolarDiagnosticReporter.ScanMode.STARTUP, "42:deadbeef")) {
+      throw new AssertionError("same fingerprint must skip");
+    }
+    if (!SolarDiagnosticReporter.shouldShipSource(
+            "SolarLog/crash.log", manifest, path, 999L,
+            SolarDiagnosticReporter.ScanMode.STARTUP, "43:cafebabe")) {
+      throw new AssertionError("changed fingerprint must ship");
+    }
+  }
+
+  @Test
+  public void contentFingerprintStableForSameText() {
+    String a = SolarDiagnosticReporter.contentFingerprint("hello crash stack");
+    String b = SolarDiagnosticReporter.contentFingerprint("hello crash stack");
+    if (!a.equals(b)) throw new AssertionError("stable fp");
+    String c = SolarDiagnosticReporter.contentFingerprint("hello crash stack!");
+    if (a.equals(c)) throw new AssertionError("different content different fp");
   }
 
   @Test

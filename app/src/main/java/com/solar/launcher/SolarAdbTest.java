@@ -41,6 +41,16 @@ final class SolarAdbTest {
         Log.i(TAG, "PASS " + reason);
     }
 
+    /** 2026-07-16 — Real-world matrix step progress (scripts/test_realworld_matrix_adb.sh). */
+    static void step(int index, String name, String detail) {
+        Log.i(TAG, "STEP " + index + " " + name + (detail != null && detail.length() > 0 ? " " + detail : ""));
+    }
+
+    /** 2026-07-16 — Timing line for matrix / keyevent suite. */
+    static void timing(String name, long ms) {
+        Log.i(TAG, "TIMING " + name + " ms=" + ms);
+    }
+
     static void avrcpHarness(String phase, String detail) {
         Log.i(TAG, "avrcp_harness " + phase + " " + detail);
     }

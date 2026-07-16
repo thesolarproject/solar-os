@@ -197,19 +197,25 @@ public final class LauncherPreference {
         } catch (Throwable ignored) {}
     }
 
-    /** Explicit MAIN launch — unit-tested without Robolectric. */
+    /**
+     * Explicit MAIN launch — unit-tested without Robolectric.
+     * 2026-07-16 — Stock fills family-aware pkg/activity before resolveLaunchComponent
+     * so Y2 does not open missing com.innioasis.y1.MainActivity.
+     * Reversal: resolveLaunchComponent(target, readHomeComponentProperty()) only.
+     */
     static Intent buildExplicitHomeIntent(Context context, String target) {
-        String[] parts = HomeTargetPolicy.resolveLaunchComponent(
-                normalizeHomeTarget(target), readHomeComponentProperty());
-        if (LauncherDefault.TARGET_ROCKBOX.equals(normalizeHomeTarget(target))
+        String normalized = normalizeHomeTarget(target);
+        String flat = resolveComponentFlatForTarget(context, normalized, readHomeComponentProperty());
+        String[] parts = HomeTargetPolicy.resolveLaunchComponent(normalized, flat);
+        if (LauncherDefault.TARGET_ROCKBOX.equals(normalized)
                 && !LauncherSwitch.isRockboxInstalled(context)) {
             return null;
         }
-        if (LauncherDefault.TARGET_JJ.equals(normalizeHomeTarget(target))
+        if (LauncherDefault.TARGET_JJ.equals(normalized)
                 && !LauncherSwitch.isJjInstalled(context)) {
             return null;
         }
-        if (LauncherDefault.TARGET_STOCK.equals(normalizeHomeTarget(target))
+        if (LauncherDefault.TARGET_STOCK.equals(normalized)
                 && !LauncherSwitch.isStockInstalled(context)) {
             return null;
         }

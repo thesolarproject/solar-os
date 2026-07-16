@@ -16,14 +16,25 @@ public final class SolarUiState {
     /**
      * 2026-07-15 — MainActivity screen change writes this so VolumePanelHooks / :overlay can skip HUD.
      * Covers STATE_PLAYER and STATE_VIDEO_PLAYER. Reversal: never call (old dead prop).
+     * 2026-07-16 — Async setprop; sync su on every NP enter blocked the first volume wheel ticks.
      */
     public static void setNowPlayingScreen(boolean active) {
-        RootShell.run("setprop " + PROP_NOW_PLAYING_SCREEN + " " + (active ? "1" : "0"));
+        writePropAsync(PROP_NOW_PLAYING_SCREEN, active ? "1" : "0");
     }
 
     /** MainActivity playback start/stop — global overlay Now Playing chip. */
     public static void setPlaybackActive(boolean active) {
-        RootShell.run("setprop " + PROP_PLAYBACK_ACTIVE + " " + (active ? "1" : "0"));
+        writePropAsync(PROP_PLAYBACK_ACTIVE, active ? "1" : "0");
+    }
+
+    /** 2026-07-16 — Prefer reflection; root setprop only as background fallback. */
+    private static void writePropAsync(String key, String value) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            sp.getMethod("set", String.class, String.class).invoke(null, key, value);
+            return;
+        } catch (Exception ignored) {}
+        RootShell.runAsync("setprop " + key + " " + value);
     }
 
     /** Overlay service + in-app checks (readable from {@code :overlay} process). */

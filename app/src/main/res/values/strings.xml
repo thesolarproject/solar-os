@@ -76,6 +76,9 @@
     <string name="report_issue_needs_reach">Connect to Wi‑Fi and sign in to Reach to message Solar Development. Your message is sent to the developers and opens a private diagnostic report with logs from this device.</string>
     <string name="report_issue_sent_hint">Message queued — diagnostics are being uploaded for the developers.</string>
     <string name="diag_getting_ready">Getting ready…</string>
+    <!-- 2026-07-16 — Full-screen first boot / self-heal wait (was blank black screen). -->
+    <string name="getting_things_ready">Getting things ready, please wait…</string>
+    <string name="getting_things_ready_detail">Solar is finishing setup on this player.</string>
     <string name="support_link_kofi_intro">Thank you for supporting Solar. Open this page in a browser to donate:</string>
     <string name="donors_loading">Loading donors…</string>
     <string name="donors_empty">No donors listed yet.</string>
@@ -1325,8 +1328,8 @@
     <string name="update_rom_flash_blocked_marker"> · PC flash required first</string>
     <string name="update_rom_only_marker"> · ROM only (PC flash)</string>
     <string name="update_rom_flash_ok">OK</string>
-    <string name="platform_prep_title">Setting up Solar</string>
-    <string name="platform_prep_subtitle">Preparing your player for the ideal Solar experience…</string>
+    <string name="platform_prep_title">Getting things ready, please wait…</string>
+    <string name="platform_prep_subtitle">Solar is finishing setup on this player…</string>
     <string name="platform_prep_continue">Continue</string>
     <string name="platform_prep_restart">Restart now</string>
     <string name="platform_prep_partial_message">Some system features may be limited on this player. Music and settings will still work.</string>

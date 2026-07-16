@@ -370,6 +370,64 @@ pack_ata_rom_zip() {
         || die "$(basename "$out") missing system.img"
 }
 
+# 2026-07-16 — Firmware-only ATA Y2 bases (y2_ata_exdac_*) omit Windows SP Flash Tool.
+# Merge toolkit from SOLAR_Y2_FLASH_TOOLS_ZIP or a prior full rom_y2.zip so local builds pass pack_ata.
+ensure_y2_sp_flash_tools() {
+    local dir="$1"
+    local tools_zip candidate
+    if [ -f "$dir/flash_tool.exe" ] || [ -f "$dir/FlashToolLib.dll" ]; then
+        return 0
+    fi
+    tools_zip="${SOLAR_Y2_FLASH_TOOLS_ZIP:-}"
+    if [ -z "$tools_zip" ] || [ ! -f "$tools_zip" ]; then
+        for candidate in \
+            "$REPO_ROOT/dist/rom_y2.zip" \
+            "$REPO_ROOT/rom_y2.zip" \
+            "$HOME/Downloads/rom_y2.zip" \
+            "$HOME/Downloads/rom_y2 (3).zip"; do
+            if [ -f "$candidate" ] && unzip -l "$candidate" 2>/dev/null | grep -qiE 'flash_tool\.exe|FlashToolLib'; then
+                tools_zip="$candidate"
+                break
+            fi
+        done
+    fi
+    [ -n "$tools_zip" ] && [ -f "$tools_zip" ] \
+        || die "Y2 base has no SP Flash Tool; set SOLAR_Y2_FLASH_TOOLS_ZIP to a full rom_y2.zip that includes flash_tool.exe"
+    echo "==> Injecting SP Flash Tool tree from $tools_zip (firmware-only ATA base)"
+    # Extract only toolkit paths — never overwrite system.img / userdata.img / stock scatter.
+    unzip -q -o "$tools_zip" \
+        'flash_tool.exe' 'FlashToolLib*' 'Flashtoollib*' 'DA_*.bin' 'MTK_AllInOne_DA.bin' \
+        'Qt*.dll' 'msvc*.dll' 'phonon4.dll' 'SLA_Challenge.dll' \
+        'codecs/*' 'imageformats/*' 'sqldrivers/*' 'Driver/*' \
+        'assistant.exe' 'flashtool.qch' 'flashtool.qhc' \
+        '*.ini' '*.xml' '*.xsd' 'Credits.txt' \
+        -d "$dir" 2>/dev/null || true
+    # Fallback: extract all then restore our critical images if partial unzip skipped globs.
+    if [ ! -f "$dir/flash_tool.exe" ]; then
+        local tmp
+        tmp=$(mktemp -d)
+        unzip -q -o "$tools_zip" -d "$tmp"
+        # Copy tool files not present; never clobber baked firmware images.
+        (
+            cd "$tmp"
+            find . -type f ! -name 'system.img' ! -name 'userdata.img' ! -name 'boot.img' \
+                ! -name 'recovery.img' ! -name 'cache.img' ! -name 'secro.img' \
+                ! -name 'MT6582_Android_scatter.txt' ! -name 'logo.bin' ! -name 'EBR2' \
+                ! -name 'original_system.img' -print0
+        ) | while IFS= read -r -d '' rel; do
+            rel="${rel#./}"
+            [ -n "$rel" ] || continue
+            mkdir -p "$dir/$(dirname "$rel")"
+            if [ ! -f "$dir/$rel" ]; then
+                cp -a "$tmp/$rel" "$dir/$rel"
+            fi
+        done
+        rm -rf "$tmp"
+    fi
+    [ -f "$dir/flash_tool.exe" ] \
+        || die "failed to inject flash_tool.exe from $tools_zip"
+}
+
 case "$TYPE" in
     a)
         # 2026-07-15 — Y1 type A ATA (SP Flash Tool + firmware) from y1-community; was rockbox-y1 type-a-base.
@@ -1201,16 +1259,29 @@ pad_ext4_image_if_short "$BASE_DIR/userdata.img"
 
 if [ "$TYPE" = "y2" ]; then
     if [ ! -f "$BASE_DIR/EBR2" ]; then
-        echo "==> Bundling EBR2 (missing from Y2 ATA base — required for SP Flash index 14)"
+        # 2026-07-16 — File only for SP Flash kits; must NOT rewrite scatter to invent an EBR2
+        # partition that shifts ANDROID (0x6500000→0x6580000) — that bootloops Y2 eMMC.
+        echo "==> Bundling EBR2 file (missing from Y2 ATA base; scatter stays stock)"
         cp "$REPO_ROOT/solar-rom/vendor/y2-flash/EBR2" "$BASE_DIR/EBR2"
     fi
-    # Upstream y2-ata scatter often has ANDROID at 0x6500000; MTKclient wo + y2-mtk-flash-manifest
-    # require the vendored offsets (ANDROID 0x6580000). Always overwrite with canonical scatter.
+    # 2026-07-16 — Stock ATA linear_start_addr only (ANDROID 0x6500000, USRDATA 0x41700000).
+    # Was: vendored scatter that inserted EBR2 @ SYS14 and shifted system/userdata +0x80000
+    # (remote CI rom_y2.zip bootloop). Local builds that kept base scatter still booted.
+    # Always overwrite with stock-canonical scatter so CI and laptop match.
     Y2_SCATTER_VENDOR="$REPO_ROOT/solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt"
     [ -f "$Y2_SCATTER_VENDOR" ] \
-        || die "missing $Y2_SCATTER_VENDOR (canonical MT6582 scatter for flash tools)"
-    echo "==> Installing canonical MT6582 scatter (MTKclient wo linear_start_addr)"
+        || die "missing $Y2_SCATTER_VENDOR (stock MT6582 scatter for flash tools)"
+    echo "==> Installing stock MT6582 scatter (ANDROID @ 0x6500000 — no EBR2 partition shift)"
     cp "$Y2_SCATTER_VENDOR" "$BASE_DIR/MT6582_Android_scatter.txt"
+    # Fail fast if someone re-introduces the shifted map.
+    if ! grep -q 'linear_start_addr: 0x6500000' "$BASE_DIR/MT6582_Android_scatter.txt"; then
+        die "Y2 scatter missing ANDROID @ 0x6500000 (refusing bootloop layout)"
+    fi
+    if grep -q 'partition_name: EBR2' "$BASE_DIR/MT6582_Android_scatter.txt"; then
+        die "Y2 scatter must not declare EBR2 as a download partition (shifts ANDROID — bootloop)"
+    fi
+    # 2026-07-16 — Firmware-only ATA bases need Windows SP Flash Tool from a full kit zip.
+    ensure_y2_sp_flash_tools "$BASE_DIR"
 fi
 
 [ -f "$BASE_DIR/system.img" ] || die "system.img not found under $BASE_DIR after unzip"
@@ -1558,7 +1629,8 @@ if [ "$TYPE" = "y2" ]; then
             preloader_eastaeon82_wet_kk.bin; do
         [ -f "$PRISTINE_DIR/$_restore" ] && cp -a "$PRISTINE_DIR/$_restore" "$BASE_DIR/$_restore"
     done
-    # Re-assert canonical scatter after pristine restore (never ship base ATA 0x6500000 ANDROID).
+    # 2026-07-16 — Re-assert stock scatter after pristine restore (ANDROID @ 0x6500000).
+    # Was: comment claimed “never ship base ATA 0x6500000” — that inverted truth and bootlooped CI.
     Y2_SCATTER_VENDOR="$REPO_ROOT/solar-rom/vendor/y2-flash/MT6582_Android_scatter.txt"
     if [ -f "$Y2_SCATTER_VENDOR" ]; then
         cp "$Y2_SCATTER_VENDOR" "$BASE_DIR/MT6582_Android_scatter.txt"

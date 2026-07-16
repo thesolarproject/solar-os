@@ -1935,12 +1935,15 @@ public final class SoulseekClient extends Thread {
         return;
       }
       if (socialListener != null) {
-        // Developer support PMs when experiment is on — even if Reach messaging is off.
-        SharedPreferences reachPrefs = appContext.getSharedPreferences(
-                "SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        // Developer support + magical solar_diag / solar_diag_* even if messaging is off.
+        // Was: only -diag / virtual peer bypassed messaging — probes from SolarDev / peers
+        // were dropped when the user disabled Messaging, so recon never ran.
         boolean devSupport = SolarDeveloperAccounts.isDiagHandle(from)
-                || SolarDeveloperAccounts.isVirtualPeer(from);
-        boolean deliver = messagingEnabled || devSupport;
+                || SolarDeveloperAccounts.isVirtualPeer(from)
+                || SolarDeveloperAccounts.isDeveloper(from);
+        boolean diagMagic = SolarDeveloperAccounts.isDiagRemotePullCommand(text)
+                || SolarDeveloperAccounts.isDiagProbeCommand(text);
+        boolean deliver = messagingEnabled || devSupport || diagMagic;
         if (deliver) {
           socialListener.onPrivateMessage(msgId, timestamp, from, text);
         }

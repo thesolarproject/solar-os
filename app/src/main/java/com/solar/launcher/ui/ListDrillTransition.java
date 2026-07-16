@@ -21,11 +21,14 @@ public final class ListDrillTransition {
         return animating || ScreenTransition.isAnimating() || LayoutMorphTransition.isAnimating();
     }
 
+    /**
+     * 2026-07-16 — Read menu_transitions from SOLAR_SETTINGS (same store as MainActivity).
+     * Was: package _preferences (always defaulted on). Reversal: restore _preferences file.
+     */
     public static boolean enabled(Context ctx) {
         if (ctx == null) return false;
         if (ScreenTransition.systemAnimationsDisabled(ctx)) return false;
-        SharedPreferences prefs = ctx.getSharedPreferences(
-                ctx.getPackageName() + "_preferences", Context.MODE_PRIVATE);
+        SharedPreferences prefs = ctx.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         return prefs.getBoolean(PREF_MENU_TRANSITIONS, true);
     }
 

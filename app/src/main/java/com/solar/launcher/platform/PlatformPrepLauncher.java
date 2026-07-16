@@ -6,8 +6,9 @@ import android.content.Intent;
 import org.json.JSONObject;
 
 /**
- * 2026-07-05 — Silent background platform prep; blocking wizard is manual-only.
- * Reversal: restore launchIfRequired blocking wizard on every boot.
+ * 2026-07-05 — Platform prep entry; first-boot uses visible wizard via SolarLaunchActivity.
+ * 2026-07-16 — Silent prep remains for gap-heal after UI is already up (not cold blank screen).
+ * Reversal: only ensureAsync silent; delete first-boot wizard route in SolarLaunchActivity.
  */
 public final class PlatformPrepLauncher {
 
@@ -15,7 +16,11 @@ public final class PlatformPrepLauncher {
 
     private PlatformPrepLauncher() {}
 
-    /** Schedule silent prep when prepVersion ahead — no blocking UI on ROM-ready devices. */
+    /**
+     * Schedule silent prep when prepVersion ahead.
+     * 2026-07-16 — When first-session gate is still open, prefer visible wizard (already launched
+     * from SolarLaunchActivity); silent path is a safety net if MainActivity was entered directly.
+     */
     public static void ensureAsync(Context ctx) {
         if (ctx == null) return;
         try {
@@ -36,6 +41,17 @@ public final class PlatformPrepLauncher {
             }
         } catch (Exception e) {
             return;
+        }
+        // 2026-07-16 — If first UI not ready yet, open wizard once instead of silent-only blank.
+        if (com.solar.launcher.FirstSessionReadyGate.shouldShowGettingReady(ctx)
+                && !com.solar.launcher.DeviceFeatures.isA5()) {
+            try {
+                Intent i = new Intent(ctx, PlatformPrepWizardActivity.class);
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                i.putExtra(PlatformPrepWizardActivity.EXTRA_FIRST_BOOT, true);
+                ctx.startActivity(i);
+                return;
+            } catch (Exception ignored) {}
         }
         if (silentPrepScheduled) return;
         silentPrepScheduled = true;

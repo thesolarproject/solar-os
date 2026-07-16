@@ -26,9 +26,14 @@ public final class SoulseekAccount {
 
     private static final Pattern USERNAME_OK =
             Pattern.compile("^[A-Za-z0-9_-]{1,20}$");
-    private static final Pattern FRIEND_CODE_Y1 =
-            Pattern.compile("^Y1-[a-z]{3,5}-[a-z]{3,5}-[0-9]{2}$");
-    private static final Pattern FRIEND_CODE_Y2 =
+    /**
+     * Canonical auto friend code: {Y1|Y2|A5}-word-word-## (3–5 letter words).
+     * Model prefix comes from {@link DeviceFeatures#deviceModelLabel()}.
+     */
+    private static final Pattern FRIEND_CODE_CANONICAL =
+            Pattern.compile("^(Y1|Y2|A5)-[a-z]{3,5}-[a-z]{3,5}-[0-9]{2}$");
+    /** Legacy Y2 three-word form (pre word-word-## unification). */
+    private static final Pattern FRIEND_CODE_Y2_THREE_WORD =
             Pattern.compile("^Y2-[a-z]{3,5}-[a-z]{3,5}-[a-z]{3,5}$");
     /** Hash-based letter segments from earlier Reach builds. */
     private static final Pattern FRIEND_CODE_HASH_Y1 =
@@ -37,7 +42,7 @@ public final class SoulseekAccount {
             Pattern.compile("^Y2-[a-z]{4}-[a-z]{4}-[a-z]{4}$");
     /** Legacy uppercase friend codes from earlier Reach builds. */
     private static final Pattern FRIEND_CODE_LEGACY =
-            Pattern.compile("^(Y1|Y2)-[A-Z2-9]{5}-[A-Z2-9]{4}$");
+            Pattern.compile("^(Y1|Y2|A5)-[A-Z2-9]{5}-[A-Z2-9]{4}$");
     /** Fixed auto password — identical on every device for auto accounts. */
     private static final String AUTO_PASSWORD = "ReachAutoShare2024";
 
@@ -84,8 +89,8 @@ public final class SoulseekAccount {
     public static boolean isFriendCode(String username) {
         if (username == null) return false;
         String t = username.trim();
-        return FRIEND_CODE_Y1.matcher(t).matches()
-                || FRIEND_CODE_Y2.matcher(t).matches()
+        return FRIEND_CODE_CANONICAL.matcher(t).matches()
+                || FRIEND_CODE_Y2_THREE_WORD.matcher(t).matches()
                 || FRIEND_CODE_HASH_Y1.matcher(t).matches()
                 || FRIEND_CODE_HASH_Y2.matcher(t).matches()
                 || FRIEND_CODE_LEGACY.matcher(t).matches();
@@ -129,21 +134,19 @@ public final class SoulseekAccount {
     }
 
     public static String generateUsername(Context context, boolean fresh) {
-        String prefix = DeviceFeatures.isY2() ? "Y2" : "Y1";
+        // Model prefix must match the device the user actually has (Y1 / Y2 / A5).
+        String prefix = DeviceFeatures.deviceModelLabel();
+        if (prefix == null || prefix.isEmpty()) prefix = "Y1";
         String deviceId = deviceId(context);
         String seed = prefix + ":" + deviceId;
         if (fresh) {
             seed += ":" + System.nanoTime();
         }
         byte[] hash = sha256(utf8Bytes(seed));
-        if (DeviceFeatures.isY2()) {
-            return String.format(Locale.US, "Y2-%s-%s-%s",
-                    SoulseekWordDictionary.pickWord(context, hash, 0),
-                    SoulseekWordDictionary.pickWord(context, hash, 1),
-                    SoulseekWordDictionary.pickWord(context, hash, 2));
-        }
         int nn = (hash[10] & 0xff) % 100;
-        return String.format(Locale.US, "Y1-%s-%s-%02d",
+        // Canonical: Model-three/four/fiveletter-three/four/fiveletter-twodigits
+        return String.format(Locale.US, "%s-%s-%s-%02d",
+                prefix,
                 SoulseekWordDictionary.pickWord(context, hash, 0),
                 SoulseekWordDictionary.pickWord(context, hash, 1),
                 nn);

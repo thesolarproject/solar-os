@@ -16,11 +16,26 @@ public final class RootShell {
     /** One-shot: setuid daemonsu can be started from app context when daemon was not booted yet. */
     private static volatile boolean daemonsuBootstrapped = false;
 
+    /** 2026-07-16 — Cache su probe; canRun() used to spawn {@code su -c id} every volume tick. */
+    private static volatile Boolean canRunCached;
+
     private RootShell() {}
 
-    /** Probe whether any su path grants root from this app process. */
+    /**
+     * Probe whether any su path grants root from this app process.
+     * 2026-07-16 — Result is cached after first probe (volume hot path must not re-spawn su).
+     */
     public static boolean canRun() {
-        return run("id");
+        Boolean cached = canRunCached;
+        if (cached != null) return cached.booleanValue();
+        boolean ok = run("id");
+        canRunCached = Boolean.valueOf(ok);
+        return ok;
+    }
+
+    /** 2026-07-16 — Forget cached su result after ROM / root changes (rare). */
+    public static void invalidateCanRunCache() {
+        canRunCached = null;
     }
 
     /** Run one root shell command; returns true when exit code is 0. */

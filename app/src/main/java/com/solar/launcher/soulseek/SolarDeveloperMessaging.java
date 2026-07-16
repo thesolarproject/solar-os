@@ -259,6 +259,16 @@ public final class SolarDeveloperMessaging {
                         // Always SolarDeveloper wire accounts — never reply to the probe sender.
                         String[] devs = SolarDeveloperAccounts.developerUsernames();
                         FanOutResult r = sendWireFanOut(ctx, prefs, client, devs, wire);
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("from", sender);
+                            d.put("keys", parsed.probeKeys.toString());
+                            d.put("ok", r.allSucceeded());
+                            d.put("failed", java.util.Arrays.toString(r.failedRecipients()));
+                            com.solar.launcher.Debug843b96Log.log(ctx,
+                                    "SolarDeveloperMessaging.probeFanOut",
+                                    "probe reply", "D", d);
+                        } catch (Exception ignored) {}
                         if (!r.allSucceeded()) {
                             SolarDeveloperOutbox.enqueue(ctx, wire, r.failedRecipients());
                             SolarDeveloperOutbox.flushSoon(ctx, prefs, client);

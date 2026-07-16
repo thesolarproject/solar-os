@@ -34,6 +34,8 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
+        // 2026-07-16 — Defensive: OEM may deliver null context (historical instantiate NPE path).
+        if (context == null) return;
         // #region agent log
         try {
             org.json.JSONObject d = Debug705932Log.usbSnapshot();

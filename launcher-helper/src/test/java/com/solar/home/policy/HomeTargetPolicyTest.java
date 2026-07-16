@@ -58,6 +58,11 @@ public class HomeTargetPolicyTest {
                 "com.innioasis.y2/com.innioasis.y2.MainActivity");
         assertArrayEquals(new String[] {
                 HomeTargetPolicy.INNIOASIS_Y2_PKG, HomeTargetPolicy.INNIOASIS_Y2_ACTIVITY }, stockY2);
+        // 2026-07-16 — Family-aware stock fallback without PROP flat.
+        String[] stockY2Default = HomeTargetPolicy.resolveLaunchComponent("stock", "", true);
+        assertArrayEquals(new String[] {
+                HomeTargetPolicy.INNIOASIS_Y2_PKG, HomeTargetPolicy.INNIOASIS_Y2_ACTIVITY },
+                stockY2Default);
     }
 
     @Test

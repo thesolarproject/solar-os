@@ -41,15 +41,23 @@ public final class HearingSafetyVolume {
 
     private static volatile int lastWarnIndex = -1;
     private static volatile int cachedAbsoluteMax = -1;
+    /** 2026-07-16 — Hot-path cache; prefs only re-read when toggle changes. */
+    private static volatile Boolean enabledCache;
+    /** 2026-07-16 — Throttle OS EU unlock so failed up-steps do not spam root/reflection. */
+    private static volatile long lastEnsureFullRangeMs;
 
     private HearingSafetyVolume() {}
 
     /** True when Solar caps volume and shows hearing warnings (default off). */
     public static boolean isEnabled(Context ctx) {
         if (ctx == null) return false;
-        return ctx.getApplicationContext()
+        Boolean cached = enabledCache;
+        if (cached != null) return cached.booleanValue();
+        boolean on = ctx.getApplicationContext()
                 .getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
                 .getBoolean(PREF_ENABLED, false);
+        enabledCache = Boolean.valueOf(on);
+        return on;
     }
 
     /** Persisted hardware max index for Xposed volume hooks (system_server has no app prefs). */
@@ -61,16 +69,22 @@ public final class HearingSafetyVolume {
         Context app = ctx.getApplicationContext();
         app.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PREF_ENABLED, enabled).apply();
+        enabledCache = Boolean.valueOf(enabled);
         // 2026-07-15 — Push props + clear EU cap when off; Solar 80% clamp when on.
+        // Layman: Hearing Safety ON = real volume stops at 80% HW but the bar still goes to 100%.
         syncSystemBypass(app, enabled);
         if (enabled) {
             clampStream(app, AudioManager.STREAM_MUSIC);
+        } else {
+            // 2026-07-16 — Turning safety off must unlock full hardware range immediately.
+            ensureFullVolumeRange(app);
         }
     }
 
     /** Boot / prefs load — apply bypass without changing the stored toggle. */
     public static void syncFromPrefs(Context ctx) {
         if (ctx == null) return;
+        enabledCache = null; // re-read prefs once after boot
         syncSystemBypass(ctx.getApplicationContext(), isEnabled(ctx));
     }
 
@@ -132,15 +146,28 @@ public final class HearingSafetyVolume {
             target = cur + 1;
         } else if (!up && cur > 0) {
             target = cur - 1;
+        } else if (up && cur >= effMax) {
+            // Already at Solar-allowed top (full HW, or 80% HW when Hearing Safety is on).
+            return cur;
         }
         setStreamIndex(ctx, streamType, target);
         int after = am.getStreamVolume(streamType);
         // 2026-07-15 — OS EU cap often freezes index at ~80%; clear brake and retry once.
         // Layman: if the wheel won't go louder, knock off the phone's hidden volume lock.
+        // 2026-07-16 — Throttle unlock work; was re-running su/reflection on every stuck tick.
         if (up && target > cur && after <= cur && !isEnabled(ctx)) {
-            ensureFullVolumeRange(ctx);
-            setStreamIndex(ctx, streamType, target);
-            after = am.getStreamVolume(streamType);
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now - lastEnsureFullRangeMs >= 1500L) {
+                lastEnsureFullRangeMs = now;
+                ensureFullVolumeRange(ctx);
+                // Recompute max after unlock — OS may now report full hardware steps.
+                int newEff = getEffectiveMaxIndex(ctx, streamType);
+                if (target < newEff && target <= cur) {
+                    target = Math.min(cur + 1, newEff);
+                }
+                setStreamIndex(ctx, streamType, Math.min(target, newEff));
+                after = am.getStreamVolume(streamType);
+            }
         }
         return after;
     }
@@ -276,10 +303,28 @@ public final class HearingSafetyVolume {
      * 2026-07-15 — Re-assert full range before video / music if OS still clamps ~80%.
      * Layman: phones hide a “headphones too loud” brake — knock it off again if volume sticks.
      * Call from player open and volume wheel when up-step fails.
+     * 2026-07-16 — After unlock, refresh absolute max so UI 100% can map to true hardware top.
      */
     public static void ensureFullVolumeRange(Context ctx) {
         if (ctx == null || isEnabled(ctx)) return;
-        syncSystemBypass(ctx.getApplicationContext(), false);
+        Context app = ctx.getApplicationContext();
+        syncSystemBypass(app, false);
+        AudioManager am = audioManager(app);
+        if (am == null) return;
+        int reported = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+        // Prefer the larger of stored hardware max vs what OS now reports after unlock.
+        int abs = Math.max(reported, getAbsoluteMaxIndex(app, AudioManager.STREAM_MUSIC));
+        if (reported >= DEFAULT_ABSOLUTE_MAX) {
+            abs = reported;
+        } else if (abs < DEFAULT_ABSOLUTE_MAX) {
+            abs = DEFAULT_ABSOLUTE_MAX;
+        }
+        if (abs > 0 && abs != cachedAbsoluteMax) {
+            cachedAbsoluteMax = abs;
+            storeAbsoluteMax(app, AudioManager.STREAM_MUSIC, abs);
+            // 2026-07-16 — Never canRun() here (sync su); async setprop is enough for Xposed.
+            RootShell.runAsync("setprop " + PROP_ABSOLUTE_MAX + " " + abs);
+        }
     }
 
     /**

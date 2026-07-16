@@ -262,16 +262,23 @@ public final class FocusScrollHelper {
         int top = laidOut ? child.getTop() : 0;
         int bottom = laidOut ? child.getBottom() : 0;
         boolean fullyVisible = laidOut && top >= 0 && bottom <= viewport;
+        if (fullyVisible) {
+            // 2026-07-16 — Mid-list walk: no clearFocus/abort/post (was ~1 full frame per wheel notch).
+            // Layman: highlight just hops to the next already-on-screen row.
+            // Technical: setSelectionFromTop + requestFocus only; edge path still uses full sticky.
+            int sel = list.getSelectedItemPosition();
+            if (sel != position) {
+                list.setSelectionFromTop(position, top);
+            }
+            if (child != null && !child.isFocused() && child.isFocusable()) {
+                child.requestFocus();
+            }
+            return;
+        }
         // 2026-07-11 — Drop old focus chrome first so the bar does not ride a recycled view.
         clearListChildFocus(list);
         // Abort fling / leftover PositionScroller from older builds before sticky pin.
         abortListMotion(list);
-        if (fullyVisible) {
-            // Keep row where it is — no scroll (iPod: walk the page).
-            list.setSelectionFromTop(position, top);
-            requestFor(list).focusAfterSelect(position, false);
-            return;
-        }
         // Walk the page: only pin to the absolute edge if clipping/off-screen.
         // Removed train-timetable sticky-slot natural top logic per user request.
         boolean pinBottom;

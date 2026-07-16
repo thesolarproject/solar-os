@@ -67,6 +67,10 @@ public final class FlowCoverBakeCache {
     public void scheduleBake(final String coverKey, final Bitmap cover,
             final CoverFlowLayout.Metrics metrics, final boolean withReflection) {
         if (coverKey == null || cover == null || cover.isRecycled() || metrics == null) return;
+        // 2026-07-16 — Skip bake under RAM pressure (Y1 thrash). Reversal: remove LowMemoryGate check.
+        try {
+            if (com.solar.launcher.LowMemoryGate.shouldDeferHeavyWork(null)) return;
+        } catch (Throwable ignored) {}
         final String key = bakeKey(coverKey, metrics, withReflection);
         synchronized (this) {
             Bitmap hit = baked.get(key);
@@ -98,15 +102,30 @@ public final class FlowCoverBakeCache {
     }
 
     private Bitmap bake(Bitmap cover, CoverFlowLayout.Metrics metrics, boolean withReflection) {
+        // 2026-07-16 — TOCTOU: cover may recycle between scheduleBake and worker run.
+        if (cover == null || cover.isRecycled() || metrics == null) return null;
         int w = Math.max(1, Math.round(metrics.displaySize));
         float reflectH = withReflection ? metrics.reflectHeight : 0f;
         int h = w + Math.max(0, Math.round(reflectH));
-        Bitmap out = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
-        Canvas canvas = new Canvas(out);
-        square.set(0f, 0f, w, w);
-        FlowAlbumArt3d.drawCoverWithReflection(canvas, cover, square, 0f, 1f, reflectH,
-                metrics.reflectTable, coverPaint, reflectionPaint);
-        return out;
+        Bitmap out = null;
+        try {
+            out = Bitmap.createBitmap(w, h, Bitmap.Config.RGB_565);
+            if (cover.isRecycled()) {
+                if (out != null && !out.isRecycled()) out.recycle();
+                return null;
+            }
+            Canvas canvas = new Canvas(out);
+            square.set(0f, 0f, w, w);
+            FlowAlbumArt3d.drawCoverWithReflection(canvas, cover, square, 0f, 1f, reflectH,
+                    metrics.reflectTable, coverPaint, reflectionPaint);
+            return out;
+        } catch (RuntimeException e) {
+            // Canvas: trying to use a recycled bitmap — drop partial bake.
+            if (out != null && !out.isRecycled()) {
+                try { out.recycle(); } catch (Throwable ignored) {}
+            }
+            return null;
+        }
     }
 
     public synchronized void clear() {

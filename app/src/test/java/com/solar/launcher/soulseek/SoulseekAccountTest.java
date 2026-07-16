@@ -49,7 +49,8 @@ public class SoulseekAccountTest {
   public void usernameValidation() {
     if (!SoulseekAccount.isValidUsername("solarabcd")) throw new AssertionError("valid");
     if (!SoulseekAccount.isValidUsername("Y1-plume-wave-42")) throw new AssertionError("friend code");
-    if (!SoulseekAccount.isValidUsername("Y2-abcd-efgh-ijkl")) throw new AssertionError("y2 friend");
+    if (!SoulseekAccount.isValidUsername("Y2-abcd-efgh-12")) throw new AssertionError("y2 friend");
+    if (!SoulseekAccount.isValidUsername("A5-mint-glow-07")) throw new AssertionError("a5 friend");
     if (SoulseekAccount.isValidUsername("")) throw new AssertionError("empty");
     if (SoulseekAccount.isValidUsername("bad name")) throw new AssertionError("space");
     if (SoulseekAccount.isValidUsername("Dré")) throw new AssertionError("accent");
@@ -60,21 +61,59 @@ public class SoulseekAccountTest {
   public void friendCodeFormat() {
     String u = SoulseekAccount.generateUsername(null);
     if (!SoulseekAccount.isFriendCode(u)) throw new AssertionError(u);
-    if (!u.startsWith("Y1-") && !u.startsWith("Y2-")) throw new AssertionError(u);
+    if (!u.startsWith("Y1-") && !u.startsWith("Y2-") && !u.startsWith("A5-")) {
+      throw new AssertionError(u);
+    }
+    // Canonical: Model-word-word-##
+    if (!u.matches("^(Y1|Y2|A5)-[a-z]{3,5}-[a-z]{3,5}-[0-9]{2}$")) {
+      throw new AssertionError("canonical form: " + u);
+    }
+    if (u.length() > 20) throw new AssertionError("too long: " + u);
     assertDictionarySegments(u);
+  }
+
+  @Test
+  public void friendCodeUsesDeviceModelPrefix() {
+    com.solar.launcher.DeviceFeatures.setCachedFamilyForTest("a5");
+    try {
+      String u = SoulseekAccount.generateUsername(null, true);
+      if (!u.startsWith("A5-")) throw new AssertionError("expected A5 prefix: " + u);
+      if (!u.matches("^A5-[a-z]{3,5}-[a-z]{3,5}-[0-9]{2}$")) {
+        throw new AssertionError("a5 canonical: " + u);
+      }
+    } finally {
+      com.solar.launcher.DeviceFeatures.resetCacheForTest();
+    }
+    com.solar.launcher.DeviceFeatures.setCachedFamilyForTest("y2");
+    try {
+      String u = SoulseekAccount.generateUsername(null, true);
+      if (!u.startsWith("Y2-")) throw new AssertionError("expected Y2 prefix: " + u);
+      if (!u.matches("^Y2-[a-z]{3,5}-[a-z]{3,5}-[0-9]{2}$")) {
+        throw new AssertionError("y2 must be word-word-## not three words: " + u);
+      }
+    } finally {
+      com.solar.launcher.DeviceFeatures.resetCacheForTest();
+    }
   }
 
   @Test
   public void legacyHashFriendCodeStillRecognized() {
     if (!SoulseekAccount.isFriendCode("Y1-abcde-fghi-42")) throw new AssertionError("hash y1");
     if (!SoulseekAccount.isFriendCode("Y2-abcd-efgh-ijkl")) throw new AssertionError("hash y2");
+    if (!SoulseekAccount.isFriendCode("Y2-aioli-def-burls")) {
+      throw new AssertionError("legacy y2 three-word");
+    }
+    if (!SoulseekAccount.isFriendCode("A5-mint-glow-07")) throw new AssertionError("a5 canonical");
   }
 
   private static void assertDictionarySegments(String username) {
     String[] parts = username.split("-");
     if (parts.length < 3) throw new AssertionError("segments");
+    // Canonical ends with two digits; legacy three-word Y2 has no trailing nn.
     int end = parts.length - 1;
-    if (parts[0].equals("Y1")) end = parts.length - 2;
+    if (parts[parts.length - 1].matches("[0-9]{2}")) {
+      end = parts.length - 2;
+    }
     for (int i = 1; i <= end; i++) {
       if (!SoulseekWordDictionary.isValidWord(parts[i])) {
         throw new AssertionError("not dictionary word: " + parts[i]);

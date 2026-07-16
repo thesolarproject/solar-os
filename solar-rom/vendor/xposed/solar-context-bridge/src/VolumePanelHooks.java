@@ -228,7 +228,7 @@ final class VolumePanelHooks {
                     if (param.args.length < 2) return;
                     int stream = param.args[0] instanceof Integer ? (Integer) param.args[0] : -1;
                     if (!MediaVolumeControlStub.isMediaStream(stream)) return;
-                    if (isInternalVolumeAdjust()) return;
+                    // 2026-07-16 — Always enforce Hearing Safety cap; Solar app also clamps.
                     int index = param.args[1] instanceof Integer ? (Integer) param.args[1] : 0;
                     int eff = HearingSafetyStub.effectiveMaxIndex();
                     if (index > eff) {
@@ -241,7 +241,9 @@ final class VolumePanelHooks {
                     if (param.args.length < 2) return;
                     int stream = param.args[0] instanceof Integer ? (Integer) param.args[0] : -1;
                     if (!MediaVolumeControlStub.isMediaStream(stream)) return;
-                    if (isInternalVolumeAdjust()) return;
+                    // 2026-07-16 — flags==0 (Solar FLAGS_NO_UI) or internal prop: never open HUD.
+                    // Was: only internal prop; race on async setprop re-opened overlay and lagged NP wheel.
+                    if (isInternalVolumeAdjust() || isSilentVolumeFlags(param.args)) return;
                     scheduleVolumeOverlay();
                 }
             });
@@ -249,6 +251,14 @@ final class VolumePanelHooks {
             SolarContextBridge.log("setStreamVolume hook fail: " + t.getClass().getSimpleName());
             return 0;
         }
+    }
+
+    /** Solar media volume uses flags=0 — not a user-facing volume-key UI request. */
+    private static boolean isSilentVolumeFlags(Object[] args) {
+        if (args == null || args.length < 3) return false;
+        if (!(args[2] instanceof Integer)) return false;
+        int flags = (Integer) args[2];
+        return (flags & FLAG_SHOW_UI) == 0;
     }
 
     /** Replace stock panel method — show Solar overlay instead; use type-safe default return. */

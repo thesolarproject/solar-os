@@ -134,6 +134,8 @@ public final class SolarDataReset {
         if (app == null) return;
         SolarRecoveryCoordinator.clearEmergencyState(app);
         SolarRecoveryCoordinator.setPlatformDegraded(app, false);
+        // 2026-07-16 — Factory wipe must re-show first-ready wait on next cold start.
+        FirstSessionReadyGate.clearUiReady(app);
     }
 
     static void clearDirectoryContents(File dir, boolean overwriteFiles) {

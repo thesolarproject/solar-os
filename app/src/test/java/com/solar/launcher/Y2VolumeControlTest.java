@@ -27,4 +27,10 @@ public class Y2VolumeControlTest {
         assertTrue(Y1InputKeys.isWheelUp(126));
         assertTrue(Y1InputKeys.isWheelDown(127));
     }
+
+    /** 2026-07-16 — NP pulse always uses 0–100 display max (not raw stream steps). */
+    @Test
+    public void displayMaxIsAlwaysHundred() {
+        assertEquals(100, HearingSafetyVolume.DISPLAY_MAX);
+    }
 }

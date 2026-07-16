@@ -88,6 +88,7 @@ public final class SolarDiagContextCollector {
     }
 
     private static String collectEnvironment(Context context, boolean full) {
+        appContextForMem = context != null ? context.getApplicationContext() : null;
         StringBuilder sb = new StringBuilder(full ? 8192 : 2048);
         sb.append("=== Solar diagnostic environment ===\n");
         sb.append("detail: ").append(full ? "full" : "light").append('\n');
@@ -632,6 +633,63 @@ public final class SolarDiagContextCollector {
         sb.append(readLines("/proc/meminfo", 8));
         sb.append("proc_loadavg: ").append(readOneLine("/proc/loadavg")).append('\n');
         sb.append("proc_uptime: ").append(readOneLine("/proc/uptime")).append('\n');
+        // 2026-07-16 — ActivityManager + process status for Y1 RAM triage.
+        // Reversal: delete am_memory / self_status blocks.
+        try {
+            if (appContextForMem != null) {
+                android.app.ActivityManager am = (android.app.ActivityManager)
+                        appContextForMem.getSystemService(Context.ACTIVITY_SERVICE);
+                if (am != null) {
+                    android.app.ActivityManager.MemoryInfo mi =
+                            new android.app.ActivityManager.MemoryInfo();
+                    am.getMemoryInfo(mi);
+                    sb.append("am_avail_mem: ").append(mi.availMem).append('\n');
+                    sb.append("am_threshold: ").append(mi.threshold).append('\n');
+                    sb.append("am_low_memory: ").append(mi.lowMemory).append('\n');
+                    if (android.os.Build.VERSION.SDK_INT >= 16) {
+                        sb.append("am_total_mem: ").append(mi.totalMem).append('\n');
+                    }
+                }
+            }
+        } catch (Exception e) {
+            sb.append("am_memory_error: ").append(e.getMessage()).append('\n');
+        }
+        try {
+            sb.append("self_status:\n");
+            sb.append(readSelfStatusLines());
+        } catch (Exception ignored) {}
+        try {
+            sb.append("low_memory_gate: ")
+                    .append(com.solar.launcher.LowMemoryGate.snapshotOneLine(appContextForMem))
+                    .append('\n');
+        } catch (Exception ignored) {}
+    }
+
+    /** Set during collect so appendProc can sample ActivityManager without extra params. */
+    private static volatile Context appContextForMem;
+
+    private static String readSelfStatusLines() {
+        StringBuilder out = new StringBuilder();
+        try {
+            java.io.BufferedReader br = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(new java.io.FileInputStream("/proc/self/status")));
+            try {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    if (line.startsWith("VmRSS:") || line.startsWith("VmSize:")
+                            || line.startsWith("VmPeak:") || line.startsWith("Threads:")
+                            || line.startsWith("FDSize:") || line.startsWith("voluntary_ctxt")
+                            || line.startsWith("nonvoluntary_ctxt")) {
+                        out.append("  ").append(line).append('\n');
+                    }
+                }
+            } finally {
+                br.close();
+            }
+        } catch (Exception e) {
+            out.append("  error: ").append(e.getMessage()).append('\n');
+        }
+        return out.toString();
     }
 
     /** Keys only — no secret values (ARLs live in account-context file). */

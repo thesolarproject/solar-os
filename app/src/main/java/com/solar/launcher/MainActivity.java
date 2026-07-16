@@ -491,6 +491,16 @@ public class MainActivity extends Activity {
     private static final int OVERLAY_ART_CACHE = 4;
     private static final int OVERLAY_PODCAST = 8;
     private static final int OVERLAY_MISC = 16;
+    /** 2026-07-16 — First boot / self-heal full-screen “Getting things ready…”. */
+    private static final int OVERLAY_FIRST_READY = 32;
+    private boolean firstReadyOverlayActive;
+    private long firstReadyShownAtMs;
+    private final Runnable firstReadyCheckRunnable = new Runnable() {
+        @Override
+        public void run() {
+            maybeDismissFirstReadyOverlay();
+        }
+    };
     private int blockingOverlayOwners;
     private TextView tvLoadingOverlayText;
     private ImageView ivMenuPreview, ivAlbumArt, ivPlayerBgBlur, ivPauseOverlay;
@@ -1262,6 +1272,11 @@ public class MainActivity extends Activity {
     private int wheelIndexGeneration;
     private int pendingWheelFocusPosition = ListView.INVALID_POSITION;
     private boolean pendingWheelFocusRetried;
+    /** 2026-07-16 — Merge rapid wheel notches for long song lists (one move per frame). */
+    private final ListWheelCoalescer listWheelCoalescer = new ListWheelCoalescer();
+    /** 2026-07-16 — Precomputed song subtitles (guest scan once per list open, not per getView). */
+    private String[] songListSubtitleCache;
+    private boolean songListGuestOnlyCached;
     private Vibrator cachedVibrator;
     private long lastWheelHapticNanos;
     private long suppressOverlayHapticUntilNanos;
@@ -2844,6 +2859,13 @@ public class MainActivity extends Activity {
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT
         ));
+        // 2026-07-16 — First boot / self-heal: cover blank paint until home is usable.
+        // Layman: full-screen “Getting things ready, please wait…” instead of black emptiness.
+        boolean keepReady = getIntent() != null
+                && getIntent().getBooleanExtra(FirstSessionReadyGate.EXTRA_KEEP_READY_OVERLAY, false);
+        if (keepReady || FirstSessionReadyGate.shouldShowGettingReady(this)) {
+            showFirstReadyOverlay();
+        }
         // 🚀 [여기까지 추가 끝!]
         themedContextMenu = new ThemedContextMenu(this);
         // 2026-07-14 — Belt: if focus sits on the overlay and a key reaches View.onKey, feed MainActivity.
@@ -3777,6 +3799,10 @@ public class MainActivity extends Activity {
         }
 
         scheduleDeferredColdStartWork();
+        // 2026-07-16 — Home built; poll first-ready overlay dismiss.
+        if (firstReadyOverlayActive) {
+            scheduleFirstReadyCheck(300L);
+        }
 
         // #region agent log
         try {
@@ -4041,6 +4067,8 @@ public class MainActivity extends Activity {
         scheduleThemeAutoVariantIfRequested();
 
         scheduleAdbFlowCarouselIfRequested();
+        // 2026-07-16 — Exhaustive real-world matrix (library / search / playlists / screens).
+        scheduleAdbRealworldMatrixIfRequested(getIntent());
     }
 
     private void scheduleAdbFlowCarouselIfRequested() {
@@ -4094,14 +4122,66 @@ public class MainActivity extends Activity {
 
     /** Library scan overlay only on browse/menu screens — never block Flow / Now Playing. */
     private boolean libraryScanOverlayAllowedHere() {
+        // 2026-07-16 — First-ready overlay always allowed (covers blank first paint on any screen).
+        if ((blockingOverlayOwners & OVERLAY_FIRST_READY) != 0) return true;
         return currentScreenState == STATE_MENU
                 || currentScreenState == STATE_BROWSER
                 || currentScreenState == STATE_SETTINGS
                 || currentScreenState == STATE_MORE;
     }
 
+    /**
+     * 2026-07-16 — Full-screen first-session wait until home is usable.
+     * Layman: “Getting things ready, please wait…” while setup and library wake up.
+     */
+    private void showFirstReadyOverlay() {
+        firstReadyOverlayActive = true;
+        firstReadyShownAtMs = android.os.SystemClock.uptimeMillis();
+        acquireBlockingOverlay(OVERLAY_FIRST_READY, getString(R.string.getting_things_ready));
+        scheduleFirstReadyCheck(400L);
+    }
+
+    private void scheduleFirstReadyCheck(long delayMs) {
+        if (clockHandler == null) return;
+        clockHandler.removeCallbacks(firstReadyCheckRunnable);
+        clockHandler.postDelayed(firstReadyCheckRunnable, Math.max(100L, delayMs));
+    }
+
+    /**
+     * 2026-07-16 — Drop ready overlay when home menu is painted (Solar is usable).
+     * Layman: as soon as the home list is on screen and setup is done, lift the wait message.
+     * Technical: min display 700ms so the message is readable; not waiting on full library scan.
+     */
+    private void maybeDismissFirstReadyOverlay() {
+        if (!firstReadyOverlayActive) return;
+        if (isFinishing()) return;
+        long shownMs = android.os.SystemClock.uptimeMillis() - firstReadyShownAtMs;
+        if (shownMs < 700L) {
+            scheduleFirstReadyCheck(700L - shownMs);
+            return;
+        }
+        boolean homeUp = currentScreenState == STATE_MENU
+                && layoutMainMenu != null
+                && layoutMainMenu.getVisibility() == View.VISIBLE
+                && homeMenuEntries != null
+                && !homeMenuEntries.isEmpty();
+        boolean prepIdle = !FirstSessionReadyGate.shouldShowPrepWizard(this);
+        if (homeUp && prepIdle) {
+            firstReadyOverlayActive = false;
+            releaseBlockingOverlay(OVERLAY_FIRST_READY);
+            FirstSessionReadyGate.markUiReadyComplete(this);
+            return;
+        }
+        // Keep messaging fresh while waiting.
+        if ((blockingOverlayOwners & OVERLAY_FIRST_READY) != 0) {
+            setLoadingOverlayText(getString(R.string.getting_things_ready));
+        }
+        scheduleFirstReadyCheck(400L);
+    }
+
     private void acquireBlockingOverlay(int owner, String text) {
-        if (owner == OVERLAY_LIB_SCAN && !libraryScanOverlayAllowedHere()) {
+        if (owner == OVERLAY_LIB_SCAN && !libraryScanOverlayAllowedHere()
+                && (blockingOverlayOwners & OVERLAY_FIRST_READY) == 0) {
             return;
         }
         blockingOverlayOwners |= owner;
@@ -4128,6 +4208,9 @@ public class MainActivity extends Activity {
         if (blockingOverlayOwners == 0) {
             flushDeferredUsbConnectPromptIfNeeded();
         }
+        if (owner != OVERLAY_FIRST_READY && firstReadyOverlayActive) {
+            scheduleFirstReadyCheck(200L);
+        }
     }
 
     private void refreshBlockingOverlayVisible() {
@@ -4145,7 +4228,7 @@ public class MainActivity extends Activity {
             return;
         }
         layoutLoadingOverlay.setVisibility(View.VISIBLE);
-        if ((blockingOverlayOwners & OVERLAY_LIB_SCAN) != 0) {
+        if ((blockingOverlayOwners & (OVERLAY_LIB_SCAN | OVERLAY_FIRST_READY)) != 0) {
             getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         } else {
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -4426,10 +4509,18 @@ public class MainActivity extends Activity {
         // 2026-07-11 — Edge-only iPod/feature-phone scroll; was sticky-Y setSelectionFromTop(anchor)
         // which scrolled the whole list every tick. Reversal: restore sticky-Y anchor path.
         FocusScrollHelper.ensureListPositionVisible(listVirtualSongs, target);
-        pendingWheelFocusPosition = target;
-        pendingWheelFocusRetried = false;
-        listVirtualSongs.removeCallbacks(wheelFocusTask);
-        listVirtualSongs.post(wheelFocusTask);
+        // 2026-07-16 — Mid-list focus is applied inside FocusScrollHelper; only post fallback
+        // when the target row is not yet a child (off-screen jump).
+        int first = listVirtualSongs.getFirstVisiblePosition();
+        int childIdx = target - first;
+        if (childIdx < 0 || childIdx >= listVirtualSongs.getChildCount()) {
+            pendingWheelFocusPosition = target;
+            pendingWheelFocusRetried = false;
+            listVirtualSongs.removeCallbacks(wheelFocusTask);
+            listVirtualSongs.post(wheelFocusTask);
+        } else {
+            pendingWheelFocusPosition = ListView.INVALID_POSITION;
+        }
         boolean changed = !android.text.TextUtils.equals(oldLetter, newLetter);
         if (changed) {
             showFastScrollLetter(newLetter);
@@ -4439,6 +4530,69 @@ public class MainActivity extends Activity {
             wheelDetentFeedback(false);
         }
         return true;
+    }
+
+    /**
+     * 2026-07-16 — Apply coalesced wheel steps to the song/browse ListView.
+     * Layman: one jump for a burst of dial clicks so long lists do not feel "behind".
+     * Technical: reuse flywheel section jump when burst is large; otherwise multi-row step.
+     */
+    private boolean applyCoalescedListWheelSteps(int signedSteps) {
+        if (listVirtualSongs == null || signedSteps == 0) return false;
+        if (listVirtualSongs.getVisibility() != View.VISIBLE) return false;
+        ensureWheelSectionIndex();
+        int direction = signedSteps > 0 ? 1 : -1;
+        int n = Math.abs(signedSteps);
+        int current = currentWheelPosition();
+        // Burst of 3+ notches with letter sort → A–Z jump (same idea as WheelPhysics section).
+        boolean sectionOk = n >= 3 && isFastScrollLetterEligible();
+        int target;
+        if (sectionOk) {
+            target = wheelSectionIndex.jumpTarget(current, direction);
+            if (target < 0 || target == current) {
+                target = current + direction * Math.min(n, ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
+            }
+        } else {
+            // Progressive: 1:1 for slow ticks; mild amplify when catching a small backlog.
+            int jump = n <= 2 ? n : Math.min(n + (n / 3), ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
+            target = current + direction * jump;
+        }
+        boolean moved = moveWheelSelection(target);
+        if (moved) {
+            // clickFeedback is throttled; skip when multi-step catch-up (haptic already in move).
+            if (n <= 2) clickFeedback();
+            if (currentScreenState == STATE_NAVIDROME) {
+                refreshNavidromeBrowsePreviewFromSelection();
+            } else if (currentScreenState == STATE_PLEX) {
+                refreshPlexBrowsePreviewFromSelection();
+            } else if (currentScreenState == STATE_JELLYFIN) {
+                refreshJellyfinBrowsePreviewFromSelection();
+            }
+        }
+        return moved;
+    }
+
+    /** 2026-07-16 — Wire coalescer to listVirtualSongs after adapter attach. */
+    private void bindListWheelCoalescer() {
+        if (listVirtualSongs == null) return;
+        listWheelCoalescer.bind(listVirtualSongs, new ListWheelCoalescer.Apply() {
+            @Override
+            public boolean applySteps(int signedSteps) {
+                return applyCoalescedListWheelSteps(signedSteps);
+            }
+        });
+    }
+
+    /**
+     * 2026-07-16 — Attach song adapter + subtitle cache + wheel coalescer.
+     * Layman: one place so every “open this song list” path stays fast under the dial.
+     */
+    private void setSongListAdapter(List<SongItem> targetSongs, boolean numbered) {
+        rebuildSongListSubtitleCache(targetSongs);
+        SongListAdapter adapter = new SongListAdapter(targetSongs, numbered);
+        listVirtualSongs.setAdapter(adapter);
+        bindListWheelCoalescer();
+        ensureWheelSectionIndex();
     }
 
     private android.graphics.drawable.StateListDrawable getY1RowStateBackground(
@@ -9348,6 +9502,10 @@ public class MainActivity extends Activity {
         scrollHomeMenuToIndex(focusedHomeMenuIndex);
         refreshHomeMenuRowStyles();
         if (containerHomeMenuItems != null) containerHomeMenuItems.requestLayout();
+        // 2026-07-16 — Home painted; first-ready wait can lift if prep is done.
+        if (firstReadyOverlayActive) {
+            scheduleFirstReadyCheck(200L);
+        }
         nowPlayingHomeMenuVisible = shouldShowNowPlayingHome();
     }
 
@@ -10465,6 +10623,530 @@ public class MainActivity extends Activity {
         openGetMusicScreen();
     }
 
+    /**
+     * 2026-07-16 — Lab: {@code am start … --ez solar_adb_realworld_matrix true}
+     * or {@code files/adb_realworld_matrix.flag}. Mutes music, walks screens/library modes,
+     * search, play (muted), playlist create/append, favorites, stress transitions.
+     */
+    private void scheduleAdbRealworldMatrixIfRequested(Intent intent) {
+        boolean fromIntent = intent != null
+                && intent.getBooleanExtra("solar_adb_realworld_matrix", false);
+        File flag = new File(getFilesDir(), "adb_realworld_matrix.flag");
+        boolean fromFlag = flag.isFile();
+        if (!fromIntent && !fromFlag) return;
+        if (intent != null) intent.removeExtra("solar_adb_realworld_matrix");
+        if (fromFlag) {
+            // Layman: one-shot flag so monkey/launcher cold start still triggers matrix.
+            //noinspection ResultOfMethodCallIgnored
+            flag.delete();
+        }
+        SolarAdbTest.pass("matrix_scheduled");
+        new Handler().postDelayed(new Runnable() {
+            @Override public void run() {
+                runAdbRealworldMatrix();
+            }
+        }, 1800);
+    }
+
+    /** 2026-07-16 — Silence STREAM_MUSIC for lab play tests (no speaker blast). */
+    private void muteMusicStreamForAdb() {
+        try {
+            android.media.AudioManager am =
+                    (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+            if (am != null) {
+                am.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, 0, 0);
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 2026-07-16 — Exhaustive real-world usage matrix on-device.
+     * Each case is one user-facing surface; failures log FAIL but chain continues.
+     */
+    private void runAdbRealworldMatrix() {
+        final Handler h = new Handler();
+        final int[] step = {0};
+        final long t0 = android.os.SystemClock.elapsedRealtime();
+        final String testPlName = "SolarAdbMatrix";
+        final java.util.ArrayList<String> fails = new java.util.ArrayList<String>();
+        muteMusicStreamForAdb();
+
+        final Runnable chain = new Runnable() {
+            @Override public void run() {
+                final int i = step[0];
+                final long stepStart = android.os.SystemClock.elapsedRealtime();
+                String name = "s" + i;
+                try {
+                    switch (i) {
+                        case 0: {
+                            name = "mute_home";
+                            muteMusicStreamForAdb();
+                            changeScreen(STATE_MENU);
+                            StringBuilder sb = new StringBuilder("home focus=")
+                                    .append(focusedHomeMenuIndex)
+                                    .append(" rows=").append(homeMenuEntries.size())
+                                    .append(" lib=").append(customLibrary != null
+                                            ? customLibrary.size() : -1)
+                                    .append(" scan=").append(libraryScanRunning
+                                            || isCustomScanning);
+                            for (int hi = 0; hi < homeMenuEntries.size(); hi++) {
+                                sb.append(' ').append(hi).append('=')
+                                        .append(homeMenuEntries.get(hi).id);
+                            }
+                            SolarAdbTest.pass(sb.toString());
+                            break;
+                        }
+                        case 1: {
+                            name = "browser_root";
+                            isAudiobookLibraryMode = false;
+                            currentBrowserMode = BROWSER_ROOT;
+                            changeScreen(STATE_BROWSER);
+                            buildFileBrowserUI();
+                            SolarAdbTest.pass("browser_root state=" + currentScreenState
+                                    + " mode=" + currentBrowserMode);
+                            break;
+                        }
+                        case 2: {
+                            name = "artists";
+                            currentBrowserMode = BROWSER_ARTISTS;
+                            buildVirtualCategories("ARTIST");
+                            SolarAdbTest.pass("artists cats=" + currentScrollIndexList.size());
+                            break;
+                        }
+                        case 3: {
+                            name = "albums";
+                            currentBrowserMode = BROWSER_ALBUMS;
+                            buildVirtualCategories("ALBUM");
+                            SolarAdbTest.pass("albums cats=" + currentScrollIndexList.size());
+                            break;
+                        }
+                        case 4: {
+                            name = "all_songs";
+                            currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+                            virtualQueryType = "ALL";
+                            buildVirtualSongs();
+                            SolarAdbTest.pass("all_songs n=" + virtualSongList.size());
+                            break;
+                        }
+                        case 5: {
+                            name = "recent";
+                            currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+                            virtualQueryType = "RECENT";
+                            buildVirtualSongs();
+                            SolarAdbTest.pass("recent n=" + virtualSongList.size());
+                            break;
+                        }
+                        case 6: {
+                            name = "genres";
+                            currentBrowserMode = BROWSER_GENRES;
+                            buildVirtualCategories("GENRE");
+                            SolarAdbTest.pass("genres cats=" + currentScrollIndexList.size());
+                            break;
+                        }
+                        case 7: {
+                            name = "years";
+                            currentBrowserMode = BROWSER_YEARS;
+                            buildVirtualCategories("YEAR");
+                            SolarAdbTest.pass("years cats=" + currentScrollIndexList.size());
+                            break;
+                        }
+                        case 8: {
+                            name = "favorites";
+                            currentBrowserMode = BROWSER_FAVORITES;
+                            buildVirtualSongsForFavorites();
+                            SolarAdbTest.pass("favorites n=" + virtualSongList.size());
+                            break;
+                        }
+                        case 9: {
+                            name = "playlists_list";
+                            currentBrowserMode = BROWSER_PLAYLISTS;
+                            buildPlaylistsUI();
+                            SolarAdbTest.pass("playlists n="
+                                    + (libraryPlaylists != null ? libraryPlaylists.size() : -1));
+                            break;
+                        }
+                        case 10: {
+                            name = "library_search_empty";
+                            // Layman: empty query should not crash; results may be empty.
+                            librarySearchQuery = "";
+                            librarySearchVisible.clear();
+                            librarySearchResults = LibrarySearch.searchWithGenre(
+                                    flowLibrarySearchRows(), "a", libraryBrowsePrefs);
+                            currentBrowserMode = BROWSER_LIBRARY_SEARCH;
+                            int hits = librarySearchResults != null
+                                    ? librarySearchResults.songs.size() : 0;
+                            SolarAdbTest.pass("library_search_q=a hits=" + hits);
+                            break;
+                        }
+                        case 11: {
+                            name = "library_search_common";
+                            String q = "the";
+                            librarySearchQuery = q;
+                            librarySearchResults = LibrarySearch.searchWithGenre(
+                                    flowLibrarySearchRows(), q, libraryBrowsePrefs);
+                            int hits = librarySearchResults != null
+                                    ? librarySearchResults.songs.size() : 0;
+                            SolarAdbTest.pass("library_search_q=" + q + " hits=" + hits);
+                            break;
+                        }
+                        case 12: {
+                            name = "play_first_muted";
+                            muteMusicStreamForAdb();
+                            java.util.ArrayList<java.io.File> queue =
+                                    new java.util.ArrayList<java.io.File>();
+                            if (customLibrary != null) {
+                                for (int si = 0; si < customLibrary.size() && queue.size() < 8; si++) {
+                                    SongItem s = customLibrary.get(si);
+                                    if (s != null && s.file != null && s.file.isFile()) {
+                                        queue.add(s.file);
+                                    }
+                                }
+                            }
+                            if (queue.isEmpty()) {
+                                SolarAdbTest.pass("play_skip empty_library");
+                            } else {
+                                playTrackList(queue, 0, null);
+                                muteMusicStreamForAdb();
+                                SolarAdbTest.pass("play_started queue=" + queue.size()
+                                        + " screen=" + currentScreenState
+                                        + " musicActive=" + playback.isMusicActive());
+                            }
+                            break;
+                        }
+                        case 13: {
+                            name = "pause_after_play";
+                            try {
+                                if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                                    mediaPlayer.pause();
+                                    isPausedByHand = true;
+                                }
+                            } catch (Throwable ignored) {}
+                            muteMusicStreamForAdb();
+                            SolarAdbTest.pass("paused playing="
+                                    + (mediaPlayer != null && mediaPlayer.isPlaying()));
+                            break;
+                        }
+                        case 14: {
+                            name = "open_queue_context";
+                            if (!playback.hasAnyQueue()) {
+                                SolarAdbTest.pass("queue_skip no_queue");
+                            } else {
+                                showThemedContextMenu();
+                                openPlaybackQueueInContextMenu();
+                                SolarAdbTest.pass("queue_opened mem="
+                                        + playback.unifiedQueue().size());
+                            }
+                            break;
+                        }
+                        case 15: {
+                            name = "dismiss_context_home";
+                            try {
+                                dismissThemedContextMenu();
+                            } catch (Throwable t) {
+                                // Layman: dismiss can NPE if sheet already gone — still force home.
+                                changeScreen(STATE_MENU);
+                            }
+                            changeScreen(STATE_MENU);
+                            SolarAdbTest.pass("back_menu state=" + currentScreenState);
+                            break;
+                        }
+                        case 16: {
+                            name = "settings";
+                            changeScreen(STATE_SETTINGS);
+                            SolarAdbTest.pass("settings state=" + currentScreenState);
+                            break;
+                        }
+                        case 17: {
+                            name = "podcasts";
+                            changeScreen(STATE_PODCASTS);
+                            SolarAdbTest.pass("podcasts state=" + currentScreenState);
+                            break;
+                        }
+                        case 18: {
+                            name = "get_music";
+                            deviceTestOpenGetMusicTypeSearch();
+                            SolarAdbTest.pass("get_music state=" + currentScreenState);
+                            break;
+                        }
+                        case 19: {
+                            name = "wifi";
+                            changeScreen(STATE_WIFI);
+                            SolarAdbTest.pass("wifi state=" + currentScreenState);
+                            break;
+                        }
+                        case 20: {
+                            name = "bluetooth";
+                            if (!BluetoothExperiment.isEnabled(prefs)) {
+                                SolarAdbTest.pass("bluetooth_skipped experiment_off");
+                            } else {
+                                changeScreen(STATE_BLUETOOTH);
+                                SolarAdbTest.pass("bluetooth state=" + currentScreenState);
+                            }
+                            break;
+                        }
+                        case 21: {
+                            name = "apps";
+                            changeScreen(STATE_APPS);
+                            SolarAdbTest.pass("apps state=" + currentScreenState);
+                            break;
+                        }
+                        case 22: {
+                            name = "more";
+                            changeScreen(STATE_MORE);
+                            SolarAdbTest.pass("more state=" + currentScreenState);
+                            break;
+                        }
+                        case 23: {
+                            name = "player";
+                            if (playback.hasAnyQueue()) {
+                                changeScreen(STATE_PLAYER);
+                                SolarAdbTest.pass("player state=" + currentScreenState
+                                        + " music=" + playback.isMusicActive());
+                            } else {
+                                SolarAdbTest.pass("player_skip no_queue");
+                            }
+                            break;
+                        }
+                        case 24: {
+                            name = "playlist_create";
+                            java.util.ArrayList<java.io.File> tracks =
+                                    new java.util.ArrayList<java.io.File>();
+                            if (playback.isMusicActive() && !playback.musicPlaylist().isEmpty()) {
+                                tracks.add(playback.musicPlaylist().get(playback.musicIndex()));
+                            } else if (customLibrary != null) {
+                                for (int si = 0; si < customLibrary.size() && tracks.isEmpty(); si++) {
+                                    SongItem s = customLibrary.get(si);
+                                    if (s != null && s.file != null && s.file.isFile()) {
+                                        tracks.add(s.file);
+                                    }
+                                }
+                            }
+                            if (tracks.isEmpty() || rootFolder == null) {
+                                SolarAdbTest.pass("playlist_create_skip no_tracks");
+                            } else {
+                                // Layman: wipe prior lab playlist so reruns stay idempotent.
+                                try {
+                                    java.util.List<PlaylistManager.Entry> existing =
+                                            PlaylistManager.scan(rootFolder);
+                                    for (PlaylistManager.Entry e : existing) {
+                                        if (e != null && testPlName.equals(e.name)
+                                                && e.sourceFile != null) {
+                                            PlaylistManager.deletePlaylistFile(e.sourceFile);
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                                PlaylistManager.Entry created = PlaylistManager.createPlaylist(
+                                        rootFolder, testPlName, tracks);
+                                SolarAdbTest.pass("playlist_created name=" + testPlName
+                                        + " tracks=" + tracks.size()
+                                        + " file=" + (created != null && created.sourceFile != null
+                                        ? created.sourceFile.getName() : "null"));
+                            }
+                            break;
+                        }
+                        case 25: {
+                            name = "playlist_append";
+                            java.io.File extra = null;
+                            if (customLibrary != null) {
+                                for (int si = 0; si < customLibrary.size(); si++) {
+                                    SongItem s = customLibrary.get(si);
+                                    if (s != null && s.file != null && s.file.isFile()) {
+                                        extra = s.file;
+                                        if (si > 0) break; // prefer 2nd track when present
+                                    }
+                                }
+                            }
+                            PlaylistManager.Entry pl = findPlaylistEntryByName(testPlName);
+                            if (pl == null || pl.sourceFile == null || extra == null) {
+                                SolarAdbTest.pass("playlist_append_skip missing");
+                            } else {
+                                java.util.ArrayList<java.io.File> add =
+                                        new java.util.ArrayList<java.io.File>();
+                                add.add(extra);
+                                PlaylistManager.appendTracks(pl.sourceFile, rootFolder, add);
+                                PlaylistManager.Entry after = PlaylistManager.parse(
+                                        pl.sourceFile, rootFolder);
+                                SolarAdbTest.pass("playlist_appended n="
+                                        + (after != null && after.tracks != null
+                                        ? after.tracks.size() : -1));
+                            }
+                            break;
+                        }
+                        case 26: {
+                            name = "playlists_rescan";
+                            currentBrowserMode = BROWSER_PLAYLISTS;
+                            changeScreen(STATE_BROWSER);
+                            buildPlaylistsUI();
+                            boolean found = findPlaylistEntryByName(testPlName) != null;
+                            if (found) {
+                                SolarAdbTest.pass("playlist_visible name=" + testPlName
+                                        + " total=" + libraryPlaylists.size());
+                            } else {
+                                SolarAdbTest.fail("playlist_missing name=" + testPlName);
+                                fails.add(name);
+                            }
+                            break;
+                        }
+                        case 27: {
+                            name = "favorite_toggle";
+                            java.io.File favFile = null;
+                            if (customLibrary != null && !customLibrary.isEmpty()
+                                    && customLibrary.get(0).file != null) {
+                                favFile = customLibrary.get(0).file;
+                            }
+                            if (favFile == null) {
+                                SolarAdbTest.pass("favorite_skip no_track");
+                            } else {
+                                String path = favFile.getAbsolutePath();
+                                boolean was = favoritePaths.contains(path);
+                                if (was) favoritePaths.remove(path);
+                                else favoritePaths.add(path);
+                                try {
+                                    // 2026-07-16 — Store single-path toggle (no bulk save API).
+                                    MusicLibraryStore.getInstance(MainActivity.this)
+                                            .setFavorite(path, !was);
+                                } catch (Throwable t) {
+                                    SolarAdbTest.fail("favorite_store "
+                                            + t.getClass().getSimpleName());
+                                    fails.add(name);
+                                }
+                                SolarAdbTest.pass("favorite_toggled was=" + was
+                                        + " now=" + favoritePaths.contains(path));
+                            }
+                            break;
+                        }
+                        case 28: {
+                            name = "context_menu_browser";
+                            currentBrowserMode = BROWSER_ROOT;
+                            changeScreen(STATE_BROWSER);
+                            buildFileBrowserUI();
+                            showThemedContextMenu();
+                            SolarAdbTest.pass("context_browser");
+                            try { dismissThemedContextMenu(); } catch (Throwable ignored) {}
+                            break;
+                        }
+                        case 29: {
+                            name = "context_menu_player";
+                            if (playback.hasAnyQueue()) {
+                                changeScreen(STATE_PLAYER);
+                                showThemedContextMenu();
+                                SolarAdbTest.pass("context_player");
+                                try { dismissThemedContextMenu(); } catch (Throwable ignored) {}
+                            } else {
+                                SolarAdbTest.pass("context_player_skip");
+                            }
+                            break;
+                        }
+                        case 30: {
+                            name = "stress_screen_flip";
+                            // Layman: rapid jumps that real users do with wheel+back.
+                            int[] flip = new int[] {
+                                    STATE_MENU, STATE_BROWSER, STATE_MENU, STATE_SETTINGS,
+                                    STATE_MENU, STATE_PODCASTS, STATE_MENU
+                            };
+                            if (playback.hasAnyQueue()) {
+                                flip = new int[] {
+                                        STATE_MENU, STATE_BROWSER, STATE_PLAYER, STATE_BROWSER,
+                                        STATE_MENU, STATE_SETTINGS, STATE_MENU, STATE_PLAYER,
+                                        STATE_MENU
+                                };
+                            }
+                            for (int f = 0; f < flip.length; f++) {
+                                changeScreen(flip[f]);
+                            }
+                            SolarAdbTest.pass("stress_flip end=" + currentScreenState
+                                    + " steps=" + flip.length);
+                            break;
+                        }
+                        case 31: {
+                            name = "flow_if_ready";
+                            if (!isFlowEnabled()) {
+                                SolarAdbTest.pass("flow_skipped disabled");
+                            } else if (!playback.isMusicActive() || playback.musicPlaylist().isEmpty()) {
+                                SolarAdbTest.pass("flow_skipped no_music");
+                            } else {
+                                try {
+                                    // 2026-07-16 — Player-style Flow entry (albums carousel).
+                                    openFlow(FlowLaunchRequest.picker(STATE_PLAYER));
+                                    SolarAdbTest.pass("flow_opened state=" + currentScreenState);
+                                } catch (Throwable t) {
+                                    SolarAdbTest.fail("flow " + t.getClass().getSimpleName()
+                                            + ": " + t.getMessage());
+                                    fails.add(name);
+                                }
+                            }
+                            break;
+                        }
+                        case 32: {
+                            name = "artist_drill";
+                            currentBrowserMode = BROWSER_ARTISTS;
+                            changeScreen(STATE_BROWSER);
+                            buildVirtualCategories("ARTIST");
+                            if (!currentScrollIndexList.isEmpty()) {
+                                String artist = currentScrollIndexList.get(0);
+                                openArtistBrowse(artist);
+                                SolarAdbTest.pass("artist_drill a=" + artist
+                                        + " mode=" + currentBrowserMode
+                                        + " songs=" + virtualSongList.size());
+                            } else {
+                                SolarAdbTest.pass("artist_drill_skip empty");
+                            }
+                            break;
+                        }
+                        case 33: {
+                            name = "get_music_roundtrip";
+                            deviceTestGetMusicMenuRoundTrip();
+                            SolarAdbTest.pass("get_music_roundtrip state=" + currentScreenState);
+                            break;
+                        }
+                        case 34: {
+                            name = "library_rescan_ui";
+                            // Layman: rebuild all-songs after playlist/fav mutations — catch UI stalls.
+                            currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+                            virtualQueryType = "ALL";
+                            changeScreen(STATE_BROWSER);
+                            buildVirtualSongs();
+                            SolarAdbTest.pass("rescan_ui songs=" + virtualSongList.size()
+                                    + " lib=" + (customLibrary != null ? customLibrary.size() : -1));
+                            break;
+                        }
+                        case 35: {
+                            name = "matrix_summary";
+                            changeScreen(STATE_MENU);
+                            long total = android.os.SystemClock.elapsedRealtime() - t0;
+                            SolarAdbTest.timing("matrix_total", total);
+                            if (fails.isEmpty()) {
+                                SolarAdbTest.pass("matrix_done ms=" + total
+                                        + " fails=0 lib="
+                                        + (customLibrary != null ? customLibrary.size() : -1));
+                            } else {
+                                SolarAdbTest.fail("matrix_done ms=" + total
+                                        + " fails=" + fails.size() + " " + fails);
+                            }
+                            return; // terminal
+                        }
+                        default:
+                            return;
+                    }
+                } catch (Throwable t) {
+                    String msg = name + " " + t.getClass().getSimpleName()
+                            + ": " + (t.getMessage() != null ? t.getMessage() : "");
+                    SolarAdbTest.fail(msg);
+                    fails.add(name);
+                    android.util.Log.e("SolarAdbTest", "matrix step crash", t);
+                }
+                SolarAdbTest.timing(name, android.os.SystemClock.elapsedRealtime() - stepStart);
+                SolarAdbTest.step(i, name, "ok");
+                step[0]++;
+                // Layman: longer settle after play / UI rebuilds; short for pure navigations.
+                int delay = (i == 12 || i == 14 || i == 31 || i == 34) ? 1200
+                        : (i == 30 ? 80 : 450);
+                h.postDelayed(this, delay);
+            }
+        };
+        h.post(chain);
+    }
+
     int deviceTestCurrentScreenState() {
         return currentScreenState;
     }
@@ -10790,6 +11472,10 @@ public class MainActivity extends Activity {
         // Was: SolarUiState prop never written. Reversal: delete this setNowPlayingScreen call.
         SolarUiState.setNowPlayingScreen(VolumeHudPolicy.isInlineVolumeScreen(state,
                 STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER));
+        // 2026-07-16 — Entering NP: drop OS EU ~80% lock when Hearing Safety is off (async-safe).
+        if (state == STATE_PLAYER || state == MediaSuiteHost.STATE_VIDEO_PLAYER) {
+            HearingSafetyVolume.ensureFullVolumeRange(this);
+        }
         refreshBlockingOverlayVisible();
         scheduleSoulseekSharePolicyRefresh();
         layoutMainMenu.setVisibility(state == STATE_MENU ? View.VISIBLE : View.GONE);
@@ -21591,23 +22277,57 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private String songSubtitleLine(SongItem song) {
+        return songSubtitleLine(song, songListGuestOnlyCached);
+    }
+
+    /**
+     * 2026-07-16 — Subtitle without re-scanning guest policy (pass guestOnly from list open).
+     * Layman: building “Artist · Album” must stay cheap while the wheel flies through tracks.
+     */
+    private String songSubtitleLine(SongItem song, boolean guestOnly) {
         if (song == null) return "";
         if (isAudiobookLibraryMode && song.file != null) {
             String progress = com.solar.launcher.audiobook.AudiobookBookmarks.progressSubtitle(
                     this, song.file, 0);
             if (progress != null && !progress.isEmpty()) return progress;
         }
-        if (ArtistBrowsePolicy.isGuestOnlyArtistBrowse(virtualQueryValue, virtualQueryType,
-                policyTracksFromLibrary(), libraryBrowsePrefs)) {
+        if (guestOnly) {
             String owner = ArtistBrowsePolicy.guestSongSubtitleOwner(song.album, virtualQueryValue,
                     policyTracksFromLibrary(), libraryBrowsePrefs);
             if (owner != null && !owner.trim().isEmpty() && song.album != null && !song.album.isEmpty()) {
                 return getString(R.string.library_song_from_album, owner, song.album);
             }
         }
-        if (song.artist.isEmpty()) return song.album;
-        if (song.album.isEmpty()) return song.artist;
+        if (song.artist == null || song.artist.isEmpty()) {
+            return song.album != null ? song.album : "";
+        }
+        if (song.album == null || song.album.isEmpty()) return song.artist;
         return song.artist + " · " + song.album;
+    }
+
+    /** 2026-07-16 — One guest-policy probe + subtitle strings for the open song list. */
+    private void rebuildSongListSubtitleCache(List<SongItem> songs) {
+        if (songs == null || songs.isEmpty()) {
+            songListSubtitleCache = null;
+            songListGuestOnlyCached = false;
+            return;
+        }
+        songListGuestOnlyCached = ArtistBrowsePolicy.isGuestOnlyArtistBrowse(
+                virtualQueryValue, virtualQueryType, policyTracksFromLibrary(), libraryBrowsePrefs);
+        String[] cache = new String[songs.size()];
+        for (int i = 0; i < songs.size(); i++) {
+            cache[i] = songSubtitleLine(songs.get(i), songListGuestOnlyCached);
+        }
+        songListSubtitleCache = cache;
+    }
+
+    private String cachedSongSubtitleAt(int position, SongItem song) {
+        if (songListSubtitleCache != null && position >= 0
+                && position < songListSubtitleCache.length) {
+            String s = songListSubtitleCache[position];
+            if (s != null) return s;
+        }
+        return songSubtitleLine(song, songListGuestOnlyCached);
     }
 
     private List<ArtistBrowsePolicy.Track> policyTracksFromLibrary() {
@@ -36992,7 +37712,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             virtualSongList.add(s.file);
             currentScrollIndexList.add(s.title);
         }
-        listVirtualSongs.setAdapter(new SongListAdapter(target, false));
+        setSongListAdapter(target, false);
     }
 
     /** 2026-07-06: Music queue incl. Navidrome — musicPlaylist() omits file-less streams. */
@@ -38302,8 +39022,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             });
             return;
         }
-        SongListAdapter adapter = new SongListAdapter(targetSongs, false);
-        listVirtualSongs.setAdapter(adapter);
+        setSongListAdapter(targetSongs, false);
         listVirtualSongs.post(new Runnable() {
             @Override
             public void run() {
@@ -39291,8 +40010,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 currentScrollIndexList.add(f.getName());
             }
         }
-        SongListAdapter adapter = new SongListAdapter(targetSongs, true);
-        listVirtualSongs.setAdapter(adapter);
+        setSongListAdapter(targetSongs, true);
         playlistListFocusIndex = 0;
         listVirtualSongs.post(new Runnable() {
             @Override
@@ -40451,8 +41169,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             virtualSongList.add(s.file);
             currentScrollIndexList.add(s.title);
         }
-        SongListAdapter adapter = new SongListAdapter(targetSongs, false);
-        listVirtualSongs.setAdapter(adapter);
+        setSongListAdapter(targetSongs, false);
         // #region agent log
         try {
             org.json.JSONObject d = new org.json.JSONObject();
@@ -50197,25 +50914,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void adjustVolume(boolean up) {
         int stream = activeVolumeStream();
-        int currentVol = MediaVolumeControl.adjustStream(this, stream, up);
-        int maxVol = MediaVolumeControl.getMaxVolume(this, stream);
+        // 2026-07-16 — Step index; pulse always uses 0–100 display (Hearing Safety scales 80% HW → 100% bar).
+        MediaVolumeControl.adjustStream(this, stream, up);
+        int display = MediaVolumeControl.getDisplayVolume(this, stream);
+        int displayMax = MediaVolumeControl.getDisplayMaxVolume(this);
         // 2026-07-15 — Pulse transport only; never full refreshPlayerUi (FM NP was jamming on wheel).
         if (currentScreenState == STATE_PLAYER) {
             if (themedContextMenu != null && themedContextMenu.isShowing() && contextMenuInVolumeSlider
                     && !contextMenuVolumeOnly) {
                 refreshContextVolumeSliderUi();
             } else if (playerTransport != null) {
-                int max = maxVol > 0 ? maxVol
-                        : (audioManager != null ? audioManager.getStreamMaxVolume(stream) : 1);
-                int cur = currentVol;
-                playerTransport.showVolumePulse(cur, max);
+                playerTransport.showVolumePulse(display, displayMax);
             }
         } else if (currentScreenState == MediaSuiteHost.STATE_VIDEO_PLAYER && videoTransport != null) {
-            int max = audioManager != null
-                    ? audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 1;
-            int cur = audioManager != null
-                    ? audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
-            videoTransport.showVolumeInTrack(cur, max);
+            // 2026-07-16 — Same 0–100 display scale as music NP (was raw OS index / max → stuck ~80%).
+            videoTransport.showVolumeInTrack(
+                    MediaVolumeControl.getDisplayVolume(this, AudioManager.STREAM_MUSIC),
+                    MediaVolumeControl.getDisplayMaxVolume(this));
         }
     }
 
@@ -50587,8 +51302,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
             }
             if (Y1InputKeys.isWheelUp(keyCode)) {
-                // #region agent log
-                if (event.getRepeatCount() == 0) {
+                // 2026-07-16 — Debug JSON only when ENABLED (was allocating every NP wheel tick).
+                if (DebugAgentLog.ENABLED && event.getRepeatCount() == 0) {
                     try {
                         org.json.JSONObject d = new org.json.JSONObject();
                         d.put("keyCode", keyCode);
@@ -50597,28 +51312,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         DebugAgentLog.log(this, "MainActivity.onKeyDown", "wheel up", "H-KEYMAP", d);
                     } catch (Exception ignored) {}
                 }
-                // #endregion
                 if (playerScrubCursorActive) {
                     movePlayerScrubCursor(-MEDIA_SCRUB_STEP_MS);
                 } else {
                     adjustVolume(false);
                 }
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("runId", "pre-fix");
-                    d.put("keyCode", keyCode);
-                    d.put("scan", event != null ? event.getScanCode() : -1);
-                    d.put("scrubActive", playerScrubCursorActive);
-                    d.put("adjustedVolume", !playerScrubCursorActive);
-                    d.put("portraitOn", Y1PortraitExperiment.isEnabled(this));
-                    d.put("mode", Y1PortraitExperiment.mode(this));
-                    Debug210a10Log.log(this, "MainActivity.onKeyDown",
-                            "NP wheel up → volume path", "H-B", d);
-                    com.solar.launcher.flow.FlowBackDebugLog.log(
-                            "MainActivity.onKeyDown", "player wheel up", "H-V4", d);
-                } catch (Exception ignored) {}
-                // #endregion
+                if (Debug210a10Log.ENABLED || com.solar.launcher.flow.FlowBackDebugLog.ENABLED) {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("keyCode", keyCode);
+                        d.put("scrubActive", playerScrubCursorActive);
+                        d.put("adjustedVolume", !playerScrubCursorActive);
+                        Debug210a10Log.log(this, "MainActivity.onKeyDown",
+                                "NP wheel up → volume path", "H-B", d);
+                        com.solar.launcher.flow.FlowBackDebugLog.log(
+                                "MainActivity.onKeyDown", "player wheel up", "H-V4", d);
+                    } catch (Exception ignored) {}
+                }
                 clickFeedback();
                 return true;
             }
@@ -50628,22 +51338,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 } else {
                     adjustVolume(true);
                 }
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("runId", "pre-fix");
-                    d.put("keyCode", keyCode);
-                    d.put("scan", event != null ? event.getScanCode() : -1);
-                    d.put("scrubActive", playerScrubCursorActive);
-                    d.put("adjustedVolume", !playerScrubCursorActive);
-                    d.put("portraitOn", Y1PortraitExperiment.isEnabled(this));
-                    d.put("mode", Y1PortraitExperiment.mode(this));
-                    Debug210a10Log.log(this, "MainActivity.onKeyDown",
-                            "NP wheel down → volume path", "H-B", d);
-                    com.solar.launcher.flow.FlowBackDebugLog.log(
-                            "MainActivity.onKeyDown", "player wheel down", "H-V4", d);
-                } catch (Exception ignored) {}
-                // #endregion
+                if (Debug210a10Log.ENABLED || com.solar.launcher.flow.FlowBackDebugLog.ENABLED) {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("keyCode", keyCode);
+                        d.put("scrubActive", playerScrubCursorActive);
+                        d.put("adjustedVolume", !playerScrubCursorActive);
+                        Debug210a10Log.log(this, "MainActivity.onKeyDown",
+                                "NP wheel down → volume path", "H-B", d);
+                        com.solar.launcher.flow.FlowBackDebugLog.log(
+                                "MainActivity.onKeyDown", "player wheel down", "H-V4", d);
+                    } catch (Exception ignored) {}
+                }
                 clickFeedback();
                 return true;
             }
@@ -50742,28 +51448,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 int direction = Y1InputKeys.isWheelUp(keyCode) ? -1
                         : Y1InputKeys.isWheelDown(keyCode) ? 1 : 0;
                 if (direction != 0) {
-                    // PR #23 progressive flywheel; section jump only when letter index is eligible.
+                    // 2026-07-16 — Coalesce notches: flywheel step size queued, flushed once/frame.
+                    // Was: moveWheelSelection on every keyevent → backlog on long song lists.
                     ensureWheelSectionIndex();
                     wheelPhysics.tick(android.os.SystemClock.elapsedRealtimeNanos(),
                             direction, wheelResult);
-                    int current = currentWheelPosition();
-                    boolean sectionOk = wheelResult.sectionJump && isFastScrollLetterEligible();
-                    int target = sectionOk
-                            ? wheelSectionIndex.jumpTarget(current, direction)
-                            : current + direction * wheelResult.rowSteps;
-                    if (target < 0) {
-                        target = current + direction * Math.max(1, wheelResult.rowSteps);
-                    }
-                    if (moveWheelSelection(target)) {
-                        applyListWraparoundIfNeeded(keyCode);
-                        if (currentScreenState == STATE_NAVIDROME) {
-                            refreshNavidromeBrowsePreviewFromSelection();
-                        } else if (currentScreenState == STATE_PLEX) {
-                            refreshPlexBrowsePreviewFromSelection();
-                        } else if (currentScreenState == STATE_JELLYFIN) {
-                            refreshJellyfinBrowsePreviewFromSelection();
-                        }
-                        clickFeedback();
+                    int steps = wheelResult.sectionJump && isFastScrollLetterEligible()
+                            ? direction * Math.max(3, wheelResult.rowSteps)
+                            : direction * Math.max(1, wheelResult.rowSteps);
+                    bindListWheelCoalescer();
+                    if (!listWheelCoalescer.offerSteps(steps)) {
+                        // Fallback if list unbound — direct apply (should be rare).
+                        applyCoalescedListWheelSteps(steps);
                     }
                     return true;
                 }
@@ -51099,6 +51795,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         // 2026-07-15 — singleTop bring-to-front still needs FM lab open (onCreate may not re-run).
         scheduleAdbOpenFmIfRequested(intent);
+        // 2026-07-16 — singleTop still runs full real-world matrix when re-armed.
+        scheduleAdbRealworldMatrixIfRequested(intent);
     }
 
     /**
@@ -52911,46 +53609,62 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         private View buildTwoLineSongRowView(final int position, View convertView, final boolean numbered) {
             final SongItem song = songAt(position);
             FrameLayout row;
-            if (convertView instanceof FrameLayout && "two_line_song_row".equals(convertView.getTag())) {
+            SongRowHolder holder;
+            if (convertView instanceof FrameLayout && convertView.getTag() instanceof SongRowHolder) {
                 row = (FrameLayout) convertView;
+                holder = (SongRowHolder) convertView.getTag();
             } else {
+                // 2026-07-16 — ViewHolder: bind listeners once (was new listeners every getView).
                 row = MoveRibbonRows.createLibraryMoveRow(MainActivity.this, y1LibraryRowHeightPx);
-                row.setTag("two_line_song_row");
+                holder = new SongRowHolder();
+                holder.row = row;
+                row.setTag(holder);
                 row.setFocusable(true);
                 row.setSoundEffectsEnabled(false);
+                row.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+                    @Override
+                    public void onFocusChange(View v, boolean hasFocus) {
+                        SongRowHolder h = (SongRowHolder) v.getTag();
+                        if (h == null || h.song == null) return;
+                        MoveRibbonRows.bindLibraryMoveRow(MainActivity.this, h.row,
+                                h.titleText, h.subtitle, false, hasFocus, h.nowPlaying, h.playing,
+                                y1ActiveRowWidthPx(), y1LibraryRowHeightPx);
+                        if (hasFocus) showFastScrollLetter(h.song.title);
+                    }
+                });
+                A5FocusConfirm.setOnClickListener(row, new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        if (System.currentTimeMillis() < suppressListClickUntil) return;
+                        SongRowHolder h = (SongRowHolder) v.getTag();
+                        if (h == null) return;
+                        clickFeedback();
+                        if (playlistMoveFrom >= 0) return;
+                        playTrackList(virtualSongList, h.position,
+                                "PLAYLIST".equals(virtualQueryType) ? virtualQueryValue : null);
+                    }
+                });
             }
             applyLibraryListRowParams(row, y1LibraryRowHeightPx + 2);
             final boolean nowPlaying = isPlaylistViewNowPlayingSlot(position);
             final boolean playing = nowPlaying && !isPausedByHand && playback.isMusicActive();
-            row.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-                @Override
-                public void onFocusChange(View v, boolean hasFocus) {
-                    MoveRibbonRows.bindLibraryMoveRow(MainActivity.this, row,
-                            numbered ? String.format(Locale.US, "%02d · %s", position + 1, song.title)
-                                    : song.title,
-                            songSubtitleLine(song), false, hasFocus, nowPlaying, playing,
-                            y1ActiveRowWidthPx(), y1LibraryRowHeightPx);
-                    if (hasFocus) showFastScrollLetter(song.title);
-                }
-            });
-            A5FocusConfirm.setOnClickListener(row, new View.OnClickListener() {
-                @Override
-                public void onClick(View v) {
-                    if (System.currentTimeMillis() < suppressListClickUntil) return;
-                    clickFeedback();
-                    if (playlistMoveFrom >= 0) return;
-                    playTrackList(virtualSongList, position,
-                            "PLAYLIST".equals(virtualQueryType) ? virtualQueryValue : null);
-                }
-            });
+            holder.position = position;
+            holder.song = song;
+            holder.nowPlaying = nowPlaying;
+            holder.playing = playing;
+            holder.titleText = numbered
+                    ? String.format(Locale.US, "%02d · %s", position + 1, song.title)
+                    : song.title;
+            // 2026-07-16 — Cached subtitle (guest policy ran once at list open).
+            holder.subtitle = cachedSongSubtitleAt(position, song);
             // 2026-07-15 — Touch long-press lifts playlist strip; skip row context hold (conflicts).
-            // Was: attachA5RowLongPress always. Reversal: always attachA5RowLongPress; drop MoveRibbonTouch.
             if (numbered && "PLAYLIST".equals(virtualQueryType) && MoveRibbonTouch.touchReorderEnabled()) {
+                final int liftPos = position;
                 MoveRibbonTouch.attachBrowseLift(row, CENTER_MOVE_HOLD_MS, new MoveRibbonTouch.Callbacks() {
                     @Override
                     public void onLift() {
                         if (playlistMoveFrom >= 0 || playlistMoveTutorialShowing) return;
-                        beginPlaylistMove(position);
+                        beginPlaylistMove(liftPos);
                         clickFeedback();
                     }
 
@@ -52964,11 +53678,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 attachA5RowLongPress(row);
             }
             MoveRibbonRows.bindLibraryMoveRow(MainActivity.this, row,
-                    numbered ? String.format(Locale.US, "%02d · %s", position + 1, song.title)
-                            : song.title,
-                    songSubtitleLine(song), false, row.hasFocus(), nowPlaying, playing,
+                    holder.titleText, holder.subtitle, false, row.hasFocus(), nowPlaying, playing,
                     y1ActiveRowWidthPx(), y1LibraryRowHeightPx);
             return row;
+        }
+
+        /** 2026-07-16 — Song row ViewHolder for recycle without re-allocating listeners. */
+        private final class SongRowHolder {
+            FrameLayout row;
+            SongItem song;
+            String titleText;
+            String subtitle;
+            int position;
+            boolean nowPlaying;
+            boolean playing;
         }
 
         private View buildSimpleSongRowView(final int position, View convertView) {

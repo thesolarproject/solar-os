@@ -104,13 +104,28 @@ public final class HomeTargetPolicy {
      * Technical: stock prefers PROP_HOME_COMPONENT then Y1 defaults; custom uses prop; unknown → Solar.
      * Reversal: remove TARGET_STOCK branch.
      */
+    /**
+     * Resolve pkg/activity for target. Stock without customComponent defaults to Y1
+     * for back-compat; prefer {@link #resolveLaunchComponent(String, String, boolean)}.
+     */
     public static String[] resolveLaunchComponent(String target, String customComponentFlat) {
+        return resolveLaunchComponent(target, customComponentFlat, false);
+    }
+
+    /**
+     * 2026-07-16 — Family-aware stock fallback (Y2 → innioasis.y2).
+     * Layman: stock Home opens the real factory app for this player, not the other model.
+     * Reversal: always Y1 when customComponentFlat empty.
+     */
+    public static String[] resolveLaunchComponent(String target, String customComponentFlat,
+            boolean y2Device) {
         String normalized = normalizeTarget(target);
         if (TARGET_CUSTOM.equals(normalized) || TARGET_STOCK.equals(normalized)) {
             String[] parsed = parseComponent(customComponentFlat);
             if (parsed != null) return parsed;
             if (TARGET_STOCK.equals(normalized)) {
-                return new String[] { INNIOASIS_Y1_PKG, INNIOASIS_Y1_ACTIVITY };
+                String pkg = stockPackageForDevice(y2Device);
+                return new String[] { pkg, stockActivityForPackage(pkg) };
             }
             return new String[] { SOLAR_PKG, SOLAR_ACTIVITY };
         }

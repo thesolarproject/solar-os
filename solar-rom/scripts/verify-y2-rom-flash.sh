@@ -91,6 +91,17 @@ if [ "$user_bytes" -gt "$USRDATA_PARTITION_MAX" ]; then
 fi
 
 scatter="$tmpdir/MT6582_Android_scatter.txt"
+# 2026-07-16 — Reject EBR2-as-partition map that shifts ANDROID +0x80000 (remote CI bootloop).
+if grep -q 'partition_name: EBR2' "$scatter"; then
+    die "scatter declares EBR2 as a partition (shifts ANDROID/USRDATA — known Y2 bootloop; use stock ATA scatter)"
+fi
+android_addr=$(scatter_linear_addr "$scatter" "ANDROID")
+if [ "$(printf '%s' "$android_addr" | tr 'A-F' 'a-f')" = "0x6580000" ]; then
+    die "scatter ANDROID is 0x6580000 (shifted EBR2 layout) — stock ATA is 0x6500000"
+fi
+if [ "$(printf '%s' "$android_addr" | tr 'A-F' 'a-f')" != "0x6500000" ]; then
+    die "scatter ANDROID linear_start_addr is $android_addr (expected stock 0x6500000)"
+fi
 while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"

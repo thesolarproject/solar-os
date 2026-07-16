@@ -11,11 +11,14 @@ public final class ModalTransition {
 
     private ModalTransition() {}
 
+    /**
+     * 2026-07-16 — SOLAR_SETTINGS same as MainActivity / ListDrillTransition.
+     * Reversal: packageName + "_preferences".
+     */
     public static boolean enabled(Context ctx) {
         if (ctx == null) return false;
         if (ScreenTransition.systemAnimationsDisabled(ctx)) return false;
-        SharedPreferences prefs = ctx.getSharedPreferences(
-                ctx.getPackageName() + "_preferences", Context.MODE_PRIVATE);
+        SharedPreferences prefs = ctx.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         return prefs.getBoolean(ListDrillTransition.PREF_MENU_TRANSITIONS, true);
     }
 

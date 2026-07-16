@@ -30,6 +30,19 @@ public class AudioTagWriterTest {
     }
 
     @Test
+    public void flacGateDependsOnSdk() {
+        // 2026-07-16 — API ≤17 rejects FLAC (VerifyError); host unit tests often report SDK 0.
+        File flac = new File("/music/track.flac");
+        if (android.os.Build.VERSION.SDK_INT <= 17) {
+            assertFalse(AudioTagWriter.supportsEmbedding(flac));
+            assertEquals(AudioTagWriter.EmbedResult.UNSUPPORTED_FORMAT,
+                    AudioTagWriter.capabilityFor(flac));
+        } else {
+            assertTrue(AudioTagWriter.supportsEmbedding(flac));
+        }
+    }
+
+    @Test
     public void sidecarBaseNameStripsAudioExtensions() {
         assertEquals("Album-Song", AudioTagWriter.sidecarBaseName("Album-Song.wav"));
         assertEquals("Album-Song", AudioTagWriter.sidecarBaseName("Album-Song.flac"));

@@ -31,10 +31,16 @@ public class PlatformPrepWizardActivity extends Activity {
     public static final String EXTRA_MANUAL_REPAIR = "solar_platform_prep_manual";
     /** Xposed/module repair finished — show reboot confirm only (2026-07-06). */
     public static final String EXTRA_REBOOT_ONLY = "solar_platform_prep_reboot_only";
+    /**
+     * 2026-07-16 — First-boot / cold-start gate from {@link com.solar.launcher.SolarLaunchActivity}.
+     * Layman: full-screen “Getting things ready…” instead of silent prep on a blank screen.
+     */
+    public static final String EXTRA_FIRST_BOOT = "solar_platform_prep_first_boot";
 
     private static final int MAX_LOG_LINES = 40;
     /** Auto-enter Solar after partial/limited notice — user may skip with Back or Center. */
     private static final long AUTO_CONTINUE_MS = 3500L;
+    private boolean firstBoot;
 
     private TextView titleView;
     private TextView subtitleView;
@@ -55,6 +61,7 @@ public class PlatformPrepWizardActivity extends Activity {
         super.onCreate(savedInstanceState);
         final boolean manual = getIntent().getBooleanExtra(EXTRA_MANUAL_REPAIR, false);
         final boolean rebootOnly = getIntent().getBooleanExtra(EXTRA_REBOOT_ONLY, false);
+        firstBoot = getIntent().getBooleanExtra(EXTRA_FIRST_BOOT, false);
         if (rebootOnly) {
             setContentView(R.layout.activity_platform_prep);
             bindWizardViews();
@@ -71,11 +78,13 @@ public class PlatformPrepWizardActivity extends Activity {
         // 2026-07-05 — Auto-launched wizard after prep already applied (legacy boot gate) → skip to Solar.
         try {
             PlatformPrepManifest manifest = PlatformPrepManifest.load(this);
-            boolean needsPrep = PlatformPrepState.needsSilentPrep(this, manifest);
+            boolean needsPrep = PlatformPrepState.needsSilentPrep(this, manifest)
+                    || PlatformPrepState.isRebootPending(this);
             // #region agent log
             JSONObject gate = new JSONObject();
             try {
                 gate.put("manual", manual);
+                gate.put("firstBoot", firstBoot);
                 gate.put("needsSilentPrep", needsPrep);
                 gate.put("applied", PlatformPrepState.getAppliedVersion(this));
                 gate.put("prepVersion", manifest.prepVersion);
@@ -83,12 +92,17 @@ public class PlatformPrepWizardActivity extends Activity {
             } catch (Exception ignored) {}
             PlatformPrepDebugLog.log(this, "PlatformPrepWizardActivity.onCreate", "gate", "H2", gate);
             // #endregion
+            if (!manual && !firstBoot && !needsPrep) {
+                finishIntoSolar(false);
+                return;
+            }
             if (!manual && !needsPrep) {
+                // First-boot extra but ladder already applied — still show brief ready then Solar.
                 finishIntoSolar(false);
                 return;
             }
         } catch (Exception e) {
-            if (!manual) {
+            if (!manual && !firstBoot) {
                 finishIntoSolar(false);
                 return;
             }
@@ -108,10 +122,25 @@ public class PlatformPrepWizardActivity extends Activity {
         actionButton = (Button) findViewById(R.id.platform_prep_action);
         logScroll = (ScrollView) findViewById(R.id.platform_prep_log_scroll);
 
-        ThemeManager.applyThemedTextStyle(titleView, ThemeManager.getTextColorPrimary());
-        ThemeManager.applyThemedTextStyle(subtitleView, ThemeManager.getTextColorSecondary());
-        ThemeManager.applyThemedTextStyle(logView, ThemeManager.getTextColorSecondary());
-        ThemeManager.applyThemedTextStyle(actionButton, ThemeManager.getTextColorPrimary());
+        // 2026-07-16 — First-boot: keep high-contrast white-on-black (layout already black).
+        // Manual repair can still use theme text tokens for log/detail.
+        if (firstBoot || getIntent().getBooleanExtra(EXTRA_REBOOT_ONLY, false)) {
+            if (titleView != null) titleView.setTextColor(0xFFFFFFFF);
+            if (subtitleView != null) subtitleView.setTextColor(0xFFCCCCCC);
+            if (percentView != null) percentView.setTextColor(0xFFAAAAAA);
+            if (logView != null) logView.setTextColor(0xFF888888);
+        } else {
+            ThemeManager.applyThemedTextStyle(titleView, ThemeManager.getTextColorPrimary());
+            ThemeManager.applyThemedTextStyle(subtitleView, ThemeManager.getTextColorSecondary());
+            ThemeManager.applyThemedTextStyle(logView, ThemeManager.getTextColorSecondary());
+            ThemeManager.applyThemedTextStyle(actionButton, ThemeManager.getTextColorPrimary());
+        }
+        if (titleView != null) {
+            titleView.setText(R.string.getting_things_ready);
+        }
+        if (subtitleView != null) {
+            subtitleView.setText(R.string.getting_things_ready_detail);
+        }
 
         actionButton.setFocusable(true);
         actionButton.setFocusableInTouchMode(true);
@@ -288,6 +317,8 @@ public class PlatformPrepWizardActivity extends Activity {
         }
         Intent i = new Intent(this, MainActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        // 2026-07-16 — Keep ready overlay until home menu is usable after prep.
+        i.putExtra(com.solar.launcher.FirstSessionReadyGate.EXTRA_KEEP_READY_OVERLAY, true);
         startActivity(i);
         finish();
     }

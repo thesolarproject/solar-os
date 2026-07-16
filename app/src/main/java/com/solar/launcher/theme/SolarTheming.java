@@ -25,12 +25,37 @@ public final class SolarTheming {
 
     private SolarTheming() {}
 
-    /** English string for a label resource — used for stable solarConfig key lookup. */
+    /**
+     * English string for a label resource — used for stable solarConfig key lookup.
+     * 2026-07-16 — Defensive: odd Context wrappers / missing res must not crash home preview.
+     * Reversal: bare createConfigurationContext + getString without try/catch.
+     */
     public static String englishString(Context context, int stringResId) {
         if (context == null || stringResId == 0) return "";
-        Configuration conf = new Configuration(context.getResources().getConfiguration());
-        conf.setLocale(Locale.US);
-        return context.createConfigurationContext(conf).getResources().getString(stringResId);
+        try {
+            Configuration conf = new Configuration(context.getResources().getConfiguration());
+            // API 17: setLocale may NPE on some OEM Configuration wrappers — use .locale field.
+            conf.locale = Locale.US;
+            if (android.os.Build.VERSION.SDK_INT >= 17) {
+                try {
+                    conf.setLocale(Locale.US);
+                    Context localized = context.createConfigurationContext(conf);
+                    if (localized != null) {
+                        return localized.getResources().getString(stringResId);
+                    }
+                } catch (Throwable ignored) {
+                    // fall through to updateConfiguration path
+                }
+            }
+            context.getResources().updateConfiguration(conf, context.getResources().getDisplayMetrics());
+            return context.getResources().getString(stringResId);
+        } catch (Throwable t) {
+            try {
+                return context.getString(stringResId);
+            } catch (Throwable t2) {
+                return "";
+            }
+        }
     }
 
     /** English settings row label for solarConfig {@code settings*} lookup. */
