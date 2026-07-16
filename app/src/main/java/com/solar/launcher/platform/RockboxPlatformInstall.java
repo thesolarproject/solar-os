@@ -124,6 +124,10 @@ public final class RockboxPlatformInstall {
             while ((line = reader.readLine()) != null) sb.append(line);
             JSONObject root = new JSONObject(sb.toString());
             JSONArray files = root.getJSONArray("files");
+
+            java.util.Set<String> dirs = new java.util.HashSet<String>();
+            java.util.List<String> copyCmds = new java.util.ArrayList<String>();
+
             for (int i = 0; i < files.length(); i++) {
                 JSONObject f = files.getJSONObject(i);
                 String asset = f.getString("asset");
@@ -131,10 +135,61 @@ public final class RockboxPlatformInstall {
                 String mode = f.optString("mode", "644");
                 if (dest.equals("/system/lib/librockbox.so")) continue;
                 if (!y2 && dest.contains("rockbox-y2")) continue;
-                if (!copyAssetFileIfNeeded(ctx, asset, dest, mode, force)) {
+
+                File extracted = PlatformAssetExtractor.extractAsset(ctx, asset);
+                if (extracted == null) {
+                    SolarLog.w(TAG, "missing asset " + asset);
                     ok = false;
+                    continue;
+                }
+                File destFile = new File(dest);
+                String parent = destFile.getParent();
+                if (parent != null) dirs.add(parent);
+
+                String srcQuote = PlatformProbe.shellQuote(extracted.getAbsolutePath());
+                String destQuote = PlatformProbe.shellQuote(dest);
+                if (force) {
+                    copyCmds.add("cp -f " + srcQuote + " " + destQuote + " && chmod " + mode + " " + destQuote);
+                } else {
+                    copyCmds.add("[ -f " + destQuote + " ] || { cp -f " + srcQuote + " " + destQuote + " && chmod " + mode + " " + destQuote + "; }");
                 }
             }
+
+            if (copyCmds.isEmpty()) {
+                return ok;
+            }
+
+            File cacheRoot = PlatformAssetExtractor.cacheRoot(ctx);
+            if (!cacheRoot.exists()) cacheRoot.mkdirs();
+            File scriptFile = new File(cacheRoot, "stage_rockbox_batch.sh");
+            java.io.FileOutputStream fos = null;
+            try {
+                fos = new java.io.FileOutputStream(scriptFile);
+                StringBuilder script = new StringBuilder();
+                script.append("#!/system/bin/sh\n");
+                script.append("mount -o remount,rw /system 2>/dev/null\n");
+                for (String d : dirs) {
+                    script.append("mkdir -p ").append(PlatformProbe.shellQuote(d)).append("\n");
+                }
+                for (String cmd : copyCmds) {
+                    script.append(cmd).append("\n");
+                }
+                script.append("sync\n");
+                fos.write(script.toString().getBytes("UTF-8"));
+                fos.flush();
+            } finally {
+                if (fos != null) {
+                    try { fos.close(); } catch (Exception ignored) {}
+                }
+            }
+            scriptFile.setReadable(true, false);
+            scriptFile.setExecutable(true, false);
+
+            if (!RootShell.run("sh " + PlatformProbe.shellQuote(scriptFile.getAbsolutePath()))) {
+                SolarLog.w(TAG, "batch staging script failed");
+                ok = false;
+            }
+            try { scriptFile.delete(); } catch (Exception ignored) {}
         } catch (Exception e) {
             SolarLog.w(TAG, "stage index parse failed: " + e.getMessage());
             return false;

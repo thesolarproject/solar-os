@@ -10,7 +10,6 @@ import com.solar.launcher.RootShell;
 import com.solar.launcher.SolarLog;
 import com.solar.launcher.XposedModuleEnsurer;
 import com.solar.launcher.XposedModuleStore;
-import com.solar.launcher.Y1RomPrep;
 
 /**
  * 2026-07-05 — Blocking platform prep wizard ladder; closes OTA gaps when root is available.
@@ -141,13 +140,8 @@ public final class SolarPlatformPrep {
         // 2026-07-05 — Ladder step 1: wrong-family / legacy /system APK cleanup per manifest deprecated[].
         PlatformDeprecationCleaner.removeDeprecatedArtifacts(ctx, manifest, listener);
 
-        notify(listener, 15, "Updating switch scripts…");
-        // 2026-07-05 — Ladder step 2: Rockbox handoff scripts + keymap (Y1RomPrep APK mirror of ROM).
-        Y1RomPrep.ensureSwitchScriptsSync(ctx);
-
-        notify(listener, 18, "Installing Rockbox…");
-        // 2026-07-06 — Ladder step 2b: org.rockbox + staged libs from platform bundle (Y2 prep-delivered).
-        RockboxPlatformInstall.ensure(ctx, manifest, probe.remountWritable, result);
+        // 2026-07-16 — Co-install alongside Rockbox/switch scripts removed from onboarding setup.
+        // Solar-first onboarding: modders can manually incorporate Rockbox or switch scripts if desired.
 
         notify(listener, 25, "Staging init hooks…");
         // 2026-07-05 — Ladder step 3: init.d files (99XposedInit.sh) from manifest files[].

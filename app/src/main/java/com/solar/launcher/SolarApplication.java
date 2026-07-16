@@ -313,7 +313,6 @@ public class SolarApplication extends Application {
                 // Reversal: remove isA5 continue; always run ensureSwitchScripts.
                 if (!DeviceFeatures.isA5()) {
                     SolarBootPacing.pauseBetweenBootstrapSteps();
-                    Y1RomPrep.ensureSwitchScripts(SolarApplication.this);
                     RockboxDisable.ensureOnce(SolarApplication.this);
                     SolarBootPacing.pauseBetweenBootstrapSteps();
                 }
