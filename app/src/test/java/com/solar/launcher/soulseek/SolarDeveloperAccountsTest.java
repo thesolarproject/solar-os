@@ -182,6 +182,23 @@ public class SolarDeveloperAccountsTest {
   }
 
   @Test
+  public void mediaInfoFormatIncludesMetadata() {
+    SolarDeveloperImpactPing.MediaInfo info = SolarDeveloperImpactPing.MediaInfo
+            .of("deezer")
+            .id("123")
+            .title("Night Drive")
+            .artist("Solar Band")
+            .album("Demo")
+            .reason("cdn 403");
+    String line = info.formatLine();
+    if (!line.contains("deezer fail")) throw new AssertionError(line);
+    if (!line.contains("id=123")) throw new AssertionError(line);
+    if (!line.contains("Night Drive")) throw new AssertionError(line);
+    if (!line.contains("Solar Band")) throw new AssertionError(line);
+    if (!line.contains("cdn 403")) throw new AssertionError(line);
+  }
+
+  @Test
   public void wireRecipientsDevSenderSkipsSelf() {
     String[] t = SolarDeveloperAccounts.wireRecipientsForSender("SolarDev");
     if (t.length != 2) throw new AssertionError("count=" + t.length);

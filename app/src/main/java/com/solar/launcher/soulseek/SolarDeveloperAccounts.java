@@ -185,7 +185,8 @@ public final class SolarDeveloperAccounts {
         if (dev.isEmpty()) dev = "?";
         String msg = oneLine != null ? oneLine.trim().replace('\n', ' ') : "";
         if (msg.isEmpty()) msg = "event";
-        if (msg.length() > 100) msg = msg.substring(0, 99) + "…";
+        // Allow rich media one-liners (title/artist/id) without multi-line dumps.
+        if (msg.length() > 200) msg = msg.substring(0, 199) + "…";
         return DIAG_MARKER + who + "@" + dev + ": " + msg;
     }
 

@@ -82,9 +82,16 @@ public final class DeezerDownloader {
                 } catch (Exception e) {
                     String msg = e.getMessage() != null ? e.getMessage() : "Download failed";
                     try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo info =
+                                com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                        .of("deezer")
+                                        .id(result != null ? String.valueOf(result.id) : "")
+                                        .title(result != null ? result.title : "")
+                                        .artist(result != null ? result.artist : "")
+                                        .album(result != null ? result.album : "")
+                                        .reason(msg);
                         com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
-                                com.solar.launcher.SolarApplication.getAppContext(),
-                                "deezer", msg);
+                                com.solar.launcher.SolarApplication.getAppContext(), info);
                     } catch (Throwable ignored) {}
                     if (listener != null) {
                         listener.onError(msg);
@@ -128,9 +135,17 @@ public final class DeezerDownloader {
                 } catch (Exception e) {
                     String msg = e.getMessage() != null ? e.getMessage() : "Download failed";
                     try {
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo info =
+                                com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                        .of("deezer")
+                                        .id(result != null ? String.valueOf(result.id) : "")
+                                        .title(result != null ? result.title : "")
+                                        .artist(result != null ? result.artist : "")
+                                        .album(result != null ? result.album : "")
+                                        .file(dest != null ? dest.getName() : "")
+                                        .reason(msg);
                         com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
-                                com.solar.launcher.SolarApplication.getAppContext(),
-                                "deezer", msg);
+                                com.solar.launcher.SolarApplication.getAppContext(), info);
                     } catch (Throwable ignored) {}
                     if (listener != null) {
                         listener.onError(msg);
@@ -228,9 +243,18 @@ public final class DeezerDownloader {
                 listener.onComplete(dest, track);
             }
             try {
+                com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo info =
+                        com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                .of("deezer")
+                                .id(sngId != null ? sngId : "")
+                                .title(track != null ? track.title : "")
+                                .artist(track != null ? track.artist : "")
+                                .album(track != null ? track.album : "")
+                                .file(dest != null ? dest.getName() : "")
+                                .reason("download complete")
+                                .ok(true);
                 com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaOk(
-                        com.solar.launcher.SolarApplication.getAppContext(),
-                        "deezer", "download complete");
+                        com.solar.launcher.SolarApplication.getAppContext(), info);
             } catch (Throwable ignored) {}
         } catch (Exception e) {
             if (dest.exists()) dest.delete();

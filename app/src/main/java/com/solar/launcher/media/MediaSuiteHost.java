@@ -3852,8 +3852,14 @@ public final class MediaSuiteHost {
                 // Final quality exhausted — high-impact stream failure (buffered resolve already waited).
                 try {
                     com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
-                            host.context(), "youtube",
-                            message != null ? message : "stream resolve failed");
+                            host.context(),
+                            com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                    .of("youtube")
+                                    .id(video != null ? video.id : youtubeNowPlayingId)
+                                    .title(video != null ? video.title : youtubeNowPlayingTitle)
+                                    .artist(video != null ? video.author : "")
+                                    .quality(quality)
+                                    .reason(message != null ? message : "stream resolve failed"));
                 } catch (Throwable ignored) {}
                 clearYouTubeResolveUi();
                 toastYouTubePlayError(message);
@@ -4396,7 +4402,14 @@ public final class MediaSuiteHost {
                 if (videoPlaybackYoutube) {
                     try {
                         com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaOk(
-                                host.context(), "youtube", "playback started");
+                                host.context(),
+                                com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                        .of("youtube")
+                                        .id(youtubeNowPlayingId)
+                                        .title(youtubeNowPlayingTitle)
+                                        .quality(youtubeStreamQuality)
+                                        .reason("playback started")
+                                        .ok(true));
                     } catch (Throwable ignored) {}
                 }
                 host.runOnUiThread(new Runnable() {
@@ -4455,8 +4468,13 @@ public final class MediaSuiteHost {
                 // During playback/buffering — natural wait window; damped one-liner to SolarDev.
                 try {
                     com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
-                            host.context(), "youtube",
-                            "playback what=" + what + " extra=" + extra);
+                            host.context(),
+                            com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                                    .of("youtube")
+                                    .id(youtubeNowPlayingId)
+                                    .title(youtubeNowPlayingTitle)
+                                    .quality(youtubeStreamQuality)
+                                    .reason("ijk what=" + what + " extra=" + extra));
                 } catch (Throwable ignored) {}
                 host.runOnUiThread(new Runnable() {
                     @Override

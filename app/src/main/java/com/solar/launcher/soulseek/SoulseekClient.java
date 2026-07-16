@@ -1294,14 +1294,24 @@ public final class SoulseekClient extends Thread {
   }
 
   private void failDownload(String reason) {
+    PendingDownload pd;
     synchronized (downloadLock) {
       downloadFailureReason = reason;
+      pd = pendingDownload;
       downloadLock.notifyAll();
     }
     debugLog("download fail: " + reason);
     try {
+      String peer = pd != null ? pd.username : "";
+      String file = pd != null ? pd.filename : "";
       com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
-              appContext, "soulseek", reason != null ? reason : "download failed");
+              appContext,
+              com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                      .of("soulseek")
+                      .peer(peer)
+                      .file(file)
+                      .title(basenameForSave(file))
+                      .reason(reason != null ? reason : "download failed"));
     } catch (Throwable ignored) {}
   }
 

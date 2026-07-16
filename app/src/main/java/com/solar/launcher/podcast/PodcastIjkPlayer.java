@@ -55,6 +55,8 @@ public final class PodcastIjkPlayer {
     private OnPreparedListener preparedListener;
     private OnCompletionListener completionListener;
     private OnErrorListener errorListener;
+    /** Last setDataSource path/url — for diagnostic media identity only. */
+    private volatile String lastSourcePath = "";
 
     /** Podcast-only IJK flags (SoundTouch + audio-only); testable without loading native code. */
     public static List<Option> podcastPlayerOptions() {
@@ -129,11 +131,24 @@ public final class PodcastIjkPlayer {
                 try {
                     com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
                             com.solar.launcher.SolarApplication.getAppContext(),
-                            "podcast", "playback what=" + what + " extra=" + extra);
+                            podcastFailInfo(what, extra));
                 } catch (Throwable ignored) {}
                 return errorListener != null && errorListener.onError(PodcastIjkPlayer.this, what, extra);
             }
         });
+    }
+
+    private com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo podcastFailInfo(
+            int what, int extra) {
+        String path = lastSourcePath != null ? lastSourcePath : "";
+        String name = path;
+        int slash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        if (slash >= 0 && slash + 1 < path.length()) name = path.substring(slash + 1);
+        return com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo
+                .of("podcast")
+                .file(name)
+                .title(name)
+                .reason("ijk what=" + what + " extra=" + extra);
     }
 
     public void setWakeMode(Context ctx, int mode) {
@@ -153,10 +168,12 @@ public final class PodcastIjkPlayer {
     }
 
     public void setDataSource(String path) throws IOException {
+        lastSourcePath = path != null ? path : "";
         player.setDataSource(path);
     }
 
     public void setDataSource(File file) throws IOException {
+        lastSourcePath = file != null ? file.getAbsolutePath() : "";
         FileInputStream fis = new FileInputStream(file);
         player.setDataSource(fis.getFD());
         fis.close();
@@ -262,7 +279,7 @@ public final class PodcastIjkPlayer {
                     try {
                         com.solar.launcher.soulseek.SolarDeveloperImpactPing.mediaFailed(
                                 com.solar.launcher.SolarApplication.getAppContext(),
-                                "podcast", "playback what=" + what + " extra=" + extra);
+                                podcastFailInfo(what, extra));
                     } catch (Throwable ignored) {}
                     return errorListener != null
                             && errorListener.onError(PodcastIjkPlayer.this, what, extra);
