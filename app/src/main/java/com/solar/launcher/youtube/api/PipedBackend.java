@@ -56,20 +56,19 @@ public final class PipedBackend implements YoutubeBackend {
 
     @Override
     public List<YouTubeVideo> getPopularVideos() throws IOException {
+        // 2026-07-16 — Regional trending first; hype playlist fallback.
+        String region = YoutubeApiUtil.regionCode();
+        try {
+            String trendUrl = baseUrl + "/trending?region=" + YoutubeApiUtil.urlEncode(region);
+            String trendBody = httpGet(trendUrl);
+            List<YouTubeVideo> trending = parsePipedStreams(new JSONArray(trendBody));
+            if (trending != null && !trending.isEmpty()) return trending;
+        } catch (Exception ignored) {}
         String url = baseUrl + "/playlists/" + YoutubeApiUtil.getHypePlaylist();
         String body = httpGet(url);
         try {
             JSONArray arr = new JSONObject(body).getJSONArray("relatedStreams");
-            List<YouTubeVideo> out = new ArrayList<YouTubeVideo>();
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject j = arr.getJSONObject(i);
-                out.add(new YouTubeVideo(
-                        YoutubeApiUtil.pipedVideoId(j.optString("url", "")),
-                        j.optString("title", ""),
-                        j.optString("uploaderName", ""),
-                        YoutubeApiUtil.formatDuration(j.optInt("duration", 0))));
-            }
-            return out;
+            return parsePipedStreams(arr);
         } catch (Exception e) {
             throw new IOException("Piped popular parse: " + e.getMessage(), e);
         }
@@ -77,8 +76,9 @@ public final class PipedBackend implements YoutubeBackend {
 
     @Override
     public List<YouTubeVideo> search(String query) throws IOException {
+        String region = YoutubeApiUtil.regionCode();
         String url = baseUrl + "/search?q=" + YoutubeApiUtil.urlEncode(query)
-                + "&filter=videos";
+                + "&filter=videos&region=" + YoutubeApiUtil.urlEncode(region);
         String body = httpGet(url);
         try {
             JSONArray arr = new JSONObject(body).getJSONArray("items");
@@ -203,6 +203,27 @@ public final class PipedBackend implements YoutubeBackend {
         if (lower.contains("webm")) return "webm";
         if (lower.contains("ogg")) return "ogg";
         return "m4a";
+    }
+
+    /** Parse Piped trending / playlist relatedStreams arrays into rows. */
+    private static List<YouTubeVideo> parsePipedStreams(JSONArray arr) {
+        List<YouTubeVideo> out = new ArrayList<YouTubeVideo>();
+        if (arr == null) return out;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject j = arr.optJSONObject(i);
+            if (j == null) continue;
+            String type = j.optString("type", "stream");
+            if (type.length() > 0 && !"stream".equals(type) && !"video".equals(type)) continue;
+            String id = YoutubeApiUtil.pipedVideoId(j.optString("url", ""));
+            if (id.isEmpty()) id = j.optString("videoId", "");
+            if (id.isEmpty()) continue;
+            out.add(new YouTubeVideo(
+                    id,
+                    j.optString("title", ""),
+                    j.optString("uploaderName", j.optString("uploader", "")),
+                    YoutubeApiUtil.formatDuration(j.optInt("duration", 0))));
+        }
+        return out;
     }
 
     /** Tiny HTML strip for Piped commentText (&lt;br&gt; → newline). */

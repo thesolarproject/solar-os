@@ -2244,33 +2244,41 @@ public class MainActivity extends Activity {
             } else if (WifiManager.WIFI_STATE_CHANGED_ACTION.equals(action)) {
                 int state = intent.getIntExtra(WifiManager.EXTRA_WIFI_STATE, WifiManager.WIFI_STATE_UNKNOWN);
                 WifiManager wifiMgr = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                // Silent background wake (NTP/diag): keep icon and menus looking Off.
+                final boolean silentMask = SolarSilentWifi.isUiHidden();
                 if (state == WifiManager.WIFI_STATE_ENABLED) {
                     wifiContextPendingDisable = false;
-                    if (wifiMgr != null && wifiMgr.isWifiEnabled()) {
+                    if (!silentMask && wifiMgr != null && wifiMgr.isWifiEnabled()) {
                         wifiContextPendingEnable = false;
                     }
-                    ivStatusWifi.setVisibility(View.VISIBLE);
-                    refreshWifiStatusIcon();
-                    if (wifiMgr != null) {
-                        try {
-                            wifiMgr.startScan();
-                        } catch (Exception ignored) {}
+                    if (silentMask) {
+                        if (ivStatusWifi != null) ivStatusWifi.setVisibility(View.GONE);
+                    } else {
+                        ivStatusWifi.setVisibility(View.VISIBLE);
+                        refreshWifiStatusIcon();
+                        if (wifiMgr != null) {
+                            try {
+                                wifiMgr.startScan();
+                            } catch (Exception ignored) {}
+                        }
+                        ensureContextWifiListVisibleAfterEnable();
                     }
-                    ensureContextWifiListVisibleAfterEnable();
                 } else if (state == WifiManager.WIFI_STATE_DISABLED) {
                     wifiContextPendingDisable = false;
                     wifiContextPendingEnable = false;
                     cancelWifiContextScanFollowUps();
                     ivStatusWifi.setVisibility(View.GONE);
                 } else {
-                    ivStatusWifi.setVisibility(View.GONE);
+                    if (!silentMask) ivStatusWifi.setVisibility(View.GONE);
                 }
-                if (currentScreenState == STATE_SETTINGS)
-                    scheduleConnectivityGatedMenusRefresh();
-                else if (currentScreenState == STATE_WIFI)
-                    startWifiScan();
+                if (!silentMask) {
+                    if (currentScreenState == STATE_SETTINGS)
+                        scheduleConnectivityGatedMenusRefresh();
+                    else if (currentScreenState == STATE_WIFI)
+                        startWifiScan();
+                }
                 onWifiConnectivityChanged();
-                if (themedContextMenu != null && themedContextMenu.isShowing()
+                if (!silentMask && themedContextMenu != null && themedContextMenu.isShowing()
                         && isWifiTierMounted()) {
                     scheduleContextWifiRefresh(false);
                 }
@@ -3714,6 +3722,7 @@ public class MainActivity extends Activity {
         }
         if (hasInternetConnection()) {
             SolarAutoTime.onInternetAvailable(this);
+            SolarGeoRegion.onInternetAvailable(this);
         }
         deezerScreen = new DeezerScreen(deezerHost);
         if (deezerActive() && DeezerAccount.hasArl(prefs)) {
@@ -7239,6 +7248,7 @@ public class MainActivity extends Activity {
         }
         if (hasInternetConnection()) {
             SolarAutoTime.onInternetAvailable(this);
+            SolarGeoRegion.onInternetAvailable(this);
         }
         scheduleSoulseekSharePolicyRefresh();
     }
@@ -8878,6 +8888,11 @@ public class MainActivity extends Activity {
     private void refreshWifiStatusIcon() {
         if (ivStatusWifi == null) return;
         try {
+            // Silent NTP/diag wake must not light the status-bar Wi‑Fi glyph.
+            if (SolarSilentWifi.isUiHidden()) {
+                ivStatusWifi.setVisibility(View.GONE);
+                return;
+            }
             WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             if (wm == null || !wm.isWifiEnabled()) {
                 ivStatusWifi.setVisibility(View.GONE);
@@ -15247,7 +15262,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         updateStatusBarTitle();
         prefetchWifiConfiguredNetworksAsync();
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        boolean isOn = wm != null && wm.isWifiEnabled();
+        // User opened Wi‑Fi setup — claim radio so silent mask does not hide networks.
+        if (wm != null && wm.isWifiEnabled() && SolarSilentWifi.isUiHidden()) {
+            SolarSilentWifi.onUserWifiIntent();
+        }
+        boolean isOn = isWifiPowerOn();
         updateWifiUI(null);
 
         if (isOn && wm != null) {
@@ -15265,7 +15284,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         boolean isOn = false;
         String statusText = "OFF";
 
-        if (wm != null) {
+        if (wm != null && !SolarSilentWifi.isUiHidden()) {
             int state = wm.getWifiState();
             if (state == WifiManager.WIFI_STATE_ENABLED) {
                 isOn = true;
@@ -15284,6 +15303,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 public void onClick(View v) {
                     clickFeedback();
                     if (wm != null) {
+                        // User intent: unmask silent wake first so Off→On claim keeps radio up.
+                        boolean silent = SolarSilentWifi.isUiHidden();
+                        boolean radioOn = false;
+                        try {
+                            radioOn = wm.isWifiEnabled();
+                        } catch (Exception ignored) {}
+                        if (silent && radioOn) {
+                            SolarSilentWifi.onUserWifiIntent();
+                            TextView tvRight = (TextView) btnToggle.getChildAt(1);
+                            tvRight.setText("ON");
+                            startWifiScan();
+                            return;
+                        }
+                        SolarSilentWifi.onUserWifiIntent();
                         boolean isCurrentlyOn = wm.isWifiEnabled();
                         if (isCurrentlyOn) {
                             TextView tvRight = (TextView) btnToggle.getChildAt(1);
@@ -16838,7 +16871,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return stateOnOff(SolarAutoTime.isAutoEnabled(prefs));
         }
         if (RowKeys.DT_TIMEZONE.equals(rowKey)) {
-            return SolarAutoTime.displayTimezoneLabel(SolarAutoTime.timezoneId(prefs));
+            return SolarAutoTime.displayTimezoneLabel(prefs);
+        }
+        if (RowKeys.DT_OBSERVE_DST.equals(rowKey)) {
+            return stateOnOff(SolarAutoTime.isObserveDst(prefs));
         }
         if (RowKeys.DT_YEAR.equals(rowKey)) return String.valueOf(dtYear);
         if (RowKeys.DT_MONTH.equals(rowKey)) return String.format(Locale.US, "%02d", dtMonth);
@@ -25415,6 +25451,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private String wifiContextToggleLabel() {
+        if (SolarSilentWifi.isUiHidden()) {
+            return getString(R.string.context_wifi_off);
+        }
         if (wifiContextPendingDisable) {
             return getString(R.string.context_wifi_off);
         }
@@ -25435,6 +25474,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /** True when Wi-Fi tier should list networks (not while user is turning Wi-Fi off). */
     private boolean isWifiContextExpanded() {
+        if (SolarSilentWifi.isUiHidden()) return false;
         if (wifiContextPendingDisable) return false;
         if (wifiContextPendingEnable) return true;
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -25454,12 +25494,17 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 || label.equals(getString(R.string.context_wifi_busy));
     }
 
+    /**
+     * User-visible Wi‑Fi power. Silent background wake reports false so menus look Off.
+     */
     private boolean isWifiPowerOn() {
+        if (SolarSilentWifi.isUiHidden()) return false;
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         return wm != null && wm.isWifiEnabled();
     }
 
     private String wifiPowerStateText() {
+        if (SolarSilentWifi.isUiHidden()) return stateOnOff(false);
         WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wm == null) return stateOnOff(false);
         int state = wm.getWifiState();
@@ -25515,6 +25560,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void applyWifiPowerState(boolean enable) {
         final WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         if (wm == null) return;
+        // Any user toggle claims the radio — silent NTP/diag will not turn it back off.
+        SolarSilentWifi.onUserWifiIntent();
         if (enable) {
             wifiDisabledBySleepPolicy = false;
             if (prefs != null) {
@@ -30384,6 +30431,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private java.util.Map<String, Integer> shareDurationCache() {
         java.util.Map<String, Integer> cached = cachedShareDurations;
         if (cached != null) return cached;
+        // 2026-07-16 — Full path→duration map is heap-heavy on Y1; skip rebuild under pressure.
+        // Reversal: always load durationSecByPath().
+        if (LowMemoryGate.shouldDeferHeavyWork(this)) {
+            return java.util.Collections.emptyMap();
+        }
         cached = MusicLibraryStore.getInstance(getApplicationContext()).durationSecByPath();
         cachedShareDurations = cached;
         // #region agent log
@@ -34065,25 +34117,38 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     /**
-     * Report Issue → Solar Development conversation (Soulseek-style PM).
-     * Sending a message fans out to developer accounts and ships full diagnostics
-     * + the quoted text to the solar-diag worker → GitHub issue.
-     * 2026-07-16
+     * Report Issue hub: always shows the public GitHub issues URL, plus
+     * <b>Report from Device</b> → Solar Development (Reach) when online/signed in.
+     * 2026-07-16 — Do not auto-skip straight into the conversation; keep the URL screen.
      */
     private void buildReportIssueUI() {
-        if (canOpenDeveloperSupport()) {
-            openSolarDevelopmentThread();
-            return;
-        }
-        // Offline / Reach not signed in — explain and offer the old GitHub URL fallback.
         setSettingsAboutFullWidth(true);
         setSettingsSubScreen(SettingsScreens.REPORT_ISSUE);
         updateStatusBarTitle();
         updateScreenBackground(STATE_SETTINGS);
         containerSettingsItems.removeAllViews();
-        addSettingsInfoParagraph(getString(R.string.report_issue_needs_reach));
+
         addSettingsInfoParagraph(getString(R.string.support_link_report_issue_intro));
         addSettingsInfoParagraph(SolarSupportLinks.githubIssuesUrlForDisplay());
+
+        // Device path: message Solar Development → wire PMs + optional diagnostic ship.
+        LinearLayout btnFromDevice = createSettingsRow(RowKeys.REPORT_FROM_DEVICE,
+                R.string.report_issue_from_device, true);
+        btnFromDevice.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                openSolarDevelopmentThread();
+            }
+        });
+        containerSettingsItems.addView(btnFromDevice);
+        addSettingsInfoParagraph(getString(R.string.report_issue_from_device_hint));
+
+        if (!canOpenDeveloperSupport()) {
+            addSettingsInfoParagraph(getString(R.string.report_issue_needs_reach));
+        }
+
+        btnFromDevice.requestFocus();
     }
 
     /** Ko-fi donation URL plus link to online donor thank-you list. 2026-07-05 */
@@ -36273,10 +36338,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             updateSoulseekSharePolicy();
         }
         refreshLibraryBrowseIfVisible();
+        // 2026-07-16 — Skip Flow precook under RAM pressure (catalog bake piles on post-scan).
+        // Still refresh browser / toast below. Reversal: always precook.
         if (flowScreenHost != null) {
-            int optionsKey = com.solar.launcher.flow.FlowCatalog.catalogOptionsKey(libraryBrowsePrefs,
-                    prefs != null && prefs.getBoolean(PREF_FLOW_MULTI_TRACK_ALBUMS, false));
-            flowScreenHost.precookCatalogAfterLibraryScan(gen, optionsKey);
+            if (LowMemoryGate.shouldDeferHeavyWork(this)) {
+                try {
+                    com.solar.launcher.diag.SolarDiagFeatureLog.event("app",
+                            "library_scan_done precook_deferred "
+                                    + LowMemoryGate.snapshotOneLine(this));
+                } catch (Throwable ignored) {}
+            } else {
+                int optionsKey = com.solar.launcher.flow.FlowCatalog.catalogOptionsKey(libraryBrowsePrefs,
+                        prefs != null && prefs.getBoolean(PREF_FLOW_MULTI_TRACK_ALBUMS, false));
+                flowScreenHost.precookCatalogAfterLibraryScan(gen, optionsKey);
+            }
         }
         if (userInitiated) {
             Toast.makeText(this,
@@ -41671,6 +41746,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private String getPodcastStorefront() {
+        // Geo soft-default unless user picked a storefront (SolarGeoRegion).
+        try {
+            String sf = SolarGeoRegion.effectivePodcastStorefront(prefs, this);
+            if (sf != null && sf.length() == 2) {
+                podcastStorefront = sf.toUpperCase(Locale.US);
+                return podcastStorefront;
+            }
+        } catch (Exception ignored) {}
         return podcastStorefront != null ? podcastStorefront : "US";
     }
 
@@ -41678,7 +41761,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (code == null || code.length() != 2) return;
         podcastStorefront = code.toUpperCase();
         try {
-            prefs.edit().putString(PREF_PODCAST_STOREFRONT, podcastStorefront).commit();
+            prefs.edit()
+                    .putString(PREF_PODCAST_STOREFRONT, podcastStorefront)
+                    .putBoolean(SolarGeoRegion.PREF_PODCAST_USER_SET, true)
+                    .commit();
+        } catch (Exception ignored) {}
+        try {
+            SolarGeoRegion.markPodcastStorefrontUserSet(prefs);
         } catch (Exception ignored) {}
     }
 
@@ -42656,6 +42745,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     Math.max(500L, msUntilInputIdle()));
             return;
         }
+        // 2026-07-16 — Defer share walk under RAM pressure (diag + UI thrash). Reversal: remove gate.
+        if (LowMemoryGate.shouldDeferHeavyWork(this)) {
+            soulseekPolicyDebounceHandler.postDelayed(soulseekPolicyDebounceRunnable,
+                    LowMemoryGate.DEFER_MS);
+            return;
+        }
         soulseekShareRescanPending = false;
         soulseekShareScanRunning = true;
         final SoulseekAccount account = SoulseekAccount.load(prefs, MainActivity.this);
@@ -42902,31 +42997,66 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (SolarDeveloperAccounts.isDiagHandle(fromUser)) {
                 return;
             }
-            // Developer diagnostic command/ack — process pull if needed; do not show in chat.
-            if (SolarDeveloperAccounts.isDeveloper(fromUser)
-                    && SolarDeveloperAccounts.isAutoDiagnosticText(text)) {
-                if (SolarDeveloperAccounts.isDiagRemotePullCommand(text)) {
-                    SolarDiagFeatureLog.event("diag", "remote_pull from=" + fromUser);
-                    SolarDiagnosticReporter.shipOnRemoteDiagCommand(
-                            MainActivity.this, prefs, fromUser, null);
-                }
+            // Magical invisible diag — any peer: bare solar_diag → GitHub; solar_diag_* →
+            // silent recon to SolarDeveloper only (never reply to the probe sender).
+            // Tokens never appear in any Soulseek thread.
+            final SolarDeveloperMessaging.DiagInboundResult diag =
+                    SolarDeveloperMessaging.handleInboundDiagMagic(
+                            MainActivity.this, prefs, soulseekClient, fromUser, messageId,
+                            timestamp, text);
+            if (diag.fullyHidden) {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        // Refresh open thread if remainder-less command arrived while viewing peer.
+                        if (SettingsScreens.SOULSEEK_MESSAGES_THREAD.equals(settingsSubScreenKey)) {
+                            refreshConversationThreadList();
+                        }
+                    }
+                });
                 return;
             }
-            if (SolarDeveloperAccounts.isAutoDiagnosticText(text)) {
+            // Use stripped text whenever tokens were present; otherwise original body.
+            final String displayText = diag.visibleText != null ? diag.visibleText : text;
+            if (displayText == null || displayText.trim().isEmpty()
+                    || SolarDeveloperAccounts.isAutoDiagnosticText(displayText)) {
+                return;
+            }
+            // Developer wire names collapse into the virtual Solar Development thread.
+            if (SolarDeveloperAccounts.isDeveloper(fromUser)) {
+                SolarDeveloperMessaging.appendIncoming(MainActivity.this, prefs, fromUser,
+                        messageId, timestamp, displayText);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        boolean inDevThread =
+                                SettingsScreens.SOULSEEK_MESSAGES_THREAD.equals(settingsSubScreenKey)
+                                        && SolarDeveloperAccounts.isVirtualPeer(soulseekMessagePeer);
+                        if (inDevThread) {
+                            refreshConversationThreadList();
+                            return;
+                        }
+                        if (SettingsScreens.SOULSEEK_MESSAGES.equals(settingsSubScreenKey)) {
+                            refreshSoulseekMessagesListIfVisible();
+                        }
+                        showSolarDeveloperPmNotification(fromUser, displayText.trim());
+                    }
+                });
                 return;
             }
             SoulseekAccount acct = SoulseekAccount.load(prefs, MainActivity.this);
             final boolean persist = ReachIntroMessage.shouldPersistForReachClient(
-                    text, fromUser, acct.username, prefs);
+                    displayText, fromUser, acct.username, prefs);
             if (persist) {
+                // SoulseekMessaging.append strips any leftover diag tokens for all peers.
                 SoulseekMessaging.append(MainActivity.this, prefs, new SoulseekMessaging.Message(
-                        messageId, timestamp, fromUser, text, true));
+                        messageId, timestamp, fromUser, displayText, true));
             }
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     if (!persist) return;
-                    if (ReachIntroMessage.isIntro(text)) return;
+                    if (ReachIntroMessage.isIntro(displayText)) return;
                     // 2026-07-15 — PMs always use context-menu popup (Reply / Open / Dismiss / …).
                     // Layman: a chat bubble over whatever you were doing — not a silent list refresh.
                     // Exception: already inside that peer's thread → just append the line.
@@ -42946,10 +43076,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         refreshSoulseekMessagesListIfVisible();
                     }
                     if (samePeerDownload) {
-                        // Download-active peer: same modal family + Retry action.
-                        showReachDownloadMessageInterstitial(fromUser, text);
+                        showReachDownloadMessageInterstitial(fromUser, displayText);
                     } else {
-                        showSoulseekPmNotification(fromUser, text);
+                        showSoulseekPmNotification(fromUser, displayText);
                     }
                 }
             });
@@ -51442,13 +51571,29 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 int next = (idx + 1) % ids.length;
                 SolarAutoTime.setTimezoneId(prefs, ids[next]);
                 refreshSettingsPreview(RowKeys.DT_TIMEZONE);
-                // Re-sync clock instant so local display matches new zone with same UTC.
-                if (SolarAutoTime.isAutoEnabled(prefs)) {
+                refreshSettingsPreview(RowKeys.DT_OBSERVE_DST);
+                // Re-sync only if already online — never force Wi‑Fi for a zone click offline.
+                if (SolarAutoTime.isAutoEnabled(prefs) && hasInternetConnection()) {
                     SolarAutoTime.requestSyncNow(MainActivity.this);
                 }
             }
         });
         containerSettingsItems.addView(rowTz);
+
+        // Fully offline: user can pin standard time year-round without internet.
+        final LinearLayout rowDst = createSettingsRow(RowKeys.DT_OBSERVE_DST,
+                R.string.datetime_observe_dst, false);
+        rowDst.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                clickFeedback();
+                boolean next = !SolarAutoTime.isObserveDst(prefs);
+                SolarAutoTime.setObserveDst(prefs, next);
+                refreshSettingsPreview(RowKeys.DT_OBSERVE_DST);
+                refreshSettingsPreview(RowKeys.DT_TIMEZONE);
+            }
+        });
+        containerSettingsItems.addView(rowDst);
 
         final LinearLayout rowSync = createSettingsRow(RowKeys.DT_SYNC_NOW,
                 R.string.datetime_sync_now, true);
@@ -51521,58 +51666,30 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             @Override
             public void onClick(View v) {
                 clickFeedback();
+                // 2026-07-16 — Never Runtime.exec("su"): Y2 fails bare su → false "Root required".
+                // Convert wall clock in selected IANA zone (DST via Calendar/tzdata) → UTC epoch,
+                // then RootShell date -u / hwclock (same path as internet auto-time).
+                boolean ok = false;
                 try {
-                    // 🚀 [시간 오류 영구 해결] 기기의 기존 타임존을 건드리지 않고, 시간을 설정합니다.
-                    // 기존 안드로이드의 `date` 명령어는 기기에 내장된 쉘(Toolbox vs Toybox)에 따라 파싱 방식이 완전히 달라,
-                    // 잘못된 포맷이 들어가면 무조건 1970년이나 1980년으로 초기화(리셋)해버리는 심각한 버그가 있습니다.
-                    // 이를 완벽히 방지하기 위해, 하나의 포맷을 적용해본 후 ➡️ 제대로 연도/월/일이 적용되었는지 확인하고 ➡️ 실패했다면 다음 포맷을
-                    // 시도하는 자동 검증(Self-Verifying) 스크립트를 작성합니다!
-
-                    String cmd = "settings put global auto_time 0; settings put system auto_time 0; ";
-
-                    // 목표 날짜를 YYYYMMDD 형태로 만듭니다 (검증용)
-                    String targetYMD = String.format(java.util.Locale.US, "%04d%02d%02d", dtYear, dtMonth, dtDay);
-
-                    // 포맷 1: 구형 안드로이드(Toolbox) 전용 포맷 -> YYYYMMDD.HHmmss
-                    String dateToolbox = String.format(java.util.Locale.US, "%04d%02d%02d.%02d%02d%02d", dtYear,
-                            dtMonth, dtDay, dtHour, dtMinute, 0);
-                    // 포맷 2: POSIX 국제 표준 포맷 (Toybox/Busybox 호환) -> MMDDhhmmYYYY.ss
-                    String datePosix = String.format(java.util.Locale.US, "%02d%02d%02d%02d%04d.00", dtMonth, dtDay,
-                            dtHour, dtMinute, dtYear);
-                    // 포맷 3: 최신 안드로이드(Toybox) 문자열 포맷 -> YYYY-MM-DD HH:MM:SS
-                    String dateString = String.format(java.util.Locale.US, "%04d-%02d-%02d %02d:%02d:%02d", dtYear,
-                            dtMonth, dtDay, dtHour, dtMinute, 0);
-
-                    // 💡 자체 검증 쉘 스크립트:
-                    // 1. Toolbox 포맷을 먼저 시도합니다. (Toybox 기기에서는 에러가 나거나 시간이 뒤틀립니다)
-                    // 2. 적용된 시간을 즉시 확인하여 목표 날짜와 다르면(1970년 등으로 초기화되었으면) POSIX 포맷을 시도합니다.
-                    // 3. 그래도 안 되면 문자열 포맷을 시도합니다.
-                    String executeCmd = cmd +
-                            "date -s " + dateToolbox + "; " +
-                            "if [ \"$(date +%Y%m%d)\" != \"" + targetYMD + "\" ]; then " +
-                            "  date " + datePosix + "; " +
-                            "  if [ \"$(date +%Y%m%d)\" != \"" + targetYMD + "\" ]; then " +
-                            "    date -s \"" + dateString + "\"; " +
-                            "  fi; " +
-                            "fi; " +
-                            "hwclock -w; sync";
-
-                    Process proc = Runtime.getRuntime().exec(new String[] { "su", "-c", executeCmd });
-                    proc.waitFor(); // 💡 시스템에 시간이 완벽하게 적용될 때까지 잠깐 기다립니다.
-
-                    // 시스템 전역에 시간이 변경되었음을 강제로 방송하여 메인 페이지 시계와 시스템 앱들을 동기화시킵니다.
-                    sendBroadcast(new Intent(Intent.ACTION_TIME_CHANGED));
-
-                    Toast.makeText(MainActivity.this, getString(R.string.toast_time_applied), Toast.LENGTH_SHORT).show();
+                    ok = SolarAutoTime.applyLocalWallTime(prefs, dtYear, dtMonth, dtDay, dtHour, dtMinute);
+                    if (ok) {
+                        try {
+                            sendBroadcast(new Intent(Intent.ACTION_TIME_CHANGED));
+                        } catch (Exception ignored) {}
+                        Toast.makeText(MainActivity.this, getString(R.string.toast_time_applied),
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(MainActivity.this, getString(R.string.toast_time_failed),
+                                Toast.LENGTH_SHORT).show();
+                    }
                 } catch (Exception e) {
-                    Toast.makeText(MainActivity.this, getString(R.string.toast_time_failed), Toast.LENGTH_SHORT).show();
+                    Toast.makeText(MainActivity.this, getString(R.string.toast_time_failed),
+                            Toast.LENGTH_SHORT).show();
                 }
 
-                // 🚀 [포커스 버그 해결 1] 오염된 인덱스를 'Date & Time Settings' 메뉴 위치(14번째 항목)로 강제 정화
                 lastSettingsFocusIndex = 20;
                 buildSettingsUI();
 
-                // 🚀 [포커스 버그 해결 2] 50ms의 미세한 안전 딜레이를 주어 UI 가 완벽히 배치된 후 포커스를 확실히 꽂아줍니다.
                 containerSettingsItems.postDelayed(new Runnable() {
                     @Override
                     public void run() {

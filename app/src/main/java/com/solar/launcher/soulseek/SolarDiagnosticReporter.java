@@ -150,15 +150,22 @@ public final class SolarDiagnosticReporter {
         if (context == null) return;
         final Context app = context.getApplicationContext();
         final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
-        SolarDiagFeatureLog.event("app", "process_start sdk=" + Build.VERSION.SDK_INT
-                + " model=" + Build.MODEL
-                + (hasRecentCrashLog() ? " crash_pending=1" : ""));
-        // App / process start → one delayed STARTUP ship when online (crash or clean boot).
-        scheduleBootScan(app, prefs);
+        // Cheap local ring only — no network. Full ship waits for real online.
+        try {
+            SolarDiagFeatureLog.event("app", "process_start sdk=" + Build.VERSION.SDK_INT
+                    + " model=" + Build.MODEL
+                    + (hasRecentCrashLog() ? " crash_pending=1" : "")
+                    + " online=" + ConnectivityHelper.isOnline(app));
+        } catch (Throwable ignored) {}
+        // Only schedule boot scan retries when already online or crash pending (still sleeps until net).
+        if (ConnectivityHelper.allowPassiveOnlineWork(app) || hasRecentCrashLog()) {
+            scheduleBootScan(app, prefs);
+        }
     }
 
     public static void onReachInternetAvailable(final Context context, final SharedPreferences prefs) {
         if (context == null) return;
+        if (!ConnectivityHelper.allowPassiveOnlineWork(context)) return;
         if (!isBackgroundShippingAllowed(prefs)) return;
         if (!firstInternetScanDone) {
             firstInternetScanDone = true;
@@ -172,6 +179,7 @@ public final class SolarDiagnosticReporter {
 
     public static void onWifiAvailable(final Context context, final SharedPreferences prefs) {
         if (context == null) return;
+        if (!ConnectivityHelper.allowPassiveOnlineWork(context)) return;
         // Silent one-liner to SolarDev (damped) — independent of log ship.
         SolarDeveloperImpactPing.wifiConnected(context);
         if (!isBackgroundShippingAllowed(prefs)) return;
@@ -417,6 +425,16 @@ public final class SolarDiagnosticReporter {
                 || mode == ScanMode.POWER_OFF
                 || mode == ScanMode.RESTART
                 || (mode == ScanMode.STARTUP && hasRecentCrashLog());
+        // 2026-07-16 — Under RAM pressure, force light env even for crash STARTUP (still ships).
+        // Reversal: remove LowMemoryGate branch.
+        if (full && mode == ScanMode.STARTUP
+                && com.solar.launcher.LowMemoryGate.shouldDeferHeavyWork(context)) {
+            full = false;
+            try {
+                SolarDiagFeatureLog.event("diag", "startup_full_deferred_pressure "
+                        + com.solar.launcher.LowMemoryGate.snapshotOneLine(context));
+            } catch (Throwable ignored) {}
+        }
         // Never toggle Wi‑Fi: ships only while already online.
         if (!ConnectivityHelper.isOnline(context)) {
             if (callback != null) callback.onComplete(false, 0, "", "offline");
@@ -480,11 +498,11 @@ public final class SolarDiagnosticReporter {
                 || mode == ScanMode.RESTART
                 || mode == ScanMode.WIFI_OFF;
         int shippedFiles = 0;
+        boolean shippedCrashPriority = false;
         for (LogSource src : sources) {
             if (src == null || src.file == null || !src.file.isFile()) continue;
             long mtime = src.file.lastModified();
             String key = src.file.getAbsolutePath();
-            if (!forceAll && !shouldShipSource(src.label, manifest, key, mtime, mode)) continue;
             int cap = Math.min(maxFile, Math.max(0, budget));
             if (cap < 1024) break;
             String content;
@@ -500,18 +518,29 @@ public final class SolarDiagnosticReporter {
                 continue;
             }
             content = SolarLog.scrub(context, content);
+            String fp = contentFingerprint(content);
+            if (!forceAll && !shouldShipSource(src.label, manifest, key, mtime, mode, fp)) {
+                continue;
+            }
             parts.add(new SolarDiagClient.FilePart(src.label, content));
             budget -= content.length();
             shippedFiles++;
+            if (isPriorityStartupSource(src.label)
+                    && src.label.toLowerCase(Locale.US).contains("crash.log")) {
+                shippedCrashPriority = true;
+            }
             try {
                 updated.put(key, mtime);
+                if (fp != null && !fp.isEmpty()) updated.put(fpKey(key), fp);
             } catch (Exception ignored) {}
         }
 
         // Connect/startup with nothing new: skip HTTPS (env-only issues were flooding solar-diag).
+        // 2026-07-16 — Also skip when crash.log exists but fingerprint already shipped
+        // (was: hasRecentCrashLog forced empty crash issues every boot for 48h).
         // WIFI_OFF still ships light env/ring so pre-sleep flush always has a heartbeat.
         if ((mode == ScanMode.ROUTINE || mode == ScanMode.WIFI || mode == ScanMode.STARTUP)
-                && shippedFiles == 0 && !hasRecentCrashLog()) {
+                && shippedFiles == 0) {
             SolarDiagFeatureLog.event("diag", mode.name().toLowerCase(Locale.US) + "_skip no_new_logs");
             if (callback != null) callback.onComplete(true, 0, "", "skipped_empty");
             return;
@@ -566,6 +595,17 @@ public final class SolarDiagnosticReporter {
             prefs.edit().putString(PREF_DIAG_SENT_MANIFEST, updated.toString()).apply();
             SolarDiagFeatureLog.event("diag", "shipped issue=" + result.issueNumber
                     + " mode=" + mode.name());
+            // 2026-07-16 — After a successful crash payload ship, rotate crash.log so
+            // hasRecentCrashLog() + priority re-upload do not flood every boot for 48h.
+            // Reversal: delete rotate call; keep crash.log forever until user clears logs.
+            if (shippedCrashPriority
+                    || (mode == ScanMode.STARTUP && "crash".equals(type))) {
+                try {
+                    rotateShippedCrashLog();
+                } catch (Throwable t) {
+                    SolarDiagFeatureLog.warn("diag", "crash_rotate " + t.getMessage());
+                }
+            }
         } else {
             SolarDiagFeatureLog.warn("diag", "ship_failed mode=" + mode.name()
                     + " err=" + result.error);
@@ -636,15 +676,77 @@ public final class SolarDiagnosticReporter {
         return crash.isFile() && now - crash.lastModified() < window;
     }
 
+    /**
+     * Whether this log file should go out on this scan.
+     * 2026-07-16 — Priority crash/error no longer force-reship every STARTUP when the
+     * content fingerprint is unchanged (stops solar-diag issue floods).
+     * Reversal: STARTUP + priority always return true.
+     */
     static boolean shouldShipSource(String label, JSONObject manifest, String path, long mtime,
             ScanMode mode) {
+        return shouldShipSource(label, manifest, path, mtime, mode, null);
+    }
+
+    static boolean shouldShipSource(String label, JSONObject manifest, String path, long mtime,
+            ScanMode mode, String contentFingerprint) {
         if (mode == ScanMode.SUPPORT_OPEN || mode == ScanMode.REMOTE_PULL
                 || mode == ScanMode.USER_REPORT || mode == ScanMode.WIFI_OFF
                 || mode == ScanMode.POWER_OFF || mode == ScanMode.RESTART) {
             return true;
         }
-        if (mode == ScanMode.STARTUP && isPriorityStartupSource(label)) return true;
-        return manifest.optLong(path, -1) != mtime;
+        if (mode == ScanMode.STARTUP && isPriorityStartupSource(label)) {
+            if (contentFingerprint != null && !contentFingerprint.isEmpty() && manifest != null) {
+                String prev = manifest.optString(fpKey(path), "");
+                if (contentFingerprint.equals(prev)) return false;
+                return true;
+            }
+            // No fingerprint yet: fall back to mtime (changed = ship).
+            return manifest == null || manifest.optLong(path, -1) != mtime;
+        }
+        return manifest == null || manifest.optLong(path, -1) != mtime;
+    }
+
+    static String fpKey(String path) {
+        return (path != null ? path : "") + "#fp";
+    }
+
+    /** Length + rolling hash of content — stable for identical crash tails. */
+    static String contentFingerprint(String content) {
+        if (content == null || content.isEmpty()) return "0:0";
+        int len = content.length();
+        int h = 0;
+        // Sample head + tail so huge rotated logs still change when a new crash is prepended/appended.
+        int step = Math.max(1, len / 256);
+        for (int i = 0; i < len; i += step) {
+            h = 31 * h + content.charAt(i);
+        }
+        h = 31 * h + content.charAt(len - 1);
+        return len + ":" + Integer.toHexString(h);
+    }
+
+    /**
+     * Move crash.log → crash.log.shipped after a successful crash ship.
+     * Keeps forensic tail on disk without re-triggering hasRecentCrashLog every boot.
+     */
+    static void rotateShippedCrashLog() {
+        File dir = SolarLogPaths.preferredLogDir(null);
+        if (dir == null) return;
+        File crash = new File(dir, "crash.log");
+        if (!crash.isFile()) return;
+        File shipped = new File(dir, "crash.log.shipped");
+        if (shipped.exists()) {
+            // Keep previous shipped as .old once.
+            File old = new File(dir, "crash.log.shipped.old");
+            if (old.exists()) old.delete();
+            shipped.renameTo(old);
+        }
+        if (!crash.renameTo(shipped)) {
+            // Fallback: truncate in place so mtime/window clears.
+            try {
+                java.io.FileOutputStream out = new java.io.FileOutputStream(crash, false);
+                out.close();
+            } catch (Exception ignored) {}
+        }
     }
 
     static boolean isPriorityStartupSource(String label) {

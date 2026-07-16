@@ -3,7 +3,6 @@ package com.solar.launcher;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.net.wifi.WifiManager;
 import android.os.SystemClock;
 import com.solar.launcher.diag.SolarDiagFeatureLog;
 import com.solar.launcher.net.SolarHttp;
@@ -11,24 +10,27 @@ import com.solar.launcher.net.SolarHttp;
 import org.json.JSONObject;
 
 import java.text.SimpleDateFormat;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 2026-07-16 — Automatic internet clock sync for rooted Solar devices (Y1/Y2/A5).
+ * 2026-07-16 — Clock + timezone for rooted Solar (Y1/Y2/A5), hybrid offline/online.
  *
  * <ul>
- *   <li>Default <b>on</b> — user may disable in Date &amp; Time settings.</li>
- *   <li>User-owned <b>timezone</b> (never forced from geo); geo/IP only picks NTP pool.</li>
- *   <li>Triggers: process start (optional brief Wi‑Fi wake), Wi‑Fi online, hotspot with net.</li>
- *   <li>Root {@code date}/{@code hwclock} + {@code persist.sys.timezone} (A5 allowed).</li>
+ *   <li>Internet time default <b>on</b> but only runs when already online — never wakes Wi‑Fi on boot.</li>
+ *   <li>IANA zones with optional <b>Observe DST</b> (off → fixed standard-time offset, fully offline).</li>
+ *   <li>Silent Wi‑Fi only on explicit “Sync now” (user intent), never as a background habit.</li>
+ *   <li>Root via {@link RootShell} (Y2 cannot use bare {@code Runtime.exec("su")}).</li>
  * </ul>
  */
 public final class SolarAutoTime {
     public static final String PREF_AUTO_INTERNET_TIME = "solar_auto_internet_time";
     public static final String PREF_TIMEZONE_ID = "solar_timezone_id";
+    /** When true (default), IANA zone uses tzdata DST rules. When false, standard-time offset year-round. */
+    public static final String PREF_OBSERVE_DST = "solar_observe_dst";
     public static final String PREF_LAST_SYNC_MS = "solar_auto_time_last_sync_ms";
     public static final String PREF_LAST_SERVER = "solar_auto_time_last_server";
 
@@ -52,7 +54,19 @@ public final class SolarAutoTime {
         prefs.edit().putBoolean(PREF_AUTO_INTERNET_TIME, on).apply();
     }
 
-    /** Stored timezone id, or system default when unset. */
+    /** Default on — Android tzdata handles spring-forward / fall-back for the chosen zone. */
+    public static boolean isObserveDst(SharedPreferences prefs) {
+        return prefs == null || prefs.getBoolean(PREF_OBSERVE_DST, true);
+    }
+
+    public static void setObserveDst(SharedPreferences prefs, boolean observe) {
+        if (prefs == null) return;
+        prefs.edit().putBoolean(PREF_OBSERVE_DST, observe).apply();
+        // Re-apply effective zone so wall clock / system props match the new policy offline.
+        applyEffectiveTimezoneRoot(prefs);
+    }
+
+    /** Stored preferred IANA timezone id, or system default when unset. */
     public static String timezoneId(SharedPreferences prefs) {
         if (prefs != null) {
             String id = prefs.getString(PREF_TIMEZONE_ID, "");
@@ -64,7 +78,43 @@ public final class SolarAutoTime {
     public static void setTimezoneId(SharedPreferences prefs, String id) {
         if (prefs == null || id == null || id.trim().isEmpty()) return;
         prefs.edit().putString(PREF_TIMEZONE_ID, id.trim()).apply();
-        applyTimezoneRoot(id.trim());
+        applyEffectiveTimezoneRoot(prefs);
+    }
+
+    /**
+     * Zone used for display + wall-clock conversion: IANA with DST, or fixed standard offset.
+     * Fully offline — no network required.
+     */
+    public static TimeZone effectiveTimeZone(SharedPreferences prefs) {
+        String id = timezoneId(prefs);
+        TimeZone base = TimeZone.getTimeZone(id != null ? id : "UTC");
+        if (isObserveDst(prefs)) return base;
+        // Standard time year-round (raw offset, no DST transitions).
+        return TimeZone.getTimeZone(fixedOffsetEtcGmtId(base.getRawOffset()));
+    }
+
+    /** Persist the effective zone (IANA or Etc/GMT±N when DST observation is off). */
+    public static void applyEffectiveTimezoneRoot(SharedPreferences prefs) {
+        if (isObserveDst(prefs)) {
+            applyTimezoneRoot(timezoneId(prefs));
+        } else {
+            TimeZone base = TimeZone.getTimeZone(timezoneId(prefs));
+            applyTimezoneRoot(fixedOffsetEtcGmtId(base.getRawOffset()));
+        }
+    }
+
+    /**
+     * Etc/GMT ids invert the sign of the offset (POSIX legacy).
+     * UTC−5 (US Eastern standard) → {@code Etc/GMT+5}.
+     */
+    static String fixedOffsetEtcGmtId(int rawOffsetMs) {
+        int hours = Math.round(rawOffsetMs / 3600000f);
+        if (hours == 0) return "UTC";
+        // Clamp to common Etc range.
+        if (hours > 14) hours = 14;
+        if (hours < -12) hours = -12;
+        if (hours > 0) return "Etc/GMT-" + hours;
+        return "Etc/GMT+" + (-hours);
     }
 
     /** Curated list for wheel picker (id only). */
@@ -103,43 +153,112 @@ public final class SolarAutoTime {
         return 0;
     }
 
+    /**
+     * Wheel label for the preferred city zone; offset respects Observe DST setting.
+     * Layman: with DST on, New York shows UTC-4 in summer; with DST off, stays standard year-round.
+     */
     public static String displayTimezoneLabel(String id) {
+        return displayTimezoneLabel(id, true);
+    }
+
+    public static String displayTimezoneLabel(SharedPreferences prefs) {
+        return displayTimezoneLabel(timezoneId(prefs), isObserveDst(prefs));
+    }
+
+    public static String displayTimezoneLabel(String id, boolean observeDst) {
         if (id == null || id.isEmpty()) id = TimeZone.getDefault().getID();
-        TimeZone tz = TimeZone.getTimeZone(id);
-        int raw = tz.getRawOffset() / 60000;
-        int h = Math.abs(raw) / 60;
-        int m = Math.abs(raw) % 60;
-        String sign = raw >= 0 ? "+" : "-";
+        TimeZone base = TimeZone.getTimeZone(id);
+        long now = System.currentTimeMillis();
+        int totalMin = (observeDst ? base.getOffset(now) : base.getRawOffset()) / 60000;
+        int h = Math.abs(totalMin) / 60;
+        int m = Math.abs(totalMin) % 60;
+        String sign = totalMin >= 0 ? "+" : "-";
         String off = m == 0
                 ? String.format(Locale.US, "UTC%s%d", sign, h)
                 : String.format(Locale.US, "UTC%s%d:%02d", sign, h, m);
-        // Short city tail after last /
         String city = id;
         int slash = id.lastIndexOf('/');
         if (slash >= 0 && slash + 1 < id.length()) city = id.substring(slash + 1).replace('_', ' ');
+        if (observeDst && base.inDaylightTime(new Date(now))) {
+            return city + " (" + off + " DST)";
+        }
+        if (!observeDst && base.useDaylightTime()) {
+            return city + " (" + off + " no DST)";
+        }
         return city + " (" + off + ")";
     }
 
-    /** Process start — optional Wi‑Fi wake, then sync if online; restore radio state. */
+    /**
+     * Apply user wall-clock fields in the effective zone (DST policy applied) via RootShell.
+     * Works fully offline.
+     */
+    public static boolean applyLocalWallTime(SharedPreferences prefs,
+            int year, int month1to12, int day, int hour24, int minute) {
+        TimeZone tz = effectiveTimeZone(prefs);
+        long utcMs = localWallToUtcEpochMs(tz, year, month1to12, day, hour24, minute);
+        if (utcMs <= 0L) return false;
+        applyEffectiveTimezoneRoot(prefs);
+        return applyUtcEpochRoot(utcMs);
+    }
+
+    /**
+     * Convert local Y-M-D H:M in {@code tz} to UTC epoch ms.
+     * Uses {@link Calendar} so spring-forward / fall-back match when DST is observed.
+     */
+    static long localWallToUtcEpochMs(String tzId, int year, int month1to12, int day,
+            int hour24, int minute) {
+        TimeZone tz = TimeZone.getTimeZone(
+                tzId != null && !tzId.isEmpty() ? tzId : TimeZone.getDefault().getID());
+        return localWallToUtcEpochMs(tz, year, month1to12, day, hour24, minute);
+    }
+
+    static long localWallToUtcEpochMs(TimeZone tz, int year, int month1to12, int day,
+            int hour24, int minute) {
+        if (month1to12 < 1 || month1to12 > 12 || day < 1 || day > 31) return -1L;
+        if (hour24 < 0 || hour24 > 23 || minute < 0 || minute > 59) return -1L;
+        if (tz == null) tz = TimeZone.getDefault();
+        Calendar cal = Calendar.getInstance(tz);
+        cal.clear();
+        cal.set(Calendar.YEAR, year);
+        cal.set(Calendar.MONTH, month1to12 - 1);
+        cal.set(Calendar.DAY_OF_MONTH, day);
+        cal.set(Calendar.HOUR_OF_DAY, hour24);
+        cal.set(Calendar.MINUTE, minute);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        return cal.getTimeInMillis();
+    }
+
+    /**
+     * Process start — offline-first: apply timezone only; NTP only if already online.
+     * Never silent-wakes Wi‑Fi (keeps the disconnected experience snappy).
+     */
     public static void onProcessStart(final Context context) {
         if (context == null) return;
         final Context app = context.getApplicationContext();
         final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
-        if (!isAutoEnabled(prefs)) return;
         new Thread(new Runnable() {
             @Override
             public void run() {
-                syncWithOptionalWifiWake(app, prefs, true);
+                try {
+                    // Cheap offline path — zone/DST policy only, no network.
+                    applyEffectiveTimezoneRoot(prefs);
+                } catch (Exception ignored) {}
+                if (!isAutoEnabled(prefs)) return;
+                // No Wi‑Fi wake: only sync if the device is already online.
+                if (!ConnectivityHelper.isOnline(app)) return;
+                syncNow(app, prefs, false);
             }
         }, "SolarAutoTimeBoot").start();
     }
 
-    /** Wi‑Fi / hotspot has routable connectivity. */
+    /** Wi‑Fi / hotspot has routable connectivity — passive NTP (no radio wake). */
     public static void onInternetAvailable(final Context context) {
         if (context == null) return;
         final Context app = context.getApplicationContext();
         final SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
         if (!isAutoEnabled(prefs)) return;
+        if (!ConnectivityHelper.isOnline(app)) return;
         long now = System.currentTimeMillis();
         if (now - lastAttemptMs < MIN_SYNC_INTERVAL_MS) return;
         new Thread(new Runnable() {
@@ -150,7 +269,10 @@ public final class SolarAutoTime {
         }, "SolarAutoTimeNet").start();
     }
 
-    /** Force one attempt (settings “Sync now”). */
+    /**
+     * User-initiated “Sync now” — may briefly silent-wake Wi‑Fi if offline.
+     * Background paths never call this.
+     */
     public static void requestSyncNow(final Context context) {
         if (context == null) return;
         final Context app = context.getApplicationContext();
@@ -158,40 +280,35 @@ public final class SolarAutoTime {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                syncNow(app, prefs, true);
+                syncWithOptionalWifiWake(app, prefs, true);
             }
         }, "SolarAutoTimeForce").start();
     }
 
-    private static void syncWithOptionalWifiWake(Context app, SharedPreferences prefs, boolean boot) {
+    /**
+     * Silent Wi‑Fi wake (no status icon / settings “On”) then NTP if online; restore radio
+     * unless the user claimed Wi‑Fi mid-session.
+     */
+    private static void syncWithOptionalWifiWake(Context app, SharedPreferences prefs, boolean allowWake) {
         if (!running.compareAndSet(false, true)) return;
         lastAttemptMs = System.currentTimeMillis();
-        WifiManager wm = null;
-        boolean wasEnabled = true;
-        boolean weEnabled = false;
+        boolean beganSilent = false;
         try {
-            wm = (WifiManager) app.getSystemService(Context.WIFI_SERVICE);
-            if (wm != null) {
-                wasEnabled = wm.isWifiEnabled();
-                if (!wasEnabled && boot) {
-                    // Brief wake — only if device has known networks (isWifiEnabled false but radio can join).
-                    try {
-                        weEnabled = wm.setWifiEnabled(true);
-                    } catch (Exception ignored) {
-                        weEnabled = false;
-                    }
-                }
+            boolean online = false;
+            try {
+                online = ConnectivityHelper.isOnline(app);
+            } catch (Exception ignored) {}
+            if (!online && allowWake) {
+                beganSilent = SolarSilentWifi.begin(app);
+                if (beganSilent) waitUntilOnline(app, BOOT_WIFI_WAIT_MS);
             }
-            waitUntilOnline(app, BOOT_WIFI_WAIT_MS);
             if (ConnectivityHelper.isOnline(app)) {
                 performSync(app, prefs);
             }
         } catch (Exception ignored) {
         } finally {
-            if (weEnabled && wm != null && !wasEnabled) {
-                try {
-                    wm.setWifiEnabled(false);
-                } catch (Exception ignored) {}
+            if (beganSilent) {
+                SolarSilentWifi.end(app);
             }
             running.set(false);
         }
@@ -223,11 +340,11 @@ public final class SolarAutoTime {
     }
 
     private static void performSync(Context app, SharedPreferences prefs) {
-        // Apply user timezone first (does not depend on NTP).
-        String tzId = timezoneId(prefs);
-        applyTimezoneRoot(tzId);
+        // Apply user timezone / DST policy first (works offline; no NTP required).
+        String preferredId = timezoneId(prefs);
+        applyEffectiveTimezoneRoot(prefs);
 
-        String[] hosts = ntpHostsForContext(app, tzId);
+        String[] hosts = ntpHostsForContext(app, preferredId);
         long utcMs = SolarNtpClient.queryFirstUtcEpochMs(hosts);
         if (utcMs <= 0L) {
             // Last-resort pool
@@ -252,18 +369,27 @@ public final class SolarAutoTime {
             } catch (Exception ignored) {}
             try {
                 SolarDiagFeatureLog.event("time", "ntp_ok server=" + server
-                        + " tz=" + tzId + " utc=" + utcMs);
+                        + " tz=" + preferredId
+                        + " dst=" + isObserveDst(prefs)
+                        + " utc=" + utcMs);
             } catch (Throwable ignored) {}
         }
     }
 
     /**
      * NTP pool selection: prefer geo IP timezone region; else user timezone id; else global pool.
-     * Never writes timezone from geo — only chooses servers.
+     * Timezone soft-default lives in {@link SolarGeoRegion}; this path only chooses NTP servers.
      */
     static String[] ntpHostsForContext(Context app, String userTzId) {
         String region = regionFromTimezone(userTzId);
-        String geoTz = fetchGeoTimezoneHint(app);
+        String geoTz = null;
+        try {
+            geoTz = SolarGeoRegion.geoTimezone(
+                    app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE));
+        } catch (Exception ignored) {}
+        if (geoTz == null || geoTz.isEmpty()) {
+            geoTz = fetchGeoTimezoneHint(app);
+        }
         if (geoTz != null && !geoTz.isEmpty()) {
             region = regionFromTimezone(geoTz);
         }
@@ -342,8 +468,11 @@ public final class SolarAutoTime {
         }
     }
 
-    /** Root: set wall clock to absolute UTC epoch (device TZ already applied for display). */
-    static boolean applyUtcEpochRoot(long utcEpochMs) {
+    /**
+     * Root: set wall clock to absolute UTC epoch. Display uses the IANA zone (DST-aware).
+     * Public for Date &amp; Time Apply (must use RootShell paths, not bare {@code su}).
+     */
+    public static boolean applyUtcEpochRoot(long utcEpochMs) {
         if (utcEpochMs <= 0L) return false;
         // Try framework first (SET_TIME when granted as system).
         try {
@@ -378,7 +507,8 @@ public final class SolarAutoTime {
         return RootShell.run(cmd, true);
     }
 
-    static boolean applyTimezoneRoot(String tzId) {
+    /** Root: persist IANA timezone (tzdata applies DST transitions automatically). */
+    public static boolean applyTimezoneRoot(String tzId) {
         if (tzId == null || tzId.trim().isEmpty()) return false;
         final String id = tzId.trim();
         // Framework (may work when system-signed / SET_TIME_ZONE).

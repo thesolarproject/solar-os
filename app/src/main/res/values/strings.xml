@@ -71,6 +71,8 @@
     <string name="settings_our_donors">Our Donors</string>
     <string name="settings_sub_our_donors">Settings: Our Donors</string>
     <string name="support_link_report_issue_intro">Report bugs or request features. Open this address in a browser on your computer:</string>
+    <string name="report_issue_from_device">Report from Device</string>
+    <string name="report_issue_from_device_hint">Message Solar Development on this player. Your note is sent privately and can include diagnostics from this device.</string>
     <string name="report_issue_needs_reach">Connect to Wi‑Fi and sign in to Reach to message Solar Development. Your message is sent to the developers and opens a private diagnostic report with logs from this device.</string>
     <string name="report_issue_sent_hint">Message queued — diagnostics are being uploaded for the developers.</string>
     <string name="diag_getting_ready">Getting ready…</string>
@@ -263,7 +265,7 @@
     <string name="bg_mode_custom">Custom image</string>
     <string name="bg_mode_album">Album art blur</string>
     <string name="toast_time_applied">Time applied successfully!</string>
-    <string name="toast_time_failed">Failed: Root access required.</string>
+    <string name="toast_time_failed">Could not set time. Check root and try again.</string>
     <string name="toast_install_ok">Installed update.</string>
     <string name="toast_install_reboot">Update installed. Rebooting…</string>
     <string name="toast_install_failed">Install Failed.</string>
@@ -763,10 +765,13 @@
     <string name="datetime_minute">Minute</string>
     <string name="datetime_auto_internet">Internet Time</string>
     <string name="datetime_timezone">Time Zone</string>
+    <string name="datetime_observe_dst">Observe Daylight Saving</string>
     <string name="datetime_sync_now">Sync Time Now</string>
     <string name="datetime_sync_started">Syncing time…</string>
-    <string name="datetime_auto_on">Sets the clock from the internet when Wi‑Fi is online. Time zone is your choice below.</string>
-    <string name="datetime_auto_off">Manual date and time only.</string>
+    <string name="datetime_auto_on">Sets the clock from the internet when Wi‑Fi is already online. Does not wake Wi‑Fi in the background. Time zone is your choice below.</string>
+    <string name="datetime_auto_off">Manual date and time only — fully offline.</string>
+    <string name="datetime_dst_on">Uses your zone’s spring-forward / fall-back rules (works offline).</string>
+    <string name="datetime_dst_off">Keeps standard time year-round for the selected zone (works offline).</string>
 
     <!-- System update -->
     <string name="update_current_version">Current Version</string>

@@ -51,7 +51,8 @@ public final class OverlayWifiTierHelper {
     public static List<Row> buildRows(Context ctx) {
         ArrayList<Row> rows = new ArrayList<Row>();
         WifiManager wm = wifi(ctx);
-        boolean on = wm != null && wm.isWifiEnabled();
+        // Silent NTP/diag wake: report Off so overlay quick Wi‑Fi matches main UI.
+        boolean on = wm != null && wm.isWifiEnabled() && !SolarSilentWifi.isUiHidden();
         rows.add(new Row(ctx.getString(on ? R.string.context_wifi_on : R.string.context_wifi_off),
                 null, false, null, true));
         if (wm == null || !on) {

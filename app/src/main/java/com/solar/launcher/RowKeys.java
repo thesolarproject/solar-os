@@ -103,6 +103,8 @@ public final class RowKeys {
     public static final String DIAG_AUTO_REPORT = "settings.diag_auto_report";
     /** Root Settings — GitHub Issues URL screen. */
     public static final String REPORT_ISSUE = "settings.report_issue";
+    /** Report Issue sub-row → Solar Development conversation (device diagnostics). */
+    public static final String REPORT_FROM_DEVICE = "settings.report_from_device";
     /** Dev-support experiment — in-app report thread (2026-07-05). */
     public static final String REPORT_PROBLEM = "settings.report_problem";
     public static final String CONTACT_DEVELOPER = "settings.contact_developer";
@@ -173,6 +175,8 @@ public final class RowKeys {
     public static final String DATETIME = "settings.datetime";
     public static final String DT_AUTO_INTERNET = "datetime.auto_internet";
     public static final String DT_TIMEZONE = "datetime.timezone";
+    /** Manual daylight-saving observation (works fully offline). */
+    public static final String DT_OBSERVE_DST = "datetime.observe_dst";
     public static final String DT_SYNC_NOW = "datetime.sync_now";
     public static final String LANGUAGE = "settings.language";
     public static final String RADIO = "settings.radio";
@@ -350,6 +354,7 @@ public final class RowKeys {
         if (ABOUT.equals(rowKey)) return R.string.settings_about;
         if (DIAG_AUTO_REPORT.equals(rowKey)) return R.string.settings_diag_auto_report;
         if (REPORT_ISSUE.equals(rowKey)) return R.string.settings_report_issue;
+        if (REPORT_FROM_DEVICE.equals(rowKey)) return R.string.report_issue_from_device;
         if (SUPPORT_DEVELOPER.equals(rowKey)) return R.string.settings_support_developer;
         if (OUR_DONORS.equals(rowKey)) return R.string.settings_our_donors;
         if (DEBUG.equals(rowKey)) return R.string.settings_sub_debug;
@@ -448,6 +453,7 @@ public final class RowKeys {
         if (UPDATE_LATEST.equals(rowKey)) return R.string.update_latest_version;
         if (DT_AUTO_INTERNET.equals(rowKey)) return R.string.datetime_auto_internet;
         if (DT_TIMEZONE.equals(rowKey)) return R.string.datetime_timezone;
+        if (DT_OBSERVE_DST.equals(rowKey)) return R.string.datetime_observe_dst;
         if (DT_SYNC_NOW.equals(rowKey)) return R.string.datetime_sync_now;
         if (DT_YEAR.equals(rowKey)) return R.string.datetime_year;
         if (DT_MONTH.equals(rowKey)) return R.string.datetime_month;

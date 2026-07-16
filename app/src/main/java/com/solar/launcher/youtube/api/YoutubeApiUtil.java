@@ -1,8 +1,12 @@
 package com.solar.launcher.youtube.api;
 
+import com.solar.launcher.SolarApplication;
+import com.solar.launcher.SolarGeoRegion;
+
 import java.net.URLEncoder;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Random;
 
 /**
@@ -27,6 +31,25 @@ public final class YoutubeApiUtil {
     private static final Random RANDOM = new Random();
 
     private YoutubeApiUtil() {}
+
+    /**
+     * 2026-07-16 — ISO country for trending/search (from SolarGeoRegion IP cache / locale).
+     * Layman: tell YouTube frontends where home is so Popular matches local charts.
+     */
+    public static String regionCode() {
+        try {
+            android.content.Context ctx = SolarApplication.getAppContext();
+            if (ctx != null) {
+                String r = SolarGeoRegion.youtubeRegion(ctx);
+                if (r != null && r.length() == 2) return r.toUpperCase(Locale.US);
+            }
+        } catch (Exception ignored) {}
+        try {
+            String lc = Locale.getDefault().getCountry();
+            if (lc != null && lc.length() == 2) return lc.toUpperCase(Locale.US);
+        } catch (Exception ignored) {}
+        return "US";
+    }
 
     /** Pick a hyped playlist id for “Popular” browse. */
     public static String getHypePlaylist() {

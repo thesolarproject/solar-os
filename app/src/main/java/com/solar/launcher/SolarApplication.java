@@ -1,7 +1,9 @@
 package com.solar.launcher;
 
 import android.app.Application;
+import android.content.ComponentCallbacks2;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import com.solar.launcher.service.ProcessManagerService;
 
@@ -36,10 +38,47 @@ public class SolarApplication extends Application {
     public void onCreate() {
         super.onCreate();
         sApp = this;
+        // 2026-07-16 — Y1 RAM gate: init + process thrash log + system trim callbacks.
+        // Reversal: remove LowMemoryGate block; drop onTrimMemory/onLowMemory overrides.
+        try {
+            LowMemoryGate.init(this);
+            LowMemoryGate.noteProcessStart();
+            registerComponentCallbacks(new ComponentCallbacks2() {
+                @Override
+                public void onTrimMemory(int level) {
+                    LowMemoryGate.onSystemTrim(level);
+                    if (level >= TRIM_MEMORY_RUNNING_LOW
+                            || level == TRIM_MEMORY_MODERATE
+                            || level == TRIM_MEMORY_COMPLETE) {
+                        try {
+                            com.solar.launcher.diag.SolarDiagFeatureLog.warn("app",
+                                    "onTrimMemory level=" + level + " "
+                                            + LowMemoryGate.snapshotOneLine(SolarApplication.this));
+                        } catch (Throwable ignored) {}
+                    }
+                }
+
+                @Override
+                public void onConfigurationChanged(Configuration newConfig) {}
+
+                @Override
+                public void onLowMemory() {
+                    LowMemoryGate.onLowMemory();
+                    try {
+                        com.solar.launcher.diag.SolarDiagFeatureLog.warn("app",
+                                "onLowMemory " + LowMemoryGate.snapshotOneLine(SolarApplication.this));
+                    } catch (Throwable ignored) {}
+                }
+            });
+        } catch (Throwable ignored) {}
         // 2026-07-16 — Auto internet clock (rooted): brief Wi‑Fi wake if needed, restore radio.
+        // Geo soft-defaults (TZ / locale / podcast / YouTube region) run on online after wake.
         if (!isOverlayProcess()) {
             try {
                 SolarAutoTime.onProcessStart(this);
+            } catch (Throwable ignored) {}
+            try {
+                SolarGeoRegion.onInternetAvailable(this);
             } catch (Throwable ignored) {}
         }
         // #region agent log

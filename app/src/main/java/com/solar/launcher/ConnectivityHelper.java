@@ -15,9 +15,21 @@ import java.net.NetworkInterface;
 import java.util.Enumeration;
 import java.util.Locale;
 
-/** ponytail: online vs local-network checks + home shortcut visibility rules. */
+/**
+ * ponytail: online vs local-network checks + home shortcut visibility rules.
+ * Hybrid offline/online: passive network work must gate on {@link #allowPassiveOnlineWork}.
+ */
 public final class ConnectivityHelper {
     private ConnectivityHelper() {}
+
+    /**
+     * True only when the device is already online — passive features (geo soft-default,
+     * background NTP, diag scans, impact pings) must no-op when false so offline play stays snappy.
+     * Never wakes Wi‑Fi. User-initiated actions (Sync now, Report Issue) may still opt into wake.
+     */
+    public static boolean allowPassiveOnlineWork(Context context) {
+        return isOnline(context);
+    }
 
     /** Any connected network (Wi‑Fi, mobile, Ethernet). */
     public static boolean isOnline(Context context) {

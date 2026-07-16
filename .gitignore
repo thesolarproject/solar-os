@@ -67,3 +67,7 @@ build/
 cloudflare/**/README.md
 cloudflare/**/SETUP.md
 local.solar-diag.properties
+
+# Local developer Soulseek diag probe reference (not for users)
+slkseekdiagref.md
+**/slkseekdiagref.md

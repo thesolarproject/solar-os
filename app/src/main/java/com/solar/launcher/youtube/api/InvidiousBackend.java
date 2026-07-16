@@ -49,21 +49,20 @@ public final class InvidiousBackend implements YoutubeBackend {
 
     @Override
     public List<YouTubeVideo> getPopularVideos() throws IOException {
+        // 2026-07-16 — Prefer regional trending so Popular feels local; fall back to hype playlist.
+        String region = YoutubeApiUtil.regionCode();
+        try {
+            String trendUrl = baseUrl + "/api/v1/trending?region="
+                    + YoutubeApiUtil.urlEncode(region);
+            String trendBody = httpGet(trendUrl);
+            List<YouTubeVideo> trending = parseInvidiousVideoArray(new JSONArray(trendBody));
+            if (trending != null && !trending.isEmpty()) return trending;
+        } catch (Exception ignored) {}
         String url = baseUrl + "/api/v1/playlists/" + YoutubeApiUtil.getHypePlaylist();
         String body = httpGet(url);
         try {
             JSONArray arr = new JSONObject(body).getJSONArray("videos");
-            List<YouTubeVideo> out = new ArrayList<YouTubeVideo>();
-            for (int i = 0; i < arr.length(); i++) {
-                JSONObject j = arr.getJSONObject(i);
-                if (!"video".equals(j.optString("type", "video"))) continue;
-                out.add(new YouTubeVideo(
-                        j.optString("videoId", ""),
-                        j.optString("title", ""),
-                        j.optString("author", ""),
-                        YoutubeApiUtil.formatDuration(j.optInt("lengthSeconds", 0))));
-            }
-            return out;
+            return parseInvidiousPlaylistVideos(arr);
         } catch (Exception e) {
             throw new IOException("Invidious popular parse: " + e.getMessage(), e);
         }
@@ -71,8 +70,9 @@ public final class InvidiousBackend implements YoutubeBackend {
 
     @Override
     public List<YouTubeVideo> search(String query) throws IOException {
+        String region = YoutubeApiUtil.regionCode();
         String url = baseUrl + "/api/v1/search?q=" + YoutubeApiUtil.urlEncode(query)
-                + "&type=video";
+                + "&type=video&region=" + YoutubeApiUtil.urlEncode(region);
         String body = httpGet(url);
         try {
             JSONArray json = new JSONArray(body);
@@ -205,6 +205,43 @@ public final class InvidiousBackend implements YoutubeBackend {
         if (lower.contains("webm")) return "webm";
         if (lower.contains("ogg")) return "ogg";
         return "m4a";
+    }
+
+    private static List<YouTubeVideo> parseInvidiousVideoArray(JSONArray json) {
+        List<YouTubeVideo> out = new ArrayList<YouTubeVideo>();
+        if (json == null) return out;
+        for (int i = 0; i < json.length(); i++) {
+            JSONObject j = json.optJSONObject(i);
+            if (j == null) continue;
+            String type = j.optString("type", "video");
+            if (type.length() > 0 && !"video".equals(type) && !"shortVideo".equals(type)) {
+                continue;
+            }
+            String id = j.optString("videoId", "");
+            if (id.isEmpty()) continue;
+            out.add(new YouTubeVideo(
+                    id,
+                    j.optString("title", ""),
+                    j.optString("author", ""),
+                    YoutubeApiUtil.formatDuration(j.optInt("lengthSeconds", 0))));
+        }
+        return out;
+    }
+
+    private static List<YouTubeVideo> parseInvidiousPlaylistVideos(JSONArray arr) {
+        List<YouTubeVideo> out = new ArrayList<YouTubeVideo>();
+        if (arr == null) return out;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject j = arr.optJSONObject(i);
+            if (j == null) continue;
+            if (!"video".equals(j.optString("type", "video"))) continue;
+            out.add(new YouTubeVideo(
+                    j.optString("videoId", ""),
+                    j.optString("title", ""),
+                    j.optString("author", ""),
+                    YoutubeApiUtil.formatDuration(j.optInt("lengthSeconds", 0))));
+        }
+        return out;
     }
 
     private static String httpGet(String url) throws IOException {

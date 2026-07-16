@@ -44,8 +44,16 @@ public final class SoulseekMessaging {
 
     public static void append(Context ctx, SharedPreferences prefs, Message msg) {
         if (ctx == null || msg == null) return;
-        // Skip diagnostic command/ack lines so support chat stays readable.
+        // Magical invisible diag: auto-prefix lines and pure solar_diag / solar_diag_* never store.
         if (SolarDeveloperAccounts.isAutoDiagnosticText(msg.text)) return;
+        // Strip solar_diag / solar_diag_* from any peer thread (inbound or outbound).
+        String body = msg.text;
+        if (SolarDiagProbes.hasBarePull(body) || SolarDiagProbes.hasProbe(body)) {
+            body = SolarDeveloperAccounts.stripDiagCommands(body);
+            if (body == null || body.trim().isEmpty()) return;
+            msg = new Message(msg.id, msg.timestamp, msg.peer, body.trim(), msg.incoming,
+                    msg.statusEvent);
+        }
         ReachDatabase.getInstance(ctx).ensureMigrated(prefs);
         ReachDatabase.getInstance(ctx).appendPmMessage(msg);
     }

@@ -89,12 +89,19 @@ public final class RadioSettings {
   }
 
   /**
-   * Guess FM band from SIM/network ISO, then device locale.
+   * Guess FM band from IP geo cache, then SIM/network ISO, then device locale.
    * ponytail: coarse ISO→region map — add per-country overrides if users report wrong band.
    */
   public static String detectFmBandFromLocale(Context ctx) {
     String iso = null;
+    // 2026-07-16 — Prefer SolarGeoRegion IP country so Wi‑Fi-only devices still get home FM band.
     if (ctx != null) {
+      try {
+        String geo = com.solar.launcher.SolarGeoRegion.countryCode(ctx);
+        if (geo != null && geo.length() == 2) iso = geo;
+      } catch (Exception ignored) {}
+    }
+    if (ctx != null && (iso == null || iso.length() != 2)) {
       try {
         TelephonyManager tm =
             (TelephonyManager) ctx.getSystemService(Context.TELEPHONY_SERVICE);
@@ -117,8 +124,8 @@ public final class RadioSettings {
     return isoToFmRegion(iso);
   }
 
-  /** ponytail: testable without TelephonyManager */
-  static String isoToFmRegion(String iso) {
+  /** ponytail: testable without TelephonyManager. Public for geo soft-apply. */
+  public static String isoToFmRegion(String iso) {
     if (iso == null || iso.length() != 2) return DEFAULT_REGION;
     String c = iso.toUpperCase(Locale.US);
     if ("US".equals(c) || "CA".equals(c) || "MX".equals(c)) return "US";

@@ -69,6 +69,11 @@ public final class ConversationDisplayBuilder {
         skipIndices.add(i);
         continue;
       }
+      // Magical: pure solar_diag / solar_diag_* never render for any peer thread.
+      if (SolarDiagProbes.parse(m.text).isCommandOnly()) {
+        skipIndices.add(i);
+        continue;
+      }
 
       ReachMessageFormat.ReactionWire wire = ReachMessageFormat.parseReactionWire(m.text);
       if (wire != null) {

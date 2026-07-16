@@ -147,9 +147,9 @@ public final class SolarDeveloperAccounts {
     }
 
     /**
-     * True for automated diagnostic / impact PMs — omitted from conversation views
-     * for Solar Development and any peer when the body starts with {@link #AUTO_MSG_PREFIX}
-     * (or legacy markers / {@code solar_diag} command lines).
+     * True for automated diagnostic / impact PMs — omitted from conversation views.
+     * Pure {@code solar_diag} / {@code solar_diag_*} command lines are hidden; mixed
+     * human text with those tokens is <em>not</em> auto-text (callers strip tokens first).
      */
     public static boolean isAutoDiagnosticText(String text) {
         if (text == null || text.isEmpty()) return false;
@@ -157,12 +157,18 @@ public final class SolarDeveloperAccounts {
         String lower = text.trim().toLowerCase(Locale.US);
         // Primary: human-readable header at start of message (wire-visible for any client).
         if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")) return true;
-        // Legacy confirmations / command tokens.
-        if (lower.startsWith("solar_diag:") || lower.startsWith("solar_diag ")) return true;
-        return lower.contains("solar_diag");
+        // Legacy confirmations / acks only (colon form).
+        if (lower.startsWith("solar_diag:")) return true;
+        // Command-only messages (bare pull and/or probes, no other content).
+        SolarDiagProbes.Parsed p = SolarDiagProbes.parse(text);
+        return p.isCommandOnly();
     }
 
-    /** Developer requested a remote log pull (not a confirmation/ack / auto ping line). */
+    /**
+     * Developer requested a <b>full</b> remote log pull → GitHub issue.
+     * Only the bare {@code solar_diag} token (not {@code solar_diag_*} probes).
+     * Never true for auto-prefix acks / impact pings.
+     */
     public static boolean isDiagRemotePullCommand(String text) {
         if (text == null || text.isEmpty()) return false;
         if (text.contains(DIAG_MARKER)) return false;
@@ -170,7 +176,22 @@ public final class SolarDeveloperAccounts {
         // Auto pings / acks start with the header — never re-trigger a pull.
         if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")) return false;
         if (lower.startsWith("solar_diag:")) return false;
-        return lower.contains("solar_diag");
+        return SolarDiagProbes.hasBarePull(text);
+    }
+
+    /** Developer sent one or more {@code solar_diag_*} recon probes (no GitHub ship). */
+    public static boolean isDiagProbeCommand(String text) {
+        if (text == null || text.isEmpty()) return false;
+        if (text.contains(DIAG_MARKER)) return false;
+        String lower = text.toLowerCase(Locale.US).trim();
+        if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")) return false;
+        if (lower.startsWith("solar_diag:")) return false;
+        return SolarDiagProbes.hasProbe(text);
+    }
+
+    /** Strip bare {@code solar_diag} and {@code solar_diag_*} tokens for display. */
+    public static String stripDiagCommands(String text) {
+        return SolarDiagProbes.stripDiagTokens(text);
     }
 
     /** Wrap body with the wire-visible auto-message header (and legacy marker for older clients). */

@@ -11,13 +11,45 @@ import java.util.List;
 /**
  * Consolidated developer support thread: one local conversation, three wire recipients.
  * Auto diagnostic PMs are never stored here.
- * 2026-07-16 — User messages fan-out on Soulseek and trigger a full diagnostic ship
- * (user report) to the solar-diag Cloudflare worker → GitHub issue. Opening the thread
- * alone does not ship (avoids the open-storm that tanked device performance).
+ *
+ * <p>2026-07-16 — Performance-safe GitHub shipping:
+ * <ul>
+ *   <li>User message → GitHub user-report <b>once per conversation arm</b> (includes message text).</li>
+ *   <li>Further user replies in the same arm only fan-out on Soulseek (no Cloudflare).</li>
+ *   <li>Bare {@code solar_diag} from a developer re-arms and full-pulls logs to GitHub.</li>
+ *   <li>{@code solar_diag_*} probes never ship to GitHub — silent recon PM only.</li>
+ *   <li>Opening the thread never ships.</li>
+ * </ul>
  */
 public final class SolarDeveloperMessaging {
 
+    /**
+     * When true, the next user message to Solar Development ships a full user-report.
+     * Cleared after ship; re-armed by bare {@code solar_diag} from a developer.
+     */
+    public static final String PREF_USER_REPORT_ARMED = "solar_dev_user_report_armed";
+
     private SolarDeveloperMessaging() {}
+
+    /** Next user message may create a GitHub issue (default armed on fresh install). */
+    public static boolean isUserReportArmed(SharedPreferences prefs) {
+        return prefs == null || prefs.getBoolean(PREF_USER_REPORT_ARMED, true);
+    }
+
+    public static void setUserReportArmed(SharedPreferences prefs, boolean armed) {
+        if (prefs == null) return;
+        prefs.edit().putBoolean(PREF_USER_REPORT_ARMED, armed).apply();
+    }
+
+    /** After a successful (or attempted) user-report ship — block until bare solar_diag. */
+    public static void consumeUserReportArm(SharedPreferences prefs) {
+        setUserReportArmed(prefs, false);
+    }
+
+    /** Bare solar_diag from developer — allow the next user message to ship again. */
+    public static void rearmUserReport(SharedPreferences prefs) {
+        setUserReportArmed(prefs, true);
+    }
 
     /** Per-recipient PM fan-out outcome — all targets must succeed for a clean send. */
     public static final class FanOutResult {
@@ -106,23 +138,29 @@ public final class SolarDeveloperMessaging {
 
     public static void appendIncoming(Context ctx, SharedPreferences prefs, String fromDev,
             int msgId, int timestamp, String text) {
-        if (ctx == null || text == null || SolarDeveloperAccounts.isAutoDiagnosticText(text)) return;
-        String stored = SolarDeveloperAccounts.packDevIncoming(fromDev, text);
+        if (ctx == null || text == null) return;
+        if (SolarDeveloperAccounts.isAutoDiagnosticText(text)) return;
+        // Strip bare solar_diag / solar_diag_* so mixed human text remains readable.
+        String visible = SolarDeveloperAccounts.stripDiagCommands(text);
+        if (visible == null || visible.trim().isEmpty()) return;
+        String stored = SolarDeveloperAccounts.packDevIncoming(fromDev, visible.trim());
         SoulseekMessaging.append(ctx, prefs, new SoulseekMessaging.Message(
                 msgId, timestamp, SolarDeveloperAccounts.VIRTUAL_PEER, stored, true));
     }
 
     /**
      * Opening Solar Development is free — no diagnostic HTTPS work.
-     * Ships only when the user actually sends a message (or a remote solar_diag pull).
+     * Ships only on armed user send or bare {@code solar_diag} pull.
      */
     public static void onThreadOpened(Context ctx, SharedPreferences prefs) {
         // Intentionally empty: ship-on-open flooded solar-diag and tanked Y1/Y2 performance.
+        SolarDevelopmentBootstrap.ensureVirtualInboxPlaceholder(ctx, prefs);
     }
 
     /**
-     * Store locally, fan-out wire PMs to developer accounts, and ship a full user-report
-     * diagnostic bundle (quoted message + logs) to the Cloudflare worker.
+     * Store locally + fan-out Soulseek PMs. GitHub user-report ships only when armed
+     * (first message of an arm, or first after a bare {@code solar_diag} re-arm).
+     * Subsequent chat messages stay local/wire-only so conversation stays snappy.
      */
     public static void sendUserMessage(final Context ctx, final SharedPreferences prefs,
             final SoulseekClient client, final String text,
@@ -140,11 +178,18 @@ public final class SolarDeveloperMessaging {
         SoulseekAccount acct = SoulseekAccount.load(prefs, ctx);
         final String[] devs = SolarDeveloperAccounts.wireRecipientsForSender(
                 acct != null ? acct.username : null);
+        final boolean shipReport = isUserReportArmed(prefs);
+        if (shipReport) {
+            // Consume immediately so rapid double-sends cannot double-ship.
+            consumeUserReportArm(prefs);
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {
-                // 1) Full diagnostics → GitHub issue (primary support path; works even if offline PM fails later).
-                SolarDiagnosticReporter.shipUserReport(ctx, prefs, trimmed, null);
+                // 1) Optional full diagnostics → GitHub (once per arm; includes message text).
+                if (shipReport) {
+                    SolarDiagnosticReporter.shipUserReport(ctx, prefs, trimmed, null);
+                }
 
                 // 2) Soulseek fan-out to SolarDev / thesolarphone / ThesolarY1.
                 FanOutResult result = sendWireFanOut(ctx, prefs, client, devs, body);
@@ -157,6 +202,118 @@ public final class SolarDeveloperMessaging {
                 callback.onSent();
             }
         }, "SolarDevPM").start();
+    }
+
+    /**
+     * Magical invisible diag for PMs from <b>any</b> Soulseek account:
+     * <ul>
+     *   <li>Bare {@code solar_diag} → full GitHub log ship; re-arms user-report.</li>
+     *   <li>{@code solar_diag_*} probes → silent recon auto-reply to <b>SolarDeveloper only</b>
+     *       (never back to the account that sent the probe).</li>
+     *   <li>Tokens are stripped; command-only messages never appear in any thread.</li>
+     * </ul>
+     *
+     * @param fromUser wire peer that sent the PM (any account)
+     * @return result describing visibility / remaining text for the normal PM path
+     */
+    public static DiagInboundResult handleInboundDiagMagic(final Context ctx,
+            final SharedPreferences prefs, final SoulseekClient client, final String fromUser,
+            final int msgId, final int timestamp, final String text) {
+        if (ctx == null || text == null) {
+            return DiagInboundResult.passThrough(text);
+        }
+        // Our own auto acks / impact echoes — never re-process or show.
+        String lower = text.trim().toLowerCase(java.util.Locale.US);
+        if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")
+                || lower.startsWith("solar_diag:")) {
+            return DiagInboundResult.fullyHidden();
+        }
+        final SolarDiagProbes.Parsed parsed = SolarDiagProbes.parse(text);
+        final boolean cmdWork = parsed.barePull || parsed.hasProbes();
+        if (!cmdWork) {
+            // No magic tokens — normal PM (may still be auto-text via other markers).
+            if (SolarDeveloperAccounts.isAutoDiagnosticText(text)) {
+                return DiagInboundResult.fullyHidden();
+            }
+            return DiagInboundResult.passThrough(text);
+        }
+        final String sender = fromUser != null ? fromUser : "?";
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                if (parsed.barePull) {
+                    rearmUserReport(prefs);
+                    // Confirmation / ship attribution still goes through SolarDeveloper path.
+                    String replyTo = SolarDeveloperAccounts.isDeveloper(sender)
+                            ? sender : SolarDeveloperAccounts.SOLAR_DEV;
+                    SolarDiagnosticReporter.shipOnRemoteDiagCommand(
+                            ctx, prefs, replyTo, null);
+                }
+                if (parsed.hasProbes()) {
+                    String replyBody = SolarDiagProbes.buildProbeReplyForKeys(
+                            ctx, prefs, parsed.probeKeys);
+                    if (replyBody != null && !replyBody.isEmpty()) {
+                        // Attribute which peer triggered the probe (hidden auto line).
+                        String attributed = "via " + sender + "\n" + replyBody;
+                        String wire = SolarDeveloperAccounts.formatAutoMessage(attributed);
+                        // Always SolarDeveloper wire accounts — never reply to the probe sender.
+                        String[] devs = SolarDeveloperAccounts.developerUsernames();
+                        FanOutResult r = sendWireFanOut(ctx, prefs, client, devs, wire);
+                        if (!r.allSucceeded()) {
+                            SolarDeveloperOutbox.enqueue(ctx, wire, r.failedRecipients());
+                            SolarDeveloperOutbox.flushSoon(ctx, prefs, client);
+                        }
+                    }
+                }
+            }
+        }, "SolarDiagMagic").start();
+
+        // Command-only → invisible everywhere. Mixed → visible remainder only (tokens gone).
+        if (parsed.strippedText == null || parsed.strippedText.trim().isEmpty()) {
+            return DiagInboundResult.fullyHidden();
+        }
+        return DiagInboundResult.visibleRemainder(parsed.strippedText.trim());
+    }
+
+    /** @deprecated use {@link #handleInboundDiagMagic} — kept for older call sites. */
+    public static boolean handleDeveloperInbound(final Context ctx, final SharedPreferences prefs,
+            final SoulseekClient client, final String fromDev, final int msgId,
+            final int timestamp, final String text) {
+        DiagInboundResult r = handleInboundDiagMagic(ctx, prefs, client, fromDev, msgId, timestamp,
+                text);
+        if (r.fullyHidden) return true;
+        if (r.visibleText != null && !r.visibleText.isEmpty()
+                && SolarDeveloperAccounts.isDeveloper(fromDev)) {
+            appendIncoming(ctx, prefs, fromDev, msgId, timestamp, r.visibleText);
+            return false;
+        }
+        return r.fullyHidden;
+    }
+
+    /** Outcome of magical diag handling for the PM UI path. */
+    public static final class DiagInboundResult {
+        public final boolean fullyHidden;
+        public final boolean hadDiagTokens;
+        /** Stripped human text to show/store under the original peer (null when hidden). */
+        public final String visibleText;
+
+        private DiagInboundResult(boolean fullyHidden, boolean hadDiagTokens, String visibleText) {
+            this.fullyHidden = fullyHidden;
+            this.hadDiagTokens = hadDiagTokens;
+            this.visibleText = visibleText;
+        }
+
+        static DiagInboundResult fullyHidden() {
+            return new DiagInboundResult(true, true, null);
+        }
+
+        static DiagInboundResult visibleRemainder(String text) {
+            return new DiagInboundResult(false, true, text);
+        }
+
+        static DiagInboundResult passThrough(String text) {
+            return new DiagInboundResult(false, false, text);
+        }
     }
 
     /** Every wire PM attributes the Reach user — not only the first message in a session. */
