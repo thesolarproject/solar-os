@@ -70,6 +70,7 @@ public final class SettingsScreens {
     public static final String RADIO_FM_BAND = "settings.radio.fm_band";
     public static final String RADIO_INTERNET_COUNTRY = "settings.radio.internet_country";
     public static final String VIDEO = "settings.video";
+    public static final String SCROBBLING = "settings.scrobbling";
 
     public static int titleResId(String key) {
         if (key == null) return 0;
@@ -132,6 +133,7 @@ public final class SettingsScreens {
         if (RADIO_FM_BAND.equals(key)) return R.string.settings_sub_radio_fm_band;
         if (RADIO_INTERNET_COUNTRY.equals(key)) return R.string.settings_sub_radio_internet_country;
         if (VIDEO.equals(key)) return R.string.settings_sub_video;
+        if (SCROBBLING.equals(key)) return R.string.settings_scrobbling;
         return 0;
     }
 

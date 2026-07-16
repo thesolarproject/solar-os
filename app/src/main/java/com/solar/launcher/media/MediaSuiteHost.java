@@ -3979,6 +3979,10 @@ public final class MediaSuiteHost {
         return videoPlaybackYoutube;
     }
 
+    public boolean isVideoPlaying() {
+        return (videoController != null && videoController.isPlaying()) || videoPlaybackYoutube;
+    }
+
     /**
      * 2026-07-15 — Silence video / live YouTube stream before music or Deezer takes over.
      * Layman: starting a song must kill the video player if it was still making noise.

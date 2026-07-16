@@ -1349,6 +1349,7 @@ public class MainActivity extends Activity {
     private NavidromeSettingsHost navidromeSettingsHost;
     private PlexSettingsHost plexSettingsHost;
     private com.solar.launcher.jellyfin.JellyfinSettingsHost jellyfinSettingsHost;
+    private com.solar.launcher.scrobble.ScrobbleSettingsHost scrobbleSettingsHost;
     private int audiobookPendingResumeMs;
     private NavidromeScreenHost navidromeScreenHost;
     private PlexScreenHost plexScreenHost;
@@ -11863,6 +11864,8 @@ public class MainActivity extends Activity {
                 buildPlexSettingsUI();
             } else if (SettingsScreens.JELLYFIN.equals(settingsSubScreenKey)) {
                 buildJellyfinSettingsUI();
+            } else if (SettingsScreens.SCROBBLING.equals(settingsSubScreenKey)) {
+                buildScrobblingSettingsUI();
             } else if (SettingsScreens.MEDIA.equals(settingsSubScreenKey)) {
                 buildMediaSettingsUI();
             } else if (SettingsScreens.POWER.equals(settingsSubScreenKey)) {
@@ -15135,6 +15138,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (jellyfinScreenHost != null) {
                 jellyfinScreenHost.finishSearchKeyboard(typedPassword.trim());
             }
+        }
+        else if (keyboardPurpose == com.solar.launcher.scrobble.ScrobbleSettingsHost.KEYBOARD_LASTFM_USER
+                || keyboardPurpose == com.solar.launcher.scrobble.ScrobbleSettingsHost.KEYBOARD_LASTFM_PASS
+                || keyboardPurpose == com.solar.launcher.scrobble.ScrobbleSettingsHost.KEYBOARD_LISTENBRAINZ_TOKEN) {
+            if (scrobbleSettingsHost != null) scrobbleSettingsHost.finishKeyboard(keyboardPurpose, typedPassword.trim());
+            changeScreen(STATE_SETTINGS);
+            buildScrobblingSettingsUI();
         }
         else finishSoulseekPassEntry();
     }
@@ -29685,6 +29695,50 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             });
         }
         jellyfinSettingsHost.build();
+        if (containerSettingsItems.getChildCount() > 1) {
+            containerSettingsItems.getChildAt(1).requestFocus();
+        }
+    }
+
+    private void buildScrobblingSettingsUI() {
+        if (scrobbleSettingsHost == null) {
+            scrobbleSettingsHost = new com.solar.launcher.scrobble.ScrobbleSettingsHost(
+                    new com.solar.launcher.scrobble.ScrobbleSettingsHost.Actions() {
+                @Override public android.app.Activity activity() { return MainActivity.this; }
+                @Override public SharedPreferences prefs() { return prefs; }
+                @Override public void clickFeedback() { MainActivity.this.clickFeedback(); }
+                @Override public LinearLayout createSettingsRow(String rowKey, int labelRes, boolean submenu) {
+                    return MainActivity.this.createSettingsRow(rowKey, labelRes, submenu);
+                }
+                @Override public LinearLayout createSettingsRow(String rowKey, CharSequence title, boolean submenu) {
+                    return MainActivity.this.createSettingsRow(rowKey, title, submenu, true);
+                }
+                @Override public Button createListButton(String label) { return MainActivity.this.createListButton(label); }
+                @Override public void styleSecondaryLabel(Button btn) { MainActivity.this.styleSecondaryLabel(btn); }
+                @Override public void addSettingsRow(View row) { containerSettingsItems.addView(row); }
+                @Override public void clearSettingsRows() { containerSettingsItems.removeAllViews(); }
+                @Override public void setSettingsSubScreen(String key) { MainActivity.this.setSettingsSubScreen(key); }
+                @Override public void updateStatusBarTitle() { MainActivity.this.updateStatusBarTitle(); }
+                @Override public void applyReachBrowseLayoutMode() { MainActivity.this.applyReachBrowseLayoutMode(); }
+                @Override public void refreshSettingsPreview(String rowKey) { MainActivity.this.refreshSettingsPreview(rowKey); }
+                @Override public void drillSettingsBack(Runnable back) {
+                    lastSettingsFocusIndex = playbackSettingsMenuFocusIndex;
+                    MainActivity.this.drillSettingsBack(back != null ? back : new Runnable() {
+                        @Override public void run() { buildPlaybackSettingsUI(); }
+                    });
+                }
+                @Override public void openKeyboard(int purpose, String prefill) {
+                    keyboardPurpose = purpose;
+                    keyboardReturnState = STATE_SETTINGS;
+                    keyboardPrefill = prefill != null ? prefill : "";
+                    changeScreen(STATE_WIFI_KEYBOARD);
+                }
+                @Override public String previewForRow(String rowKey) {
+                    return com.solar.launcher.scrobble.ScrobbleSettingsHost.previewValue(prefs, rowKey);
+                }
+            });
+        }
+        scrobbleSettingsHost.build();
         if (containerSettingsItems.getChildCount() > 1) {
             containerSettingsItems.getChildAt(1).requestFocus();
         }
@@ -49932,7 +49986,6 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /** Push title/artist/position to y1-track-info for Y1Bridge + AVRCP trampolines. */
     private void syncAvrcpTrackInfo(boolean trackChanged) {
-        if (avrcpTrackInfoWriter == null) return;
         boolean podcastActive = playback.isPodcastActive() && podcastIjkPlayer != null;
         boolean playing = false;
         boolean hasPlayer = podcastActive || mediaPlayer != null;
@@ -49961,8 +50014,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             title = filterAvrcpDisplayField(title);
             artist = filterAvrcpDisplayField(artist);
             album = filterAvrcpDisplayField(album);
+            PlayQueue.QueueItem cur = playback.currentItem();
             if (title.isEmpty()) {
-                PlayQueue.QueueItem cur = playback.currentItem();
                 if (cur != null) {
                     if (cur.kind == PlayQueue.ItemKind.PODCAST_EPISODE && cur.episode != null) {
                         title = cur.episode.title != null ? cur.episode.title : "";
@@ -49992,6 +50045,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 } catch (Exception ignored) {}
             }
             if (!podcastActive && duration <= 0) duration = playbackDurationForScrub();
+
+            try {
+                com.solar.launcher.scrobble.ScrobbleManager.onPlaybackStateChange(this,
+                        title, artist, album, duration, position, playing, trackChanged,
+                        podcastActive, cur, mediaSuite != null && mediaSuite.isVideoPlaying());
+            } catch (Exception ignored) {}
+
+            if (avrcpTrackInfoWriter == null) return;
             if (connectedA2dpAddress != null) {
                 kickY1BridgeMediaService();
             }

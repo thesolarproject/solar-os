@@ -310,4 +310,46 @@ public final class SolarHttp {
         }
         return resp.body().byteStream();
     }
+
+    public static String postForm(String urlStr, okhttp3.FormBody body) throws IOException {
+        TlsHelper.ensureSecurityProvider();
+        Request req = new Request.Builder()
+                .url(urlStr)
+                .header("User-Agent", DEFAULT_UA)
+                .post(body)
+                .build();
+        Response resp = TlsHelper.client().newCall(req).execute();
+        String bodyStr = "";
+        try {
+            bodyStr = resp.body() != null ? resp.body().string() : "";
+        } finally {
+            if (resp.body() != null) resp.body().close();
+        }
+        if (!resp.isSuccessful()) {
+            throw new IOException("HTTP " + resp.code() + " for " + urlStr + ": " + bodyStr);
+        }
+        return bodyStr;
+    }
+
+    public static String postJson(String urlStr, String json, String authToken) throws IOException {
+        TlsHelper.ensureSecurityProvider();
+        Request.Builder rb = new Request.Builder()
+                .url(urlStr)
+                .header("User-Agent", DEFAULT_UA)
+                .post(okhttp3.RequestBody.create(okhttp3.MediaType.parse("application/json; charset=utf-8"), json));
+        if (authToken != null && !authToken.isEmpty()) {
+            rb.header("Authorization", "Token " + authToken);
+        }
+        Response resp = TlsHelper.client().newCall(rb.build()).execute();
+        String bodyStr = "";
+        try {
+            bodyStr = resp.body() != null ? resp.body().string() : "";
+        } finally {
+            if (resp.body() != null) resp.body().close();
+        }
+        if (!resp.isSuccessful()) {
+            throw new IOException("HTTP " + resp.code() + " for " + urlStr + ": " + bodyStr);
+        }
+        return bodyStr;
+    }
 }

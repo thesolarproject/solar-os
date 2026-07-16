@@ -615,9 +615,16 @@
     <string name="path_plex_songs">Plex / %1$s / Songs</string>
     <string name="settings_plex">Plex server</string>
     <string name="plex_settings_url">Server URL</string>
-    <string name="plex_settings_token">Plex Token</string>
+    <string name="plex_settings_token">X-Plex-Token</string>
     <string name="plex_settings_test">Test connection</string>
     <string name="plex_test_ok">Plex connection OK</string>
+    <string name="settings_scrobbling">Scrobbling</string>
+    <string name="scrobble_lastfm_enable">Last.fm Scrobbling</string>
+    <string name="scrobble_lastfm_user">Last.fm Username</string>
+    <string name="scrobble_lastfm_pass">Last.fm Password</string>
+    <string name="scrobble_lastfm_auth">Sign in to Last.fm</string>
+    <string name="scrobble_listenbrainz_enable">ListenBrainz Scrobbling</string>
+    <string name="scrobble_listenbrainz_token">ListenBrainz User Token</string>
     <string name="plex_test_fail">Plex connection failed</string>
     <string name="plex_not_configured">Plex not configured</string>
     <string name="plex_download_album">Download album for offline</string>
