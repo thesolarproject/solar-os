@@ -26,7 +26,7 @@ public final class Debug31d3d8Log {
     private static final String INGEST =
             "http://127.0.0.1:7642/ingest/033bd1a9-8f26-4d94-8b67-6b91f340fc87";
 
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private Debug31d3d8Log() {}
 

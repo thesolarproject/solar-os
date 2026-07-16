@@ -14,7 +14,7 @@ public final class Debug2241b1Log {
     private static final String SESSION = "2241b1";
     private static final String HOST_PATH =
             "/home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/.cursor/debug-2241b1.log";
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private Debug2241b1Log() {}
 

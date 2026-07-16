@@ -29,7 +29,7 @@ public final class Debug701426Log {
             "/home/deck/Documents/Cursor Workspaces/TheSolarProject/solar/.cursor/debug-701426.log";
 
     /** 2026-07-15 — On while hunting results-list focus; disable after confirmation. */
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private Debug701426Log() {}
 

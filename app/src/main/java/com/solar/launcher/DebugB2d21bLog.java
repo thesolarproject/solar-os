@@ -34,7 +34,7 @@ public final class DebugB2d21bLog {
             "http://127.0.0.1:7642/ingest/033bd1a9-8f26-4d94-8b67-6b91f340fc87";
 
     /** On for this session — disable after post-fix confirmation. */
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private static final ExecutorService EXEC = Executors.newSingleThreadExecutor();
     private static final AtomicInteger probeCalls = new AtomicInteger();

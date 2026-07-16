@@ -18,7 +18,7 @@ public final class Debug383b4eLog {
     private static final String FILE = "debug-383b4e.log";
     private static final String SESSION = "383b4e";
     /** 2026-07-11 — Force on while diagnosing "app not starting". */
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private Debug383b4eLog() {}
 

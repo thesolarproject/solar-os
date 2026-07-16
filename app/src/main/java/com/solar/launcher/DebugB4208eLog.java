@@ -20,7 +20,7 @@ public final class DebugB4208eLog {
     private static final String FILE = "debug-b4208e.log";
 
     /** 2026-07-14 — On for A5 portrait debug; turn off after confirmed fix. */
-    public static volatile boolean ENABLED = true;
+    public static volatile boolean ENABLED = false; // 2026-07-16 — off: sync disk/HTTP on wheel/key paths tanked Y1/Y2 scroll
 
     private DebugB4208eLog() {}
 
