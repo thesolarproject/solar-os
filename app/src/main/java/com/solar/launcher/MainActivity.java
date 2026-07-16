@@ -3879,6 +3879,37 @@ public class MainActivity extends Activity {
             }, 500);
         }
 
+        // 2026-07-16 — Automated YouTube play on device (resolve → cache → MediaPlayer).
+        // adb shell am start -n com.solar.launcher/.MainActivity \
+        //   --ez solar_adb_play_youtube true --es solar_adb_youtube_id pEkvHwbfn9g
+        if (getIntent().getBooleanExtra("solar_adb_play_youtube", false)) {
+            final String ytId = getIntent().getStringExtra("solar_adb_youtube_id");
+            final String ytTitle = getIntent().getStringExtra("solar_adb_youtube_title");
+            getIntent().removeExtra("solar_adb_play_youtube");
+            getIntent().removeExtra("solar_adb_youtube_id");
+            getIntent().removeExtra("solar_adb_youtube_title");
+            new Handler().postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (mediaSuite == null) {
+                            SolarAdbTest.fail("youtube_play no_media_suite");
+                            return;
+                        }
+                        if (ytId == null || ytId.trim().isEmpty()) {
+                            SolarAdbTest.fail("youtube_play empty_id");
+                            return;
+                        }
+                        mediaSuite.adbPlayYouTubeVideo(ytId,
+                                ytTitle != null ? ytTitle : "adb-test");
+                        SolarAdbTest.pass("youtube_play_started id=" + ytId);
+                    } catch (Throwable t) {
+                        SolarAdbTest.fail("youtube_play " + t.getClass().getSimpleName()
+                                + ": " + t.getMessage());
+                    }
+                }
+            }, 1200);
+        }
+
         scheduleAdbOpenFmIfRequested(getIntent());
 
         if (getIntent().getBooleanExtra("solar_adb_get_music_type_search", false)) {

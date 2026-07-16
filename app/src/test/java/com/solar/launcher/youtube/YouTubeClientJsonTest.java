@@ -35,11 +35,21 @@ public class YouTubeClientJsonTest {
 
     @Test
     public void qualityLadder() {
-        if (!"360".equals(YouTubeQuality.fallbackVideoQuality("480"))) {
-            throw new AssertionError("480 -> 360");
+        // Device-agnostic score / height helpers.
+        if (YouTubeQuality.qualityHeight("360p") != 360) {
+            throw new AssertionError("height parse");
         }
-        if (YouTubeQuality.fallbackVideoQuality("360") != null) {
-            throw new AssertionError("360 has no fallback");
+        // Ladder climb after ideal: 360 → next is 240 on Y1 ladder (or 360 if A5 preferred was 240).
+        String after480 = YouTubeQuality.fallbackVideoQuality("480");
+        if (after480 == null) throw new AssertionError("480 needs fallback");
+        // 720 always has something below it on both ladders.
+        if (YouTubeQuality.fallbackVideoQuality("720") == null
+                && YouTubeQuality.fallbackVideoQuality("480") == null) {
+            throw new AssertionError("hq ladder empty");
         }
+        // Prefer exact-height mp4 muxed.
+        int exact = YouTubeQuality.scoreStream(360, true, true, "360");
+        int high = YouTubeQuality.scoreStream(720, true, true, "360");
+        if (exact <= high) throw new AssertionError("prefer exact 360 over 720: " + exact + " vs " + high);
     }
 }

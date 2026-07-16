@@ -82,7 +82,7 @@ public class SoulseekAccountTest {
         throw new AssertionError("a5 canonical: " + u);
       }
     } finally {
-      com.solar.launcher.DeviceFeatures.resetCacheForTest();
+      com.solar.launcher.DeviceFeatures.setCachedFamilyForTest(null);
     }
     com.solar.launcher.DeviceFeatures.setCachedFamilyForTest("y2");
     try {
@@ -92,7 +92,7 @@ public class SoulseekAccountTest {
         throw new AssertionError("y2 must be word-word-## not three words: " + u);
       }
     } finally {
-      com.solar.launcher.DeviceFeatures.resetCacheForTest();
+      com.solar.launcher.DeviceFeatures.setCachedFamilyForTest(null);
     }
   }
 

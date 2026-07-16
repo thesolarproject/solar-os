@@ -56,6 +56,7 @@ import com.solar.launcher.video.VideoPlayerController;
 import com.solar.launcher.youtube.YouTubeClient;
 import com.solar.launcher.youtube.YouTubeComment;
 import com.solar.launcher.youtube.YouTubeDownloader;
+import com.solar.launcher.youtube.YouTubeProgressiveCache;
 import com.solar.launcher.youtube.YouTubeRecentSearches;
 import com.solar.launcher.youtube.YouTubeResultJson;
 import com.solar.launcher.youtube.YouTubeSavePaths;
@@ -3815,6 +3816,16 @@ public final class MediaSuiteHost {
                 } catch (Exception ignored) {}
                 // #endregion
                 if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
+                    // Fail-open: YtApi always has a constructible progressive URL.
+                    String seed = com.solar.launcher.youtube.api.InstancesConfig.DEFAULT_YTAPI;
+                    String q = quality != null && quality.length() > 0 ? quality : "360";
+                    youtubeStreamUrl = seed + "/direct_url?video_id="
+                            + com.solar.launcher.youtube.api.YoutubeApiUtil.urlEncode(video.id)
+                            + "&quality="
+                            + com.solar.launcher.youtube.api.YoutubeApiUtil.urlEncode(q);
+                    android.util.Log.w("SolarYouTube", "empty parse — using YtApi seed url");
+                }
+                if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
                     String next = YouTubeClient.fallbackVideoQuality(quality);
                     if (next != null) {
                         playYouTubeVideoAtQuality(video, next, fromIjkFallback);
@@ -4534,7 +4545,7 @@ public final class MediaSuiteHost {
                 com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
         // Letterbox must sit in the middle of the black panel (FrameLayout default is top-left).
         surfaceHost.addView(videoSurface, centeredVideoSurfaceLp());
-        videoController = new VideoPlayerController();
+        videoController = new VideoPlayerController(host.context());
         videoController.setPlaybackListener(videoPlaybackListener());
         videoController.setBufferingListener(videoBufferingListener());
         videoController.attachHolder(videoSurface.getHolder());
@@ -4552,42 +4563,33 @@ public final class MediaSuiteHost {
     }
 
     /**
-     * Solar IJK player — HTTP URL from native YouTubeClient resolveStream.
-     * 2026-07-14 — OnError retries next quality or leaves player with toast (was silent black screen).
-     * 2026-07-15 — Letterbox/crop + EOF leave when nothing follows.
+     * YouTube playback — notPipe-aligned: prefer progressive download then local play on Y1.
+     * 2026-07-16 — CRITICAL: do NOT call stopNonFmPlayback() here. That path calls
+     * stopVideoAndYoutubeStream() and wipes youtubeStreamUrl → "Could not play: no url".
+     * Capture the URL first; only stop music; releaseVideoPlayer handles prior video.
      */
     private void startYoutubeStreamPlayback() {
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("hasUrl", youtubeStreamUrl != null && youtubeStreamUrl.length() > 0);
-            d.put("urlPrefix", youtubeStreamUrl != null && youtubeStreamUrl.length() > 96
-                    ? youtubeStreamUrl.substring(0, 96) : youtubeStreamUrl);
-            d.put("quality", youtubeStreamQuality != null ? youtubeStreamQuality : "");
-            com.solar.launcher.Debug9d82a5Log.log(host.context(),
-                    "MediaSuiteHost.startYoutubeStreamPlayback", "enter player", "C", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        if (youtubeStreamUrl == null || youtubeStreamUrl.isEmpty()) {
+        // Capture before any stop helpers — stopNonFmPlayback used to null this field.
+        final String url = youtubeStreamUrl;
+        final String vid = youtubeNowPlayingId != null ? youtubeNowPlayingId : "yt";
+        final String q = youtubeStreamQuality != null ? youtubeStreamQuality : "360";
+        if (url == null || url.isEmpty()) {
+            android.util.Log.e("SolarYouTube", "start play aborted: empty stream url id=" + vid);
             Toast.makeText(host.context(), R.string.youtube_play_error, Toast.LENGTH_SHORT).show();
             leaveYouTubePlayerOnError();
             return;
         }
-        // 2026-07-15 — Live YouTube video exclusive: stop music + FM + other engines.
+        // Keep field in sync in case a later stop wiped it; download uses captured url.
+        youtubeStreamUrl = url;
+        videoPlaybackYoutube = true;
+        android.util.Log.i("SolarYouTube", "start play q=" + q
+                + " url=" + (url.length() > 120 ? url.substring(0, 120) : url));
+        // Music only — never stopNonFmPlayback (clears YouTube stream state).
         host.stopMusicPlayback();
-        host.stopNonFmPlayback();
         releaseVideoPlayer();
-        // 2026-07-15 — Full volume range before stream (same 80% lock as music path).
         com.solar.launcher.HearingSafetyVolume.ensureFullVolumeRange(host.context());
         FrameLayout surfaceHost = host.findViewById(R.id.video_surface_host);
         if (surfaceHost == null) {
-            // #region agent log
-            try {
-                com.solar.launcher.Debug9d82a5Log.log(host.context(),
-                        "MediaSuiteHost.startYoutubeStreamPlayback",
-                        "missing video_surface_host", "C", null);
-            } catch (Exception ignored) {}
-            // #endregion
             Toast.makeText(host.context(), R.string.video_play_error, Toast.LENGTH_SHORT).show();
             return;
         }
@@ -4595,28 +4597,122 @@ public final class MediaSuiteHost {
         videoSurface.setAspectRatio(
                 com.solar.launcher.video.VideoSettings.ijkAspectRatio(host.context()));
         surfaceHost.addView(videoSurface, centeredVideoSurfaceLp());
-        videoController = new VideoPlayerController();
+        videoController = new VideoPlayerController(host.context());
         videoController.setPlaybackListener(videoPlaybackListener());
         videoController.setBufferingListener(videoBufferingListener());
         videoController.attachHolder(videoSurface.getHolder());
+
+        // 2026-07-16 — Real-time JIT streaming via SolarStreamProxy without pre-downloading entire file.
+        // If already cached on disk from prior run, open local file instantly.
+        final int gen = ++youtubeLoadGen;
+        final File cached = YouTubeProgressiveCache.cacheFile(host.context(), vid, q);
+        if (YouTubeProgressiveCache.isUsable(cached) && cached.length() > 1024L * 1024L) {
+            openYoutubeCachedFile(cached);
+            return;
+        }
+        setVideoStatusText(host.getString(R.string.youtube_resolve_opening));
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    com.solar.launcher.net.SolarStreamProxy.ensureStarted(host.context());
+                    final String proxyUrl = com.solar.launcher.net.SolarStreamProxy.proxyUrl(url);
+                    if (gen != youtubeLoadGen) return;
+                    host.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (gen != youtubeLoadGen) return;
+                            try {
+                                if (videoController == null) {
+                                    toastYouTubePlayError(null);
+                                    leaveYouTubePlayerOnError();
+                                    return;
+                                }
+                                setVideoStatusText(host.getString(R.string.youtube_resolve_opening));
+                                videoController.openUrl(proxyUrl);
+                                videoController.play();
+                                startVideoProgressUpdates();
+                                updateVideoProgressUi(0);
+                            } catch (Exception e) {
+                                toastYouTubePlayError(e.getMessage());
+                                leaveYouTubePlayerOnError();
+                            }
+                        }
+                    });
+                } catch (final Exception e) {
+                    android.util.Log.e("SolarYouTube", "proxy start failed", e);
+                    if (gen != youtubeLoadGen) return;
+                    host.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (gen != youtubeLoadGen) return;
+                            try {
+                                setVideoStatusText(host.getString(R.string.youtube_resolve_connecting));
+                                if (videoController == null) {
+                                    toastYouTubePlayError(e.getMessage());
+                                    leaveYouTubePlayerOnError();
+                                    return;
+                                }
+                                videoController.openUrl(url);
+                                videoController.play();
+                                startVideoProgressUpdates();
+                                updateVideoProgressUi(0);
+                            } catch (Exception e2) {
+                                toastYouTubePlayError(e.getMessage());
+                                leaveYouTubePlayerOnError();
+                            }
+                        }
+                    });
+                }
+            }
+        }, "YouTubeProxyPlay").start();
+    }
+
+    /**
+     * ADB/automated play: resolve + play a video id (Videos YouTube path, not audio-only).
+     * Usage: am start … --ez solar_adb_play_youtube true --es solar_adb_youtube_id VIDEO_ID
+     */
+    public void adbPlayYouTubeVideo(String videoId, String title) {
+        if (videoId == null || videoId.trim().isEmpty()) {
+            android.util.Log.e("SolarYouTube", "adb play: empty id");
+            return;
+        }
+        youtubeAudioMode = false;
+        String t = title != null && title.length() > 0 ? title : videoId;
+        playYouTubeVideo(new YouTubeVideo(videoId.trim(), t, "", ""));
+    }
+
+    /**
+     * Play cached progressive MP4 with MediaPlayer (local path — notPipe style).
+     * Layman: file is already on disk with Solar TLS; stock player reads the file.
+     */
+    private void openYoutubeCachedFile(File playFile) {
+        if (playFile == null || !playFile.isFile() || playFile.length() < 64 * 1024L) {
+            toastYouTubePlayError(null);
+            leaveYouTubePlayerOnError();
+            return;
+        }
         try {
-            setVideoStatusText(host.getString(R.string.youtube_resolve_connecting));
-            videoController.openUrl(youtubeStreamUrl);
+            setVideoStatusText(host.getString(R.string.youtube_resolve_opening));
+            if (videoController == null) {
+                videoController = new VideoPlayerController(host.context());
+                videoController.setPlaybackListener(videoPlaybackListener());
+                videoController.setBufferingListener(videoBufferingListener());
+                if (videoSurface != null) {
+                    videoController.attachHolder(videoSurface.getHolder());
+                }
+            }
+            // Surface may still be settling after long download — open then force play-on-ready.
+            videoController.open(playFile);
             videoController.play();
             startVideoProgressUpdates();
             updateVideoProgressUi(0);
+            clearVideoStatusText();
+            android.util.Log.i("SolarYouTube", "playing cached " + playFile.getName()
+                    + " bytes=" + playFile.length());
         } catch (Exception e) {
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("ex", e.getClass().getSimpleName());
-                d.put("msg", e.getMessage() != null ? e.getMessage() : "");
-                com.solar.launcher.Debug9d82a5Log.log(host.context(),
-                        "MediaSuiteHost.startYoutubeStreamPlayback",
-                        "openUrl threw", "B", d);
-            } catch (Exception ignored) {}
-            // #endregion
-            toastYouTubePlayError(null);
+            android.util.Log.e("SolarYouTube", "open cached failed", e);
+            toastYouTubePlayError(e.getMessage());
             leaveYouTubePlayerOnError();
         }
     }

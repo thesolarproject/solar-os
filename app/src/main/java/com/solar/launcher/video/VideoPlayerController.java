@@ -1,58 +1,54 @@
 package com.solar.launcher.video;
 
+import android.content.Context;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.net.Uri;
+import android.util.Log;
 import android.view.SurfaceHolder;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 
 import tv.danmaku.ijk.media.player.IMediaPlayer;
 import tv.danmaku.ijk.media.player.IjkMediaPlayer;
 
 /**
- * Owns one {@link IjkMediaPlayer}, binds {@link SurfaceHolder} lifecycle, play/pause/seek/release.
- * Call {@link #attachHolder(SurfaceHolder)} from a {@link SurfaceRenderView} or SurfaceView host.
+ * Local files → IJK; progressive HTTP → MediaPlayer (notPipe VideoView path).
+ * 2026-07-16 — Fix Y1 black screen: wait for valid surface; Context+Uri setDataSource;
+ * software IJK fallback; host may download-then-open(file) if stream still fails.
  */
 public final class VideoPlayerController implements SurfaceHolder.Callback,
         IMediaPlayer.OnPreparedListener,
         IMediaPlayer.OnErrorListener,
         IMediaPlayer.OnCompletionListener,
         IMediaPlayer.OnVideoSizeChangedListener,
-        IMediaPlayer.OnBufferingUpdateListener {
+        IMediaPlayer.OnBufferingUpdateListener,
+        MediaPlayer.OnPreparedListener,
+        MediaPlayer.OnErrorListener,
+        MediaPlayer.OnCompletionListener,
+        MediaPlayer.OnVideoSizeChangedListener,
+        MediaPlayer.OnBufferingUpdateListener {
 
-    /**
-     * 2026-07-14 — Host learns when stream fails or ends (YouTube IJK path).
-     * 2026-07-15 — Also video size for aspect / landscape session.
-     * Layman: Solar can toast and leave the player instead of a black stuck screen.
-     * Technical: wraps IJK OnError / OnCompletion / OnVideoSizeChanged.
-     * Reversal: leave listener null — same silent-fail behaviour as pre-harden.
-     */
+    private static final String TAG = "SolarVideoPlayer";
+
     public interface PlaybackListener {
-        /** Decode / network failure — what / why for toast. */
         void onError(int what, int extra);
-
-        /** Natural end of stream. */
         void onCompletion();
-
-        /**
-         * 2026-07-15 — Decoded frame size ready (for letterbox/crop + orientation).
-         * Default no-op via empty impl in older anonymous listeners not updating size.
-         */
         void onVideoSize(int width, int height);
     }
 
-    /**
-     * 2026-07-15 — Honest load progress for YouTube / HTTP (Hallmark: no stuck “Resolving…”).
-     * Layman: show buffering percent while the first frames fill.
-     */
     public interface BufferingListener {
-        /** 0–100 while downloading ahead of playhead. */
         void onBuffering(int percent);
-
-        /** Prepared and first start issued — hide status chrome. */
         void onReadyToPlay();
     }
 
-    private final IjkMediaPlayer player;
+    private final Context appCtx;
+    private final IjkMediaPlayer ijkPlayer;
+    private MediaPlayer mediaPlayer;
+    private boolean useMediaPlayer;
     private SurfaceHolder boundHolder;
     private boolean prepared;
     private boolean playWhenSurfaceReady;
@@ -60,58 +56,94 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     private String pendingPath;
     private PlaybackListener playbackListener;
     private BufferingListener bufferingListener;
-    /** 2026-07-14 — Guard double error callbacks after release / retry. */
     private boolean released;
+    private boolean triedIjkFallback;
+    private boolean preparePosted;
 
-    public VideoPlayerController() {
-        player = SolarIjkPlayerFactory.create();
-        wirePlayerListeners();
+    public VideoPlayerController(Context context) {
+        appCtx = context != null ? context.getApplicationContext() : null;
+        ijkPlayer = SolarIjkPlayerFactory.create();
+        wireIjkListeners();
     }
 
-    /** Host callback for error / end — YouTube uses this to retry quality or leave. */
+    /** @deprecated use {@link #VideoPlayerController(Context)} */
+    public VideoPlayerController() {
+        this(null);
+    }
+
     public void setPlaybackListener(PlaybackListener listener) {
         playbackListener = listener;
     }
 
-    /** Optional buffering % / ready — video shell status label. */
     public void setBufferingListener(BufferingListener listener) {
         bufferingListener = listener;
     }
 
     public IjkMediaPlayer getPlayer() {
-        return player;
+        return ijkPlayer;
     }
 
-    /** Open a local file; prepares async once a surface is available. */
+    /**
+     * Local file — prefer stock MediaPlayer (notPipe VideoView path). IJK HW often
+     * black-screens progressive YouTube MP4 on MT6572 even when the file is valid.
+     */
     public void open(File file) throws IOException {
-        if (file == null) throw new IOException("no file");
+        if (file == null || !file.isFile()) throw new IOException("no file");
+        useMediaPlayer = true;
+        triedIjkFallback = false;
+        preparePosted = false;
         resetForNewSource();
         pendingPath = file.getAbsolutePath();
-        player.setDataSource(pendingPath);
+        Log.i(TAG, "open file mediaPlayer=true " + pendingPath
+                + " bytes=" + file.length());
+        ensureMediaPlayer();
+        setMediaDataSource(pendingPath);
         maybePrepare();
     }
 
     /**
-     * 2026-07-06 — HTTP stream (YouTube IJK path).
-     * 2026-07-14 — Shares factory HTTP options; errors go to {@link PlaybackListener}.
+     * Progressive HTTP — MediaPlayer with Context+Uri (API 17 safe), after surface is valid.
+     * Prefer download-then-open(file) for YouTube: MediaPlayer HTTPS TLS is weak on API 17.
      */
     public void openUrl(String url) throws IOException {
         if (url == null || url.isEmpty()) throw new IOException("no url");
+        boolean isProxyOrYt = url.contains("/stream?url=") || url.contains("googlevideo.com") || url.contains("piped");
+        useMediaPlayer = isHttpUrl(url) && !isProxyOrYt;
+        triedIjkFallback = !useMediaPlayer;
+        preparePosted = false;
         resetForNewSource();
         pendingPath = url;
-        player.setDataSource(url);
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("urlPrefix", url.length() > 96 ? url.substring(0, 96) : url);
-            d.put("hasHolder", boundHolder != null);
-            d.put("isDirectUrlApi", url.indexOf("/direct_url") >= 0);
-            d.put("isVideoplayback", url.indexOf("videoplayback") >= 0);
-            com.solar.launcher.Debug9d82a5Log.log(null,
-                    "VideoPlayerController.openUrl", "setDataSource", "B", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        Log.i(TAG, "openUrl mediaPlayer=" + useMediaPlayer + " "
+                + (url.length() > 120 ? url.substring(0, 120) : url));
+        if (useMediaPlayer) {
+            ensureMediaPlayer();
+            setMediaDataSource(url);
+        } else {
+            ijkPlayer.setDataSource(url);
+        }
         maybePrepare();
+    }
+
+    private void setMediaDataSource(String pathOrUrl) throws IOException {
+        if (mediaPlayer == null) ensureMediaPlayer();
+        // Local absolute path — plain setDataSource(path) is most reliable on API 17.
+        if (pathOrUrl != null && pathOrUrl.startsWith("/") && !isHttpUrl(pathOrUrl)) {
+            mediaPlayer.setDataSource(pathOrUrl);
+            return;
+        }
+        try {
+            if (appCtx != null) {
+                Map<String, String> headers = new HashMap<String, String>();
+                headers.put("User-Agent",
+                        "Mozilla/5.0 (Linux; Android 4.2) AppleWebKit/537.36");
+                mediaPlayer.setDataSource(appCtx, Uri.parse(pathOrUrl), headers);
+            } else {
+                mediaPlayer.setDataSource(pathOrUrl);
+            }
+        } catch (IOException e) {
+            // Older devices sometimes only accept plain string
+            mediaPlayer.setDataSource(pathOrUrl);
+        }
     }
 
     public boolean isPrepared() {
@@ -120,7 +152,9 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
 
     public boolean isPlaying() {
         try {
-            return prepared && player.isPlaying();
+            if (!prepared) return false;
+            if (useMediaPlayer && mediaPlayer != null) return mediaPlayer.isPlaying();
+            return ijkPlayer.isPlaying();
         } catch (IllegalStateException e) {
             return false;
         }
@@ -128,7 +162,9 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
 
     public long getCurrentPosition() {
         try {
-            return prepared ? player.getCurrentPosition() : 0L;
+            if (!prepared) return 0L;
+            if (useMediaPlayer && mediaPlayer != null) return mediaPlayer.getCurrentPosition();
+            return ijkPlayer.getCurrentPosition();
         } catch (IllegalStateException e) {
             return 0L;
         }
@@ -136,7 +172,9 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
 
     public long getDuration() {
         try {
-            return prepared ? player.getDuration() : 0L;
+            if (!prepared) return 0L;
+            if (useMediaPlayer && mediaPlayer != null) return mediaPlayer.getDuration();
+            return ijkPlayer.getDuration();
         } catch (IllegalStateException e) {
             return 0L;
         }
@@ -148,17 +186,24 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
             return;
         }
         try {
-            player.start();
+            if (useMediaPlayer && mediaPlayer != null) mediaPlayer.start();
+            else ijkPlayer.start();
             playWhenSurfaceReady = false;
             pausedForSurfaceLoss = false;
-        } catch (IllegalStateException ignored) {}
+        } catch (IllegalStateException e) {
+            Log.e(TAG, "start failed", e);
+        }
     }
 
     public void pause() {
         playWhenSurfaceReady = false;
         if (!prepared) return;
         try {
-            if (player.isPlaying()) player.pause();
+            if (useMediaPlayer && mediaPlayer != null) {
+                if (mediaPlayer.isPlaying()) mediaPlayer.pause();
+            } else if (ijkPlayer.isPlaying()) {
+                ijkPlayer.pause();
+            }
         } catch (IllegalStateException ignored) {}
     }
 
@@ -170,17 +215,19 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     public void seekTo(long positionMs) {
         if (!prepared) return;
         try {
-            player.seekTo(positionMs);
+            if (useMediaPlayer && mediaPlayer != null) mediaPlayer.seekTo((int) positionMs);
+            else ijkPlayer.seekTo(positionMs);
         } catch (IllegalStateException ignored) {}
     }
 
-    /** Wire surface callbacks from the hosting view. */
     public void attachHolder(SurfaceHolder holder) {
         if (holder == null) return;
         holder.addCallback(this);
         boundHolder = holder;
-        player.setDisplay(holder);
-        maybePrepare();
+        if (hasValidSurface()) {
+            applyDisplay(holder);
+            maybePrepare();
+        }
     }
 
     public void detachHolder(SurfaceHolder holder) {
@@ -188,7 +235,6 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         if (boundHolder == holder) boundHolder = null;
     }
 
-    /** Stop playback and release native player — call on Back / screen exit. */
     public void release() {
         released = true;
         playWhenSurfaceReady = false;
@@ -197,83 +243,129 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
         pendingPath = null;
         playbackListener = null;
         bufferingListener = null;
+        releaseMediaPlayer();
         try {
-            player.stop();
+            ijkPlayer.stop();
         } catch (IllegalStateException ignored) {}
         try {
-            player.setDisplay(null);
+            ijkPlayer.setDisplay(null);
         } catch (IllegalStateException ignored) {}
-        player.release();
+        ijkPlayer.release();
     }
 
     @Override
     public void onPrepared(IMediaPlayer mp) {
+        onEnginePrepared("ijk");
+    }
+
+    @Override
+    public boolean onError(IMediaPlayer mp, int what, int extra) {
+        return onEngineError(what, extra, true);
+    }
+
+    @Override
+    public void onCompletion(IMediaPlayer mp) {
+        onEngineCompletion();
+    }
+
+    @Override
+    public void onVideoSizeChanged(IMediaPlayer mp, int width, int height, int sarNum, int sarDen) {
+        onEngineVideoSize(width, height);
+    }
+
+    @Override
+    public void onBufferingUpdate(IMediaPlayer mp, int percent) {
+        onEngineBuffering(percent);
+    }
+
+    @Override
+    public void onPrepared(MediaPlayer mp) {
+        onEnginePrepared("mediaplayer");
+    }
+
+    @Override
+    public boolean onError(MediaPlayer mp, int what, int extra) {
+        return onEngineError(what, extra, false);
+    }
+
+    @Override
+    public void onCompletion(MediaPlayer mp) {
+        onEngineCompletion();
+    }
+
+    @Override
+    public void onVideoSizeChanged(MediaPlayer mp, int width, int height) {
+        onEngineVideoSize(width, height);
+    }
+
+    @Override
+    public void onBufferingUpdate(MediaPlayer mp, int percent) {
+        onEngineBuffering(percent);
+    }
+
+    private void onEnginePrepared(String eng) {
         if (released) return;
         prepared = true;
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("playWhenReady", playWhenSurfaceReady);
-            d.put("urlPrefix", pendingPath != null && pendingPath.length() > 80
-                    ? pendingPath.substring(0, 80) : pendingPath);
-            com.solar.launcher.Debug9d82a5Log.log(null,
-                    "VideoPlayerController.onPrepared", "prepared ok", "C", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        Log.i(TAG, "prepared ok eng=" + eng);
         if (playWhenSurfaceReady) play();
         BufferingListener bl = bufferingListener;
         if (bl != null) bl.onReadyToPlay();
     }
 
-    @Override
-    public boolean onError(IMediaPlayer mp, int what, int extra) {
+    private boolean onEngineError(int what, int extra, boolean fromIjk) {
         if (released) return true;
         prepared = false;
         playWhenSurfaceReady = false;
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("what", what);
-            d.put("extra", extra);
-            d.put("urlPrefix", pendingPath != null && pendingPath.length() > 80
-                    ? pendingPath.substring(0, 80) : pendingPath);
-            d.put("isDirectUrlApi", pendingPath != null
-                    && pendingPath.indexOf("/direct_url") >= 0);
-            com.solar.launcher.Debug9d82a5Log.log(null,
-                    "VideoPlayerController.onError", "ijk decode/net error", "A", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        PlaybackListener l = playbackListener;
-        if (l != null) {
-            l.onError(what, extra);
+        Log.e(TAG, "error what=" + what + " extra=" + extra + " ijk=" + fromIjk
+                + " path=" + pendingPath);
+        // MediaPlayer failed (HTTP or local) → IJK software decode once.
+        if (!fromIjk && !triedIjkFallback && pendingPath != null) {
+            triedIjkFallback = true;
+            try {
+                Log.i(TAG, "MediaPlayer failed — IJK software decode retry");
+                useMediaPlayer = false;
+                releaseMediaPlayer();
+                resetIjkOnly();
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0);
+                ijkPlayer.setDataSource(pendingPath);
+                applyDisplay(boundHolder);
+                preparePosted = false;
+                maybePrepare();
+                return true;
+            } catch (Exception e) {
+                Log.e(TAG, "IJK fallback failed", e);
+            }
         }
-        // Consumed — avoid IJK default completion-on-error path.
+        PlaybackListener l = playbackListener;
+        if (l != null) l.onError(what, extra);
         return true;
     }
 
-    @Override
-    public void onCompletion(IMediaPlayer mp) {
+    private void onEngineCompletion() {
         if (released) return;
         PlaybackListener l = playbackListener;
-        if (l != null) {
-            l.onCompletion();
-        }
+        if (l != null) l.onCompletion();
     }
 
-    @Override
-    public void onVideoSizeChanged(IMediaPlayer mp, int width, int height, int sarNum, int sarDen) {
+    private void onEngineVideoSize(int width, int height) {
         if (released) return;
         PlaybackListener l = playbackListener;
-        if (l != null) {
-            l.onVideoSize(width, height);
-        }
+        if (l != null) l.onVideoSize(width, height);
+    }
+
+    private void onEngineBuffering(int percent) {
+        if (released) return;
+        BufferingListener bl = bufferingListener;
+        if (bl != null) bl.onBuffering(percent);
     }
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         if (released) return;
+        Log.i(TAG, "surfaceCreated");
         boundHolder = holder;
-        player.setDisplay(holder);
+        applyDisplay(holder);
+        preparePosted = false;
         maybePrepare();
         if (pausedForSurfaceLoss && prepared) {
             pausedForSurfaceLoss = false;
@@ -285,73 +377,148 @@ public final class VideoPlayerController implements SurfaceHolder.Callback,
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         if (released) return;
         boundHolder = holder;
-        player.setDisplay(holder);
+        applyDisplay(holder);
     }
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
         if (released) return;
+        Log.i(TAG, "surfaceDestroyed");
         if (prepared) {
             try {
-                if (player.isPlaying()) {
-                    player.pause();
+                if (isPlaying()) {
+                    pause();
                     pausedForSurfaceLoss = true;
                 }
-            } catch (IllegalStateException ignored) {}
+            } catch (Exception ignored) {}
         }
-        player.setDisplay(null);
+        try {
+            if (useMediaPlayer && mediaPlayer != null) mediaPlayer.setDisplay(null);
+            else ijkPlayer.setDisplay(null);
+        } catch (Exception ignored) {}
         if (boundHolder == holder) boundHolder = null;
+        preparePosted = false;
     }
 
     private void maybePrepare() {
-        if (released || prepared || pendingPath == null || boundHolder == null) {
-            // #region agent log
-            // Only note waits for surface (have URL, no holder yet).
-            if (!released && !prepared && pendingPath != null && boundHolder == null) {
-                try {
-                    com.solar.launcher.Debug9d82a5Log.log(null,
-                            "VideoPlayerController.maybePrepare",
-                            "waiting for surface", "C", null);
-                } catch (Exception ignored) {}
-            }
-            // #endregion
+        if (released || prepared || pendingPath == null) return;
+        if (!hasValidSurface()) {
+            Log.i(TAG, "wait for valid surface");
             return;
         }
-        // #region agent log
+        if (preparePosted) return;
+        preparePosted = true;
+        applyDisplay(boundHolder);
+        if (useMediaPlayer && mediaPlayer != null) {
+            // notPipe: prepare off UI thread to avoid 4.2 hang
+            final MediaPlayer mp = mediaPlayer;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    if (released) return;
+                    try {
+                        Log.i(TAG, "MediaPlayer.prepareAsync");
+                        mp.prepareAsync();
+                    } catch (IllegalStateException e) {
+                        Log.e(TAG, "prepareAsync ISE", e);
+                        preparePosted = false;
+                        hostError(1, -1);
+                    }
+                }
+            }, "SolarMpPrepare").start();
+            return;
+        }
         try {
-            com.solar.launcher.Debug9d82a5Log.log(null,
-                    "VideoPlayerController.maybePrepare", "prepareAsync", "C", null);
-        } catch (Exception ignored) {}
-        // #endregion
+            Log.i(TAG, "IJK.prepareAsync");
+            ijkPlayer.prepareAsync();
+        } catch (IllegalStateException e) {
+            preparePosted = false;
+            Log.e(TAG, "IJK prepareAsync", e);
+        }
+    }
+
+    private void hostError(final int what, final int extra) {
+        PlaybackListener l = playbackListener;
+        if (l != null) l.onError(what, extra);
+    }
+
+    private boolean hasValidSurface() {
+        if (boundHolder == null) return false;
         try {
-            player.prepareAsync();
-        } catch (IllegalStateException ignored) {}
+            return boundHolder.getSurface() != null && boundHolder.getSurface().isValid();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void resetForNewSource() {
         prepared = false;
         playWhenSurfaceReady = false;
         pausedForSurfaceLoss = false;
+        preparePosted = false;
+        if (useMediaPlayer) {
+            releaseMediaPlayer();
+            ensureMediaPlayer();
+        } else {
+            resetIjkOnly();
+        }
+    }
+
+    private void resetIjkOnly() {
         try {
-            player.reset();
-            SolarIjkPlayerFactory.applyY1Options(player);
-            wirePlayerListeners();
+            ijkPlayer.reset();
+            SolarIjkPlayerFactory.applyY1Options(ijkPlayer);
+            if (pendingPath != null && isHttpUrl(pendingPath)) {
+                ijkPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "mediacodec", 0);
+            }
+            wireIjkListeners();
         } catch (IllegalStateException ignored) {}
     }
 
-    /** Re-attach prepared / error / completion / buffering after reset (reset clears them). */
-    private void wirePlayerListeners() {
-        player.setOnPreparedListener(this);
-        player.setOnErrorListener(this);
-        player.setOnCompletionListener(this);
-        player.setOnVideoSizeChangedListener(this);
-        player.setOnBufferingUpdateListener(this);
+    private void ensureMediaPlayer() {
+        if (mediaPlayer != null) return;
+        mediaPlayer = new MediaPlayer();
+        mediaPlayer.setOnPreparedListener(this);
+        mediaPlayer.setOnErrorListener(this);
+        mediaPlayer.setOnCompletionListener(this);
+        mediaPlayer.setOnVideoSizeChangedListener(this);
+        mediaPlayer.setOnBufferingUpdateListener(this);
+        mediaPlayer.setAudioStreamType(AudioManager.STREAM_MUSIC);
+        mediaPlayer.setScreenOnWhilePlaying(true);
     }
 
-    @Override
-    public void onBufferingUpdate(IMediaPlayer mp, int percent) {
-        if (released) return;
-        BufferingListener bl = bufferingListener;
-        if (bl != null) bl.onBuffering(percent);
+    private void releaseMediaPlayer() {
+        if (mediaPlayer == null) return;
+        try {
+            mediaPlayer.reset();
+        } catch (Exception ignored) {}
+        try {
+            mediaPlayer.release();
+        } catch (Exception ignored) {}
+        mediaPlayer = null;
+    }
+
+    private void applyDisplay(SurfaceHolder holder) {
+        if (holder == null || !hasValidSurface()) return;
+        try {
+            if (useMediaPlayer && mediaPlayer != null) mediaPlayer.setDisplay(holder);
+            else ijkPlayer.setDisplay(holder);
+        } catch (Exception e) {
+            Log.w(TAG, "setDisplay", e);
+        }
+    }
+
+    private void wireIjkListeners() {
+        ijkPlayer.setOnPreparedListener(this);
+        ijkPlayer.setOnErrorListener(this);
+        ijkPlayer.setOnCompletionListener(this);
+        ijkPlayer.setOnVideoSizeChangedListener(this);
+        ijkPlayer.setOnBufferingUpdateListener(this);
+    }
+
+    private static boolean isHttpUrl(String url) {
+        if (url == null) return false;
+        String u = url.toLowerCase();
+        return u.startsWith("http://") || u.startsWith("https://");
     }
 }

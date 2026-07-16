@@ -118,6 +118,7 @@ public final class PipedBackend implements YoutubeBackend {
 
     @Override
     public String getVideoUrl(String videoId, String quality) throws IOException {
+        // notPipe Piped.getVideoUrl: last videoStreams entry (lowest progressive) + proxy rewrite.
         String url = baseUrl + "/streams/" + YoutubeApiUtil.urlEncode(videoId);
         String body = httpGet(url);
         try {
@@ -129,17 +130,10 @@ public final class PipedBackend implements YoutubeBackend {
                 throw new IOException(msg.length() > 0 ? msg : err);
             }
             JSONArray videoStreams = json.getJSONArray("videoStreams");
-            // Prefer non-videoOnly muxed; fall back to lowest progressive (last entry like notPipe).
-            String chosen = null;
-            for (int i = 0; i < videoStreams.length(); i++) {
-                JSONObject s = videoStreams.getJSONObject(i);
-                if (!s.optBoolean("videoOnly", true)) {
-                    chosen = s.optString("url", "");
-                    if (chosen.length() > 0) break;
-                }
-            }
+            if (videoStreams.length() < 1) throw new IOException("no videoStreams");
+            // Prefer quality-scored muxed; fall back to notPipe last-entry.
+            String chosen = pickPipedVideoUrl(videoStreams, quality);
             if (chosen == null || chosen.isEmpty()) {
-                if (videoStreams.length() < 1) throw new IOException("no videoStreams");
                 chosen = videoStreams.getJSONObject(videoStreams.length() - 1)
                         .optString("url", "");
             }
@@ -149,6 +143,38 @@ public final class PipedBackend implements YoutubeBackend {
             if (e instanceof IOException) throw (IOException) e;
             throw new IOException("Piped stream parse: " + e.getMessage(), e);
         }
+    }
+
+    /** Pick muxed progressive closest to quality; package-visible for tests. */
+    public static String pickPipedVideoUrl(JSONArray videoStreams, String quality) {
+        if (videoStreams == null || videoStreams.length() < 1) return null;
+        String best = null;
+        int bestScore = Integer.MIN_VALUE;
+        String anyMuxed = null;
+        for (int i = 0; i < videoStreams.length(); i++) {
+            JSONObject s = videoStreams.optJSONObject(i);
+            if (s == null) continue;
+            String u = s.optString("url", "");
+            if (u.isEmpty()) continue;
+            boolean videoOnly = s.optBoolean("videoOnly", true);
+            if (!videoOnly && anyMuxed == null) anyMuxed = u;
+            String q = s.optString("quality", "");
+            int h = s.optInt("height", 0);
+            if (h <= 0) h = com.solar.launcher.youtube.YouTubeQuality.qualityHeight(q);
+            String mime = s.optString("mimeType", s.optString("format", ""));
+            boolean mp4 = mime != null && mime.toLowerCase().contains("mp4");
+            int score = com.solar.launcher.youtube.YouTubeQuality.scoreStream(
+                    h, !videoOnly, mp4, quality);
+            if (score > bestScore) {
+                bestScore = score;
+                best = u;
+            }
+        }
+        if (best != null) return best;
+        if (anyMuxed != null) return anyMuxed;
+        return videoStreams.optJSONObject(videoStreams.length() - 1) != null
+                ? videoStreams.optJSONObject(videoStreams.length() - 1).optString("url", "")
+                : null;
     }
 
     @Override

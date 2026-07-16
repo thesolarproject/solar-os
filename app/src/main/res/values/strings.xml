@@ -1728,7 +1728,7 @@
     <string name="youtube_resolve_getting_stream">Getting %1$s stream…</string>
     <string name="youtube_resolve_opening">Opening player…</string>
     <string name="youtube_resolve_buffering">Buffering… %1$d%%</string>
-    <string name="youtube_resolve_saving">Saving audio… %1$d%%</string>
+    <string name="youtube_resolve_saving">Saving… %1$d%%</string>
     <string name="youtube_resolve_connecting">Connecting…</string>
     <string name="youtube_play_error">Could not play this video.</string>
     <string name="youtube_play_error_detail">Could not play: %1$s</string>

@@ -43,7 +43,7 @@ public final class InvidiousBackend implements YoutubeBackend {
 
     @Override
     public boolean supportsHqVideo() {
-        // 2026-07-15 — Invidious muxed stream is 360p only (same as notPipe).
+        // notPipe: Invidious is 360-only (never in hqInstances). formatStreams[0] is 360 muxed.
         return false;
     }
 
@@ -115,7 +115,8 @@ public final class InvidiousBackend implements YoutubeBackend {
 
     @Override
     public String getVideoUrl(String videoId, String quality) throws IOException {
-        // quality ignored — Invidious formatStreams are 360p muxed.
+        // notPipe Invidious.getVideoUrl: formatStreams[0] + parseUrl through instance (local=true).
+        // Prefer quality-scored pick when multiple muxed rows exist; fall back to [0].
         String url = baseUrl + "/api/v1/videos/" + YoutubeApiUtil.urlEncode(videoId)
                 + "?local=true";
         String body = httpGet(url);
@@ -126,15 +127,58 @@ public final class InvidiousBackend implements YoutubeBackend {
                     || err.contains("page") || err.contains("Companion"))) {
                 throw new IOException(err);
             }
-            JSONArray formats = json.getJSONArray("formatStreams");
-            if (formats.length() < 1) throw new IOException("no formatStreams");
-            String stream = formats.getJSONObject(0).optString("url", "");
+            JSONArray formats = json.optJSONArray("formatStreams");
+            if (formats == null || formats.length() < 1) throw new IOException("no formatStreams");
+            String q = (quality != null && quality.length() > 0) ? quality : "360";
+            String stream = pickFormatStreamUrl(formats, q);
+            if (stream == null || stream.isEmpty()) {
+                stream = formats.getJSONObject(0).optString("url", "");
+            }
             if (stream.isEmpty()) throw new IOException("empty stream url");
+            // Critical notPipe step: rewrite CDN host → instance base so VideoView/IJK
+            // hits the proxy (same origin cookies / local=true).
             return YoutubeApiUtil.parseUrl(baseUrl, stream);
         } catch (Exception e) {
             if (e instanceof IOException) throw (IOException) e;
             throw new IOException("Invidious stream parse: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Prefer muxed progressive closest to requested height; mp4 over webm (IJK API 17).
+     * Package-visible for unit tests.
+     */
+    public static String pickFormatStreamUrl(JSONArray formats, String quality) {
+        if (formats == null || formats.length() < 1) return null;
+        String bestUrl = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (int i = 0; i < formats.length(); i++) {
+            JSONObject s = formats.optJSONObject(i);
+            if (s == null) continue;
+            String rel = s.optString("url", "");
+            if (rel.isEmpty()) continue;
+            String qLabel = s.optString("qualityLabel", s.optString("quality", ""));
+            int h = heightFromLabel(qLabel);
+            if (h <= 0) h = s.optInt("height", 0);
+            if (h <= 0) h = s.optInt("resolution", 0);
+            String type = s.optString("type", s.optString("container", ""));
+            boolean mp4 = type != null && (type.toLowerCase().contains("mp4")
+                    || type.toLowerCase().contains("avc"));
+            // formatStreams are muxed progressive.
+            int score = com.solar.launcher.youtube.YouTubeQuality.scoreStream(h, true, mp4, quality);
+            if (score > bestScore) {
+                bestScore = score;
+                bestUrl = rel;
+            }
+        }
+        if (bestUrl != null) return bestUrl;
+        return formats.optJSONObject(0) != null
+                ? formats.optJSONObject(0).optString("url", "") : null;
+    }
+
+    static int heightFromLabel(String label) {
+        if (label == null || label.length() == 0) return 0;
+        return com.solar.launcher.youtube.YouTubeQuality.qualityHeight(label);
     }
 
     /**

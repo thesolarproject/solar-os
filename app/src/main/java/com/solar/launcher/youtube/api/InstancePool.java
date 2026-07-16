@@ -12,10 +12,11 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * 2026-07-15 — Random pick + failover across YouTube backends (notPipe Manager idea).
- * Layman: tries several public frontends until one answers.
- * Technical: shuffle copy of pool per call; HQ stream prefer supportsHqVideo first.
- * Reversal: single hardcoded host; delete failover.
+ * 2026-07-16 — Failover across YouTube backends, aligned with notPipe Manager.
+ * Layman: try YtApi progressive first (works on Y1), then Invidious/Piped 360 proxies.
+ * Technical: notPipe uses separate 360 vs HQ instance lists and returns the first URL
+ * without a HEAD preflight — preflight was dropping playable progressive links.
+ * Reversal: hard-require isUrlReachable again (breaks many CDNs).
  */
 public final class InstancePool {
 
@@ -40,7 +41,10 @@ public final class InstancePool {
         }
         List<String> piped = cfg.getPiped();
         for (int i = 0; i < piped.size(); i++) {
-            next.add(new PipedBackend(piped.get(i)));
+            // Piped entries may be "api,proxy" like notPipe Config (parsed in PipedBackend).
+            String raw = piped.get(i);
+            if (raw == null || raw.length() == 0) continue;
+            next.add(new PipedBackend(raw));
         }
         List<String> yt = cfg.getYtApiLegacy();
         for (int i = 0; i < yt.size(); i++) {
@@ -76,7 +80,6 @@ public final class InstancePool {
     }
 
     public List<YouTubeComment> getComments(final String videoId) throws IOException {
-        // 2026-07-15 — Empty comments from one host is success; only hard IO fails over.
         IOException last = null;
         for (YoutubeBackend b : shuffled()) {
             try {
@@ -96,49 +99,35 @@ public final class InstancePool {
     }
 
     /**
-     * 2026-07-15 — Resolve stream and say which backend won (debug / fix path).
-     * Layman: find a playable link and remember who handed it out.
+     * notPipe Manager.getVideoUrl: for "360" use all 360 backends (YtApi + Inv + Piped);
+     * for 480/720 use only HQ backends (YtApi). Return first successful URL — no HEAD check.
      */
     public StreamPick getVideoUrlPick(String videoId, String quality) throws IOException {
-        // 2026-07-15 — 240/144 are low-tier (A5 fallback); do not prefer HQ backends.
-        // Was: quality != null && !"360".equals(quality)
-        boolean wantHq = quality != null && !"360".equals(quality) && !"240".equals(quality)
-                && !"144".equals(quality);
-        List<YoutubeBackend> order = shuffled();
-        if (wantHq) {
-            List<YoutubeBackend> hq = new ArrayList<YoutubeBackend>();
-            List<YoutubeBackend> rest = new ArrayList<YoutubeBackend>();
-            for (int i = 0; i < order.size(); i++) {
-                YoutubeBackend b = order.get(i);
-                if (b.supportsHqVideo()) hq.add(b);
-                else if (b.supportsVideo360()) rest.add(b);
-            }
-            order = new ArrayList<YoutubeBackend>(hq);
-            order.addAll(rest);
-        }
+        final String q = (quality != null && quality.length() > 0) ? quality : "360";
+        boolean lowTier = "360".equals(q) || "240".equals(q) || "144".equals(q);
+        List<YoutubeBackend> order = streamOrder(lowTier);
         IOException last = null;
         for (int i = 0; i < order.size(); i++) {
             YoutubeBackend b = order.get(i);
-            if (wantHq && !b.supportsHqVideo() && b.supportsVideo360()) {
-                // After HQ exhausted, try 360 backends with quality forced to 360.
-                try {
-                    String url = b.getVideoUrl(videoId, "360");
-                    if (url != null && url.length() > 0
-                            && com.solar.launcher.net.SolarHttp.isUrlReachable(url)) {
-                        return new StreamPick(url, b.getName(), "360");
-                    }
-                } catch (IOException e) {
-                    last = e;
-                }
-                continue;
-            }
-            if (!b.supportsVideo360() && !b.supportsHqVideo()) continue;
             try {
-                String url = b.getVideoUrl(videoId, quality);
-                if (url != null && url.length() > 0
-                        && com.solar.launcher.net.SolarHttp.isUrlReachable(url)) {
-                    return new StreamPick(url, b.getName(), quality);
+                // Invidious ignores quality (always ~360 muxed); YtApi honors quality= param.
+                String ask = lowTier && "YtApiLegacy".equals(b.getName()) ? q : q;
+                String url = b.getVideoUrl(videoId, ask);
+                if (url != null && url.length() > 0) {
+                    android.util.Log.i("SolarYouTube", "stream ok backend=" + b.getName()
+                            + " q=" + q + " url=" + (url.length() > 96 ? url.substring(0, 96) : url));
+                    return new StreamPick(url, b.getName(), q);
                 }
+            } catch (IOException e) {
+                android.util.Log.w("SolarYouTube", "stream fail backend=" + b.getName()
+                        + " q=" + q + " err=" + e.getMessage());
+                last = e;
+            }
+        }
+        // HQ quality failed — notPipe falls through only on HQ list; we also try 360 once.
+        if (!lowTier) {
+            try {
+                return getVideoUrlPick(videoId, "360");
             } catch (IOException e) {
                 last = e;
             }
@@ -146,7 +135,42 @@ public final class InstancePool {
         throw last != null ? last : new IOException("no stream backends");
     }
 
-    /** One resolved stream + backend tag for playback diagnostics. */
+    /**
+     * notPipe: 360 → videoInstances (all); HQ → hqInstances only.
+     * Always put YtApiLegacy first (deterministic progressive MP4 that works on Y1).
+     */
+    private List<YoutubeBackend> streamOrder(boolean lowTier) {
+        List<YoutubeBackend> ytapi = new ArrayList<YoutubeBackend>();
+        List<YoutubeBackend> others = new ArrayList<YoutubeBackend>();
+        synchronized (lock) {
+            for (int i = 0; i < all.size(); i++) {
+                YoutubeBackend b = all.get(i);
+                if (b == null) continue;
+                if ("YtApiLegacy".equals(b.getName())) {
+                    ytapi.add(b);
+                } else if (lowTier) {
+                    // 360 pool: any that supports progressive 360
+                    if (b.supportsVideo360() || b.supportsHqVideo()) others.add(b);
+                } else {
+                    // HQ pool: only progressive-quality backends (YtApi / rich hosts)
+                    if (b.supportsHqVideo() && !"Invidious".equals(b.getName())) {
+                        // Invidious is 360-muxed only in notPipe (Manager never puts it in hqInstances).
+                        others.add(b);
+                    } else if (b.supportsHqVideo() && "Invidious".equals(b.getName())) {
+                        // skip Invidious for 480/720
+                    } else if (b.supportsHqVideo()) {
+                        others.add(b);
+                    }
+                }
+            }
+        }
+        Collections.shuffle(ytapi, RANDOM);
+        Collections.shuffle(others, RANDOM);
+        List<YoutubeBackend> order = new ArrayList<YoutubeBackend>(ytapi);
+        order.addAll(others);
+        return order;
+    }
+
     public static final class StreamPick {
         public final String url;
         public final String backend;
@@ -164,69 +188,37 @@ public final class InstancePool {
         for (YoutubeBackend b : shuffled()) {
             try {
                 YoutubeBackend.AudioStream a = b.resolveAudio(videoId);
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("backend", b.getName());
-                    d.put("host", b.getHost());
-                    d.put("nullStream", a == null);
-                    d.put("emptyUrl", a == null || a.url == null || a.url.length() == 0);
-                    d.put("ext", a != null && a.ext != null ? a.ext : "");
-                    com.solar.launcher.Debug88eea4Log.log(null,
-                            "InstancePool.resolveAudio", "backend attempt", "A", d);
-                } catch (Exception ignored) {}
-                // #endregion
-                if (a != null && a.url != null && a.url.length() > 0
-                        && com.solar.launcher.net.SolarHttp.isUrlReachable(a.url)) return a;
+                if (a != null && a.url != null && a.url.length() > 0) return a;
             } catch (IOException e) {
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("backend", b.getName());
-                    d.put("host", b.getHost());
-                    d.put("err", e.getMessage() != null ? e.getMessage() : "");
-                    com.solar.launcher.Debug88eea4Log.log(null,
-                            "InstancePool.resolveAudio", "backend IOException", "A", d);
-                } catch (Exception ignored) {}
-                // #endregion
                 last = e;
             }
         }
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("last", last != null ? last.getMessage() : "none");
-            com.solar.launcher.Debug88eea4Log.log(null,
-                    "InstancePool.resolveAudio", "all backends failed", "A", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        if (last != null) throw last;
-        throw new IOException("no audio stream");
+        throw last != null ? last : new IOException("no audio backends");
+    }
+
+    private List<YoutubeBackend> shuffled() {
+        synchronized (lock) {
+            List<YoutubeBackend> copy = new ArrayList<YoutubeBackend>(all);
+            Collections.shuffle(copy, RANDOM);
+            return copy;
+        }
+    }
+
+    private interface MetaOp {
+        List<YouTubeVideo> run(YoutubeBackend b) throws IOException;
     }
 
     private List<YouTubeVideo> runMetadata(MetaOp op) throws IOException {
         IOException last = null;
         for (YoutubeBackend b : shuffled()) {
             try {
-                List<YouTubeVideo> r = op.run(b);
-                if (r != null) return r;
+                List<YouTubeVideo> v = op.run(b);
+                if (v != null && !v.isEmpty()) return v;
             } catch (IOException e) {
                 last = e;
             }
         }
-        throw last != null ? last : new IOException("no metadata backends");
-    }
-
-    private List<YoutubeBackend> shuffled() {
-        List<YoutubeBackend> copy;
-        synchronized (lock) {
-            copy = new ArrayList<YoutubeBackend>(all);
-        }
-        Collections.shuffle(copy, RANDOM);
-        return copy;
-    }
-
-    private interface MetaOp {
-        List<YouTubeVideo> run(YoutubeBackend b) throws IOException;
+        if (last != null) throw last;
+        return new ArrayList<YouTubeVideo>();
     }
 }

@@ -106,7 +106,7 @@
       "systemApk": "/system/app/org.rockbox.apk",
       "device": "y2",
       "versionCode": 1,
-      "sha256": "eae386d4652b8f946b12f09bfa874199f7659fc73e491247555ddb06e77cc476"
+      "sha256": "d8bf5a3fe1648910a08cb81d3a737897a306ab5cd667baa65529d5ecd16fad17"
     },
     "systemLib": {
       "asset": "rockbox/librockbox-system.so",
