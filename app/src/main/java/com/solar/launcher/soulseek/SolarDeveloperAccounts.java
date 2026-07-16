@@ -23,7 +23,20 @@ public final class SolarDeveloperAccounts {
 
     public static final String PREF_DEV_SUPPORT_EXPERIMENT = "solar_dev_support_experiment";
 
+    /**
+     * Legacy invisible marker (still accepted when filtering).
+     * New automated wire text uses {@link #AUTO_MSG_PREFIX} at the start so any client
+     * can exclude these lines by header.
+     */
     public static final String DIAG_MARKER = "\u0001SOLAR_DIAG\u0001";
+
+    /**
+     * Human-readable start-of-message tag for all automated Solar → developer PMs.
+     * Conversation UIs hide any message whose body (after trim) starts with this
+     * (case-insensitive), for Solar Development or any other peer.
+     * Example: {@code solar diag - alice@Y1: youtube fail id=…}
+     */
+    public static final String AUTO_MSG_PREFIX = "solar diag - ";
 
     /** Prefix on stored inbound developer PMs — preserves wire dev username in virtual thread. */
     public static final String DEV_FROM_MARKER = "\u0001SOLAR_DEV_FROM\u0001";
@@ -133,21 +146,39 @@ public final class SolarDeveloperAccounts {
         return out;
     }
 
-    /** True for diagnostic command/ack PMs — omitted from the Solar Development conversation UI. */
+    /**
+     * True for automated diagnostic / impact PMs — omitted from conversation views
+     * for Solar Development and any peer when the body starts with {@link #AUTO_MSG_PREFIX}
+     * (or legacy markers / {@code solar_diag} command lines).
+     */
     public static boolean isAutoDiagnosticText(String text) {
         if (text == null || text.isEmpty()) return false;
         if (text.contains(DIAG_MARKER)) return true;
-        String lower = text.toLowerCase(Locale.US);
+        String lower = text.trim().toLowerCase(Locale.US);
+        // Primary: human-readable header at start of message (wire-visible for any client).
+        if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")) return true;
+        // Legacy confirmations / command tokens.
+        if (lower.startsWith("solar_diag:") || lower.startsWith("solar_diag ")) return true;
         return lower.contains("solar_diag");
     }
 
-    /** Developer requested a remote log pull (not a confirmation/ack line). */
+    /** Developer requested a remote log pull (not a confirmation/ack / auto ping line). */
     public static boolean isDiagRemotePullCommand(String text) {
         if (text == null || text.isEmpty()) return false;
         if (text.contains(DIAG_MARKER)) return false;
         String lower = text.toLowerCase(Locale.US).trim();
+        // Auto pings / acks start with the header — never re-trigger a pull.
+        if (lower.startsWith("solar diag -") || lower.startsWith("solar diag-")) return false;
         if (lower.startsWith("solar_diag:")) return false;
         return lower.contains("solar_diag");
+    }
+
+    /** Wrap body with the wire-visible auto-message header (and legacy marker for older clients). */
+    public static String formatAutoMessage(String body) {
+        String b = body != null ? body.trim() : "";
+        if (b.isEmpty()) b = "event";
+        // Readable prefix first so startsWith filters work on the wire text.
+        return AUTO_MSG_PREFIX + b;
     }
 
     /** Soulseek reply after a remote pull; filtered from local conversation history. */
@@ -155,28 +186,28 @@ public final class SolarDeveloperAccounts {
         String body;
         if (ok) {
             body = issueNumber > 0
-                    ? ("solar_diag: sent (issue #" + issueNumber + ")")
-                    : "solar_diag: sent";
+                    ? ("sent (issue #" + issueNumber + ")")
+                    : "sent";
         } else {
-            body = "solar_diag: failed (retry later)";
+            body = "failed (retry later)";
         }
-        return DIAG_MARKER + body;
+        return formatAutoMessage(body);
     }
 
     /**
      * Silent notice to developer accounts on user power-off/restart.
-     * Always includes {@link #DIAG_MARKER} so conversation UI and local history omit it.
+     * Starts with {@link #AUTO_MSG_PREFIX} so conversation UIs omit it.
      */
     public static String formatPoweredOffNotice(String username, boolean restart) {
         String who = username != null ? username.trim() : "";
         if (who.isEmpty()) who = "user";
         String body = restart ? (who + " is restarting") : (who + " has powered off");
-        return DIAG_MARKER + body;
+        return formatAutoMessage(body);
     }
 
     /**
-     * Silent one-line impact ping (Wi‑Fi / media). Hidden from conversation UI via marker.
-     * Format: {@code <marker>user@device: message}
+     * Silent one-line impact ping (Wi‑Fi / media).
+     * Format: {@code solar diag - user@device: message}
      */
     public static String formatImpactPing(String username, String deviceLabel, String oneLine) {
         String who = username != null ? username.trim() : "";
@@ -187,7 +218,7 @@ public final class SolarDeveloperAccounts {
         if (msg.isEmpty()) msg = "event";
         // Allow rich media one-liners (title/artist/id) without multi-line dumps.
         if (msg.length() > 200) msg = msg.substring(0, 199) + "…";
-        return DIAG_MARKER + who + "@" + dev + ": " + msg;
+        return formatAutoMessage(who + "@" + dev + ": " + msg);
     }
 
     /** Stored inbound developer PM with wire sender attribution. */

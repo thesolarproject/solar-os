@@ -98,15 +98,28 @@ public class SolarDeveloperAccountsTest {
     if (!SolarDeveloperAccounts.isAutoDiagnosticText("solar_diag: failed (retry later)")) {
       throw new AssertionError("failure ack");
     }
+    // Wire-visible header at start of message.
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(
+            "solar diag - alice@Y1: youtube fail id=abc")) {
+      throw new AssertionError("prefix header");
+    }
+    if (!SolarDeveloperAccounts.isAutoDiagnosticText(
+            "SOLAR DIAG - wifi disconnecting")) {
+      throw new AssertionError("prefix case-insensitive");
+    }
     String formatted = SolarDeveloperAccounts.formatDiagConfirmation(true, 7);
     if (!SolarDeveloperAccounts.isAutoDiagnosticText(formatted)) {
       throw new AssertionError("formatDiagConfirmation");
     }
-    if (!formatted.contains(SolarDeveloperAccounts.DIAG_MARKER)) {
-      throw new AssertionError("confirmation should carry DIAG_MARKER");
+    if (!formatted.startsWith(SolarDeveloperAccounts.AUTO_MSG_PREFIX)) {
+      throw new AssertionError("confirmation must start with AUTO_MSG_PREFIX: " + formatted);
     }
     if (SolarDeveloperAccounts.isAutoDiagnosticText("Thanks for Solar!")) {
       throw new AssertionError("normal chat must stay visible");
+    }
+    // Mid-sentence mention of a song title must not hide the message.
+    if (SolarDeveloperAccounts.isAutoDiagnosticText("I like the band Solar Band a lot")) {
+      throw new AssertionError("normal chat with band name must stay visible");
     }
     if (!SolarDeveloperAccounts.isDiagRemotePullCommand("please run solar_diag")) {
       throw new AssertionError("pull command");
@@ -117,6 +130,10 @@ public class SolarDeveloperAccountsTest {
     if (SolarDeveloperAccounts.isDiagRemotePullCommand(
             SolarDeveloperAccounts.formatDiagConfirmation(true, 3))) {
       throw new AssertionError("marked confirmation not a pull command");
+    }
+    if (SolarDeveloperAccounts.isDiagRemotePullCommand(
+            "solar diag - alice@A5: deezer fail id=1")) {
+      throw new AssertionError("impact ping not a pull command");
     }
   }
 
@@ -177,24 +194,28 @@ public class SolarDeveloperAccountsTest {
     if (!SolarDeveloperAccounts.isAutoDiagnosticText(ping)) {
       throw new AssertionError("impact ping should hide from conversation");
     }
+    if (!ping.startsWith(SolarDeveloperAccounts.AUTO_MSG_PREFIX)) {
+      throw new AssertionError("must start with header: " + ping);
+    }
     if (!ping.contains("alice@A5:")) throw new AssertionError("ping=" + ping);
     if (!ping.contains("youtube failed")) throw new AssertionError("msg missing");
   }
 
   @Test
   public void mediaInfoFormatIncludesMetadata() {
+    // Unit-test sample strings only — not production hide rules.
     SolarDeveloperImpactPing.MediaInfo info = SolarDeveloperImpactPing.MediaInfo
             .of("deezer")
             .id("123")
-            .title("Night Drive")
-            .artist("Solar Band")
+            .title("Example Title")
+            .artist("Example Artist")
             .album("Demo")
             .reason("cdn 403");
     String line = info.formatLine();
     if (!line.contains("deezer fail")) throw new AssertionError(line);
     if (!line.contains("id=123")) throw new AssertionError(line);
-    if (!line.contains("Night Drive")) throw new AssertionError(line);
-    if (!line.contains("Solar Band")) throw new AssertionError(line);
+    if (!line.contains("Example Title")) throw new AssertionError(line);
+    if (!line.contains("Example Artist")) throw new AssertionError(line);
     if (!line.contains("cdn 403")) throw new AssertionError(line);
   }
 

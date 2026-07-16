@@ -30,8 +30,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   <li><b>MIN_PRIORITY single worker</b> — UI/audio never block; at most one send in flight.</li>
  *   <li><b>Dampening</b> — per-content cooldowns + hourly budget so spam cannot melt battery
  *       or fill SolarDev inboxes.</li>
- *   <li><b>Small payload</b> — one Soulseek PM to primary SolarDev only; DIAG_MARKER hides
- *       from conversation UI; same line mirrors into feature ring for GH bundles.</li>
+ *   <li><b>Small payload</b> — one Soulseek PM to primary SolarDev only; bodies start with
+ *       {@code solar diag - } so any conversation UI can hide them; same line mirrors into
+ *       the feature ring for GH bundles.</li>
  *   <li><b>Scrub first</b> — SolarLog.scrub before wire so tokens/paths stay private.</li>
  * </ul>
  */
