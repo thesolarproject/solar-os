@@ -103,6 +103,9 @@ recover_desync() {
 }
 
 # Push mass_storage,adb through setprop and optional sysfs write when setprop stalls.
+# 2026-07-16 — Keep persist.sys.usb.config on the safe default (adb / mtp,adb).
+# Layman: disk mode is only for this plug session; next connect must not auto-share disks.
+# Tech: MTK often mirrors sys→persist on setprop; pin persist after enabling kernel UMS.
 apply_kernel_ums() {
   setprop sys.usb.config mass_storage,adb
   if ! wait_kernel_ums; then
@@ -111,6 +114,17 @@ apply_kernel_ums() {
     fi
   fi
   wait_kernel_ums
+  # Pin non-mass_storage persist so reboot/replug never auto-exports.
+  MODEL="$(getprop ro.product.model 2>/dev/null)"
+  PERSIST_SAFE="adb"
+  case "$MODEL" in
+    Y2|*Y2*) PERSIST_SAFE="mtp,adb" ;;
+  esac
+  setprop persist.sys.usb.config "$PERSIST_SAFE"
+  if [ -d /data/property ]; then
+    echo -n "$PERSIST_SAFE" > /data/property/persist.sys.usb.config 2>/dev/null
+    chmod 600 /data/property/persist.sys.usb.config 2>/dev/null
+  fi
 }
 
 # Resolve block node for one volume path via mounts, vdc list, or vold nodes.

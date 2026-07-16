@@ -4180,9 +4180,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 2026-07-16 — Drop ready overlay when home menu is painted (Solar is usable).
-     * Layman: as soon as the home list is on screen and setup is done, lift the wait message.
-     * Technical: min display 700ms so the message is readable; not waiting on full library scan.
+     * 2026-07-16 — Drop ready overlay when home menu is painted and first library pass is idle.
+     * Layman: wait message stays until the home list is up and library scan is not blocking.
+     * Technical: min display 700ms; also wait while {@link #libraryScanRunning}.
      */
     private void maybeDismissFirstReadyOverlay() {
         if (!firstReadyOverlayActive) return;
@@ -4198,15 +4198,23 @@ public class MainActivity extends Activity {
                 && homeMenuEntries != null
                 && !homeMenuEntries.isEmpty();
         boolean prepIdle = !FirstSessionReadyGate.shouldShowPrepWizard(this);
-        if (homeUp && prepIdle) {
+        // 2026-07-16 — Keep setup face until library scan finishes so USB cannot race home.
+        boolean libraryIdle = !libraryScanRunning;
+        if (homeUp && prepIdle && libraryIdle) {
             firstReadyOverlayActive = false;
-            releaseBlockingOverlay(OVERLAY_FIRST_READY);
             FirstSessionReadyGate.markUiReadyComplete(this);
+            releaseBlockingOverlay(OVERLAY_FIRST_READY);
+            // Explicit flush — do not rely only on releaseBlockingOverlay owner count.
+            flushDeferredUsbConnectPromptIfNeeded();
             return;
         }
         // Keep messaging fresh while waiting.
         if ((blockingOverlayOwners & OVERLAY_FIRST_READY) != 0) {
-            setLoadingOverlayText(getString(R.string.getting_things_ready));
+            if (libraryScanRunning) {
+                setLoadingOverlayText(getString(R.string.loading_library));
+            } else {
+                setLoadingOverlayText(getString(R.string.getting_things_ready));
+            }
         }
         scheduleFirstReadyCheck(400L);
     }
@@ -20094,6 +20102,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void navigateContextMenuBack(boolean feedback) {
         if (themedContextMenu == null || !themedContextMenu.isShowing()) return;
         if (themedContextMenu.isQueueMoveRibbonAnimating()) return;
+        // 2026-07-16 — USB enable prompt: Back always leaves the sheet (volume/quick-bar layers too).
+        if (usbEnablePromptSession || isUsbEnablePromptTierActive()) {
+            if (feedback) clickFeedback();
+            dismissThemedContextMenu(true);
+            return;
+        }
         if (feedback) clickFeedback();
 
         if (contextMenuInVolumeSlider || themedContextMenu.isMediaSliderStripVisible()) {
@@ -22630,34 +22644,102 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         return themedContextMenu != null && themedContextMenu.isShowing() && isUsbEnablePromptTierActive();
     }
 
-    /** Library scan, album-art cache, flow catalog prep, or any blocking loading overlay. */
+    /**
+     * 2026-07-16 — Block USB enable UI only while setup/library faces are actively covering home.
+     * Layman: no USB Connection sheet over “Getting things ready…” or a mid-scan library.
+     * Tech: first-ready / lib-scan overlay owners; not permanent prep/rockbox flags.
+     */
     private boolean isHeavyWorkBlockingUsbPrompt() {
+        if (firstReadyOverlayActive) return true;
+        if ((blockingOverlayOwners & OVERLAY_FIRST_READY) != 0) return true;
         if (libraryScanRunning) return true;
-        return layoutLoadingOverlay != null
-                && layoutLoadingOverlay.getVisibility() == View.VISIBLE;
+        // Full-screen loading only when it is the first-ready or lib-scan owner (not brief toasts).
+        if (layoutLoadingOverlay != null
+                && layoutLoadingOverlay.getVisibility() == View.VISIBLE
+                && (blockingOverlayOwners & (OVERLAY_FIRST_READY | OVERLAY_LIB_SCAN)) != 0) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 2026-07-16 — Once home list is painted without first-ready face, mark UI ready so USB
+     * receivers that check {@link FirstSessionReadyGate#isHomeReadyForUsbPrompt} can proceed.
+     */
+    private void ensureUiReadyForUsbIfHomeVisible() {
+        if (FirstSessionReadyGate.isUiReadyComplete(this)) return;
+        if (firstReadyOverlayActive) return;
+        if (currentScreenState != STATE_MENU) return;
+        if (layoutMainMenu == null || layoutMainMenu.getVisibility() != View.VISIBLE) return;
+        if (homeMenuEntries == null || homeMenuEntries.isEmpty()) return;
+        FirstSessionReadyGate.markUiReadyComplete(this);
+    }
+
+    /** Package-visible: receiver asks whether enable UI must wait (active setup face only). */
+    boolean shouldDeferUsbConnectPromptNow() {
+        return isHeavyWorkBlockingUsbPrompt();
     }
 
     private void deferUsbConnectPrompt() {
         usbConnectPendingAfterLibraryScan = true;
     }
 
+    /**
+     * Package-visible for {@link UsbStorageOverlayReceiver} while setup/library still running.
+     * Layman: remember the cable so we can ask after home is ready — without locking the session.
+     */
+    void deferUsbConnectPromptForSetup() {
+        if (usbDialogDismissedThisConnection || usbMassStorageLocked) return;
+        if (UsbHostSessionPolicy.hasUserDismissedThisSession(this)) return;
+        deferUsbConnectPrompt();
+    }
+
     /** Show USB enable prompt after library/overlay work finishes (if still connected). */
     private void flushDeferredUsbConnectPromptIfNeeded() {
+        ensureUiReadyForUsbIfHomeVisible();
         if (!usbConnectPendingAfterLibraryScan) return;
         if (isHeavyWorkBlockingUsbPrompt()) return;
         if (usbDialogDismissedThisConnection || usbMassStorageLocked) {
             usbConnectPendingAfterLibraryScan = false;
             return;
         }
+        if (UsbHostSessionPolicy.hasUserDismissedThisSession(this)) {
+            usbConnectPendingAfterLibraryScan = false;
+            return;
+        }
         usbConnectPendingAfterLibraryScan = false;
+        // 2026-07-16 — Deferred during setup: session may still be unevaluated; force one eval.
+        // Was: routeUsbHostInterceptUi early-out when hasPromptEvaluatedThisSession from stale mark.
+        if (UsbHostSessionPolicy.hasPromptEvaluatedThisSession(this)
+                && !usbDialogShownThisConnection
+                && !isUsbEnablePromptShowing()) {
+            // Stale evaluated without paint — clear process-local flags only by re-routing show.
+            usbDialogShownThisConnection = false;
+        }
+        // Prefer direct show when host is still connected (one clear path).
+        if (usbFocusHelper != null && usbFocusHelper.isHostConnected()
+                && !isUsbAutoConnectEnabled()
+                && shouldOfferUsbConnectPrompt()) {
+            showUsbMassStorageDialog();
+            return;
+        }
         routeUsbHostInterceptUi(true);
     }
 
     /** Enable dialog vs mass-storage lock screen — one evaluation per host connect event (2026-07-06). */
     private void routeUsbHostInterceptUi(final boolean fromConnectEvent) {
+        ensureUiReadyForUsbIfHomeVisible();
         // 2026-07-14 — Idle BEFORE any getprop/sysfs snapshot (Y1 GC_FOR_ALLOC while prompt up).
         // Was: usbSnapshot + debug I/O ran on every USB_STATE before early returns.
-        if (usbEnablePromptSession || isUsbEnablePromptShowing()
+        // 2026-07-16 — If session was marked evaluated but UI never painted, allow one more show.
+        if (fromConnectEvent
+                && UsbHostSessionPolicy.hasPromptEvaluatedThisSession(this)
+                && !usbDialogShownThisConnection
+                && !usbDialogDismissedThisConnection
+                && !isUsbEnablePromptShowing()
+                && !UsbHostSessionPolicy.hasUserDismissedThisSession(this)) {
+            // Fall through to ensure path — do not idle-skip.
+        } else if (usbEnablePromptSession || isUsbEnablePromptShowing()
                 || usbDialogShownThisConnection || usbDialogDismissedThisConnection
                 || UsbHostSessionPolicy.hasUserDismissedThisSession(this)
                 || UsbHostSessionPolicy.hasPromptEvaluatedThisSession(this)) {
@@ -22711,7 +22793,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 || !usbFocusHelper.isMassStorageInterceptActive())) {
             return;
         }
+        // 2026-07-16 — Allow connect path when evaluated was set without painting the sheet.
+        boolean staleEvaluatedNoPaint = UsbHostSessionPolicy.hasPromptEvaluatedThisSession(this)
+                && !usbDialogShownThisConnection
+                && !usbDialogDismissedThisConnection
+                && !isUsbEnablePromptShowing();
         if (fromConnectEvent && !UsbHostSessionPolicy.shouldEvaluatePromptThisSession(this)
+                && !staleEvaluatedNoPaint
                 && !isUsbMassStorageActive()) {
             return;
         }
@@ -22973,6 +23061,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
 
         // July-2 monlith: Solar themed context menu owns the enable prompt (not companion).
+        // 2026-07-16 — Do not mark shown/evaluated until showUsbMassStorageDialog paints
+        // (defer path must leave session open for post-setup flush).
         if (fromConnectEvent) {
             if (usbDialogShownThisConnection) {
                 // #region agent log
@@ -22984,8 +23074,6 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 // #endregion
                 return;
             }
-            usbDialogShownThisConnection = true;
-            UsbHostSessionPolicy.markPromptEvaluated(this);
         } else if (!fromConnectEvent && usbDialogShownThisConnection && !isUsbMassStorageActive()) {
             // One offer per connect — focus intercept must not re-open the enable dialog.
             // #region agent log
@@ -23938,6 +24026,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (contextMenuBlockingHint || themedContextMenu.isHintOnlyMode()) return;
         if (finishUsbQueueBlockFromInput()) return;
         if (finishQueueTutorialFromInput()) return;
+        // 2026-07-16 — USB Connection enable sheet: single Back always dismisses (never traps in quick bar).
+        // Layman: Back closes the plug-in prompt so setup/home is never stuck behind a modal you can't leave.
+        // Reversal: remove this branch; multi-layer navigateContextMenuBack again for usb_storage.
+        if (usbEnablePromptSession || isUsbEnablePromptTierActive()) {
+            clickFeedback();
+            dismissThemedContextMenu(true);
+            return;
+        }
         if (contextMenuVolumeOnly) {
             dismissThemedContextMenu();
             return;
@@ -24258,6 +24354,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void showUsbMassStorageDialog() {
+        ensureUiReadyForUsbIfHomeVisible();
         if (!UsbMassStorageExperiment.isEnabled(this)) {
             return;
         }
@@ -24587,10 +24684,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (enable && lock) {
+            // Auto-connect still waits for home/setup — never UMS during first-ready.
+            if (isHeavyWorkBlockingUsbPrompt()) {
+                deferUsbConnectPromptForSetup();
+                return;
+            }
             enableUsbMassStorageAutoConnect();
             return;
         }
         if (enable) {
+            if (isHeavyWorkBlockingUsbPrompt()) {
+                deferUsbConnectPromptForSetup();
+                return;
+            }
             if (isUsbAutoConnectEnabled()) {
                 enableUsbMassStorageAutoConnect();
             } else if (!isUsbEnablePromptShowing() && !isUsbMassStorageUiLocked()) {

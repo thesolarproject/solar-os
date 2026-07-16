@@ -261,7 +261,8 @@ public final class Y1UsbFocusHelper {
                     OverlayTierScheduler.queuePendingUsbPrompt();
                     return;
                 }
-                UsbHostSessionPolicy.markPromptEvaluated(activity.getApplicationContext());
+                // 2026-07-16 — Do not mark evaluated here; routeToSolar / showUsbMassStorageDialog
+                // mark only when the enable sheet actually paints (defer must leave session open).
                 // 2026-07-10 — Sole funnel: Solar MainActivity (never companion overlay race).
                 UsbStorageOverlayReceiver.routeToSolar(
                         activity.getApplicationContext(), true, false, "Y1UsbFocusHelper.fallback");

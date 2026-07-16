@@ -32,12 +32,15 @@ public final class UsbStorageSessionFlags {
 
     /**
      * 2026-07-06 — Settings skip + boot-settle gate for all USB enable prompts.
-     * Layman: honors Skip prompt and waits after reboot-with-cable before asking.
-     * Tech: delegates to {@link UsbHostSessionPolicy#isPromptAllowedAfterBootSettle}.
+     * 2026-07-16 — Also wait until Solar home is ready (no setup / prep face).
+     * Layman: honors Skip prompt; waits after reboot-with-cable; never nags during setup.
+     * Tech: boot settle + {@link FirstSessionReadyGate#isHomeReadyForUsbPrompt}.
      */
     public static boolean shouldOfferUsbConnectPromptAfterBootSettle(Context ctx) {
         if (!shouldOfferUsbConnectPrompt(ctx)) return false;
-        return UsbHostSessionPolicy.isPromptAllowedAfterBootSettle(ctx);
+        if (!UsbHostSessionPolicy.isPromptAllowedAfterBootSettle(ctx)) return false;
+        // 2026-07-16 — Defer enable prompt until home is usable (setup overlay / prep wizard gone).
+        return FirstSessionReadyGate.isHomeReadyForUsbPrompt(ctx);
     }
 
     private static void writeSysprop(String key, String val) {

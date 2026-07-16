@@ -60,6 +60,20 @@ public final class FirstSessionReadyGate {
         return prefs(ctx).getBoolean(KEY_UI_READY, false);
     }
 
+    /**
+     * 2026-07-16 — USB plug-in prompts may run once home has been painted once.
+     * Layman: ask about disk mode after Solar home is up — not over the first-wait face.
+     * Tech: only {@link #isUiReadyComplete} (set when home list is ready). Do <b>not</b> call
+     * {@link #shouldShowGettingReady} here — that stays true for Rockbox marker / silent prep
+     * forever and was blocking all USB Connection prompts after a normal home launch.
+     * MainActivity still defers while first-ready overlay or library scan is active.
+     * Reversal: also require !shouldShowGettingReady (broken forever-block path).
+     */
+    public static boolean isHomeReadyForUsbPrompt(Context ctx) {
+        if (ctx == null) return false;
+        return isUiReadyComplete(ctx);
+    }
+
     /** Call once home menu is painted and first library pass is idle. */
     public static void markUiReadyComplete(Context ctx) {
         if (ctx == null) return;

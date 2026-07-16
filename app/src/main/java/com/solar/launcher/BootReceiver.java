@@ -61,6 +61,8 @@ public class BootReceiver extends BroadcastReceiver {
         UsbHostSessionPolicy.onBootCompleted(context);
         PmInstallPolicy.enforceInternalInstallLocation();
         UsbMassStorageExperiment.syncExperimentSysprop(context);
+        // 2026-07-16 — Clear sticky persist mass_storage so PC never sees disks without consent.
+        UsbMassStorageController.ensureNoStickyAutoUmsOnBoot(context);
         UsbMassStorageController.ensureStockMtpWhenExperimentOff(context);
         UsbStorageSessionFlags.syncUsbSessionSysprops(context);
         // Overlay/rescue immediate — modal paint must stay warm (2026-07-06).

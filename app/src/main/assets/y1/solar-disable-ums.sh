@@ -28,5 +28,13 @@ for lun in \
   fi
 done
 setprop sys.usb.config "$USB_AFTER"
-echo "UMS disabled usb=$USB_AFTER"
+# 2026-07-16 — Never leave mass_storage sticky across reboot/reconnect.
+# Layman: turning disk mode off also forgets “always show as a disk”.
+# Tech: MediaTek UsbDeviceManager copies sys.usb.config → persist.sys.usb.config on enable.
+setprop persist.sys.usb.config "$USB_AFTER"
+if [ -d /data/property ]; then
+  echo -n "$USB_AFTER" > /data/property/persist.sys.usb.config 2>/dev/null
+  chmod 600 /data/property/persist.sys.usb.config 2>/dev/null
+fi
+echo "UMS disabled usb=$USB_AFTER persist=$USB_AFTER"
 exit 0

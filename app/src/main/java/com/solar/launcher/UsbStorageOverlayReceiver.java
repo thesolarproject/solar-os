@@ -104,12 +104,51 @@ public final class UsbStorageOverlayReceiver extends BroadcastReceiver {
         if (UsbHostSessionPolicy.hasUserDismissedThisSession(context)) {
             return;
         }
-        if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)) {
+        if (!UsbStorageSessionFlags.shouldOfferUsbConnectPrompt(context)) {
             return;
         }
-        UsbHostSessionPolicy.markPromptEvaluated(context);
+        if (!UsbHostSessionPolicy.isPromptAllowedAfterBootSettle(context)) {
+            // Boot settle — arm MainActivity to flush later if cable still in.
+            MainActivity settleAlive = MainActivity.peekForOverlay();
+            if (settleAlive != null) {
+                settleAlive.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        settleAlive.deferUsbConnectPromptForSetup();
+                    }
+                });
+            }
+            return;
+        }
+        // 2026-07-16 — During first-wait / library scan only (not permanent prep/rockbox flags).
+        // Layman: wait until home is usable; never mark this plug “done” before the sheet shows.
+        MainActivity alive = MainActivity.peekForOverlay();
+        if (alive != null && alive.shouldDeferUsbConnectPromptNow()) {
+            alive.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    alive.deferUsbConnectPromptForSetup();
+                }
+            });
+            return;
+        }
+        if (!FirstSessionReadyGate.isHomeReadyForUsbPrompt(context)) {
+            if (alive != null) {
+                alive.runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        alive.deferUsbConnectPromptForSetup();
+                    }
+                });
+            } else {
+                // Cold start with cable — hand off evaluate extra; do not mark evaluated yet.
+                launchSolarUsbHandoff(context, false, false);
+            }
+            return;
+        }
 
         if (UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
+            UsbHostSessionPolicy.markPromptEvaluated(context);
             launchSolarUsbHandoff(context, true, true);
             return;
         }
@@ -126,6 +165,8 @@ public final class UsbStorageOverlayReceiver extends BroadcastReceiver {
             }, "UsbUnauthorizedTearDown").start();
         }
 
+        // Mark evaluated only as we paint the enable path (not when deferred).
+        UsbHostSessionPolicy.markPromptEvaluated(context);
         launchSolarUsbHandoff(context, true, false);
     }
 

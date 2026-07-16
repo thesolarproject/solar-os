@@ -192,12 +192,22 @@ public final class UsbMassStorageController {
     /** Disable USB mass storage and return to MTP+adb — always allowed so Y2 can recover stock MTP. */
     public static boolean disable(Context context) {
         if (context == null) return false;
+        // 2026-07-16 — Also clear orphan LUN binds when kernel already left mass_storage mode.
+        // Layman: host must not keep seeing a disk after disk mode is "off".
         if (!isKernelMassStorageMode()) {
+            if (probeLunBackingBound() && RootShell.canRun()) {
+                RootShell.run("for f in /sys/class/android_usb/android0/f_mass_storage/lun/file "
+                        + "/sys/class/android_usb/android0/f_mass_storage/lun0/file "
+                        + "/sys/class/android_usb/android0/f_mass_storage/lun1/file; do "
+                        + "[ -e \"$f\" ] && echo >\"$f\"; done");
+            }
             clearUserSession();
+            clearStickyMassStoragePersist();
             return true;
         }
         boolean ok = runUmsToggle(context, false);
         clearUserSession();
+        clearStickyMassStoragePersist();
         return ok;
     }
 
@@ -211,6 +221,45 @@ public final class UsbMassStorageController {
         if (context == null || !DeviceFeatures.isY2()) return;
         if (!isKernelMassStorageMode() && !probeLunBackingBound()) return;
         disable(context);
+    }
+
+    /**
+     * 2026-07-16 — Boot: never auto-present disks because persist.sys.usb.config stayed mass_storage.
+     * Layman: plugging into a PC after reboot must not share storage until the user turns it on.
+     * Tech: clear sticky persist + disable kernel UMS unless Settings → Auto-Connect is on.
+     * Reversal: remove boot call; rely on manual disable only.
+     */
+    public static void ensureNoStickyAutoUmsOnBoot(Context context) {
+        if (context == null) return;
+        clearUserSession();
+        // Always pin persist off mass_storage so UsbDeviceManager cannot re-apply disk mode on enum.
+        clearStickyMassStoragePersist();
+        if (UsbStorageSessionFlags.isAutoConnectEnabled(context)) {
+            // Auto-connect may re-enable after home is ready — leave kernel alone here.
+            return;
+        }
+        if (isKernelMassStorageMode() || probeLunBackingBound()) {
+            disable(context);
+            clearStickyMassStoragePersist();
+        }
+    }
+
+    /**
+     * 2026-07-16 — Drop mass_storage from persist.sys.usb.config (and property file).
+     * Layman: forget “always show as a USB disk” so the next cable connect is charge/adb only.
+     */
+    public static void clearStickyMassStoragePersist() {
+        String safe = DeviceFeatures.isY2() ? "mtp,adb" : "adb";
+        String persist = readSysUsbConfigProp("persist.sys.usb.config");
+        if (persist != null && persist.contains("mass_storage")) {
+            writeSysprop("persist.sys.usb.config", safe);
+            if (RootShell.canRun()) {
+                RootShell.run("setprop persist.sys.usb.config " + safe
+                        + "; if [ -d /data/property ]; then echo -n " + safe
+                        + " > /data/property/persist.sys.usb.config; chmod 600 "
+                        + "/data/property/persist.sys.usb.config; fi");
+            }
+        }
     }
 
     /**

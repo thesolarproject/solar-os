@@ -437,6 +437,18 @@ public class UmsEnabler {
         if (p.waitFor() != 0) {
             throw new RuntimeException("setprop sys.usb.config " + config + " failed");
         }
+        // 2026-07-16 — Never leave mass_storage in persist (auto disk on next plug/boot).
+        // Layman: temporary disk mode for this session only.
+        if (config != null && config.contains("mass_storage")) {
+            String safe = defaultUsbConfig();
+            Process p2 = Runtime.getRuntime().exec(
+                    new String[]{"setprop", "persist.sys.usb.config", safe});
+            p2.waitFor();
+        } else if (config != null) {
+            Process p2 = Runtime.getRuntime().exec(
+                    new String[]{"setprop", "persist.sys.usb.config", config});
+            p2.waitFor();
+        }
     }
 
     /** True when any mass-storage LUN sysfs node lists a backing block device path. */

@@ -62,7 +62,17 @@ public class SolarLaunchActivity extends Activity {
         } catch (Exception ignored) {}
         // #endregion
         // 2026-07-14 — Resolve MainActivity off main; start when Class.forName returns.
+        // 2026-07-16 — Hard timeout so a stuck preload never leaves a blank forever.
         final Intent extras = getIntent();
+        mainHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (!handedOff && !isFinishing()) {
+                    Log.e(TAG, "preload timeout — forcing handOff");
+                    handOff(extras, -1L, null);
+                }
+            }
+        }, 8_000L);
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -143,13 +153,13 @@ public class SolarLaunchActivity extends Activity {
         } catch (Exception ignored) {}
         // #endregion
         if (fail != null) {
-            Log.e(TAG, "preload failed", fail);
-            handedOff = false;
-            return;
+            // 2026-07-16 — Still open MainActivity; a black splash forever is worse than a retry.
+            Log.e(TAG, "preload failed — continuing to MainActivity", fail);
         }
         try {
             // 2026-07-16 — Visible self-heal / first-boot ladder (was silent → blank screen).
-            if (FirstSessionReadyGate.shouldShowPrepWizard(this)) {
+            // Skip prep wizard when preload already failed — MainActivity is the recovery surface.
+            if (fail == null && FirstSessionReadyGate.shouldShowPrepWizard(this)) {
                 Intent prep = new Intent(this, PlatformPrepWizardActivity.class);
                 prep.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 prep.putExtra(PlatformPrepWizardActivity.EXTRA_FIRST_BOOT, true);
