@@ -824,7 +824,7 @@ public final class SolarDiagnosticReporter {
     private static void addLogcatSnapshot(List<LogSource> out, int lines) {
         try {
             Process p = Runtime.getRuntime().exec(new String[] {
-                    "logcat", "-d", "-t", String.valueOf(lines > 0 ? lines : LOGCAT_LINES)
+                    "logcat", "-d", "-t", String.valueOf(lines > 0 ? lines : LOGCAT_LINES_FULL)
             });
             BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
             StringBuilder sb = new StringBuilder();
