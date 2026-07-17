@@ -36,7 +36,29 @@ public final class UsbMassStorageController {
     private static volatile boolean sUserSessionActive = false;
     private static volatile long sEnableArmedAtElapsedMs = 0L;
 
+    /**
+     * 2026-07-17 — TTL for kernel/LUN probes. Hot paths (changeScreen / BACK) used to hit
+     * sysfs every call after UMS unplug while the volume remounted → jank for new users.
+     * Invalidate on enable/disable/teardown so UI still sees a fresh state after toggle.
+     */
+    private static final long UMS_PROBE_TTL_MS = 750L;
+    private static volatile long sProbeCacheAtMs = 0L;
+    private static volatile boolean sCachedKernelUms = false;
+    private static volatile boolean sCachedLunBound = false;
+    private static volatile boolean sCachedKernelValid = false;
+    private static volatile boolean sCachedLunValid = false;
+    /** Coalesce concurrent confirmed-unplug teardowns (FocusHelper + WakeReceiver). */
+    private static final java.util.concurrent.atomic.AtomicBoolean sTeardownInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private UsbMassStorageController() {}
+
+    /** Drop probe TTL — call after enable/disable/session clear. */
+    public static void invalidateProbeCache() {
+        sProbeCacheAtMs = 0L;
+        sCachedKernelValid = false;
+        sCachedLunValid = false;
+    }
 
     /** Enable USB mass storage (verified LUN bind) as root — Y2 gated on experiment (2026-07-05). */
     public static boolean enable(Context context) {
@@ -117,6 +139,7 @@ public final class UsbMassStorageController {
         sUserSessionActive = true;
         sEnableArmedAtElapsedMs = android.os.SystemClock.elapsedRealtime();
         writeSysprop(SYSPROP_USER_SESSION, "1");
+        invalidateProbeCache();
     }
 
     /** Drop user UMS session — Turn Off, sustained unplug, or failed enable. */
@@ -124,6 +147,7 @@ public final class UsbMassStorageController {
         sUserSessionActive = false;
         sEnableArmedAtElapsedMs = 0L;
         writeSysprop(SYSPROP_USER_SESSION, "0");
+        invalidateProbeCache();
     }
 
     /**
@@ -145,17 +169,50 @@ public final class UsbMassStorageController {
 
     /** Grace after arm/enable — disconnects inside this window are USB re-enum, not unplug. */
     public static final long DISCONNECT_REENUM_GRACE_MS = 4000L;
+    /**
+     * 2026-07-16 — How long {@code connected=false} must stick before we treat cable as unplugged.
+     * Layman: brief USB blips while entering disk mode must not turn disk mode off or clear the eject screen.
+     * Was: 2s — Y1 mass_storage re-enum often stays disconnected longer; teardown cleared the eject UI
+     * and ran disable before the host finished enumerating the disk.
+     * Reversal: 2000L if real unplug feels sluggish on a future ROM with faster re-enum.
+     */
+    public static final long DISCONNECT_CONFIRM_MS = 10000L;
 
     /**
-     * True when a disconnect should skip {@code disableIfExported} (re-enum during enable).
-     * Layman: flipping into disk mode briefly looks like unplug — do not turn disk mode off.
+     * True when a disconnect should skip {@code disableIfExported} (re-enum / whole armed session).
+     * 2026-07-16 — Was: only 4s after arm. That let mid-session re-enums tear UMS down and unlock UI.
+     * Layman: once the user turns on storage, keep disks + eject screen until a real cable unplug.
+     * Reversal: restore age &lt; DISCONNECT_REENUM_GRACE_MS check if host eject must free LUNs early.
      */
     public static boolean shouldIgnoreDisconnectDisable() {
-        if (!isUserSessionActive()) return false;
-        long armed = sEnableArmedAtElapsedMs;
-        if (armed <= 0L) return false;
-        long age = android.os.SystemClock.elapsedRealtime() - armed;
-        return age < DISCONNECT_REENUM_GRACE_MS;
+        return isUserSessionActive();
+    }
+
+    /**
+     * 2026-07-16 — True while Turn on / auto-connect owns the USB cable session.
+     * Layman: do not clear the blocking eject screen on a one-frame "unplug" during re-enum.
+     */
+    public static boolean shouldDeferDisconnectTeardown() {
+        return isUserSessionActive();
+    }
+
+    /**
+     * 2026-07-16 — Confirmed cable unplug: drop session then tear down kernel UMS.
+     * Layman: only after the cable has been out for good — free the PC disk and leave eject screen.
+     */
+    public static boolean teardownAfterConfirmedUnplug(Context context) {
+        // FocusHelper + manifest WakeReceiver both confirm unplug — one disable script is enough.
+        if (!sTeardownInFlight.compareAndSet(false, true)) {
+            return true;
+        }
+        try {
+            clearUserSession();
+            if (context == null) return false;
+            return disableIfExported(context, true);
+        } finally {
+            sTeardownInFlight.set(false);
+            invalidateProbeCache();
+        }
     }
 
     /** User tapped Turn on / overlay confirm, or auto-connect pref is explicitly on. */
@@ -195,8 +252,9 @@ public final class UsbMassStorageController {
         // 2026-07-16 — Also clear orphan LUN binds when kernel already left mass_storage mode.
         // Layman: host must not keep seeing a disk after disk mode is "off".
         if (!isKernelMassStorageMode()) {
-            if (probeLunBackingBound() && RootShell.canRun()) {
-                RootShell.run("for f in /sys/class/android_usb/android0/f_mass_storage/lun/file "
+            if (probeLunBackingBoundCached()) {
+                // Async LUN clear — caller may be main thread after a race; never block on su.
+                RootShell.runAsync("for f in /sys/class/android_usb/android0/f_mass_storage/lun/file "
                         + "/sys/class/android_usb/android0/f_mass_storage/lun0/file "
                         + "/sys/class/android_usb/android0/f_mass_storage/lun1/file; do "
                         + "[ -e \"$f\" ] && echo >\"$f\"; done");
@@ -247,18 +305,20 @@ public final class UsbMassStorageController {
     /**
      * 2026-07-16 — Drop mass_storage from persist.sys.usb.config (and property file).
      * Layman: forget “always show as a USB disk” so the next cable connect is charge/adb only.
+     * Call from boot / disable only — never mid-enable (persist must stay mass_storage while exported).
      */
     public static void clearStickyMassStoragePersist() {
+        // Do not clear while user has armed disk mode — re-enum would snap back to adb.
+        if (isUserSessionActive()) return;
         String safe = DeviceFeatures.isY2() ? "mtp,adb" : "adb";
         String persist = readSysUsbConfigProp("persist.sys.usb.config");
         if (persist != null && persist.contains("mass_storage")) {
             writeSysprop("persist.sys.usb.config", safe);
-            if (RootShell.canRun()) {
-                RootShell.run("setprop persist.sys.usb.config " + safe
-                        + "; if [ -d /data/property ]; then echo -n " + safe
-                        + " > /data/property/persist.sys.usb.config; chmod 600 "
-                        + "/data/property/persist.sys.usb.config; fi");
-            }
+            // Async only — never block UI/unplug path on su + property file write.
+            RootShell.runAsync("setprop persist.sys.usb.config " + safe
+                    + "; if [ -d /data/property ]; then echo -n " + safe
+                    + " > /data/property/persist.sys.usb.config; chmod 600 "
+                    + "/data/property/persist.sys.usb.config; fi");
         }
     }
 
@@ -266,11 +326,23 @@ public final class UsbMassStorageController {
      * Cable unplug teardown — drop kernel UMS when LUN is still bound (2026-07-05).
      * Layman: unplugging the cable should turn off disk mode so the next plug asks again.
      * Tech: idempotent no-op when sysfs LUN nodes are already empty.
+     * 2026-07-16 — No-op while user session armed (re-enum blips); use
+     * {@link #teardownAfterConfirmedUnplug} or {@link #disableIfExported(Context, boolean)} force.
      * Reversal: remove callers and rely on stock UsbDeviceManager disconnect if regressions appear.
      */
     public static boolean disableIfExported(Context context) {
+        return disableIfExported(context, false);
+    }
+
+    /**
+     * @param force when true, ignore armed user session (confirmed unplug / stale recovery only).
+     */
+    public static boolean disableIfExported(Context context, boolean force) {
         if (context == null) return false;
-        if (!isKernelMassStorageMode()) return true;
+        if (!force && shouldIgnoreDisconnectDisable()) {
+            return false;
+        }
+        if (!isKernelMassStorageMode() && !probeLunBackingBound()) return true;
         return disable(context);
     }
 
@@ -282,7 +354,7 @@ public final class UsbMassStorageController {
      */
     public static boolean isMassStorageExported() {
         if (!isKernelMassStorageMode()) return false;
-        return probeLunBackingBound();
+        return probeLunBackingBoundCached();
     }
 
     /** Test hook — kernel USB mode from config + functions strings without sysfs. */
@@ -337,6 +409,7 @@ public final class UsbMassStorageController {
         if (cmd.length() == 0) return false;
         logUmsAttempt(enable, script);
         boolean rootOk = RootShell.run(cmd);
+        invalidateProbeCache();
         boolean result;
         if (!enable) {
             result = rootOk && !isKernelMassStorageMode();
@@ -441,9 +514,38 @@ public final class UsbMassStorageController {
 
     /** True when {@code sys.usb.config} or kernel functions include mass_storage (2026-07-05). */
     static boolean isKernelMassStorageMode() {
+        long now = probeNowMs();
+        if (sCachedKernelValid && (now - sProbeCacheAtMs) < UMS_PROBE_TTL_MS) {
+            return sCachedKernelUms;
+        }
+        boolean ums = probeKernelMassStorageModeLive();
+        sCachedKernelUms = ums;
+        sCachedKernelValid = true;
+        sProbeCacheAtMs = now;
+        return ums;
+    }
+
+    private static boolean probeKernelMassStorageModeLive() {
         String config = readSysUsbConfig();
         if (config.contains("mass_storage")) return true;
         return readSysfsFirstLine("/sys/class/android_usb/android0/functions").contains("mass_storage");
+    }
+
+    private static boolean probeLunBackingBoundCached() {
+        long now = probeNowMs();
+        if (sCachedLunValid && (now - sProbeCacheAtMs) < UMS_PROBE_TTL_MS) {
+            return sCachedLunBound;
+        }
+        boolean bound = probeLunBackingBound();
+        sCachedLunBound = bound;
+        sCachedLunValid = true;
+        sProbeCacheAtMs = now;
+        return bound;
+    }
+
+    /** Wall clock for TTL — works on device and host unit tests (no SystemClock). */
+    private static long probeNowMs() {
+        return System.currentTimeMillis();
     }
 
     /** Read {@code sys.usb.config} via SystemProperties (no getprop fork). */
@@ -469,7 +571,10 @@ public final class UsbMassStorageController {
             sp.getMethod("set", String.class, String.class).invoke(null, key, val);
             return;
         } catch (Throwable ignored) {}
-        RootShell.runAsync("setprop " + key + " " + val);
+        try {
+            // Host unit tests have no Looper for RootShellAsync — never throw into callers.
+            RootShell.runAsync("setprop " + key + " " + val);
+        } catch (Throwable ignored) {}
     }
 
     private static String readSysfsFirstLine(String path) {

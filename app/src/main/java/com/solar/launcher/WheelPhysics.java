@@ -1,39 +1,85 @@
 package com.solar.launcher;
 
-/** Allocation-free flywheel model for the Y1 rotary wheel. */
+/**
+ * Allocation-free flywheel model for the Y1/Y2 rotary wheel.
+ *
+ * <p>Accelerate on rapid notches; hard-reset after a short idle (finger parked / let go).
+ * Reverse direction kills momentum. Never continues emitting steps without a new KEY notch —
+ * residual “coast after release” is a bug (coalescer backlog), not this model’s job.
+ * Used by list coalescer + home/settings focus accel.
+ */
 public final class WheelPhysics {
-    public static final long RESET_NANOS = 400_000_000L;
-    public static final float SECTION_THRESHOLD = 5f;
+    /**
+     * Gap after last notch that zeros momentum (finger parked / let go).
+     * ~150 ms — shorter than a slow deliberate notch so late-delivered events do not
+     * inherit flywheel from a finished spin.
+     */
+    public static final long RESET_NANOS = 150_000_000L;
+    /**
+     * Velocity at which section/letter jump mode engages.
+     * Must sit below steady-state spin (impulse / (1 − decay@~40ms)) so rapid dial
+     * actually enters letter-jump on large libraries instead of plateauing forever.
+     */
+    public static final float SECTION_THRESHOLD = 3.35f;
+    /** Max rows per KEY notch before section mode (keep modest to limit backlog). */
     public static final int MAX_ROW_STEPS = 4;
+    /** Impulse added each notch (higher = snappier ramp). */
+    public static final float NOTCH_IMPULSE = 1.18f;
 
     private static final float[] DECAY = {
-            1.00000000f, 0.98202296f, 0.96436909f, 0.94703259f, 0.93000775f, 0.91328897f, 0.89687073f, 0.88074765f,
-            0.86491442f, 0.84936582f, 0.83409673f, 0.81910214f, 0.80437711f, 0.78991679f, 0.77571643f, 0.76177134f,
-            0.74807695f, 0.73462874f, 0.72142229f, 0.70845325f, 0.69571736f, 0.68321042f, 0.67092832f, 0.65886702f,
-            0.64702254f, 0.63539099f, 0.62396854f, 0.61275143f, 0.60173598f, 0.59091854f, 0.58029558f, 0.56986358f,
-            0.55961912f, 0.54955883f, 0.53967939f, 0.52997755f, 0.52045012f, 0.51109397f, 0.50190601f, 0.49288323f,
-            0.48402265f, 0.47532135f, 0.46677648f, 0.45838522f, 0.45014481f, 0.44205254f, 0.43410575f, 0.42630181f,
-            0.41863817f, 0.41111229f, 0.40372171f, 0.39646399f, 0.38933674f, 0.38233762f, 0.37546432f, 0.36871458f,
-            0.36208618f, 0.35557695f, 0.34918473f, 0.34290742f, 0.33674296f, 0.33068932f, 0.32474450f, 0.31890656f
+            1.00000000f, 0.978f, 0.956f, 0.935f, 0.914f, 0.894f, 0.874f, 0.855f,
+            0.836f, 0.818f, 0.800f, 0.782f, 0.765f, 0.748f, 0.732f, 0.716f,
+            0.700f, 0.685f, 0.670f, 0.655f, 0.641f, 0.627f, 0.613f, 0.600f,
+            0.587f, 0.574f, 0.561f, 0.549f, 0.537f, 0.525f, 0.514f, 0.503f,
+            0.492f, 0.481f, 0.471f, 0.460f, 0.450f, 0.440f, 0.431f, 0.421f,
+            0.412f, 0.403f, 0.394f, 0.386f, 0.377f, 0.369f, 0.361f, 0.353f,
+            0.345f, 0.338f, 0.330f, 0.323f, 0.316f, 0.309f, 0.302f, 0.296f,
+            0.289f, 0.283f, 0.277f, 0.271f, 0.265f, 0.259f, 0.254f, 0.248f
     };
 
     private float velocity;
     private long lastNanos;
     private int lastDirection;
+    /**
+     * Optional mic scratch boost (≥1). Direction still comes only from {@code direction}.
+     * Set via {@link #setMicBoost(float)} from {@link MicScrollBoost}.
+     */
+    private float micBoost = 1f;
+
+    /** @param boost 1 = no mic help; up to ~1.5 for firm scrape while KEY is live */
+    public void setMicBoost(float boost) {
+        if (boost < 1f) boost = 1f;
+        if (boost > 1.6f) boost = 1.6f;
+        micBoost = boost;
+    }
+
+    public float micBoost() {
+        return micBoost;
+    }
 
     public Result tick(long nowNanos, int direction, Result out) {
         if (out == null) out = new Result();
         long elapsed = lastNanos == 0L ? RESET_NANOS : Math.max(0L, nowNanos - lastNanos);
         if (direction == 0) {
+            // Idle sample: decay stored momentum without emitting steps
+            if (elapsed >= RESET_NANOS) {
+                velocity = 0f;
+                lastDirection = 0;
+            } else if (velocity > 0f) {
+                velocity *= decay(elapsed);
+                if (velocity < 0.08f) velocity = 0f;
+            }
             out.set(0, false, velocity);
             return out;
         }
-        if (elapsed >= RESET_NANOS || lastDirection != 0 && direction != lastDirection) {
+        // Hard stop residual when finger reverses or paused
+        if (elapsed >= RESET_NANOS || (lastDirection != 0 && direction != lastDirection)) {
             velocity = 0f;
         } else {
             velocity *= decay(elapsed);
         }
-        velocity += 1f;
+        // KEY owns direction; mic only multiplies impulse
+        velocity += NOTCH_IMPULSE * micBoost;
         lastNanos = nowNanos;
         lastDirection = direction;
         boolean section = velocity >= SECTION_THRESHOLD;
@@ -42,10 +88,26 @@ public final class WheelPhysics {
         return out;
     }
 
+    /**
+     * Signed multi-step for short menus (home/settings): section → max jump, else 1..MAX.
+     */
+    public int signedMenuSteps(long nowNanos, int direction, Result scratch) {
+        if (direction == 0) return 0;
+        tick(nowNanos, direction, scratch);
+        if (scratch.sectionJump) {
+            return direction * MAX_ROW_STEPS;
+        }
+        return direction * Math.max(1, scratch.rowSteps);
+    }
+
     public void reset() {
         velocity = 0f;
         lastNanos = 0L;
         lastDirection = 0;
+    }
+
+    public float velocity() {
+        return velocity;
     }
 
     static float decay(long elapsedNanos) {

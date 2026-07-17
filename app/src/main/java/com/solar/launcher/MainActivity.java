@@ -1184,6 +1184,8 @@ public class MainActivity extends Activity {
     private boolean usbDialogDismissedThisConnection = false;
     /** True from {@link #showUsbMassStorageDialog} until dismiss or enable — survives tier-stack pops. */
     private boolean usbEnablePromptSession = false;
+    /** USB Back was consumed on KEY_DOWN — swallow KEY_UP so home does not get a second Back. */
+    private boolean usbPromptBackHandledOnDown = false;
     private long usbDisconnectAtMs = 0L;
     /** Screen to restore after USB mass-storage lock ends (cable unplug). */
     private int usbReturnScreen = STATE_MENU;
@@ -1267,6 +1269,12 @@ public class MainActivity extends Activity {
     // PR #23 — allocation-free wheel flywheel + section index (2026-07-11).
     private final WheelPhysics wheelPhysics = new WheelPhysics();
     private final WheelPhysics.Result wheelResult = new WheelPhysics.Result();
+    /**
+     * 2026-07-17 — Mic multiplies scroll impulse only; KEY always owns CW/CCW.
+     * Probe arms on notch and auto-stops after brief idle (no continuous recording).
+     */
+    private final MicScrollBoost micScrollBoost = new MicScrollBoost();
+    private MicScratchSense micScratchSense;
     private WheelSectionIndex wheelSectionIndex = WheelSectionIndex.EMPTY;
     private android.widget.ListAdapter wheelIndexedAdapter;
     private int wheelIndexGeneration;
@@ -2462,9 +2470,15 @@ public class MainActivity extends Activity {
                 isMediaScanning = false;
 
             } else if (Intent.ACTION_MEDIA_MOUNTED.equals(action)) {
-                reloadThemeAfterStorageReady();
-                // ponytail: remount alone doesn't rescan — only ingest paths not yet in SQLite.
-                refreshLibraryAfterStorageMount();
+                // 2026-07-17 — UMS disable remounts volumes; full theme+library work right after
+                // unplug froze the UI for new users. Defer when we just left disk mode.
+                if (shouldDeferPostUmsStorageWork()) {
+                    scheduleDeferredPostUmsStorageMount();
+                } else {
+                    reloadThemeAfterStorageReady();
+                    // ponytail: remount alone doesn't rescan — only ingest paths not yet in SQLite.
+                    refreshLibraryAfterStorageMount();
+                }
             }
         }
     };
@@ -2473,14 +2487,19 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
+                // 2026-07-17 — MicroSD mount: async 1:1 mirror, then load from internal store.
+                ThemeManager.ensureThemesRootReady(MainActivity.this);
+                ThemeManager.scheduleThemeLibrarySync(MainActivity.this, true);
                 ThemeManager.ensureBundledDefault(MainActivity.this);
                 ActiveThemeEngine.loadThemes(MainActivity.this);
                 if (!ActiveThemeEngine.isJjMode()) {
                     String savedPath = prefs != null ? prefs.getString("app_theme_path", null) : null;
-                    if (savedPath != null) {
-                        ThemeManager.setThemeByFolderPath(savedPath);
+                    String savedFolder = prefs != null ? prefs.getString("app_theme_folder", null) : null;
+                    if (savedPath != null || savedFolder != null) {
+                        ThemeManager.restoreSavedThemeFromPrefs(MainActivity.this);
                     }
                     ThemeManager.ensureActiveThemeOrFallback(MainActivity.this);
+                    ThemeManager.cacheActiveTheme(MainActivity.this);
                 }
                 runOnUiThreadSafe(new Runnable() {
                     @Override
@@ -2981,7 +3000,9 @@ public class MainActivity extends Activity {
                     }
                     routeUsbHostInterceptUi(true);
                 } else {
-                    android.util.Log.d("UsbFocus", "MainActivity: disconnected");
+                    // 2026-07-16 — Only fires after Y1UsbFocusHelper confirms unplug (debounce).
+                    // Layman: leave eject screen only when the cable is actually out.
+                    android.util.Log.d("UsbFocus", "MainActivity: disconnected (confirmed)");
                     usbDisconnectAtMs = System.currentTimeMillis();
                     usbDialogShownThisConnection = false;
                     usbDialogDismissedThisConnection = false;
@@ -2992,6 +3013,7 @@ public class MainActivity extends Activity {
                     lastUmsProbeMs = 0L;
                     settingsBrowseFullWidth = false;
                     ThemeManager.setBlockSdcardThemeAssets(false);
+                    UsbMassStorageController.clearUserSession();
                     int dest = usbReturnScreen;
                     usbReturnScreen = STATE_MENU;
                     if (usbFocusHelper != null) {
@@ -3000,8 +3022,8 @@ public class MainActivity extends Activity {
                     if (prefs != null) {
                         prefs.edit().remove("usb_manual_disable").apply();
                     }
-                    if ("usb_storage".equals(contextMenuTierStack.peekLast())) {
-                        dismissThemedContextMenu();
+                    if (themedContextMenu != null && themedContextMenu.isShowing()) {
+                        dismissThemedContextMenu(false);
                     }
                     if (currentScreenState == STATE_USB_STORAGE) {
                         applyScreenChange(dest);
@@ -4101,6 +4123,156 @@ public class MainActivity extends Activity {
         scheduleAdbFlowCarouselIfRequested();
         // 2026-07-16 — Exhaustive real-world matrix (library / search / playlists / screens).
         scheduleAdbRealworldMatrixIfRequested(getIntent());
+        // 2026-07-17 — Real home wheel focus walk (onKeyDown path + logcat).
+        scheduleAdbHomeWheelIfRequested(getIntent());
+    }
+
+    /**
+     * 2026-07-17 — Device lab: walk home menu via the real wheel KEY path.
+     * adb: am start -n com.solar.launcher/.MainActivity --ez solar_adb_home_wheel true
+     * or touch files/adb_home_wheel.flag
+     * Logcat tag SolarAdbTest: homeFocus lines + PASS/FAIL home_wheel.
+     */
+    private void scheduleAdbHomeWheelIfRequested(Intent intent) {
+        boolean fromIntent = intent != null
+                && intent.getBooleanExtra("solar_adb_home_wheel", false);
+        File flag = new File(getFilesDir(), "adb_home_wheel.flag");
+        boolean fromFlag = flag.isFile();
+        if (!fromIntent && !fromFlag) return;
+        if (intent != null) intent.removeExtra("solar_adb_home_wheel");
+        if (fromFlag) {
+            //noinspection ResultOfMethodCallIgnored
+            flag.delete();
+        }
+        SolarAdbTest.pass("home_wheel_scheduled");
+        new Handler().postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                runAdbHomeWheelFocusTest();
+            }
+        }, 1200);
+    }
+
+    /**
+     * Simulate real-world rapid wheel on home: DPAD_DOWN/UP through onKeyDown,
+     * assert focus index advances and labels stay coherent.
+     */
+    private void runAdbHomeWheelFocusTest() {
+        final long t0 = android.os.SystemClock.elapsedRealtime();
+        try {
+            changeScreen(STATE_MENU);
+            if (containerHomeMenuItems == null || containerHomeMenuItems.getChildCount() == 0) {
+                SolarAdbTest.fail("home_wheel empty_menu");
+                return;
+            }
+            focusedHomeMenuIndex = 0;
+            scrollHomeMenuToIndex(0);
+            int total = containerHomeMenuItems.getChildCount();
+            StringBuilder order = new StringBuilder("home_order n=").append(total);
+            for (int i = 0; i < homeMenuEntries.size(); i++) {
+                order.append(' ').append(i).append('=').append(homeMenuEntries.get(i).id);
+            }
+            SolarAdbTest.step(0, "home_order", order.toString());
+            logAdbHomeFocus("start");
+
+            // Single-notch CW walk to bottom (or cap 20)
+            int stepsDown = Math.min(total - 1, 20);
+            int prev = focusedHomeMenuIndex;
+            for (int s = 0; s < stepsDown; s++) {
+                injectWheelKeyDown(KeyEvent.KEYCODE_DPAD_DOWN);
+                logAdbHomeFocus("down_" + s);
+                if (focusedHomeMenuIndex <= prev && !isInfiniteScroll) {
+                    // At edge or stuck
+                    if (focusedHomeMenuIndex == total - 1) break;
+                    SolarAdbTest.fail("home_wheel stuck_down from=" + prev
+                            + " still=" + focusedHomeMenuIndex + " step=" + s);
+                    return;
+                }
+                prev = focusedHomeMenuIndex;
+            }
+            int afterDown = focusedHomeMenuIndex;
+            if (afterDown <= 0 && stepsDown > 0) {
+                SolarAdbTest.fail("home_wheel no_progress_down end=" + afterDown);
+                return;
+            }
+
+            // Burst multi-notch feel: several rapid downs then ups
+            long burstStart = android.os.SystemClock.elapsedRealtime();
+            for (int s = 0; s < 8; s++) {
+                injectWheelKeyDown(KeyEvent.KEYCODE_DPAD_DOWN);
+            }
+            for (int s = 0; s < 12; s++) {
+                injectWheelKeyDown(KeyEvent.KEYCODE_DPAD_UP);
+            }
+            long burstMs = android.os.SystemClock.elapsedRealtime() - burstStart;
+            SolarAdbTest.timing("home_wheel_burst_20", burstMs);
+            logAdbHomeFocus("after_burst");
+
+            // Walk back toward top
+            prev = focusedHomeMenuIndex;
+            for (int s = 0; s < stepsDown + 4; s++) {
+                if (focusedHomeMenuIndex <= 0) break;
+                injectWheelKeyDown(KeyEvent.KEYCODE_DPAD_UP);
+                logAdbHomeFocus("up_" + s);
+                if (focusedHomeMenuIndex >= prev && focusedHomeMenuIndex > 0) {
+                    SolarAdbTest.fail("home_wheel stuck_up from=" + prev
+                            + " still=" + focusedHomeMenuIndex);
+                    return;
+                }
+                prev = focusedHomeMenuIndex;
+            }
+
+            long totalMs = android.os.SystemClock.elapsedRealtime() - t0;
+            SolarAdbTest.timing("home_wheel_total", totalMs);
+            SolarAdbTest.pass("home_wheel endFocus=" + focusedHomeMenuIndex
+                    + " rows=" + total + " afterDown=" + afterDown + " ms=" + totalMs);
+        } catch (Throwable t) {
+            SolarAdbTest.fail("home_wheel " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+    }
+
+    /** Inject wheel KEY_DOWN through the same path as hardware (onKeyDown). */
+    private void injectWheelKeyDown(int keyCode) {
+        resetInactivityTimer();
+        long now = android.os.SystemClock.uptimeMillis();
+        // Unique event times so stale-event gate never collapses notches.
+        KeyEvent down = new KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0);
+        // Must go through dispatchKeyEvent (home intercept lives there before super).
+        dispatchKeyEvent(down);
+        // Drain coalesced home scroll so the next notch sees updated focus index.
+        if (containerHomeMenuItems != null) {
+            containerHomeMenuItems.removeCallbacks(homeScrollApplyRunnable);
+            if (pendingHomeScrollIndex >= 0) {
+                applyHomeMenuScrollToIndexNow(pendingHomeScrollIndex);
+                pendingHomeScrollIndex = -1;
+            }
+        }
+        // Tiny yield so flywheel elapsed nanos are non-zero between synthetic notches.
+        try {
+            Thread.sleep(2L);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void logAdbHomeFocus(String tag) {
+        String id = "";
+        String label = "";
+        if (focusedHomeMenuIndex >= 0 && focusedHomeMenuIndex < homeMenuEntries.size()) {
+            id = homeMenuEntries.get(focusedHomeMenuIndex).id;
+            try {
+                label = getString(homeMenuEntries.get(focusedHomeMenuIndex).labelResId);
+            } catch (Throwable ignored) {}
+        } else if (focusedHomeMenuIndex >= 0 && containerHomeMenuItems != null
+                && focusedHomeMenuIndex < containerHomeMenuItems.getChildCount()) {
+            View row = containerHomeMenuItems.getChildAt(focusedHomeMenuIndex);
+            if (row != null) {
+                TextView tv = (TextView) row.getTag(HOME_MENU_TAG_LABEL);
+                if (tv != null && tv.getText() != null) label = tv.getText().toString();
+            }
+            id = "row";
+        }
+        SolarAdbTest.homeFocus(focusedHomeMenuIndex, id + "@" + tag, label);
     }
 
     private void scheduleAdbFlowCarouselIfRequested() {
@@ -4575,46 +4747,103 @@ public class MainActivity extends Activity {
     /**
      * 2026-07-16 — Apply coalesced wheel steps to the song/browse ListView.
      * Layman: one jump for a burst of dial clicks so long lists do not feel "behind".
-     * Technical: reuse flywheel section jump when burst is large; otherwise multi-row step.
+     * Technical: flywheel already sized the step; do not amplify again (double boost caused
+     * post-release coast). Section letter jump only when the flywheel asked for it via large n.
      */
     private boolean applyCoalescedListWheelSteps(int signedSteps) {
         if (listVirtualSongs == null || signedSteps == 0) return false;
         if (listVirtualSongs.getVisibility() != View.VISIBLE) return false;
+        // Mic lift mid-frame — drop residual only; still apply this signed step if non-zero.
+        long nowMs = android.os.SystemClock.uptimeMillis();
+        if (micScratchSense != null) {
+            micScrollBoost.onFeatures(
+                    micScratchSense.volumeLevel(),
+                    micScratchSense.hfLevel(),
+                    micScratchSense.scratchLevel());
+        }
+        // Note: shouldDropGhostScroll is never true within LIVE_KEY_MS of a notch.
         ensureWheelSectionIndex();
         int direction = signedSteps > 0 ? 1 : -1;
         int n = Math.abs(signedSteps);
         int current = currentWheelPosition();
-        // Burst of 3+ notches with letter sort → A–Z jump (same idea as WheelPhysics section).
-        boolean sectionOk = n >= 3 && isFastScrollLetterEligible();
+        int listCount = 0;
+        android.widget.ListAdapter ad = listVirtualSongs.getAdapter();
+        if (ad != null) listCount = ad.getCount();
+        // iPod-like: on huge libraries, prefer letter section jump when spinning hard.
+        boolean hugeLibrary = listCount >= 5000;
+        boolean sectionOk = isFastScrollLetterEligible()
+                && (n >= ListWheelCoalescer.MAX_STEPS_PER_FLUSH
+                || (hugeLibrary && n >= 3)
+                || (hugeLibrary && wheelResult.sectionJump));
         int target;
         if (sectionOk) {
             target = wheelSectionIndex.jumpTarget(current, direction);
             if (target < 0 || target == current) {
-                target = current + direction * Math.min(n, ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
+                // Fall back: multi-row page hop (still one setSelection — O(1) layout).
+                int hop = hugeLibrary
+                        ? Math.min(n * 3, ListWheelCoalescer.MAX_STEPS_PER_FLUSH * 4)
+                        : Math.min(n, ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
+                target = current + direction * hop;
             }
         } else {
-            // Progressive: 1:1 for slow ticks; mild amplify when catching a small backlog.
-            int jump = n <= 2 ? n : Math.min(n + (n / 3), ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
-            target = current + direction * jump;
+            // 1:1 with flywheel — one selection move per frame.
+            target = current + direction * Math.min(n, ListWheelCoalescer.MAX_STEPS_PER_FLUSH);
         }
         boolean moved = moveWheelSelection(target);
         if (moved) {
-            // clickFeedback is throttled; skip when multi-step catch-up (haptic already in move).
-            if (n <= 2) clickFeedback();
-            if (currentScreenState == STATE_NAVIDROME) {
-                refreshNavidromeBrowsePreviewFromSelection();
-            } else if (currentScreenState == STATE_PLEX) {
-                refreshPlexBrowsePreviewFromSelection();
-            } else if (currentScreenState == STATE_JELLYFIN) {
-                refreshJellyfinBrowsePreviewFromSelection();
+            // Skip heavy work during multi-step / huge list spin (keeps 50k fluid).
+            if (n <= 1 && !hugeLibrary) clickFeedback();
+            if (n <= 1) {
+                if (currentScreenState == STATE_NAVIDROME) {
+                    refreshNavidromeBrowsePreviewFromSelection();
+                } else if (currentScreenState == STATE_PLEX) {
+                    refreshPlexBrowsePreviewFromSelection();
+                } else if (currentScreenState == STATE_JELLYFIN) {
+                    refreshJellyfinBrowsePreviewFromSelection();
+                }
             }
         }
         return moved;
     }
 
+    /**
+     * 2026-07-17 — Keyevents that sat in the queue after the finger stopped.
+     * Layman: the dial already stopped but Android still delivers old ticks — treat as dead.
+     */
+    private static final long WHEEL_STALE_EVENT_MS = 120L;
+
+    private boolean isStaleWheelEvent(KeyEvent event) {
+        if (event == null) return false;
+        long age = android.os.SystemClock.uptimeMillis() - event.getEventTime();
+        return age > WHEEL_STALE_EVENT_MS;
+    }
+
+    /**
+     * Drop coalescer backlog only — live KEY notches must still move the UI.
+     * Mic quiet after a scrape uses this; does not eat the current detent.
+     */
+    private void dropListWheelBacklogOnly() {
+        listWheelCoalescer.dropPending();
+        wheelPhysics.setMicBoost(1f);
+        micScrollBoost.clearContactSpin();
+        clockHandler.removeCallbacks(micGhostScrollWatch);
+    }
+
+    /**
+     * Full stop (stale queue / leave list) — reset flywheel state.
+     */
+    private void hardStopListWheel() {
+        listWheelCoalescer.dropPending();
+        wheelPhysics.reset();
+        wheelPhysics.setMicBoost(1f);
+        micScrollBoost.reset();
+        clockHandler.removeCallbacks(micGhostScrollWatch);
+    }
+
     /** 2026-07-16 — Wire coalescer to listVirtualSongs after adapter attach. */
     private void bindListWheelCoalescer() {
         if (listVirtualSongs == null) return;
+        listWheelCoalescer.setLiveGate(listWheelLiveGate);
         listWheelCoalescer.bind(listVirtualSongs, new ListWheelCoalescer.Apply() {
             @Override
             public boolean applySteps(int signedSteps) {
@@ -6358,6 +6587,136 @@ public class MainActivity extends Activity {
         return Y1InputKeys.wheelMenuDelta(keyCode);
     }
 
+    /** Short-menu flywheel focus (home / settings / browser lists). */
+    private interface WheelFocusMover {
+        boolean move(int delta);
+    }
+
+    /**
+     * 2026-07-17 — Sample mic volume + HF scrape; boost impulse; arm ghost-stop watch.
+     * Direction is never taken from mic — only KEY {@code direction} parameter elsewhere.
+     */
+    private void applyMicScrollBoostForNotch() {
+        long nowMs = android.os.SystemClock.uptimeMillis();
+        ensureMicScratchSense();
+        micScratchSense.onWheelNotch();
+        micScrollBoost.onFeatures(
+                micScratchSense.volumeLevel(),
+                micScratchSense.hfLevel(),
+                micScratchSense.scratchLevel());
+        micScrollBoost.onHardwareNotch(nowMs);
+        wheelPhysics.setMicBoost(micScrollBoost.boost(nowMs));
+        scheduleMicGhostScrollWatch();
+    }
+
+    private void ensureMicScratchSense() {
+        if (micScratchSense != null) return;
+        micScratchSense = new MicScratchSense(this);
+        micScratchSense.setContactListener(new MicScratchSense.ContactListener() {
+            @Override
+            public void onFingerContactChanged(boolean contact) {
+                if (!contact) {
+                    // Lift edge — drop backlog only; never block the next live KEY.
+                    maybeDropListWheelBacklogFromMic();
+                }
+            }
+        });
+    }
+
+    private long micGhostWatchUntilMs;
+
+    private final Runnable micGhostScrollWatch = new Runnable() {
+        @Override
+        public void run() {
+            maybeDropListWheelBacklogFromMic();
+            long now = android.os.SystemClock.uptimeMillis();
+            if (now < micGhostWatchUntilMs && !micScrollBoost.shouldDropGhostScroll(now)) {
+                clockHandler.postDelayed(this, 40L);
+            }
+        }
+    };
+
+    private void scheduleMicGhostScrollWatch() {
+        micGhostWatchUntilMs = android.os.SystemClock.uptimeMillis() + MicScrollBoost.GHOST_WATCH_MS;
+        clockHandler.removeCallbacks(micGhostScrollWatch);
+        clockHandler.postDelayed(micGhostScrollWatch, 45L);
+    }
+
+    private void maybeDropListWheelBacklogFromMic() {
+        long now = android.os.SystemClock.uptimeMillis();
+        if (micScratchSense != null) {
+            micScrollBoost.onFeatures(
+                    micScratchSense.volumeLevel(),
+                    micScratchSense.hfLevel(),
+                    micScratchSense.scratchLevel());
+        }
+        if (micScrollBoost.shouldDropGhostScroll(now)) {
+            dropListWheelBacklogOnly();
+        }
+    }
+
+    /**
+     * LiveGate for coalescer — only suppresses ghost backlog after real scrape+lift.
+     * Always allows flush when KEY is live (quiet room / no mic must still scroll).
+     */
+    private final ListWheelCoalescer.LiveGate listWheelLiveGate =
+            new ListWheelCoalescer.LiveGate() {
+                @Override
+                public boolean allowFlush() {
+                    long now = android.os.SystemClock.uptimeMillis();
+                    if (micScratchSense != null) {
+                        micScrollBoost.onFeatures(
+                                micScratchSense.volumeLevel(),
+                                micScratchSense.hfLevel(),
+                                micScratchSense.scratchLevel());
+                    }
+                    // Default allow — only deny proven ghost backlog.
+                    return !micScrollBoost.shouldDropGhostScroll(now);
+                }
+            };
+
+    /**
+     * 2026-07-17 — Apply WheelPhysics multi-step for short focus menus.
+     * Layman: spin faster → jump more rows; pause → momentum dies (anchor-stop style).
+     * Firm wheel scrape (mic) multiplies steps; direction still from KEY only.
+     */
+    private boolean applyWheelAccelFocus(int keyCode, WheelFocusMover mover) {
+        return applyWheelAccelFocus(keyCode, null, mover);
+    }
+
+    private boolean applyWheelAccelFocus(int keyCode, KeyEvent event, WheelFocusMover mover) {
+        if (mover == null) return false;
+        int dir = Y1InputKeys.isWheelUp(keyCode) ? -1
+                : (Y1InputKeys.isWheelDown(keyCode) ? 1 : 0);
+        if (dir == 0) return false;
+        resetInactivityTimer();
+        // Home/settings must always move on KEY. Never start AudioRecord here — that janked
+        // every home notch under USB/Wi-Fi load (mic probe open + binder). Boost only if
+        // the long-list probe already sampled this session.
+        if (isStaleWheelEvent(event)) {
+            wheelPhysics.reset();
+            wheelPhysics.setMicBoost(1f);
+            return mover.move(dir);
+        }
+        long nowMs = android.os.SystemClock.uptimeMillis();
+        // Lightweight: reuse last mic boost if probe already running; never arm mic on menus.
+        if (micScratchSense != null) {
+            micScrollBoost.onFeatures(
+                    micScratchSense.volumeLevel(),
+                    micScratchSense.hfLevel(),
+                    micScratchSense.scratchLevel());
+            micScrollBoost.onHardwareNotch(nowMs);
+            wheelPhysics.setMicBoost(micScrollBoost.boost(nowMs));
+        } else {
+            wheelPhysics.setMicBoost(1f);
+        }
+        int signed = wheelPhysics.signedMenuSteps(
+                android.os.SystemClock.elapsedRealtimeNanos(), dir, wheelResult);
+        if (signed == 0) signed = dir;
+        // Single multi-step move — home supports |delta|>1; looping re-ran scroll/preview N times.
+        return mover.move(signed);
+    }
+
     private void restoreHomeScreenEditorFocus(final int targetFocusIndex) {
         containerSettingsItems.postDelayed(new Runnable() {
             @Override
@@ -7436,7 +7795,23 @@ public class MainActivity extends Activity {
     }
 
     private void onWifiConnectivityChanged() {
+        // Menu rebuild already deferred to input-idle via connectivityUiDebounceRunnable.
         refreshConnectivityGatedMenus();
+        // 2026-07-17 — Never run internet hooks on the wheel path: yield until input idle.
+        if (isInputPriorityBusy()) {
+            postWhenInputIdle(connectivityUiDebounceHandler, new Runnable() {
+                @Override
+                public void run() {
+                    runDeferredInternetAvailabilityHooks();
+                }
+            });
+            return;
+        }
+        runDeferredInternetAvailabilityHooks();
+    }
+
+    /** NTP / geo / Reach probes — disk+network; must not run mid-scroll. */
+    private void runDeferredInternetAvailabilityHooks() {
         if (hasInternetConnection() && soulseekReachEnabled) {
             SolarDiagnosticReporter.onReachInternetAvailable(this, prefs);
         }
@@ -8869,6 +9244,51 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * 2026-07-17 — Home + Settings (and similar) wheel before focused children eat DPAD.
+     * Same API-17 trap as Reach/browser: after first notch, focus sits on a row and
+     * {@code super.dispatchKeyEvent} never reaches {@link #onKeyDown} for DPAD 19/20.
+     * MEDIA_PLAY/PAUSE (real Y1 wheel) also routed here for one consistent path.
+     */
+    private boolean handleHomeSettingsMenuWheelKeyDown(int keyCode, KeyEvent event) {
+        if (event == null || event.getAction() != KeyEvent.ACTION_DOWN) return false;
+        if (!Y1InputKeys.isWheelKey(keyCode)) return false;
+        if (themedContextMenuOwnsKeys()) return false;
+        if (usbEnablePromptSession || isUsbEnablePromptShowing()) return false;
+        if (isUsbMassStorageUiLocked()
+                && !(usbEnablePromptSession || isUsbEnablePromptShowing())) {
+            return false; // USB lock path above already toasts
+        }
+        if (currentScreenState == STATE_MENU) {
+            boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+                @Override
+                public boolean move(int delta) {
+                    return moveHomeMenuFocus(delta);
+                }
+            });
+            if (moved) clickFeedback();
+            return true; // consume even at edge so focused row cannot steal DPAD
+        }
+        if (currentScreenState == STATE_SETTINGS && !isThemeListActive()
+                && !isConversationThreadActive() && !isReachBrowseListActive()) {
+            boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+                @Override
+                public boolean move(int delta) {
+                    return moveSettingsListFocus(delta);
+                }
+            });
+            if (moved) clickFeedback();
+            return true;
+        }
+        if (currentScreenState == STATE_MORE || currentScreenState == STATE_APPS
+                || currentScreenState == STATE_BLUETOOTH) {
+            // Fall through to existing onKeyDown handlers via super — only home/settings
+            // need early intercept for focusable LinearLayout rows.
+            return false;
+        }
+        return false;
+    }
+
+    /**
      * Reach Messages / chat rooms / conversation thread wheel nav.
      * ponytail: DPAD_UP/DOWN (19/20) are swallowed by ListView before Activity.onKeyDown on API 17 —
      * call from dispatchKeyEvent before super so index-driven highlight always runs.
@@ -9124,7 +9544,10 @@ public class MainActivity extends Activity {
         scrollHomeMenuToIndex(focusedHomeMenuIndex);
     }
 
-    /** Index-driven home menu move — wheel keys must not rely on View focus on API 17. */
+    /**
+     * Index-driven home menu move — wheel keys must not rely on View focus on API 17.
+     * {@code delta} may be multi-step (flywheel); applies one scroll/preview pass.
+     */
     private boolean moveHomeMenuFocus(int delta) {
         if (ActiveThemeEngine.isJjMode() && jjHomeOverlay != null) {
             int total = jjHomeOverlay.getChildCount();
@@ -9133,8 +9556,13 @@ public class MainActivity extends Activity {
             if (isInfiniteScroll) {
                 next = NavigationPreferences.advanceIndex(focusedHomeMenuIndex, delta, total, true);
                 if (next < 0) return false;
-            } else if (next < 0 || next >= total) {
-                return false;
+            } else {
+                if (next < 0) next = 0;
+                if (next >= total) next = total - 1;
+                if (next == focusedHomeMenuIndex && (delta < 0 && focusedHomeMenuIndex == 0
+                        || delta > 0 && focusedHomeMenuIndex == total - 1)) {
+                    return false;
+                }
             }
             focusedHomeMenuIndex = next;
             View child = jjHomeOverlay.getChildAt(next);
@@ -9149,31 +9577,16 @@ public class MainActivity extends Activity {
             next = NavigationPreferences.advanceIndex(focusedHomeMenuIndex, delta, total, true);
             if (next < 0) return false;
         } else if (next < 0 || next >= total) {
-            if (menuScroll != null) Y1ScrollIndicators.edgeGlowAtLimit(menuScroll, delta);
-            return false;
+            // Clamp to edge so multi-step flywheel still lands on last/first row.
+            if (next < 0) next = 0;
+            else next = total - 1;
+            if (next == focusedHomeMenuIndex) {
+                if (menuScroll != null) Y1ScrollIndicators.edgeGlowAtLimit(menuScroll, delta);
+                return false;
+            }
         }
         focusedHomeMenuIndex = next;
         scrollHomeMenuToIndex(next);
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("next", next);
-            d.put("total", total);
-            d.put("scrollY", menuScroll != null ? menuScroll.getScrollY() : -1);
-            View row = getHomeMenuRow(next);
-            if (row != null) {
-                TextView tv = (TextView) row.getTag(HOME_MENU_TAG_LABEL);
-                d.put("label", tv != null && tv.getText() != null ? tv.getText().toString() : "");
-            }
-            if (next >= 0 && next < homeMenuEntries.size()) {
-                d.put("entryId", homeMenuEntries.get(next).id);
-            } else if (next == total - 1 && HomeMenuConfig.shouldShowMoreTile(prefs,
-                    ConnectivityHelper.isOnline(this), ConnectivityHelper.hasLocalNetwork(this))) {
-                d.put("entryId", HomeMenuConfig.ID_MORE);
-            }
-            DebugAgentLog.log(this, "MainActivity.moveHomeMenuFocus", "focus moved", "H-D", d);
-        } catch (Exception ignored) {}
-        // #endregion
         return true;
     }
 
@@ -9798,40 +10211,69 @@ public class MainActivity extends Activity {
         return row;
     }
 
+    /** Coalesce home scroll posts — rapid wheel was queuing one heavy runnable per notch. */
+    private int pendingHomeScrollIndex = -1;
+    private final Runnable homeScrollApplyRunnable = new Runnable() {
+        @Override
+        public void run() {
+            int index = pendingHomeScrollIndex;
+            pendingHomeScrollIndex = -1;
+            applyHomeMenuScrollToIndexNow(index);
+        }
+    };
+
     private void scrollHomeMenuToIndex(int index) {
         if (containerHomeMenuItems == null || containerHomeMenuItems.getChildCount() == 0) return;
         if (index < 0 || index >= containerHomeMenuItems.getChildCount()) return;
-        final int buildGen = homeMenuBuildGen;
-        final View row = containerHomeMenuItems.getChildAt(index);
-        if (row == null) return;
-        row.post(new Runnable() {
-            @Override
-            public void run() {
-                final long postedAt = android.os.SystemClock.uptimeMillis();
-                if (buildGen != homeMenuBuildGen) return;
-                View target = getHomeMenuRow(index);
-                if (target != null) {
-                    target.requestFocus();
-                    // 2026-07-11 — Edge-only via FocusScrollHelper; skip requestChildFocus
-                    // (platform ScrollView may scroll early). Was: requestChildFocus then ensure.
-                    if (menuScroll != null) {
-                        FocusScrollHelper.ensureChildVisible(menuScroll, target);
-                    }
-                }
-                refreshHomeMenuRowStyles();
-                updateStatusBarTitle();
-                updateHomeMenuPreview(focusedHomeMenuIndex);
-                // #region agent log
-                try {
-                    org.json.JSONObject d = new org.json.JSONObject();
-                    d.put("ms", android.os.SystemClock.uptimeMillis() - postedAt);
-                    d.put("index", index);
-                    DebugAfe4efLog.log(MainActivity.this, "MainActivity.scrollHomeMenuToIndex",
-                            "posted runnable", "H3", d, "post-fix");
-                } catch (Exception ignored) {}
-                // #endregion
+        // 2026-07-17 — Immediate focus styles for snappy highlight; defer preview/status to next frame.
+        focusedHomeMenuIndex = index;
+        refreshHomeMenuRowStyles();
+        pendingHomeScrollIndex = index;
+        if (containerHomeMenuItems != null) {
+            containerHomeMenuItems.removeCallbacks(homeScrollApplyRunnable);
+            containerHomeMenuItems.post(homeScrollApplyRunnable);
+        }
+    }
+
+    /**
+     * 2026-07-17 — One scroll/focus/preview pass for the latest home index.
+     * Layman: spin the dial fast — highlight keeps up; art pane catches up after the jump.
+     */
+    private void applyHomeMenuScrollToIndexNow(int index) {
+        if (containerHomeMenuItems == null || containerHomeMenuItems.getChildCount() == 0) return;
+        if (index < 0 || index >= containerHomeMenuItems.getChildCount()) return;
+        if (homeMenuBuildGen < 0) return;
+        View target = getHomeMenuRow(index);
+        if (target != null) {
+            target.requestFocus();
+            if (menuScroll != null) {
+                FocusScrollHelper.ensureChildVisible(menuScroll, target);
             }
-        });
+        }
+        refreshHomeMenuRowStyles();
+        updateStatusBarTitle();
+        // Preview is the expensive path (bitmap + layout) — never block the wheel loop.
+        scheduleHomeMenuPreviewUpdate(index);
+    }
+
+    private int pendingHomePreviewIndex = -1;
+    private final Runnable homePreviewApplyRunnable = new Runnable() {
+        @Override
+        public void run() {
+            int idx = pendingHomePreviewIndex;
+            pendingHomePreviewIndex = -1;
+            if (idx >= 0) {
+                updateHomeMenuPreview(idx);
+            }
+        }
+    };
+
+    private void scheduleHomeMenuPreviewUpdate(int index) {
+        pendingHomePreviewIndex = index;
+        if (containerHomeMenuItems == null) return;
+        containerHomeMenuItems.removeCallbacks(homePreviewApplyRunnable);
+        // Slight delay so a burst of notches only paints the final row's art.
+        containerHomeMenuItems.postDelayed(homePreviewApplyRunnable, 48L);
     }
 
     private boolean shouldShowNowPlayingPreviewArt() {
@@ -11227,14 +11669,23 @@ public class MainActivity extends Activity {
     private void changeScreen(int state, boolean isBack) {
         if (otaSystemReplaceInProgress) return;
         if (isUsbMassStorageUiLocked() && state != STATE_USB_STORAGE) {
-            // Re-check for stale lock before blocking the user.
-            if (!UsbMassStorageController.isMassStorageExported()
-                    && !UsbMassStorageController.isKernelMassStorageMode()) {
-                clearStaleUsbMassStorageLockIfNeeded();
-            } else {
+            // 2026-07-17 — Prefer session + cached export (no dual sysfs on every changeScreen).
+            // Layman: eject screen owns the device until the cable is unplugged.
+            boolean umsActive = usbMassStorageLocked
+                    || UsbMassStorageController.isUserSessionActive()
+                    || cachedUmsExported
+                    || UsbMassStorageController.isMassStorageExported();
+            if (umsActive) {
                 Toast.makeText(this,
                         getString(R.string.usb_storage_mode_body, DeviceFeatures.productModelLabel()),
                         Toast.LENGTH_SHORT).show();
+                if (currentScreenState != STATE_USB_STORAGE) {
+                    enterUsbMassStorageLock();
+                }
+                return;
+            }
+            clearStaleUsbMassStorageLockIfNeeded();
+            if (isUsbMassStorageUiLocked()) {
                 return;
             }
         }
@@ -12536,6 +12987,55 @@ public class MainActivity extends Activity {
             }
             return true;
         }
+        // 2026-07-16 — USB eject lock: swallow nav keys (volume still allowed for safety).
+        // Layman: cannot browse menus while storage is shared; only unplug frees the UI.
+        if (event != null && isUsbMassStorageUiLocked()
+                && !(usbEnablePromptSession || isUsbEnablePromptShowing())) {
+            int code = event.getKeyCode();
+            if (Y1InputKeys.isVolumeUpKey(code) || Y1InputKeys.isVolumeDownKey(code)) {
+                // fall through to volume HUD handling below
+            } else if (Y1InputKeys.isWheelKey(code) || Y1InputKeys.isBackKey(code)
+                    || Y1InputKeys.isCenterKey(code)
+                    || Y1InputKeys.isPlayPauseKey(code)
+                    || Y1InputKeys.isTrackPreviousKey(code)
+                    || Y1InputKeys.isTrackNextKey(code)
+                    || code == KeyEvent.KEYCODE_MENU || code == KeyEvent.KEYCODE_DPAD_UP
+                    || code == KeyEvent.KEYCODE_DPAD_DOWN || code == KeyEvent.KEYCODE_DPAD_CENTER
+                    || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_HOME) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    Toast.makeText(this,
+                            getString(R.string.usb_storage_mode_body, DeviceFeatures.productModelLabel()),
+                            Toast.LENGTH_SHORT).show();
+                    if (currentScreenState != STATE_USB_STORAGE) {
+                        enterUsbMassStorageLock();
+                    }
+                }
+                return true;
+            }
+        }
+        // 2026-07-16 — In-app USB Connection sheet must own keys (not stale global chip overlay).
+        // Layman: wheel/Back/OK work on Turn on / Dismiss, not a dead overlay shell.
+        // Was: all keys → onKeyDown/Up only; center never hit handleCenterKeyUp → activateFocused.
+        // OK did nothing. Now: same center path as other context tiers.
+        if (event != null && (usbEnablePromptSession || isUsbEnablePromptShowing())
+                && themedContextMenuOwnsKeys()) {
+            if (isCenterKey(event.getKeyCode()) || isMediaPlayPauseKey(event.getKeyCode())) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    return trackCenterKeyDown(event, true);
+                }
+                if (event.getAction() == KeyEvent.ACTION_UP) {
+                    return handleCenterKeyUp(event, true);
+                }
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                return onKeyDown(event.getKeyCode(), event);
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                return onKeyUp(event.getKeyCode(), event);
+            }
+            return true;
+        }
         // 2026-07-10 — Global ChipOverlayHost (power-hold shell) owns keys while painted.
         // Was: StaleOverlayGate.isActiveOrOpening() → return true with NO forward.
         // That black-holed wheel/OK/Back when Solar stayed focused (Home Back-hold open).
@@ -12764,6 +13264,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (handleReachSettingsWheelKeyDown(event.getKeyCode(), event)) return true;
         // 2026-07-14 — Get Music / Deezer / Soulseek ScrollView rows before API 17 eats DPAD.
         if (handleBrowserScrollWheelKeyDown(event.getKeyCode(), event)) return true;
+        // 2026-07-17 — Home/Settings wheel before focused row swallows DPAD (API 17 focus trap).
+        // Layman: once a home row is focused, the dial must still move the highlight.
+        // Device test FAIL home_wheel stuck_down at Music was this path.
+        if (handleHomeSettingsMenuWheelKeyDown(event.getKeyCode(), event)) return true;
         if (handleY2DpadSideKeyEvent(event)) return true;
         // #region agent log
         if (event.getAction() == KeyEvent.ACTION_DOWN && currentScreenState == STATE_PLAYER
@@ -18407,13 +18911,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             clockHandler.removeCallbacks(centerLongPressRunnable);
             clockHandler.removeCallbacks(centerSleepHoldRunnable);
             clockHandler.removeCallbacks(keyboardDelRepeatRunnable);
+            // 2026-07-16 — USB Connection prompt: never arm hold-to-sleep on OK.
+            // Layman: pressing the middle button must always mean Turn on or Dismiss.
+            final boolean usbEnablePrompt = usbEnablePromptSession || isUsbEnablePromptTierActive();
             if (isKeyboardDelSelected()) {
                 clockHandler.postDelayed(keyboardDelRepeatRunnable, 80);
             } else if (canScheduleCenterMovePick()) {
                 clockHandler.postDelayed(centerMovePickRunnable, CENTER_MOVE_HOLD_MS);
             } else if (y2CenterOpensContextMenu()) {
                 clockHandler.postDelayed(centerLongPressRunnable, CENTER_LONG_PRESS_MS);
-            } else if (centerHoldShouldSleep(CENTER_SLEEP_HOLD_MS)) {
+            } else if (!usbEnablePrompt && centerHoldShouldSleep(CENTER_SLEEP_HOLD_MS)) {
                 clockHandler.postDelayed(centerSleepHoldRunnable, CENTER_SLEEP_HOLD_MS);
             }
         }
@@ -18479,7 +18986,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 centerLongPressHandled = false;
                 return true;
             }
-            if (centerHoldShouldSleep(heldMs)) {
+            // 2026-07-16 — USB Connection: always fire focused row (Turn on / Dismiss).
+            // Was: hold ≥300ms → sleep, so OK felt dead on deliberate presses.
+            final boolean usbEnablePrompt = usbEnablePromptSession || isUsbEnablePromptTierActive();
+            if (!usbEnablePrompt && centerHoldShouldSleep(heldMs)) {
                 performScreenSleep(false);
                 return true;
             }
@@ -18731,6 +19241,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             onUsbStorageEnableDialogDismissed("context_menu_close");
         }
         usbEnablePromptSession = false;
+        if (closingUsbEnablePrompt) {
+            // Keep usbPromptBackHandledOnDown until KEY_UP swallows residual Back.
+        } else {
+            usbPromptBackHandledOnDown = false;
+        }
         restoreFocusAfterContextMenuDismiss();
         updateVideoStatusBarPolicy();
         if (onComplete != null) onComplete.run();
@@ -18837,36 +19352,34 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
             return false;
         }
+        // 2026-07-17 — Flywheel may pass |delta|>1; skip that many focusable rows in one pass.
         int step = delta < 0 ? -1 : 1;
+        int need = Math.max(1, Math.abs(delta));
+        int landed = -1;
+        View landedView = null;
         for (int i = currentIdx + step; i >= 0 && i < containerSettingsItems.getChildCount(); i += step) {
             View next = containerSettingsItems.getChildAt(i);
             if (next == null || next.getVisibility() != View.VISIBLE || !next.isEnabled()
                     || !next.isFocusable()) {
                 continue;
             }
-            if (!next.requestFocus()) continue;
-            // 2026-07-11 — Dropped requestChildFocus; ensureChildVisible below is edge-only.
+            need--;
+            landed = i;
+            landedView = next;
+            if (need <= 0) break;
+        }
+        if (landedView != null && landedView.requestFocus()) {
             if (SettingsScreens.HOME.equals(settingsSubScreenKey)) {
-                homeScreenEditorFocusIndex = i;
+                homeScreenEditorFocusIndex = landed;
             }
-            lastSettingsFocusIndex = i;
-            Object tag = next.getTag();
+            lastSettingsFocusIndex = landed;
+            Object tag = landedView.getTag();
             if (tag instanceof String && currentScreenState == STATE_SETTINGS) {
                 updateSettingsPreview((String) tag);
             }
             if (settingsScrollView instanceof ScrollView) {
-                FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, next);
+                FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, landedView);
             }
-            // #region agent log
-            try {
-                org.json.JSONObject d = new org.json.JSONObject();
-                d.put("from", currentIdx);
-                d.put("to", i);
-                d.put("delta", delta);
-                d.put("rowKey", tag != null ? tag.toString() : "");
-                DebugAgentLog.log(this, "MainActivity.moveSettingsListFocus", "settings wheel", "H1", d);
-            } catch (Exception ignored) {}
-            // #endregion
             return true;
         }
         if (isInfiniteScroll && containerSettingsItems.getChildCount() > 0) {
@@ -19478,14 +19991,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             DebugAgentLog.log(this, "MainActivity.handleContextQuickBar", "quick selected", "H1-H2", d);
         } catch (Exception ignored) {}
         // #endregion
+        // 2026-07-16 — USB eject lock: no menu navigation at all (queue shows blocked tip only).
+        // Layman: cannot open Home/Wi‑Fi/etc while storage is shared with the PC.
         if (isUsbMassStorageUiLocked()) {
             if (index == CONTEXT_QUICK_QUEUE_INDEX) {
                 showUsbStorageQueueBlockedTier();
-                return;
             }
-            if (index == CONTEXT_QUICK_POWER_INDEX) {
-                return;
-            }
+            return;
         }
         if (usbEnablePromptSession || isUsbEnablePromptTierActive()) {
             // 2026-07-15 — Sleep moved to right end (was LOCK_INDEX).
@@ -22894,12 +23406,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /**
      * True while user is in USB storage mode (July-2 sticky flags + real LUN export).
-     * Layman: after Turn on, stays "active" until Turn Off even while kernel is still binding.
+     * Layman: after Turn on, stays "active" until cable unplug even while kernel is still binding.
+     * 2026-07-16 — Also treat armed user session as active so host eject cannot unlock menus early.
      */
     private boolean isUsbMassStorageActive() {
         if (usbMassStorageLocked || currentScreenState == STATE_USB_STORAGE) return true;
-        if (UsbMassStorageController.isMassStorageExported()) return true;
-        return cachedUmsExported;
+        if (UsbMassStorageController.isUserSessionActive()) return true;
+        // Prefer async cache for navigation hot path; live probe only when cache says maybe-on.
+        if (cachedUmsExported) return true;
+        // TTL-cached kernel/LUN probe (750ms) — safe after UMS unplug storm.
+        return UsbMassStorageController.isMassStorageExported();
     }
 
     /** Solar USB storage lock UI — block navigation while eject screen / UMS active. */
@@ -23147,6 +23663,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (UsbMassStorageController.isMassStorageExported()) return;
+        // 2026-07-16 — User armed Turn on / auto-connect: keep eject UI until confirmed unplug.
+        // Layman: PC eject of the disk must not free the menus while the cable is still in.
+        if (UsbMassStorageController.isUserSessionActive()) {
+            return;
+        }
         // User intentionally on eject screen (Turn on just pressed / lock painted) — keep it.
         if (currentScreenState == STATE_USB_STORAGE && usbMassStorageLocked) {
             return;
@@ -23169,7 +23690,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /**
      * Mass-storage lock: Solar STATE_USB_STORAGE eject screen (July-2 monlith).
-     * Layman: stays until Turn Off or unplug — no companion overlay.
+     * Layman: stays until cable unplug — no companion overlay, no menu browsing.
+     * 2026-07-16 — Always re-stop media and dismiss context menus so Turn on cannot leave playback running.
      */
     private void enterUsbMassStorageLock() {
         // #region agent log
@@ -23189,15 +23711,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         boolean alreadyOnScreen = currentScreenState == STATE_USB_STORAGE;
         boolean firstEnter = !usbMassStorageLocked;
         usbMassStorageLocked = true;
-        if (!alreadyOnScreen && themedContextMenu != null && themedContextMenu.isShowing()) {
-            dismissThemedContextMenu();
+        usbEnablePromptSession = false;
+        usbDialogShownThisConnection = true;
+        // Enable prompt must never sit over the eject screen.
+        if (themedContextMenu != null && themedContextMenu.isShowing()) {
+            dismissThemedContextMenu(false);
         }
         if (firstEnter) {
             if (currentScreenState != STATE_USB_STORAGE) {
                 usbReturnScreen = currentScreenState;
             }
-            suspendBackgroundForUsbStorage();
         }
+        // Always suspend media on every lock paint (Turn on, re-entry, auto-connect).
+        suspendBackgroundForUsbStorage();
         applyUsbStorageScreenLayout();
         if (usbFocusHelper != null) {
             usbFocusHelper.setMassStorageInterceptActive(true);
@@ -23208,7 +23734,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             buildUsbStorageUI();
         }
         // Optimistic while enable is in flight; probe will correct on refresh.
-        if (UsbMassStorageController.isMassStorageExported()) {
+        if (UsbMassStorageController.isMassStorageExported()
+                || UsbMassStorageController.isUserSessionActive()) {
             cachedUmsExported = true;
         }
         SystemUiUsbSuppressor.dismissNow(this);
@@ -23277,16 +23804,49 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
     }
 
-    /** Pause/stop players when USB mass-storage lock engages — queue stays on disk for later. */
+    /**
+     * Hard-stop players when USB mass-storage lock engages — queue metadata stays for later.
+     * 2026-07-16 — Was: pause only; music kept decoding while SD was exported to the PC.
+     * Layman: turning on USB storage silences everything until the cable is out.
+     */
     private void stopActivePlaybackForUsbStorage() {
         try {
-            pauseActiveAudio();
+            if (mediaSuite != null) {
+                mediaSuite.stopVideoAndYoutubeStream();
+            }
         } catch (Exception ignored) {}
-        if (mediaSuite != null && playback.isRadioActive()) {
-            try {
+        try {
+            if (playback.isPodcastActive() && podcastIjkPlayer != null) {
+                podcastIjkPlayer.pause();
+                try {
+                    podcastIjkPlayer.seekTo(0);
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+        try {
+            if (isMusicIjkActive() && musicIjkPlayer != null) {
+                musicIjkPlayer.pause();
+            }
+        } catch (Exception ignored) {}
+        try {
+            if (mediaPlayer != null) {
+                if (mediaPlayer.isPlaying()) {
+                    mediaPlayer.stop();
+                }
+                mediaPlayer.reset();
+            }
+        } catch (Exception ignored) {}
+        try {
+            if (mediaSuite != null && playback.isRadioActive()) {
                 mediaSuite.toggleRadioPlayPause();
-            } catch (Exception ignored) {}
-        }
+            }
+        } catch (Exception ignored) {}
+        try {
+            if (mediaSuite != null && playback.isFmActive()) {
+                // Best-effort: leave FM shell without leaving UMS lock.
+                mediaSuite.leaveFmNowPlayingToShell();
+            }
+        } catch (Exception ignored) {}
         isPausedByHand = true;
         try {
             updatePlayerUI();
@@ -24364,20 +24924,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (usbDialogDismissedThisConnection) {
             return;
         }
-        // 2026-07-14 — Never rebuild enable tier while already up (view realloc → Y1 GC stalls).
-        // Was: USB_STATE storms called show again and churned themed context menu rows.
-        if (usbEnablePromptSession || isUsbEnablePromptShowing()) {
-            UsbHostSessionPolicy.markPromptEvaluated(this);
-            return;
-        }
         if (isHeavyWorkBlockingUsbPrompt()) {
             deferUsbConnectPrompt();
             return;
         }
-        // Mark session decided before paint so WakeReceiver stops relaunching mid-draw (H3/H7).
-        usbDialogShownThisConnection = true;
-        usbEnablePromptSession = true;
-        UsbHostSessionPolicy.markPromptEvaluated(this);
+        // 2026-07-16 — Rebuild if shell is up but list rows never painted (empty modal bug).
+        // Was: early-return whenever usbEnablePromptSession — left blank title panel forever.
+        final boolean alreadyPrompt = usbEnablePromptSession || isUsbEnablePromptShowing();
+        final boolean emptyShell = themedContextMenu != null && themedContextMenu.isShowing()
+                && !themedContextMenu.hasFocusableListRows();
+        if (alreadyPrompt && !emptyShell) {
+            UsbHostSessionPolicy.markPromptEvaluated(this);
+            return;
+        }
+        if (themedContextMenu == null) return;
         if (usbFocusHelper != null) {
             usbFocusHelper.setReclaimSuspended(true);
         }
@@ -24385,58 +24945,106 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         try {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("hasWindowFocus", hasWindowFocus());
-            d.put("menuShowing", themedContextMenu != null && themedContextMenu.isShowing());
-            d.put("loadingOverlay", layoutLoadingOverlay != null
-                    && layoutLoadingOverlay.getVisibility() == View.VISIBLE);
+            d.put("menuShowing", themedContextMenu.isShowing());
+            d.put("emptyShell", emptyShell);
+            d.put("alreadyPrompt", alreadyPrompt);
             d.put("libraryScanRunning", libraryScanRunning);
             d.put("screen", currentScreenState);
-            d.put("usbDialogShown", usbDialogShownThisConnection);
-            d.put("sessionEvaluated", true);
             Debug02fc83Log.log(MainActivity.this, "MainActivity.showUsbMassStorageDialog",
-                    "prompt shown", "H1,H7", d);
+                    "paint prompt", "H1,H7", d);
         } catch (Exception ignored) {}
         // #endregion
-        java.util.ArrayList<String> labels = new java.util.ArrayList<String>();
-        java.util.ArrayList<String> states = new java.util.ArrayList<String>();
-        java.util.ArrayList<Boolean> headers = new java.util.ArrayList<Boolean>();
-        java.util.ArrayList<Runnable> actions = new java.util.ArrayList<Runnable>();
 
-        labels.add(getString(R.string.usb_connection_title));
-        states.add(null);
-        headers.add(Boolean.TRUE);
-        actions.add(null);
-
-        labels.add(getString(R.string.usb_mass_storage_turn_on));
-        states.add(null);
-        headers.add(Boolean.FALSE);
+        final String turnOn = getString(R.string.usb_mass_storage_turn_on);
+        final String dismiss = getString(R.string.soulseek_pm_dismiss);
+        final String title = getString(R.string.usb_connection_title);
+        final String[] labels = new String[] { turnOn, dismiss };
+        final String[] states = new String[] { null, null };
+        final boolean[] headers = new boolean[] { false, false };
+        final java.util.List<Runnable> actions = new java.util.ArrayList<Runnable>();
         actions.add(new Runnable() {
             @Override
             public void run() {
-                dismissThemedContextMenu(false);
+                // Sync dismiss so eject screen is not painted under a half-dead modal.
+                dismissThemedContextMenu(false, false, null);
                 enableUsbMassStorageFromRoot();
             }
         });
-
-        labels.add(getString(R.string.soulseek_pm_dismiss));
-        states.add(null);
-        headers.add(Boolean.FALSE);
         actions.add(new Runnable() {
             @Override
             public void run() {
-                dismissThemedContextMenu();
+                dismissThemedContextMenu(true, false, null);
             }
         });
 
-        if (!themedContextMenu.isShowing()) {
-            android.util.Log.d("UsbFocus", "themedContextMenu is not showing, calling showThemedContextMenu");
-            showThemedContextMenu();
-        }
+        // 2026-07-16 — Paint USB prompt as its own modal (no root context + drill + clear quick bar).
+        // Was: showThemedContextMenu → LIST_DRILL_FORWARD → replaceQuickBar([]) race left empty shell.
+        // Layman: panel always shows Turn on + Dismiss as soon as the cable is plugged in.
+        volumeHandler.removeCallbacks(hideVolumeContextTask);
+        contextMenuInVolumeSlider = false;
+        contextMenuVolumeOnly = false;
+        contextMenuVolumeReturnTier = null;
+        contextMenuInQueueTier = false;
+        contextMenuQuickOnly = false;
+        contextMenuBlockingHint = false;
+        // Cancel any in-flight list drill so a late build() never wipes this paint.
+        try {
+            themedContextMenu.cancelPendingListDrill();
+            if (themedContextMenu.isShowing()) {
+                themedContextMenu.dismiss();
+            }
+        } catch (Throwable ignored) {}
+
+        ViewGroup root = (ViewGroup) findViewById(android.R.id.content);
+        if (root == null) return;
+        int margin = (int) (10 * getResources().getDisplayMetrics().density);
+        int panelW = screenWidthPx > margin * 2 ? screenWidthPx - margin * 2 : y1ActiveRowWidthPx();
+
         contextMenuTierStack.clear();
         contextMenuTierStack.addLast(CONTEXT_NAV_ROOT);
         pushContextMenuTier("usb_storage");
-        android.util.Log.d("UsbFocus", "Calling showContextMenuTierInPlace");
-        showContextMenuTierInPlace(getString(R.string.usb_connection_title), labels, states, headers, actions, true);
+        contextMenuLabels.clear();
+        contextMenuIconKeys.clear();
+        contextMenuStateTexts.clear();
+        contextMenuHeaders.clear();
+        contextMenuActions.clear();
+        contextMenuKeepOpen.clear();
+        for (int i = 0; i < labels.length; i++) {
+            contextMenuLabels.add(labels[i]);
+            contextMenuIconKeys.add(null);
+            contextMenuStateTexts.add(states[i]);
+            contextMenuHeaders.add(Boolean.FALSE);
+            contextMenuActions.add(actions.get(i));
+            contextMenuKeepOpen.add(Boolean.FALSE);
+        }
+
+        themedContextMenu.show(root, title, null, labels, null, states, headers,
+                new ThemedContextMenu.Listener() {
+                    @Override
+                    public void onSelected(int index) {
+                        suppressListClickUntil = System.currentTimeMillis()
+                                + CONTEXT_MENU_CLICK_SUPPRESS_MS;
+                        if (index >= 0 && index < actions.size()) {
+                            Runnable a = actions.get(index);
+                            if (a != null) a.run();
+                        }
+                    }
+                },
+                y1RowHeightPx, panelW, true, false,
+                new ThemedContextMenu.QuickItem[0], null);
+        themedContextMenu.setSubmenuTierOpen(true);
+        themedContextMenu.focusSubmenuList();
+        themedContextMenu.requestOverlayFocus();
+
+        // Mark session only after paint so a failed open can retry.
+        usbDialogShownThisConnection = true;
+        usbEnablePromptSession = true;
+        UsbHostSessionPolicy.markPromptEvaluated(this);
+        contextMenuOpenedAtMs = 0L;
+        usbPromptBackHandledOnDown = false;
         syncUsbReclaimForContextMenu(true);
+        android.util.Log.d("UsbFocus", "USB Connection prompt painted rows=" + labels.length
+                + " showing=" + themedContextMenu.isShowing());
     }
 
     /**
@@ -24526,19 +25134,25 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             usbFocusHelper.clearHostInterceptDecline();
         }
         // Paint eject screen first so the user is never left without UI while UMS binds.
+        usbEnablePromptSession = false;
         enterUsbMassStorageLock();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 final boolean ok = UsbMassStorageController.enable(MainActivity.this, "auto.main");
+                final boolean exported = UsbMassStorageController.isMassStorageExported();
+                final boolean kernelUms = UsbMassStorageController.isKernelMassStorageMode();
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         SystemUiUsbSuppressor.dismissNow(MainActivity.this);
-                        if (!ok && !UsbMassStorageController.isMassStorageExported()) {
-                            onExternalUsbStorageUnlock();
+                        if (ok || exported || kernelUms
+                                || UsbMassStorageController.isUserSessionActive()) {
+                            cachedUmsExported = exported || ok || kernelUms;
+                            enterUsbMassStorageLock();
                         } else {
-                            cachedUmsExported = UsbMassStorageController.isMassStorageExported();
+                            UsbMassStorageController.clearUserSession();
+                            onExternalUsbStorageUnlock();
                         }
                     }
                 });
@@ -24548,7 +25162,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /**
      * User tapped Turn on USB storage — July-2 monlith: lock screen first, then enable UMS.
-     * Layman: dialog closes → eject screen stays until Turn Off or unplug.
+     * Layman: dialog closes → eject screen stays until cable unplug; media stops immediately.
      */
     private void enableUsbMassStorageFromRoot() {
         // #region agent log
@@ -24580,18 +25194,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     "user explicit enable", "USB-CONSENT", d);
         } catch (Exception ignored) {}
         // #endregion
-        // July-2: show STATE_USB_STORAGE immediately, enable kernel UMS in the background.
+        // July-2: show STATE_USB_STORAGE immediately (blocks menus + stops media), then bind UMS.
+        usbEnablePromptSession = false;
         enterUsbMassStorageLock();
         new Thread(new Runnable() {
             @Override
             public void run() {
                 final boolean ok = UsbMassStorageController.enable(MainActivity.this, "user.main.explicit");
                 final boolean exported = UsbMassStorageController.isMassStorageExported();
+                final boolean kernelUms = UsbMassStorageController.isKernelMassStorageMode();
                 // #region agent log
                 try {
                     org.json.JSONObject d = Debug705932Log.usbSnapshot();
                     d.put("enableOk", ok);
-                    d.put("kernelUms", UsbMassStorageController.isKernelMassStorageMode());
+                    d.put("kernelUms", kernelUms);
                     d.put("exported", exported);
                     Debug705932Log.log("MainActivity.enableUsbMassStorageFromRoot", "after enable", "H2,H3", d);
                 } catch (Exception ignored) {}
@@ -24600,11 +25216,21 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     @Override
                     public void run() {
                         SystemUiUsbSuppressor.dismissNow(MainActivity.this);
-                        if (ok || exported || UsbMassStorageController.isKernelMassStorageMode()) {
-                            cachedUmsExported = exported || ok;
+                        // 2026-07-16 — Keep eject UI whenever Turn on was armed; only leave on real fail
+                        // with no kernel UMS (re-enum may lag behind script exit).
+                        // Layman: the “eject from PC” screen stays until the cable is out.
+                        if (ok || exported || kernelUms
+                                || UsbMassStorageController.isUserSessionActive()) {
+                            if (!UsbMassStorageController.isUserSessionActive()) {
+                                UsbMassStorageController.markUserSessionActive();
+                            }
+                            cachedUmsExported = exported || ok || kernelUms;
+                            // Re-assert eject screen after USB re-enum may have stolen focus.
+                            enterUsbMassStorageLock();
                             return;
                         }
-                        // Enable failed — leave lock screen so the user is not stuck.
+                        // Enable failed with no mass_storage — leave lock so the user is not stuck.
+                        UsbMassStorageController.clearUserSession();
                         onExternalUsbStorageUnlock();
                         Toast.makeText(MainActivity.this,
                                 R.string.usb_storage_enable_failed, Toast.LENGTH_LONG).show();
@@ -28068,12 +28694,17 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         if (currentScreenState == STATE_USB_STORAGE) {
-            if (!UsbMassStorageController.isMassStorageExported()
-                    && !UsbMassStorageController.isKernelMassStorageMode()) {
-                clearStaleUsbMassStorageLockIfNeeded();
-            } else {
+            // 2026-07-16 — Never leave eject screen with Back while UMS session or kernel still armed.
+            if (UsbMassStorageController.isUserSessionActive()
+                    || UsbMassStorageController.isMassStorageExported()
+                    || UsbMassStorageController.isKernelMassStorageMode()
+                    || usbMassStorageLocked) {
                 Toast.makeText(this, getString(R.string.usb_storage_mode_body,
                         DeviceFeatures.productModelLabel()), Toast.LENGTH_SHORT).show();
+                return;
+            }
+            clearStaleUsbMassStorageLockIfNeeded();
+            if (currentScreenState == STATE_USB_STORAGE) {
                 return;
             }
         }
@@ -48158,6 +48789,32 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         startLibraryNewFilesScan(false);
     }
 
+    /**
+     * 2026-07-17 — True for a few seconds after confirmed UMS unplug / eject leave.
+     * Layman: unplugging the PC should not immediately re-walk the whole library.
+     */
+    private boolean shouldDeferPostUmsStorageWork() {
+        if (usbDisconnectAtMs <= 0L) return false;
+        long age = System.currentTimeMillis() - usbDisconnectAtMs;
+        return age >= 0L && age < 6000L;
+    }
+
+    private final Runnable deferredPostUmsStorageMountRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (isFinishing() || isUsbMassStorageUiLocked()) return;
+            reloadThemeAfterStorageReady();
+            refreshLibraryAfterStorageMount();
+        }
+    };
+
+    private void scheduleDeferredPostUmsStorageMount() {
+        clockHandler.removeCallbacks(deferredPostUmsStorageMountRunnable);
+        // Let disable-ums.sh finish and the UI settle first.
+        long delay = Math.max(800L, msUntilInputIdle());
+        clockHandler.postDelayed(deferredPostUmsStorageMountRunnable, delay);
+    }
+
     /** Walk disk for audio paths absent from SQLite — merge without deleteExcept purge. */
     private void startLibraryNewFilesScan(final boolean showOverlay) {
         if (libraryScanRunning) return;
@@ -51175,6 +51832,23 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (contextMenuBlockingHint || themedContextMenu.isHintOnlyMode()) {
             return true;
         }
+        final boolean usbEnable = usbEnablePromptSession || isUsbEnablePromptTierActive();
+        // 2026-07-16 — USB Connection: Back dismisses immediately (do not wait for KEY_UP).
+        // Layman: Back always leaves the plug-in prompt even if focus is stolen mid-hold.
+        if (usbEnable && Y1InputKeys.isBackKey(keyCode)) {
+            if (event != null && event.getRepeatCount() == 0) {
+                clickFeedback();
+                usbPromptBackHandledOnDown = true;
+                dismissThemedContextMenu(true);
+            }
+            return true;
+        }
+        // 2026-07-16 — USB Connection: wheel stays on Turn on / Dismiss only (wrap; never quick-bar).
+        if (usbEnable && Y1InputKeys.isWheelKey(keyCode)) {
+            themedContextMenu.moveListFocusOnly(Y1InputKeys.isWheelUp(keyCode) ? -1 : 1);
+            clickFeedback();
+            return true;
+        }
         if (Y1InputKeys.isWheelKey(keyCode)) {
             if (contextMenuInQueueTier && contextQueueMoveFrom >= 0
                     && themedContextMenu.focusZone() == ThemedContextMenu.FocusZone.TIER_CONTENT) {
@@ -51649,17 +52323,40 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 int direction = Y1InputKeys.isWheelUp(keyCode) ? -1
                         : Y1InputKeys.isWheelDown(keyCode) ? 1 : 0;
                 if (direction != 0) {
-                    // 2026-07-16 — Coalesce notches: flywheel step size queued, flushed once/frame.
-                    // Was: moveWheelSelection on every keyevent → backlog on long song lists.
+                    // 2026-07-16 — Coalesce notches: one jump/frame (iPod fluid on 50k tracks).
+                    // 2026-07-17 — KEY always moves; mic only boosts impulse + drops ghost backlog.
+                    // Never consume a live KEY without applying at least one step.
+                    resetInactivityTimer();
                     ensureWheelSectionIndex();
+                    bindListWheelCoalescer();
+                    if (isStaleWheelEvent(event)) {
+                        // Late delivery after stop: one detent max, clear flywheel inheritance.
+                        dropListWheelBacklogOnly();
+                        wheelPhysics.reset();
+                        applyCoalescedListWheelSteps(direction);
+                        return true;
+                    }
+                    applyMicScrollBoostForNotch();
+                    // Drop leftover backlog if mic says lift — still process THIS notch.
+                    if (micScrollBoost.shouldDropGhostScroll(
+                            android.os.SystemClock.uptimeMillis())) {
+                        dropListWheelBacklogOnly();
+                    }
                     wheelPhysics.tick(android.os.SystemClock.elapsedRealtimeNanos(),
                             direction, wheelResult);
-                    int steps = wheelResult.sectionJump && isFastScrollLetterEligible()
-                            ? direction * Math.max(3, wheelResult.rowSteps)
-                            : direction * Math.max(1, wheelResult.rowSteps);
-                    bindListWheelCoalescer();
+                    int listCount = 0;
+                    android.widget.ListAdapter ad = listVirtualSongs.getAdapter();
+                    if (ad != null) listCount = ad.getCount();
+                    boolean huge = listCount >= 5000;
+                    int steps;
+                    if (wheelResult.sectionJump && isFastScrollLetterEligible()) {
+                        steps = direction * Math.max(3, wheelResult.rowSteps);
+                    } else if (huge && wheelResult.rowSteps >= 3 && isFastScrollLetterEligible()) {
+                        steps = direction * Math.max(3, wheelResult.rowSteps);
+                    } else {
+                        steps = direction * Math.max(1, wheelResult.rowSteps);
+                    }
                     if (!listWheelCoalescer.offerSteps(steps)) {
-                        // Fallback if list unbound — direct apply (should be rare).
                         applyCoalescedListWheelSteps(steps);
                     }
                     return true;
@@ -51707,14 +52404,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         if (row != null && row.isFocusable() && row.requestFocus()) break;
                     }
                 }
-                if (moveSettingsListFocus(Y1InputKeys.isWheelUp(keyCode) ? -1 : 1)) {
+                if (applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+                    @Override
+                    public boolean move(int delta) {
+                        return moveSettingsListFocus(delta);
+                    }
+                })) {
                     clickFeedback();
                 }
                 return true;
             }
             if (currentScreenState == STATE_MENU && Y1InputKeys.isWheelKey(keyCode)) {
                 if (!isFocusValidForCurrentScreen()) requestFirstHomeMenuFocus();
-                boolean moved = moveHomeMenuFocus(Y1InputKeys.isWheelUp(keyCode) ? -1 : 1);
+                boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+                    @Override
+                    public boolean move(int delta) {
+                        return moveHomeMenuFocus(delta);
+                    }
+                });
                 // #region agent log
                 if (event.getRepeatCount() == 0) {
                     try {
@@ -51723,6 +52430,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         d.put("keyCode", keyCode);
                         d.put("moved", moved);
                         d.put("homeIdx", focusedHomeMenuIndex);
+                        d.put("flywheel", wheelResult.velocity);
                         DebugF0e28cLog.log(this, "MainActivity.onKeyDown",
                                 "home menu wheel", "H-A,H-E", d);
                     } catch (Exception ignored) {}
@@ -51740,7 +52448,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             // Was: parent.indexOfChild sibling walk only — nested rows / DPAD misses stuck.
             if (isBrowserScrollMenuScreen() && Y1InputKeys.isWheelKey(keyCode)) {
                 if (!isFocusValidForCurrentScreen()) ensureBrowserListFocus();
-                boolean moved = moveBrowserScrollFocus(Y1InputKeys.isWheelUp(keyCode) ? -1 : 1);
+                boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+                    @Override
+                    public boolean move(int delta) {
+                        return moveBrowserScrollFocus(delta);
+                    }
+                });
                 // #region agent log
                 if (event.getRepeatCount() == 0) {
                     try {
@@ -51809,6 +52522,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             if (backForceQuitHandled) {
                 return true;
             }
+            // 2026-07-16 — USB Connection dismissed on KEY_DOWN; do not fire a second Back on home.
+            if (usbPromptBackHandledOnDown) {
+                usbPromptBackHandledOnDown = false;
+                return true;
+            }
             // 2026-07-14 — A5 keyboard: short Back = Enter; long = charset (armed in onKeyDown).
             // Was: short Back cancelled typing. Reversal: restore handleBackShortPress here.
             if (currentScreenState == STATE_WIFI_KEYBOARD && A5KeyboardKeys.active()) {
@@ -51833,13 +52551,21 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
             long held = System.currentTimeMillis() - backKeyDownTime;
             if (themedContextMenu != null && themedContextMenu.isShowing()) {
-                if (contextMenuOpenedAtMs > 0 && System.currentTimeMillis() - contextMenuOpenedAtMs < 250) {
+                // 2026-07-16 — USB Connection always accepts Back (no 250ms open debounce).
+                boolean usbEnable = usbEnablePromptSession || isUsbEnablePromptTierActive();
+                // Already dismissed on KEY_DOWN — do not pop tiers / home again.
+                if (usbEnable && usbPromptBackHandledOnDown) {
+                    usbPromptBackHandledOnDown = false;
+                    return true;
+                }
+                if (!usbEnable && contextMenuOpenedAtMs > 0
+                        && System.currentTimeMillis() - contextMenuOpenedAtMs < 250) {
                     return true;
                 }
                 if (backLongPressHandled) {
                     return true;
                 }
-                if (held < BACK_LONG_PRESS_MS) {
+                if (usbEnable || held < BACK_LONG_PRESS_MS) {
                     handleContextMenuBackKeyUp();
                 }
                 return true;
@@ -51998,6 +52724,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         scheduleAdbOpenFmIfRequested(intent);
         // 2026-07-16 — singleTop still runs full real-world matrix when re-armed.
         scheduleAdbRealworldMatrixIfRequested(intent);
+        // 2026-07-17 — singleTop bring-to-front must still run home wheel harness.
+        scheduleAdbHomeWheelIfRequested(intent);
     }
 
     /**
@@ -52090,6 +52818,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             scheduleAdbOpenFmIfRequested(getIntent());
         }
         scheduleAdbFlowCarouselIfRequested();
+        // 2026-07-17 — Flag/intent home wheel test (singleTop often skips onCreate).
+        scheduleAdbHomeWheelIfRequested(getIntent());
         LandscapeOrientationGuard.recoverIfPortrait(this);
         // #region agent log
         try {
@@ -52162,6 +52892,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     protected void onPause() {
         super.onPause();
         ExternalInputHandoff.invalidateForegroundPackageCache();
+        // Drop short-lived wheel-scrape probe (no continuous mic).
+        clockHandler.removeCallbacks(micGhostScrollWatch);
+        if (micScratchSense != null) {
+            micScratchSense.release();
+        }
+        micScrollBoost.reset();
+        wheelPhysics.setMicBoost(1f);
+        listWheelCoalescer.dropPending();
         try {
             persistPlaybackQueue();
         } catch (Exception ignored) {}
@@ -52181,6 +52919,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (usbFocusHelper != null) usbFocusHelper.onDestroy();
         stopInactivityMonitor();
         if (mediaSuite != null) mediaSuite.release();
+        if (micScratchSense != null) {
+            micScratchSense.release();
+            micScratchSense = null;
+        }
         stopSettingsPreviewVerticalMarquee();
         try {
             persistPlaybackQueue();
@@ -56092,8 +56834,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                // 2026-07-16 — If user session still armed (host re-enum), re-lock instead of unlocking.
+                if (UsbMassStorageController.isUserSessionActive()
+                        && (UsbMassStorageController.isMassStorageExported()
+                        || UsbMassStorageController.isKernelMassStorageMode())) {
+                    enterUsbMassStorageLock();
+                    return;
+                }
                 usbMassStorageLocked = false;
                 cachedUmsExported = false;
+                usbEnablePromptSession = false;
                 ThemeManager.setBlockSdcardThemeAssets(false);
                 if (usbFocusHelper != null) {
                     usbFocusHelper.setMassStorageInterceptActive(false);

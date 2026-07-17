@@ -14,7 +14,12 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
      * Was: POLICY_REV 22 always goToSleep on short UP (wake already lit screen → flash→sleep).
      * Reversal: POLICY_REV 22 + unguarded triggerGoToSleep on every short pass-through tap.
      */
-    public static final int POLICY_REV = 23;
+    /**
+     * 2026-07-17 — POLICY_REV 25: remove Wheel Sense Lab exclusive-capture exemption
+     * ({@code com.solar.inputlogger} removed from product tree).
+     * Reversal: POLICY_REV 24 + restore exclusive-capture early returns for lab package.
+     */
+    public static final int POLICY_REV = 25;
  
     /**
      * Cross-process — infinite list wrap opt-in for main Solar lists (not context/overlay modal).

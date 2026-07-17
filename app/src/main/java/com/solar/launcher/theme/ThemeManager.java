@@ -98,33 +98,57 @@ public class ThemeManager {
     private static boolean nowPlayingLcdArtEnabled = false;
 
     /**
-     * Canonical public Themes/ install root.
-     * 2026-07-15 — Prefer public Internal Storage Themes/; else MicroSD Themes/; else filesDir.
-     * Was: always filesDir (UMS-safe but ignored public Internal as load root).
-     * Reversal: return internalThemesDir(ctx) unconditionally.
+     * Canonical theme <b>load/store</b> root (always on MMC when possible).
+     * 2026-07-17 — Order: public Internal Themes/ → app-private filesDir/Themes → MicroSD last.
+     * Layman: Solar loads themes from internal storage for speed; MicroSD is a 1:1 manage mirror.
+     * Was: MicroSD preferred when Internal missing, so SD eject broke theming and mirror never ran.
+     * Reversal: prefer MicroSD when Internal/filesDir unusable only.
      */
     public static String resolveThemesRoot(Context ctx) {
-        File internalPublic = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
-        if (internalPublic != null) {
-            return internalPublic.getAbsolutePath();
+        File store = canonicalThemesStore(ctx);
+        if (store != null) {
+            return store.getAbsolutePath();
         }
         File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
         if (micro != null) {
             return micro.getAbsolutePath();
         }
-        if (ctx != null) {
-            return internalThemesDir(ctx).getAbsolutePath();
-        }
         return PATH_THEMES;
+    }
+
+    /**
+     * Actual theme store on eMMC: public Internal Themes/ if present, else filesDir/Themes.
+     * Never MicroSD — that is the peer mirror only.
+     */
+    public static File canonicalThemesStore(Context ctx) {
+        File internalPublic = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+        if (internalPublic != null) {
+            // Prefer public Internal even if empty — mkdir on ensure.
+            return internalPublic;
+        }
+        if (ctx != null) {
+            return internalThemesDir(ctx);
+        }
+        if (assetContext != null) {
+            return internalThemesDir(assetContext);
+        }
+        return null;
     }
 
     public static String themesRoot() {
         return themesRootPath;
     }
 
+    /** Min gap between full library mirror passes (was syncing on every ensure/load → multi-second I/O storms). */
+    private static final long THEME_LIBRARY_SYNC_MIN_MS = 45_000L;
+    private static volatile long lastThemeLibrarySyncAtMs;
+    private static final java.util.concurrent.atomic.AtomicBoolean themeLibrarySyncInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     /**
-     * Ensures themes root exists and is writable; falls back to filesDir UMS cache when public fails.
-     * 2026-07-15 — Also kicks bidirectional Internal↔MicroSD Themes sync when both volumes exist.
+     * Ensures MMC theme store exists and is writable.
+     * 2026-07-17 — Does <b>not</b> run full MicroSD mirror on the caller thread (that froze
+     * cold start ~16s and hung adb input). Mirror is scheduled async.
      */
     public static boolean ensureThemesRootReady(Context ctx) {
         Context app = ctx != null ? ctx.getApplicationContext() : assetContext;
@@ -133,54 +157,130 @@ public class ThemeManager {
             themesRootPath = resolveThemesRoot(app);
         }
         File root = new File(themesRootPath);
+        if (!root.isDirectory()) {
+            root.mkdirs();
+        }
         if (root.isDirectory() && root.canWrite()) {
             new File(root, ".cache/covers").mkdirs();
-            syncPublicThemesBidirectional(app);
+            scheduleThemeLibrarySync(app, false);
             return true;
         }
-        if (!root.mkdirs() || !root.canWrite()) {
-            if (app == null) return false;
-            themesRootPath = new File(app.getFilesDir(), "Themes").getAbsolutePath();
-            root = new File(themesRootPath);
-            if (!root.mkdirs() && !root.isDirectory()) return false;
-        }
+        // Public Internal not writable — fall back to app-private eMMC Themes.
+        if (app == null) return false;
+        themesRootPath = internalThemesDir(app).getAbsolutePath();
+        root = new File(themesRootPath);
+        if (!root.mkdirs() && !root.isDirectory()) return false;
         new File(root, ".cache/covers").mkdirs();
-        syncPublicThemesBidirectional(app);
+        scheduleThemeLibrarySync(app, false);
         return root.canWrite();
     }
 
     /**
-     * Bidirectional copy of theme folders between public Internal and MicroSD Themes/.
-     * 2026-07-15 — Missing/newer folders propagate either way; Default seeded copies allowed.
-     * Layman: keep both cards' Themes folders in step so either volume can fail safely.
+     * Schedule 1:1 MMC ↔ MicroSD theme mirror on a background thread.
+     * @param force true to ignore throttle (download complete / media mounted)
+     */
+    public static void scheduleThemeLibrarySync(final Context ctx, boolean force) {
+        final Context app = ctx != null ? ctx.getApplicationContext() : assetContext;
+        if (app == null) return;
+        long now = System.currentTimeMillis();
+        if (!force && lastThemeLibrarySyncAtMs > 0L
+                && (now - lastThemeLibrarySyncAtMs) < THEME_LIBRARY_SYNC_MIN_MS) {
+            return;
+        }
+        if (!themeLibrarySyncInFlight.compareAndSet(false, true)) return;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    syncPublicThemesBidirectional(app);
+                    lastThemeLibrarySyncAtMs = System.currentTimeMillis();
+                } catch (Throwable ignored) {
+                } finally {
+                    themeLibrarySyncInFlight.set(false);
+                }
+            }
+        }, "ThemeLibrarySync").start();
+    }
+
+    /**
+     * 1:1 theme library mirror: MMC store ↔ MicroSD Themes/ (both directions).
+     * Also keeps filesDir/Themes in step with the store for UMS-safe active loads.
+     * Layman: drop themes on either card; Solar loads from internal; both folders stay identical.
+     * Call from background only — never the UI/wheel path.
      */
     public static void syncPublicThemesBidirectional(Context ctx) {
-        File internal = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
+        Context app = ctx != null ? ctx.getApplicationContext() : assetContext;
+        File store = canonicalThemesStore(app);
+        if (store == null) return;
+        if (!store.exists()) store.mkdirs();
+        if (!store.isDirectory()) return;
+
         File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
-        if (internal == null || micro == null) return;
-        if (!internal.exists()) internal.mkdirs();
-        if (!micro.exists()) micro.mkdirs();
-        if (!internal.isDirectory() || !micro.isDirectory()) return;
-        syncThemeLibraryOneWay(internal, micro);
-        syncThemeLibraryOneWay(micro, internal);
+        if (micro != null) {
+            if (!micro.exists()) micro.mkdirs();
+            if (micro.isDirectory()) {
+                // MicroSD → MMC first (user may have added themes on the card)
+                syncThemeLibraryOneWay(micro, store);
+                // MMC → MicroSD (downloads / MMC-managed themes)
+                syncThemeLibraryOneWay(store, micro);
+            }
+        }
+
+        // App-private eMMC cache: full library when store is public Internal.
+        if (app != null) {
+            File filesThemes = internalThemesDir(app);
+            if (filesThemes != null
+                    && !samePath(store, filesThemes)
+                    && (filesThemes.isDirectory() || filesThemes.mkdirs())) {
+                syncThemeLibraryOneWay(store, filesThemes);
+            }
+        }
+    }
+
+    /** True when paths resolve to the same directory. */
+    static boolean samePath(File a, File b) {
+        if (a == null || b == null) return false;
+        return a.getAbsolutePath().equals(b.getAbsolutePath());
+    }
+
+    /**
+     * Whether {@code src} theme folder should replace {@code dest}.
+     * Uses config.json length + mtime (FAT 2s skew); never parent-dir mtime.
+     */
+    static boolean themeFolderNeedsCopy(File src, File dest) {
+        if (src == null || !src.isDirectory()) return false;
+        File srcCfg = new File(src, "config.json");
+        if (!srcCfg.isFile() || srcCfg.length() <= 0) return false;
+        if (dest == null) return true;
+        File destCfg = new File(dest, "config.json");
+        if (!destCfg.isFile() || destCfg.length() <= 0) return true;
+        if (srcCfg.length() != destCfg.length()) return true;
+        // Source strictly newer (2s FAT skew) → copy
+        if (srcCfg.lastModified() > destCfg.lastModified() + 2000L) return true;
+        return false;
     }
 
     /** Copy theme folders from srcRoot → destRoot when missing or older at dest. */
     private static void syncThemeLibraryOneWay(File srcRoot, File destRoot) {
+        if (srcRoot == null || destRoot == null) return;
+        if (samePath(srcRoot, destRoot)) return;
         File[] kids = srcRoot.listFiles();
         if (kids == null) return;
         for (File src : kids) {
             if (!src.isDirectory() || src.getName().startsWith(".")) continue;
             if (!new File(src, "config.json").isFile()) continue;
             File dest = new File(destRoot, src.getName());
-            File destCfg = new File(dest, "config.json");
-            if (destCfg.isFile() && destCfg.length() > 0
-                    && src.lastModified() <= dest.lastModified()) {
-                continue;
-            }
+            if (!themeFolderNeedsCopy(src, dest)) continue;
             try {
-                if (!dest.exists()) dest.mkdirs();
+                if (!dest.exists() && !dest.mkdirs()) continue;
                 copyDirectory(src, dest);
+                // Align config mtime so reverse pass does not thrash.
+                File destCfg = new File(dest, "config.json");
+                File srcCfg = new File(src, "config.json");
+                if (destCfg.isFile() && srcCfg.isFile()) {
+                    destCfg.setLastModified(srcCfg.lastModified());
+                }
+                dest.setLastModified(src.lastModified());
             } catch (Exception ignored) {}
         }
     }
@@ -303,22 +403,41 @@ public class ThemeManager {
         if (ctx == null) return;
         Context app = ctx.getApplicationContext();
         assetContext = app;
-        // Keep public volumes in step before caching the active theme.
-        syncPublicThemesBidirectional(app);
+        // Mkdir store; full library mirror is async (do not block theme apply / boot).
+        ensureThemesRootReady(app);
         ThemeEntry active = getCurrentTheme();
-        if (active == null || active == bundledFallback || active.folderPath.startsWith("asset://")) {
+        if (active == null || active == bundledFallback
+                || (active.folderPath != null && active.folderPath.startsWith("asset://"))) {
             finishThemeCachePipeline(app);
             return;
         }
+        // Prefer MMC store path for runtime loads (fast + works when MicroSD ejected).
+        File store = canonicalThemesStore(app);
+        if (store != null) {
+            File storeDir = new File(store, active.folderName);
+            if (new File(storeDir, "config.json").isFile()) {
+                switchThemeEntryToInternal(app, active, storeDir);
+                // Also keep filesDir UMS cache current for export safety.
+                File filesDir = new File(internalThemesDir(app), active.folderName);
+                if (!samePath(storeDir, filesDir) && themeFolderNeedsCopy(storeDir, filesDir)) {
+                    try {
+                        if (!filesDir.exists()) filesDir.mkdirs();
+                        copyDirectory(storeDir, filesDir);
+                    } catch (Exception ignored) {}
+                }
+                finishThemeCachePipeline(app);
+                return;
+            }
+        }
         File cacheDir = new File(internalThemesDir(app), active.folderName);
         // Already on filesDir UMS cache — still refresh sidecars.
-        if (active.folderPath.startsWith(app.getFilesDir().getAbsolutePath())) {
+        if (active.folderPath != null
+                && active.folderPath.startsWith(app.getFilesDir().getAbsolutePath())) {
             finishThemeCachePipeline(app);
             return;
         }
         File sourceDir = new File(active.folderPath);
         if (!sourceDir.isDirectory()) {
-            // Prefer public Internal copy of the same folder name when available.
             File pub = com.solar.launcher.DeviceFeatures.getInternalPublicThemesDir();
             if (pub != null) {
                 File alt = new File(pub, active.folderName);
@@ -326,10 +445,7 @@ public class ThemeManager {
             }
         }
         if (!sourceDir.isDirectory()) return;
-        File cachedCfg = new File(cacheDir, "config.json");
-        // Skip full tree copy when filesDir cache is already up to date.
-        if (cachedCfg.isFile() && cachedCfg.length() > 0
-                && sourceDir.lastModified() <= cacheDir.lastModified()) {
+        if (!themeFolderNeedsCopy(sourceDir, cacheDir)) {
             switchThemeEntryToInternal(app, active, cacheDir);
             finishThemeCachePipeline(app);
             return;
@@ -1074,7 +1190,14 @@ public class ThemeManager {
     }
 
     public static void loadAllThemes(Context ctx) {
-        if (ctx != null) themesRootPath = resolveThemesRoot(ctx);
+        // Mkdir store + async mirror; never block scan on full tree copy.
+        if (ctx != null) {
+            ensureThemesRootReady(ctx);
+        } else if (assetContext != null) {
+            ensureThemesRootReady(assetContext);
+        } else {
+            themesRootPath = resolveThemesRoot(null);
+        }
         String prevFolder = availableThemes.isEmpty() ? null
                 : availableThemes.get(Math.min(currentThemeIndex, availableThemes.size() - 1)).folderName;
         availableThemes.clear();
@@ -1098,7 +1221,11 @@ public class ThemeManager {
     /** Rescan theme folders; clears stale bitmap cache so home icons match the active theme. */
     public static void rescanInstalled(Context ctx) {
         bitmapCache.clear();
-        if (ctx != null) themesRootPath = resolveThemesRoot(ctx);
+        if (ctx != null) {
+            ensureThemesRootReady(ctx);
+        } else {
+            themesRootPath = resolveThemesRoot(null);
+        }
         String prevFolder = availableThemes.isEmpty() ? BUILTIN_DEFAULT_FOLDER
                 : availableThemes.get(Math.min(currentThemeIndex, availableThemes.size() - 1)).folderName;
         availableThemes.clear();
@@ -1113,11 +1240,15 @@ public class ThemeManager {
         if (currentThemeIndex >= availableThemes.size()) currentThemeIndex = 0;
     }
 
+    /**
+     * Discover themes: scan MMC store first (load paths), then MicroSD only for names
+     * not already on the store (should be empty after a successful 1:1 sync).
+     */
     private static List<ThemeEntry> scanDiscoveredThemes() {
         List<ThemeEntry> out = new ArrayList<ThemeEntry>();
         Set<String> seen = new HashSet<String>();
-        File primaryRoot = new File(themesRootPath);
-        File defaultDir = new File(primaryRoot, BUILTIN_DEFAULT_FOLDER);
+        File storeRoot = new File(themesRootPath);
+        File defaultDir = new File(storeRoot, BUILTIN_DEFAULT_FOLDER);
         ThemeEntry def = parseFolder(defaultDir);
         if (def == null && bundledFallback != null) {
             def = bundledFallback;
@@ -1126,13 +1257,26 @@ public class ThemeManager {
             out.add(def);
             seen.add(BUILTIN_DEFAULT_FOLDER.toLowerCase(Locale.US));
         }
-        java.util.LinkedHashSet<String> rootPaths = new java.util.LinkedHashSet<String>();
-        rootPaths.add(primaryRoot.getAbsolutePath());
-        for (File themeRoot : com.solar.launcher.DeviceFeatures.getThemeRoots()) {
-            rootPaths.add(themeRoot.getAbsolutePath());
+        // 1) Canonical MMC store — primary load paths
+        scanRoot(storeRoot, seen, out);
+        // 2) filesDir UMS cache (same names skipped)
+        if (assetContext != null) {
+            File filesThemes = internalThemesDir(assetContext);
+            if (filesThemes != null && !samePath(storeRoot, filesThemes)) {
+                scanRoot(filesThemes, seen, out);
+            }
         }
-        for (String rootPath : rootPaths) {
-            scanRoot(new File(rootPath), seen, out);
+        // 3) MicroSD — only themes not yet on MMC (fail-open if sync could not write store)
+        File micro = com.solar.launcher.DeviceFeatures.getMicroSdThemesDir();
+        if (micro != null && !samePath(storeRoot, micro)) {
+            scanRoot(micro, seen, out);
+        }
+        // 4) Any other volume Themes/ (A5 dual paths, etc.)
+        for (File themeRoot : com.solar.launcher.DeviceFeatures.getThemeRoots()) {
+            if (themeRoot == null) continue;
+            if (samePath(storeRoot, themeRoot)) continue;
+            if (micro != null && samePath(micro, themeRoot)) continue;
+            scanRoot(themeRoot, seen, out);
         }
         if (out.isEmpty() && bundledFallback != null) {
             out.add(bundledFallback);

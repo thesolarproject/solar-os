@@ -10,7 +10,8 @@ public class WheelPhysicsTest {
         WheelPhysics.Result r = new WheelPhysics.Result();
         p.tick(1_000_000_000L, 1, r);
         assertEquals(1, r.rowSteps);
-        p.tick(1_500_000_000L, 1, r);
+        // > RESET gap
+        p.tick(1_000_000_000L + WheelPhysics.RESET_NANOS + 1, 1, r);
         assertEquals(1, r.rowSteps);
     }
 
@@ -19,8 +20,12 @@ public class WheelPhysicsTest {
         WheelPhysics.Result r = new WheelPhysics.Result();
         long t = 1_000_000_000L;
         for (int i = 0; i < 4; i++) p.tick(t += 40_000_000L, 1, r);
-        assertTrue(r.rowSteps >= 2 && r.rowSteps <= 4);
-        while (!r.sectionJump) p.tick(t += 40_000_000L, 1, r);
+        assertTrue(r.rowSteps >= 2 && r.rowSteps <= WheelPhysics.MAX_ROW_STEPS);
+        int guard = 0;
+        while (!r.sectionJump && guard++ < 40) {
+            p.tick(t += 40_000_000L, 1, r);
+        }
+        assertTrue("expected section jump under rapid spin", r.sectionJump);
         assertEquals(0, r.rowSteps);
     }
 
@@ -33,5 +38,38 @@ public class WheelPhysicsTest {
         assertEquals(1, r.rowSteps);
         p.tick(t += 30_000_000L, -1, r);
         assertEquals(1, r.rowSteps);
+    }
+
+    @Test public void signedMenuStepsAmplifiesBurst() {
+        WheelPhysics p = new WheelPhysics();
+        WheelPhysics.Result r = new WheelPhysics.Result();
+        long t = 2_000_000_000L;
+        int last = 0;
+        for (int i = 0; i < 3; i++) {
+            last = p.signedMenuSteps(t += 35_000_000L, 1, r);
+        }
+        assertTrue(Math.abs(last) >= 2);
+    }
+
+    @Test public void idleDecayClearsVelocity() {
+        WheelPhysics p = new WheelPhysics();
+        WheelPhysics.Result r = new WheelPhysics.Result();
+        long t = 3_000_000_000L;
+        for (int i = 0; i < 5; i++) p.tick(t += 25_000_000L, 1, r);
+        assertTrue(p.velocity() > 1f);
+        p.tick(t + WheelPhysics.RESET_NANOS + 1, 0, r);
+        assertEquals(0f, p.velocity(), 0.001f);
+    }
+
+    @Test public void lateNotchAfterPauseIsSingleStepNotFlywheel() {
+        WheelPhysics p = new WheelPhysics();
+        WheelPhysics.Result r = new WheelPhysics.Result();
+        long t = 4_000_000_000L;
+        for (int i = 0; i < 6; i++) p.tick(t += 20_000_000L, 1, r);
+        assertTrue(r.rowSteps >= 2 || r.sectionJump);
+        // Pause longer than RESET — next notch is 1 row, not multi-step coast.
+        p.tick(t + WheelPhysics.RESET_NANOS + 1, 1, r);
+        assertEquals(1, r.rowSteps);
+        assertFalse(r.sectionJump);
     }
 }

@@ -219,6 +219,7 @@ public final class UsbHostSessionPolicy {
         Context app = context.getApplicationContext();
         SharedPreferences prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         boolean wasDismissed = prefs.getBoolean(PREF_SESSION_DISMISSED, false);
+        // apply() — unplug path must not fsync SharedPreferences on the UI thread (jank).
         prefs.edit()
                 .putLong("usb_last_disconnect_time", SystemClock.elapsedRealtime())
                 .putBoolean(PREF_SESSION_ACTIVE, false)
@@ -226,11 +227,11 @@ public final class UsbHostSessionPolicy {
                 .putBoolean(PREF_SESSION_PROMPT_EVALUATED, false)
                 // Remember user dismiss for short flap only.
                 .putBoolean("usb_flap_keep_dismiss", wasDismissed)
-                .commit();
+                .apply();
         syncSessionSysprop(app, false);
         if (!prefs.getBoolean(PREF_HOST_DISC_SINCE_BOOT, false)) {
             long bootElapsed = prefs.getLong(PREF_BOOT_ELAPSED_RT, 0L);
-            prefs.edit().putBoolean(PREF_HOST_DISC_SINCE_BOOT, true).commit();
+            prefs.edit().putBoolean(PREF_HOST_DISC_SINCE_BOOT, true).apply();
             syncSysprops(app, prefs.getBoolean(PREF_BOOT_HOST_AT_BOOT, false), true, bootElapsed);
         }
         cancelPendingSettle();
@@ -422,9 +423,8 @@ public final class UsbHostSessionPolicy {
             Class<?> sp = Class.forName("android.os.SystemProperties");
             sp.getMethod("set", String.class, String.class).invoke(null, key, val);
         } catch (Exception e) {
-            if (RootShell.canRun()) {
-                RootShell.run("setprop " + key + " " + val);
-            }
+            // Never block unplug/session paths on su — async only.
+            RootShell.runAsync("setprop " + key + " " + val);
         }
     }
 

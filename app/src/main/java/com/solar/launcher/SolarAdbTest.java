@@ -62,4 +62,11 @@ final class SolarAdbTest {
                 + " centerCx=" + centerCx + " rightCx=" + rightCx
                 + " rightRotY=" + rightRotY + " rightWidth=" + rightWidth);
     }
+
+    /** Home menu focus after each synthetic wheel notch (scripts/test_home_wheel_realworld_adb.sh). */
+    static void homeFocus(int index, String id, String label) {
+        Log.i(TAG, "homeFocus idx=" + index
+                + " id=" + (id != null ? id : "")
+                + " label=" + (label != null ? label : ""));
+    }
 }

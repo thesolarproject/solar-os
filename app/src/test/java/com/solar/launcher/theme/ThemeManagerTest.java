@@ -80,6 +80,61 @@ public class ThemeManagerTest {
     }
 
     @Test
+    public void themeFolderNeedsCopy_missingDestOrConfigMismatch() throws Exception {
+        java.io.File tmp = new java.io.File(System.getProperty("java.io.tmpdir"),
+                "solar-theme-sync-" + System.nanoTime());
+        java.io.File src = new java.io.File(tmp, "src/Melody");
+        java.io.File dest = new java.io.File(tmp, "dest/Melody");
+        src.mkdirs();
+        dest.mkdirs();
+        java.io.File srcCfg = new java.io.File(src, "config.json");
+        writeBytes(srcCfg, "{\"name\":\"Melody\"}".getBytes("UTF-8"));
+        if (!ThemeManager.themeFolderNeedsCopy(src, dest)) {
+            throw new AssertionError("missing dest config should need copy");
+        }
+        java.io.File destCfg = new java.io.File(dest, "config.json");
+        writeBytes(destCfg, "{\"name\":\"Melody\"}".getBytes("UTF-8"));
+        destCfg.setLastModified(srcCfg.lastModified());
+        if (ThemeManager.themeFolderNeedsCopy(src, dest)) {
+            throw new AssertionError("matching config should skip copy");
+        }
+        writeBytes(destCfg, "{\"name\":\"OLD\"}".getBytes("UTF-8"));
+        if (!ThemeManager.themeFolderNeedsCopy(src, dest)) {
+            throw new AssertionError("size mismatch should need copy");
+        }
+        deleteTree(tmp);
+    }
+
+    @Test
+    public void samePath_matchesAbsolute() {
+        java.io.File a = new java.io.File("/storage/sdcard0/Themes");
+        java.io.File b = new java.io.File("/storage/sdcard0/Themes");
+        if (!ThemeManager.samePath(a, b)) {
+            throw new AssertionError("same path");
+        }
+        if (ThemeManager.samePath(a, new java.io.File("/storage/sdcard1/Themes"))) {
+            throw new AssertionError("different path");
+        }
+    }
+
+    private static void writeBytes(java.io.File file, byte[] data) throws Exception {
+        java.io.FileOutputStream fos = new java.io.FileOutputStream(file);
+        fos.write(data);
+        fos.close();
+    }
+
+    private static void deleteTree(java.io.File root) {
+        if (root == null || !root.exists()) return;
+        if (root.isDirectory()) {
+            String[] kids = root.list();
+            if (kids != null) {
+                for (String k : kids) deleteTree(new java.io.File(root, k));
+            }
+        }
+        root.delete();
+    }
+
+    @Test
     public void persistPathForTheme_builtinUsesThemesDefaultDir() {
         ThemeManager.ThemeEntry builtIn = new ThemeManager.ThemeEntry(
                 "asset://themes/default", "Default", "Aura", new JSONObject());

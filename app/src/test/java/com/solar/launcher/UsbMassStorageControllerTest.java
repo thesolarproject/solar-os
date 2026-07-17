@@ -81,4 +81,46 @@ public class UsbMassStorageControllerTest {
             throw new AssertionError("host CI should not have bound mass-storage LUN");
         }
     }
+
+    @Test
+    public void disconnectGraceHelperAcceptsWindow() {
+        if (!UsbMassStorageController.isWithinDisconnectGraceForTest(true, 100L, 500L, 4000L)) {
+            throw new AssertionError("expected within grace");
+        }
+        if (UsbMassStorageController.isWithinDisconnectGraceForTest(true, 100L, 5000L, 4000L)) {
+            throw new AssertionError("expected outside grace");
+        }
+        if (UsbMassStorageController.isWithinDisconnectGraceForTest(false, 100L, 200L, 4000L)) {
+            throw new AssertionError("inactive session never in grace");
+        }
+    }
+
+    @Test
+    public void disconnectConfirmMsIsPositive() {
+        if (UsbMassStorageController.DISCONNECT_CONFIRM_MS < 500L) {
+            throw new AssertionError("confirm window too short");
+        }
+    }
+
+    @Test
+    public void disconnectConfirmMsSurvivesMassStorageReenum() {
+        // Y1 re-enum often exceeds 2s; teardown at 2s cleared eject UI mid-enable (2026-07-16).
+        if (UsbMassStorageController.DISCONNECT_CONFIRM_MS < 8000L) {
+            throw new AssertionError("confirm window must outlast mass_storage re-enum; was "
+                    + UsbMassStorageController.DISCONNECT_CONFIRM_MS);
+        }
+    }
+
+    @Test
+    public void invalidateProbeCacheIsSafe() {
+        UsbMassStorageController.invalidateProbeCache();
+        // Host CI has no mass_storage LUN
+        if (UsbMassStorageController.isMassStorageExported()) {
+            throw new AssertionError("host CI should not report UMS exported");
+        }
+        UsbMassStorageController.clearUserSession();
+        if (UsbMassStorageController.isUserSessionActive()) {
+            throw new AssertionError("session should clear without device");
+        }
+    }
 }

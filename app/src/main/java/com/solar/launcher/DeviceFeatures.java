@@ -324,8 +324,9 @@ public final class DeviceFeatures {
     }
 
     /**
-     * Public Internal Themes/ folder when Internal exists; else null.
-     * 2026-07-15 — Canonical theme install/load root (filesDir is UMS cache only).
+     * Public Internal (eMMC) Themes/ folder when Internal volume exists; else null.
+     * 2026-07-17 — Canonical theme <b>store</b> for load (with filesDir fallback in ThemeManager).
+     * MicroSD Themes/ is the 1:1 manage mirror only.
      */
     public static File getInternalPublicThemesDir() {
         File internal = getInternalStorageRoot();
@@ -335,7 +336,7 @@ public final class DeviceFeatures {
 
     /**
      * MicroSD Themes/ folder when the card is healthy; else null.
-     * 2026-07-15 — Peer mirror for bidirectional theme sync.
+     * 2026-07-17 — 1:1 peer mirror of the MMC theme store (users may manage either folder).
      */
     public static File getMicroSdThemesDir() {
         File micro = getMicroSdRoot();

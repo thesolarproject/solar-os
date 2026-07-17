@@ -87,7 +87,7 @@ public class GlobalInputPolicyTest {
         assertEquals(7000L, GlobalInputPolicy.HUD_COUNTDOWN_START_MS);
         assertEquals(10000L, GlobalInputPolicy.RESCUE_EXECUTE_MS);
         assertEquals(10000L, GlobalInputPolicy.RESCUE_HOLD_MS);
-        assertEquals(23, GlobalInputPolicy.POLICY_REV);
+        assertEquals(25, GlobalInputPolicy.POLICY_REV);
     }
 
     @Test

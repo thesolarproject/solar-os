@@ -942,6 +942,9 @@ public final class OverlayModalHost {
         // #endregion
         final Context app = context.getApplicationContext();
         ThemeManager.prepareThemeForUsbStorage(app);
+        // 2026-07-16 — Hand off to Solar eject screen first (blocks menus + stops media), then enable.
+        // Was: only launch after enable succeeded — re-enum blips left user without a lock UI.
+        UsbStorageOverlayReceiver.launchSolarUsbHandoff(app, false, true);
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -957,13 +960,15 @@ public final class OverlayModalHost {
                             "enable thread result", "H1,H3", d);
                 } catch (Exception ignored) {}
                 // #endregion
-                if (ok && exported) {
-                    // Solar MainActivity owns the lock screen — not a second overlay tier.
+                if (ok || exported || UsbMassStorageController.isKernelMassStorageMode()) {
+                    // Re-assert Solar lock after USB re-enum.
                     UsbStorageOverlayReceiver.launchSolarUsbHandoff(app, false, true);
+                } else {
+                    UsbMassStorageController.clearUserSession();
                 }
             }
         }, "UsbUmsEnableEarly").start();
-        // Tear down enable prompt; Solar paints STATE_USB_STORAGE after enable succeeds.
+        // Tear down enable prompt; Solar owns STATE_USB_STORAGE for the rest of the cable session.
         dismissListener.onDismissOverlay();
     }
 

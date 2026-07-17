@@ -28,7 +28,7 @@ import okhttp3.FormBody;
  */
 public final class ScrobbleManager {
     private static final String TAG = "ScrobbleManager";
-    private static final String PREFS_NAME = "com.solar.launcher_preferences";
+    private static final String PREFS_NAME = "SOLAR_SETTINGS";
 
     public static final String PREF_LASTFM_ENABLED = "scrobble_lastfm_enabled";
     public static final String PREF_LASTFM_USERNAME = "scrobble_lastfm_username";
@@ -303,46 +303,11 @@ public final class ScrobbleManager {
 
             @Override
             protected String doInBackground(Void... voids) {
-                SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-                String apiKey = prefs.getString(PREF_LASTFM_API_KEY, DEFAULT_LASTFM_API_KEY);
-                String apiSecret = prefs.getString(PREF_LASTFM_API_SECRET, DEFAULT_LASTFM_API_SECRET);
-
-                Map<String, String> params = new HashMap<String, String>();
-                params.put("method", "auth.getMobileSession");
-                params.put("username", username);
-                params.put("password", password);
-                params.put("api_key", apiKey);
-
-                String sig = createLastFmSignature(params, apiSecret);
-                params.put("api_sig", sig);
-                params.put("format", "json");
-
-                FormBody.Builder fb = new FormBody.Builder();
-                for (Map.Entry<String, String> entry : params.entrySet()) {
-                    fb.add(entry.getKey(), entry.getValue());
+                String result = authenticateLastFmSync(ctx, username, password);
+                if (result != null && result.startsWith("Connected to Last.fm")) {
+                    success = true;
                 }
-                try {
-                    String respJson = SolarHttp.postForm(LASTFM_API_URL, fb.build());
-                    JSONObject json = new JSONObject(respJson);
-                    if (json.has("session")) {
-                        JSONObject session = json.getJSONObject("session");
-                        String sk = session.getString("key");
-                        String name = session.optString("name", username);
-                        prefs.edit()
-                                .putString(PREF_LASTFM_SK, sk)
-                                .putString(PREF_LASTFM_USERNAME, name)
-                                .putBoolean(PREF_LASTFM_ENABLED, true)
-                                .apply();
-                        success = true;
-                        return "Connected to Last.fm (" + name + ")";
-                    } else if (json.has("message")) {
-                        return json.getString("message");
-                    } else {
-                        return "Failed to parse Last.fm session";
-                    }
-                } catch (Exception e) {
-                    return "Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
-                }
+                return result;
             }
 
             @Override
@@ -350,6 +315,51 @@ public final class ScrobbleManager {
                 if (callback != null) callback.onResult(success, msg != null ? msg : "Unknown error");
             }
         }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    }
+
+    public static String authenticateLastFmSync(Context ctx, String username, String password) {
+        if (ctx == null || username == null || username.trim().isEmpty() || password == null || password.trim().isEmpty()) {
+            return "Username and password required";
+        }
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String apiKey = prefs.getString(PREF_LASTFM_API_KEY, DEFAULT_LASTFM_API_KEY);
+        String apiSecret = prefs.getString(PREF_LASTFM_API_SECRET, DEFAULT_LASTFM_API_SECRET);
+
+        Map<String, String> params = new HashMap<String, String>();
+        params.put("method", "auth.getMobileSession");
+        params.put("username", username.trim());
+        params.put("password", password.trim());
+        params.put("api_key", apiKey);
+
+        String sig = createLastFmSignature(params, apiSecret);
+        params.put("api_sig", sig);
+        params.put("format", "json");
+
+        FormBody.Builder fb = new FormBody.Builder();
+        for (Map.Entry<String, String> entry : params.entrySet()) {
+            fb.add(entry.getKey(), entry.getValue());
+        }
+        try {
+            String respJson = SolarHttp.postForm(LASTFM_API_URL, fb.build());
+            JSONObject json = new JSONObject(respJson);
+            if (json.has("session")) {
+                JSONObject session = json.getJSONObject("session");
+                String sk = session.getString("key");
+                String name = session.optString("name", username.trim());
+                prefs.edit()
+                        .putString(PREF_LASTFM_SK, sk)
+                        .putString(PREF_LASTFM_USERNAME, name)
+                        .putBoolean(PREF_LASTFM_ENABLED, true)
+                        .apply();
+                return "Connected to Last.fm (" + name + ")";
+            } else if (json.has("message")) {
+                return json.getString("message");
+            } else {
+                return "Failed to parse Last.fm session";
+            }
+        } catch (Exception e) {
+            return "Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        }
     }
 
     private static String createLastFmSignature(Map<String, String> params, String secret) {

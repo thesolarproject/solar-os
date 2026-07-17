@@ -6,9 +6,19 @@
 # Reversal: restore UmsEnabler-only path in UsbMassStorageController if shell enable is retired.
 
 MODEL="$(getprop ro.product.model 2>/dev/null)"
+# 2026-07-16 — Y1 dual-volume (sdcard0+sdcard1) like Y2; single-volume devices share what exists.
+# Layman: export every user-visible card so the PC sees the same drives as the player.
+# Was: Y1 only /storage/sdcard0 — second card never bound when present.
 VOLS="/storage/sdcard0"
 case "$MODEL" in
-  Y2|*Y2*) VOLS="/storage/sdcard0 /storage/sdcard1" ;;
+  Y2|*Y2*|Y1|*Y1*)
+    VOLS=""
+    for p in /storage/sdcard0 /storage/sdcard1; do
+      [ -e "$p" ] && VOLS="$VOLS $p"
+    done
+    VOLS="${VOLS# }"
+    [ -z "$VOLS" ] && VOLS="/storage/sdcard0"
+    ;;
 esac
 
 # Session 705932 — append one NDJSON line for debug-mode analysis.
@@ -103,28 +113,27 @@ recover_desync() {
 }
 
 # Push mass_storage,adb through setprop and optional sysfs write when setprop stalls.
-# 2026-07-16 — Keep persist.sys.usb.config on the safe default (adb / mtp,adb).
-# Layman: disk mode is only for this plug session; next connect must not auto-share disks.
-# Tech: MTK often mirrors sys→persist on setprop; pin persist after enabling kernel UMS.
+# 2026-07-16 — Keep persist ON mass_storage for the armed session (re-enum must not snap back to adb).
+# Layman: once you turn disk mode on, the PC keeps seeing the disk until you turn it off or unplug.
+# Was: pin persist→adb immediately after enable — UsbDeviceManager re-applied adb after re-enum and
+# killed mass_storage before the host could mount (LUN often left stale, UI then unlocked).
+# Tech: MTK mirrors sys→persist and reloads Default Functions from persist on CONFIGURED.
+# Boot + disable still clear sticky mass_storage (ensureNoStickyAutoUmsOnBoot / solar-disable-ums).
+# Reversal: restore mid-enable persist pin only if a ROM reboots into auto-export without boot clear.
 apply_kernel_ums() {
   setprop sys.usb.config mass_storage,adb
+  # Match persist so re-enum / UsbDeviceManager Default Functions stay on disk mode.
+  setprop persist.sys.usb.config mass_storage,adb
+  if [ -d /data/property ]; then
+    echo -n "mass_storage,adb" > /data/property/persist.sys.usb.config 2>/dev/null
+    chmod 600 /data/property/persist.sys.usb.config 2>/dev/null
+  fi
   if ! wait_kernel_ums; then
     if [ -w /sys/class/android_usb/android0/functions ]; then
       echo mass_storage,adb >/sys/class/android_usb/android0/functions 2>/dev/null
     fi
   fi
   wait_kernel_ums
-  # Pin non-mass_storage persist so reboot/replug never auto-exports.
-  MODEL="$(getprop ro.product.model 2>/dev/null)"
-  PERSIST_SAFE="adb"
-  case "$MODEL" in
-    Y2|*Y2*) PERSIST_SAFE="mtp,adb" ;;
-  esac
-  setprop persist.sys.usb.config "$PERSIST_SAFE"
-  if [ -d /data/property ]; then
-    echo -n "$PERSIST_SAFE" > /data/property/persist.sys.usb.config 2>/dev/null
-    chmod 600 /data/property/persist.sys.usb.config 2>/dev/null
-  fi
 }
 
 # Resolve block node for one volume path via mounts, vdc list, or vold nodes.
@@ -203,11 +212,39 @@ bind_block_to_lun() {
 }
 
 # Share every export volume through vold once kernel is on mass_storage.
+# 2026-07-16 — Snapshot block nodes, unmount all, share all, then sysfs-bind any missing LUNs.
 share_all_volumes() {
+  blks=""
+  for vol in $VOLS; do
+    b="$(block_for_volume "$vol")"
+    [ -n "$b" ] && blks="$blks $b"
+  done
+  blks="${blks# }"
+  for vol in $VOLS; do
+    vdc volume unmount "$vol" force 2>/dev/null
+  done
+  sleep 0.5
   for vol in $VOLS; do
     vdc volume share "$vol" ums 2>/dev/null
-    sleep 1
+    sleep 0.5
   done
+  # vdc share often binds only one LUN on dual-card Y1 — fill free LUNs from snapshot.
+  for blk in $blks; do
+    if [ -n "$blk" ] && [ -e "$blk" ]; then
+      # Skip if already bound on some lun
+      already=0
+      for f in \
+          /sys/class/android_usb/android0/f_mass_storage/lun/file \
+          /sys/class/android_usb/android0/f_mass_storage/lun0/file \
+          /sys/class/android_usb/android0/f_mass_storage/lun1/file; do
+        cur="$(cat "$f" 2>/dev/null)"
+        [ "$cur" = "$blk" ] && already=1
+      done
+      [ "$already" = "1" ] && continue
+      bind_block_to_lun "$blk"
+    fi
+  done
+  sleep 0.5
 }
 
 # Poll until dumpsys or lun sysfs shows a backing block device — fast early ticks (2026-07-05).
@@ -231,16 +268,40 @@ wait_lun_bound() {
 }
 
 # Direct LUN bind when vdc share never populated lun/file (Y1 API17 fallback).
+# 2026-07-16 — Snapshot block nodes while mounted, unmount, then bind (mounted bind often no-ops).
 bind_fallback() {
+  # Capture block paths before unmount empties /proc/mounts.
+  blks=""
+  for vol in $VOLS; do
+    b="$(block_for_volume "$vol")"
+    [ -n "$b" ] && blks="$blks $b"
+  done
+  blks="${blks# }"
+  for vol in $VOLS; do
+    vdc volume unmount "$vol" force 2>/dev/null
+  done
+  sleep 0.5
+  bound_any=0
+  for blk in $blks; do
+    if [ -n "$blk" ] && [ -e "$blk" ] && bind_block_to_lun "$blk"; then
+      bound_any=1
+      sleep 0.5
+    fi
+  done
+  if [ "$bound_any" = "1" ] && wait_lun_bound; then
+    return 0
+  fi
+  # Last resort: try resolve again (some images keep vold nodes after unmount).
   for vol in $VOLS; do
     blk="$(block_for_volume "$vol")"
     if [ -n "$blk" ] && bind_block_to_lun "$blk"; then
-      sleep 1
-      if wait_lun_bound; then
-        return 0
-      fi
+      bound_any=1
+      sleep 0.5
     fi
   done
+  if [ "$bound_any" = "1" ] && wait_lun_bound; then
+    return 0
+  fi
   return 1
 }
 
@@ -333,7 +394,28 @@ enable_y2_ums_enabler() {
   return 1
 }
 
+# True when every export volume has a non-empty LUN (dual-card Y1 must export both).
+all_luns_for_vols() {
+  need=0
+  for _v in $VOLS; do
+    need=$((need + 1))
+  done
+  [ "$need" -le 0 ] && need=1
+  have=0
+  for f in \
+      /sys/class/android_usb/android0/f_mass_storage/lun/file \
+      /sys/class/android_usb/android0/f_mass_storage/lun0/file \
+      /sys/class/android_usb/android0/f_mass_storage/lun1/file; do
+    if [ -r "$f" ]; then
+      line="$(cat "$f" 2>/dev/null)"
+      [ -n "$line" ] && have=$((have + 1))
+    fi
+  done
+  [ "$have" -ge "$need" ]
+}
+
 # Y1 / fallback: setprop sync + vdc share + sysfs bind fallback.
+# 2026-07-16 — Wait for USB re-enum to finish before share/bind; re-bind if re-enum clears LUNs.
 enable_setprop_vdc() {
   dbg_705932 "solar-enable-ums.enable_setprop_vdc" "start" "H3" "\"model\":\"$MODEL\""
   recover_desync
@@ -342,13 +424,27 @@ enable_setprop_vdc() {
     echo "UMS enable failed: kernel never reached mass_storage ($MODEL)" >&2
     return 2
   fi
-  share_all_volumes
-  if wait_lun_bound; then
-    dbg_705932 "solar-enable-ums.enable_setprop_vdc" "ok" "H3" "\"model\":\"$MODEL\""
-    return 0
+  # Re-enum after setprop mass_storage can wipe lun/file if we share too early.
+  # Layman: give the cable a moment to finish “disk mode” before attaching cards.
+  sleep 2
+  if ! wait_kernel_ums; then
+    dbg_705932 "solar-enable-ums.enable_setprop_vdc" "kernel lost after settle" "H3" "\"model\":\"$MODEL\""
+    echo "UMS enable failed: mass_storage lost during re-enum ($MODEL)" >&2
+    return 2
   fi
-  if bind_fallback; then
-    dbg_705932 "solar-enable-ums.enable_setprop_vdc" "ok bind_fallback" "H3" "\"model\":\"$MODEL\""
+  # Snapshot blocks while still mounted, then unmount+share+sysfs bind.
+  share_all_volumes
+  if ! all_luns_for_vols; then
+    bind_fallback
+  fi
+  # Second pass: re-enum sometimes clears the first LUN after the second share.
+  sleep 1
+  if ! all_luns_for_vols; then
+    bind_fallback
+  fi
+  if wait_lun_bound; then
+    # Prefer dual bind when two volumes exist; single LUN still counts as success.
+    dbg_705932 "solar-enable-ums.enable_setprop_vdc" "ok" "H3" "\"model\":\"$MODEL\",\"dual\":\"$(all_luns_for_vols && echo 1 || echo 0)\""
     return 0
   fi
   dbg_705932 "solar-enable-ums.enable_setprop_vdc" "fail" "H3" "\"model\":\"$MODEL\""

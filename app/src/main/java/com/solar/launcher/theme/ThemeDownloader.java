@@ -1049,6 +1049,8 @@ public class ThemeDownloader {
                 throw new Exception("Download incomplete: missing " + still);
             }
             endSession(true, total + " assets, " + skipped + " skipped, " + skipped404.size() + " 404-skipped");
+            // 2026-07-17 — Push new install to MicroSD mirror (async — never block download thread UI).
+            ThemeManager.scheduleThemeLibrarySync(null, true);
         } catch (Exception e) {
             dlLogError("downloadTheme", e);
             endSession(false, e.getMessage());
@@ -1166,6 +1168,7 @@ public class ThemeDownloader {
                 throw new Exception("Variant download incomplete: missing " + still);
             }
             endSession(true, installFolder);
+            ThemeManager.scheduleThemeLibrarySync(null, true);
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();

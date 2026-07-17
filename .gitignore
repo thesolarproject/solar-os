@@ -71,3 +71,11 @@ local.solar-diag.properties
 # Local developer Soulseek diag probe reference (not for users)
 slkseekdiagref.md
 **/slkseekdiagref.md
+
+# Local capture dumps (if any)
+/captures/
+session_data/
+**/session_data/
+**/secrets.local
+**/secrets.local.*
+

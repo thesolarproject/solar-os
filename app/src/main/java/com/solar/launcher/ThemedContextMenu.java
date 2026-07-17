@@ -294,6 +294,26 @@ public final class ThemedContextMenu {
         return overlay != null && overlay.getParent() != null;
     }
 
+    /**
+     * 2026-07-16 — True when the options list has at least one activatable row.
+     * Layman: used to detect a stuck empty USB Connection shell (title bar, no Turn on/Dismiss).
+     */
+    public boolean hasFocusableListRows() {
+        if (labels == null || labels.length == 0) return false;
+        int[] focusable = focusableIndices();
+        return focusable != null && focusable.length > 0;
+    }
+
+    /**
+     * 2026-07-16 — Abort in-flight list drill so a hard repaint is not clobbered by a late build().
+     * Layman: when reopening USB Connection, do not leave a half-finished slide animation.
+     */
+    public void cancelPendingListDrill() {
+        if (itemsScroll instanceof ViewGroup) {
+            com.solar.launcher.ui.ListDrillTransition.resetHost((ViewGroup) itemsScroll);
+        }
+    }
+
     public boolean isEnterExitAnimating() {
         return modalEnterExitAnimating || ModalTransition.isAnimating();
     }
@@ -570,6 +590,46 @@ public final class ThemedContextMenu {
                 }
             });
         }
+    }
+
+    /**
+     * 2026-07-16 — USB Connection (and similar action-only sheets): wheel stays on list rows.
+     * Layman: Turn on / Dismiss scroll together; never jump into Wi‑Fi volume chips.
+     * Reversal: use moveFocus() which exits the list top into the quick bar.
+     */
+    public void moveListFocusOnly(int delta) {
+        if (delta == 0 || labels == null || labels.length == 0) return;
+        submenuTierOpen = true;
+        optionsListVisible = true;
+        ensureSubmenuListVisible();
+        if (!isMenuListZone() || focusIndex < 0) {
+            enterMenuListFocus(firstFocusableIndex(0));
+        }
+        focusZone = FocusZone.TIER_CONTENT;
+        int[] focusable = focusableIndices();
+        if (focusable.length == 0) return;
+        if (focusable.length == 1) {
+            focusIndex = focusable[0];
+            refreshAll();
+            scrollFocusIntoView();
+            return;
+        }
+        int pos = 0;
+        for (int i = 0; i < focusable.length; i++) {
+            if (focusable[i] == focusIndex) {
+                pos = i;
+                break;
+            }
+        }
+        int nextPos = pos + delta;
+        if (nextPos < 0) nextPos = focusable.length - 1;
+        else if (nextPos >= focusable.length) nextPos = 0;
+        int next = focusable[nextPos];
+        if (next == focusIndex) return;
+        focusIndex = next;
+        refreshAll();
+        scrollFocusIntoView();
+        requestOverlayFocus();
     }
 
     /** Focus a specific tier list row (queue tutorial "Got it" below scrollable intro). */

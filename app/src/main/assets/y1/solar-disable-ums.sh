@@ -5,11 +5,11 @@
 # Y2: unshare + USB=mtp,adb (product uses MTP; UMS not supported).
 
 MODEL="$(getprop ro.product.model 2>/dev/null)"
-VOLS="/storage/sdcard0"
+# 2026-07-16 — Unshare every known export path (Y1 often has both sdcard0 and sdcard1).
+VOLS="/storage/sdcard0 /storage/sdcard1"
 USB_AFTER="adb"
 case "$MODEL" in
   Y2|*Y2*)
-    VOLS="/storage/sdcard0 /storage/sdcard1"
     USB_AFTER="mtp,adb"
     ;;
 esac
@@ -17,7 +17,9 @@ esac
 for vol in $VOLS; do
   vdc volume unshare "$vol" ums 2>/dev/null
 done
-sleep 0.5
+# 2026-07-17 — Was sleep 0.5; shorter settle so unplug after disk mode feels snappy.
+# LUN clear + setprop below are enough for host drop; long sleep stacked with dual teardown jank.
+sleep 0.12
 # Always clear LUN nodes before mode switch — stale lun/file caused false “USB storage on”.
 for lun in \
     /sys/class/android_usb/android0/f_mass_storage/lun/file \

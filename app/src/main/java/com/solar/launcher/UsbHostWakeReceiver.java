@@ -47,16 +47,33 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
         } catch (Exception ignored) {}
         // #endregion
         if (isUsbDisconnectIntent(intent)) {
-            UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(context);
-            UsbStorageConcierge.clearOnUsbDisconnect();
-            UsbHostSessionPolicy.onUsbHostDisconnected(context);
+            // 2026-07-16 — Armed UMS session: re-enum looks like unplug — wait then re-check sticky USB_STATE.
+            // Layman: Turn on storage stays on until the cable is really out.
+            // Tech: MainActivity helper also debounces; this path covers process-alive manifest receiver races.
             final android.content.BroadcastReceiver.PendingResult pending = goAsync();
             final Context app = context.getApplicationContext();
+            final boolean defer = UsbMassStorageController.shouldDeferDisconnectTeardown();
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        UsbMassStorageController.disableIfExported(app);
+                        if (defer) {
+                            try {
+                                Thread.sleep(UsbMassStorageController.DISCONNECT_CONFIRM_MS);
+                            } catch (InterruptedException ignored) {}
+                            try {
+                                Intent sticky = app.registerReceiver(null,
+                                        new android.content.IntentFilter(ACTION_USB_STATE));
+                                if (sticky != null && sticky.getBooleanExtra("connected", false)) {
+                                    // Re-enum blip — keep UMS session.
+                                    return;
+                                }
+                            } catch (Exception ignored) {}
+                        }
+                        UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(app);
+                        UsbStorageConcierge.clearOnUsbDisconnect();
+                        UsbHostSessionPolicy.onUsbHostDisconnected(app);
+                        UsbMassStorageController.teardownAfterConfirmedUnplug(app);
                     } finally {
                         pending.finish();
                     }

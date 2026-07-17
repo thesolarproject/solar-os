@@ -59,6 +59,8 @@ public final class Y1UsbFocusHelper {
     private boolean reclaimSuspended = false;
     private long lastBringToFrontFullMs = 0L;
     private long lastHostDisconnectAtMs = 0L;
+    /** Pending confirm that cable really left (not mass_storage re-enum). */
+    private Runnable pendingDisconnectConfirm;
 
     public Y1UsbFocusHelper(Activity activity, UsbListener listener) {
         this.activity = activity;
@@ -80,6 +82,10 @@ public final class Y1UsbFocusHelper {
 
     public void onDestroy() {
         stopUmsWatchdog();
+        if (pendingDisconnectConfirm != null) {
+            handler.removeCallbacks(pendingDisconnectConfirm);
+            pendingDisconnectConfirm = null;
+        }
         if (usbRegistered && usbReceiver != null) {
             try { activity.unregisterReceiver(usbReceiver); } catch (Exception ignored) {}
             usbRegistered = false;
@@ -148,21 +154,21 @@ public final class Y1UsbFocusHelper {
         // #endregion
 
         if (!connected && usbConnected) {
-            android.util.Log.d("UsbFocus", "USB cable disconnected");
-            lastHostDisconnectAtMs = System.currentTimeMillis();
-            usbConnected = false;
-            hostConnected = false;
-            reclaimSuspended = false;
-            massStorageIntercept = false;
-            userDeclinedHostSession = false;
-            interceptPaused = false;
-            // ponytail: dismiss global USB overlay prompt when unplugged and app is running dynamically
-            UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(activity);
-            UsbStorageConcierge.clearOnUsbDisconnect();
-            UsbHostSessionPolicy.onUsbHostDisconnected(activity.getApplicationContext());
-            stopUmsWatchdog();
-            if (listener != null) listener.onUsbStateChanged(false);
+            // 2026-07-16 — mass_storage enable re-enums USB (connected=false for a beat).
+            // Layman: Turn on storage must not drop the eject screen or kill disk mode mid-switch.
+            // Tech: debounce while user UMS session / lock intercept is armed; confirm via sticky USB_STATE.
+            if (massStorageIntercept || UsbMassStorageController.shouldDeferDisconnectTeardown()) {
+                scheduleDisconnectConfirm();
+                return;
+            }
+            applyConfirmedCableDisconnect();
             return;
+        }
+
+        // Re-enum came back before debounce fired — cancel false unplug.
+        if (connected && pendingDisconnectConfirm != null) {
+            handler.removeCallbacks(pendingDisconnectConfirm);
+            pendingDisconnectConfirm = null;
         }
 
         if (connected && host && !hostConnected) {
@@ -223,6 +229,72 @@ public final class Y1UsbFocusHelper {
                 }, 200);
             }
         }
+    }
+
+    /**
+     * 2026-07-16 — Wait for stable unplug before clearing UMS lock / session.
+     * Layman: only leave the eject screen after the cable has really been pulled.
+     */
+    private void scheduleDisconnectConfirm() {
+        if (pendingDisconnectConfirm != null) {
+            handler.removeCallbacks(pendingDisconnectConfirm);
+        }
+        pendingDisconnectConfirm = new Runnable() {
+            @Override
+            public void run() {
+                pendingDisconnectConfirm = null;
+                try {
+                    Intent sticky = activity.registerReceiver(null, new IntentFilter(ACTION_USB_STATE));
+                    if (sticky != null && sticky.getBooleanExtra(EXTRA_USB_CONNECTED, false)) {
+                        // Still plugged — re-enum blip only.
+                        usbConnected = true;
+                        final boolean extraHost = sticky.getBooleanExtra(EXTRA_HOST_CONNECTED, false);
+                        final boolean extraMassStorage = sticky.getBooleanExtra("mass_storage", false);
+                        final boolean extraPcKnow = sticky.getBooleanExtra("USB_IS_PC_KNOW_ME", false);
+                        final boolean configured = sticky.getBooleanExtra("configured", false);
+                        hostConnected = extraHost || extraMassStorage || extraPcKnow
+                                || configured
+                                || hostConnected
+                                || massStorageIntercept;
+                        android.util.Log.d("UsbFocus", "disconnect confirm cancelled — still connected");
+                        return;
+                    }
+                } catch (Exception ignored) {}
+                applyConfirmedCableDisconnect();
+            }
+        };
+        handler.postDelayed(pendingDisconnectConfirm, UsbMassStorageController.DISCONNECT_CONFIRM_MS);
+        android.util.Log.d("UsbFocus", "USB disconnect deferred "
+                + UsbMassStorageController.DISCONNECT_CONFIRM_MS + "ms (UMS session)");
+    }
+
+    /** Real cable out — clear intercept state and notify MainActivity once. */
+    private void applyConfirmedCableDisconnect() {
+        android.util.Log.d("UsbFocus", "USB cable disconnected (confirmed)");
+        lastHostDisconnectAtMs = System.currentTimeMillis();
+        usbConnected = false;
+        hostConnected = false;
+        reclaimSuspended = false;
+        massStorageIntercept = false;
+        userDeclinedHostSession = false;
+        interceptPaused = false;
+        if (pendingDisconnectConfirm != null) {
+            handler.removeCallbacks(pendingDisconnectConfirm);
+            pendingDisconnectConfirm = null;
+        }
+        UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(activity);
+        UsbStorageConcierge.clearOnUsbDisconnect();
+        UsbHostSessionPolicy.onUsbHostDisconnected(activity.getApplicationContext());
+        stopUmsWatchdog();
+        // Confirmed unplug: drop kernel UMS then unlock UI via listener.
+        final Context app = activity.getApplicationContext();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                UsbMassStorageController.teardownAfterConfirmedUnplug(app);
+            }
+        }, "UsbConfirmedUnplugUms").start();
+        if (listener != null) listener.onUsbStateChanged(false);
     }
 
     /**
