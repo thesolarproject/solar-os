@@ -317,6 +317,8 @@ public final class SolarDiagnosticReporter {
     static void notifyDevelopersPoweredOff(Context context, SharedPreferences prefs,
             boolean restart) {
         if (context == null || prefs == null) return;
+        // 2026-07-17 — Soulseek off: no power-off PM sockets (opt-in only).
+        if (!com.solar.launcher.ReachPolicy.allowsBackgroundSoulseekWork(prefs)) return;
         try {
             SoulseekAccount acct = SoulseekAccount.load(prefs, context);
             String username = acct != null ? acct.username : "";

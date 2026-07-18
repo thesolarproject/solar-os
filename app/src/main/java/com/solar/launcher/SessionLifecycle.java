@@ -6,8 +6,9 @@ import org.json.JSONObject;
 
 /**
  * 2026-07-15 — Stop screen-bound work when leaving a feature; keep real sessions that must live on.
- * Layman: leaving Search stops hammering results; leaving Reach still lets messages pop up.
- * Technical: cancel search/UI flush on Soulseek leave; keep client when Reach is enabled (PM path).
+ * Layman: leaving Search stops hammering results; leaving Reach still lets messages pop up
+ * only when Soulseek service is enabled (opt-in; default off for heat/perf).
+ * Technical: cancel search/UI flush on Soulseek leave; keep client when Soulseek is enabled (PM path).
  * Was: full client teardown on leave → no PM context popups off the Reach screen.
  * ponytail: one leave hook, callers already use {@link #onLeaveScreen}.
  */
@@ -17,8 +18,9 @@ public final class SessionLifecycle {
 
     /**
      * 2026-07-15 — Whether Reach client stays after leaving the Soulseek UI.
-     * Layman: if Reach is turned on, stay connected for chat popups.
-     * Tech: keep-for-keyboard/stream OR account still active.
+     * Layman: if Soulseek is enabled, stay connected for chat popups.
+     * Tech: keep-for-keyboard/stream OR service still active. When service is off (default),
+     * always tear down so no background sockets keep the device warm.
      */
     static boolean shouldKeepSoulseekClient(boolean keepForScreen, boolean soulseekServiceActive) {
         return keepForScreen || soulseekServiceActive;
