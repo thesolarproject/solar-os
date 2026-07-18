@@ -44,4 +44,25 @@ public class GetMusicSourcesTest {
     public void soulseekEnabledPrefKey() {
         assertEquals("soulseek_enabled", SoulseekAccount.PREF_SOULSEEK_ENABLED);
     }
+
+    @Test
+    public void soulseekDefaultsOff_deezerRemainsSearchable() {
+        // Unset pref → Soulseek inactive; Deezer still participates in Get Music search.
+        assertFalse(ReachPolicy.isSoulseekPrefEnabled(null));
+        assertFalse(ReachPolicy.isSoulseekActive(null));
+        assertFalse(ReachPolicy.allowsBackgroundSoulseekWork(null));
+        ConnectivityHelper.setReachPeerOk(true);
+        int mode = GetMusicSources.resolveGetMusicUiMode(null, false, true);
+        assertEquals(GetMusicSources.MODE_DEEZER_ONLY, mode);
+        assertEquals(GetMusicSources.SUBTITLE_DEEZER,
+                GetMusicSources.activeSourceSubtitle(null, false, true));
+    }
+
+    @Test
+    public void backgroundSoulseekWork_requiresMasterAndService() {
+        assertFalse(ReachPolicy.allowsBackgroundSoulseekWork(null));
+        // Explicit-on path is covered by prefs in device runs; static defaults stay cold.
+        assertTrue(ReachPolicy.isMasterEnabled(null));
+        assertFalse(ReachPolicy.isSoulseekPrefEnabled(null));
+    }
 }

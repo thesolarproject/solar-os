@@ -3,6 +3,8 @@ package com.solar.launcher.soulseek;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.solar.launcher.ReachPolicy;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -52,6 +54,7 @@ public final class SolarDeveloperOutbox {
     static void flushSoon(final Context context, final SharedPreferences prefs,
             final SoulseekClient mainClient) {
         if (context == null || prefs == null) return;
+        if (!ReachPolicy.allowsBackgroundSoulseekWork(prefs)) return;
         if (!SolarDeveloperAccounts.isExperimentEnabled(prefs)) return;
         long now = System.currentTimeMillis();
         if (now - lastSoonMs < FLUSH_SOON_DEBOUNCE_MS) return;
@@ -77,6 +80,7 @@ public final class SolarDeveloperOutbox {
     public static void flushIfDue(final Context context, final SharedPreferences prefs,
             final SoulseekClient mainClient, final boolean onWifi, final boolean onCharger) {
         if (context == null || prefs == null || !onWifi) return;
+        if (!ReachPolicy.allowsBackgroundSoulseekWork(prefs)) return;
         if (!SolarDeveloperAccounts.isExperimentEnabled(prefs)) return;
         long interval = onCharger ? INTERVAL_CHARGING_MS : INTERVAL_WIFI_MS;
         long now = System.currentTimeMillis();

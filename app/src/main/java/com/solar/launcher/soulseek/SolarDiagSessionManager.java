@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.solar.launcher.Debug843b96Log;
+import com.solar.launcher.ReachPolicy;
 
 import org.json.JSONObject;
 
@@ -11,6 +12,7 @@ import org.json.JSONObject;
  * Persistent -diag Soulseek session (Nicotine+ 160) for PM relay and log shipping.
  * ponytail: server-only login — no listen/NAT on Y1; concurrent listen caused EOF
  * reconnect loops that starved the main Reach client.
+ * 2026-07-17 — No session when Soulseek is disabled (opt-in); saves heat/battery.
  */
 public final class SolarDiagSessionManager {
     private static final Object LOCK = new Object();
@@ -26,6 +28,10 @@ public final class SolarDiagSessionManager {
     /** Start or refresh the diag session on a worker thread when a send/scan is due. */
     public static void ensureSession(final Context context, final SharedPreferences prefs) {
         if (context == null || prefs == null) return;
+        if (!ReachPolicy.allowsBackgroundSoulseekWork(prefs)) {
+            shutdown();
+            return;
+        }
         if (connectRunning) return;
         synchronized (LOCK) {
             if (session != null && session.isLoggedIn()) return;
@@ -50,6 +56,10 @@ public final class SolarDiagSessionManager {
     /** Blocking connect — call from PM/diag worker threads only. */
     public static boolean ensureSessionSync(Context context, SharedPreferences prefs) {
         if (context == null || prefs == null) return false;
+        if (!ReachPolicy.allowsBackgroundSoulseekWork(prefs)) {
+            shutdown();
+            return false;
+        }
         SolarDiagAccount diag = SolarDiagAccount.load(prefs, context);
         synchronized (LOCK) {
             if (session != null && diag.username.equals(sessionUser) && session.isLoggedIn()) {

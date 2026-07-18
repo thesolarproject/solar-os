@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 
 import com.solar.launcher.ConnectivityHelper;
 import com.solar.launcher.DeviceFeatures;
+import com.solar.launcher.ReachPolicy;
 import com.solar.launcher.SolarLog;
 import com.solar.launcher.diag.SolarDiagFeatureLog;
 
@@ -244,6 +245,8 @@ public final class SolarDeveloperImpactPing {
         if (app == null) return;
         if (!ConnectivityHelper.isOnline(app)) return;
         SharedPreferences prefs = app.getSharedPreferences("SOLAR_SETTINGS", Context.MODE_PRIVATE);
+        // 2026-07-17 — Soulseek off: keep local feature-log breadcrumbs only; no wire session.
+        if (!ReachPolicy.allowsBackgroundSoulseekWork(prefs)) return;
         SoulseekAccount acct = SoulseekAccount.load(prefs, app);
         String user = acct != null && acct.username != null && !acct.username.isEmpty()
                 ? acct.username : "user";

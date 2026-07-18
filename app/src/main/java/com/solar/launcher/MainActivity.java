@@ -814,9 +814,11 @@ public class MainActivity extends Activity {
     private boolean soulseekHideHighBitrate = true;
     private boolean soulseekSharingEnabled = true;
     private boolean soulseekReachEnabled = true;
-    private boolean soulseekEnabled = true;
+    /** Opt-in: default off so Get Music is Deezer-only until the user enables Soulseek. */
+    private boolean soulseekEnabled = false;
     private boolean deezerEnabled = true;
-    private int getMusicMode = GetMusicSources.MODE_REACH_ONLY;
+    /** Default Deezer-only; Soulseek joins only when soulseekActive(). */
+    private int getMusicMode = GetMusicSources.MODE_DEEZER_ONLY;
     /** True when STATE_SOULSEEK was opened from Get Music / Get more (unified chrome). */
     private boolean getMusicFromEntryPoint = false;
     private boolean getMusicReachDone = false;
@@ -3741,7 +3743,7 @@ public class MainActivity extends Activity {
                 prefs.edit().putBoolean(SolarDiagnosticReporter.PREF_DIAG_AUTO_REPORT, true).apply();
             }
             soulseekReachEnabled = prefs.getBoolean(SoulseekAccount.PREF_REACH_ENABLED, true);
-            soulseekEnabled = prefs.getBoolean(SoulseekAccount.PREF_SOULSEEK_ENABLED, true);
+            soulseekEnabled = prefs.getBoolean(SoulseekAccount.PREF_SOULSEEK_ENABLED, false);
             soulseekMessagingEnabled = prefs.getBoolean(SoulseekAccount.PREF_MESSAGING_ENABLED, true);
             deezerEnabled = DeezerAccount.isEnabled(prefs);
             syncReachConnectivityFlags();
@@ -3757,10 +3759,13 @@ public class MainActivity extends Activity {
             });
         } catch (Exception e) {}
         updateStatusBarTitle();
+        // 2026-07-17 — Soulseek opt-in: hard-stop all peer/diag sockets when disabled (default).
         if (soulseekActive()) {
             requestSoulseekShareRescan();
             // ponytail: policy tick was blocking onCreate ~20s+ (see debug-5b1e61 H3) — defer off cold start.
             scheduleSoulseekSharePolicyRefresh();
+        } else {
+            stopSoulseekBackgroundWork();
         }
         if (hasInternetConnection() && soulseekReachEnabled) {
             SolarDiagnosticReporter.onReachInternetAvailable(this, prefs);
@@ -7823,6 +7828,11 @@ public class MainActivity extends Activity {
     }
 
     private void scheduleSoulseekSharePolicyRefresh() {
+        // 2026-07-17 — No policy ticks / share walks / warm connections when Soulseek is off.
+        if (!soulseekActive()) {
+            soulseekPolicyDebounceHandler.removeCallbacks(soulseekPolicyDebounceRunnable);
+            return;
+        }
         soulseekPolicyDebounceHandler.removeCallbacks(soulseekPolicyDebounceRunnable);
         soulseekPolicyDebounceHandler.postDelayed(soulseekPolicyDebounceRunnable,
                 SOULSEEK_POLICY_DEBOUNCE_MS);
@@ -31951,22 +31961,46 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         ConnectivityHelper.setDeezerEnabled(deezerActive());
     }
 
+    /**
+     * Full Soulseek backend stop: no client, share scan, policy timer, NAT peer state, or
+     * diag PM session. Safe to call when already off (idempotent). Energy / heat path.
+     */
+    private void stopSoulseekBackgroundWork() {
+        soulseekPolicyDebounceHandler.removeCallbacks(soulseekPolicyDebounceRunnable);
+        soulseekShareRescanPending = false;
+        soulseekSearchInProgress = false;
+        getMusicReachDone = true;
+        if (soulseekClient != null) {
+            try {
+                soulseekClient.cancelSearch();
+            } catch (Exception ignored) {}
+            soulseekClient.shutdown();
+            soulseekClient = null;
+        }
+        soulseekSharePolicy.setReachMasterEnabled(false);
+        ConnectivityHelper.setReachEnabled(false);
+        ConnectivityHelper.setReachLoginOk(false);
+        ReachPeerConnectivity.reset();
+        SolarDiagSessionManager.shutdown();
+        syncReachConnectivityFlags();
+        syncStatusBarSearchThrobber();
+    }
+
     /** Tear down live Soulseek / Deezer work when a service is turned off. */
     private void applyReachServiceState() {
         syncReachConnectivityFlags();
         if (!soulseekActive()) {
-            if (soulseekClient != null) {
-                soulseekClient.shutdown();
-                soulseekClient = null;
-            }
-            soulseekSearchInProgress = false;
-            ConnectivityHelper.setReachLoginOk(false);
+            stopSoulseekBackgroundWork();
+        } else {
+            scheduleSoulseekSharePolicyRefresh();
         }
         if (!deezerActive()) {
             if (deezerScreen != null) deezerScreen.cancelSearch();
             ConnectivityHelper.setDeezerLoginOk(false);
         }
-        updateSoulseekSharePolicy();
+        if (soulseekActive()) {
+            updateSoulseekSharePolicy();
+        }
         buildHomeMenu();
     }
 
@@ -39882,10 +39916,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         buildLibrarySearchUI();
         if (libraryBrowsePrefs.includeReachInLibrarySearch() && soulseekActive()
                 && requireInternet(R.string.soulseek_wifi_required)) {
-            librarySearchReachActive = true;
-            librarySearchReachSearching = true;
-            syncStatusBarSearchThrobber();
-            ensureSoulseekClient().search(librarySearchQuery);
+            SoulseekClient reachClient = ensureSoulseekClient();
+            if (reachClient != null) {
+                librarySearchReachActive = true;
+                librarySearchReachSearching = true;
+                syncStatusBarSearchThrobber();
+                reachClient.search(librarySearchQuery);
+            }
         }
         if (NavidromePrefs.isConfigured(prefs) && requireInternet(R.string.navidrome_wifi_required)) {
             librarySearchNavidromeActive = true;
@@ -44263,17 +44300,25 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void requestSoulseekShareRescan() {
+        if (!soulseekActive()) {
+            soulseekShareRescanPending = false;
+            return;
+        }
         soulseekShareRescanPending = true;
         updateSoulseekSharePolicy();
     }
 
     private void runSoulseekShareScanIfNeeded() {
+        if (!soulseekActive()) {
+            soulseekShareRescanPending = false;
+            return;
+        }
         if (soulseekShareScanRunning) return;
         // ponytail: only rescan when library changed or index empty — was re-walking disk every policy tick.
         // Also scan when soulseek is active but index is empty (diagnostic logs need sharing
         // even when library sharing is disabled).
         if (!soulseekShareRescanPending) {
-            if (soulseekActive() && soulseekShareIndex.fileCount() == 0) {
+            if (soulseekShareIndex.fileCount() == 0) {
                 soulseekShareRescanPending = true;
             } else {
                 return;
@@ -44380,12 +44425,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         // #endregion
         if (!soulseekActive()) {
-            soulseekSharePolicy.setReachMasterEnabled(false);
-            if (soulseekClient != null) {
-                soulseekClient.shutdown();
-                soulseekClient = null;
-            }
-            SolarDiagSessionManager.shutdown();
+            stopSoulseekBackgroundWork();
             return;
         }
         if (shouldSoulseekSleepForScreen()) {
@@ -45622,10 +45662,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
 
         if (wantReachSearch) {
+            SoulseekClient reachClient = null;
             if (requireReachPeerConnectivity()) {
+                reachClient = ensureSoulseekClient();
+            }
+            if (reachClient != null) {
                 soulseekSearchInProgress = true;
                 updateGetMusicSearchStatusRow();
-                ensureSoulseekClient().search(soulseekLastQuery);
+                reachClient.search(soulseekLastQuery);
             } else {
                 getMusicReachDone = true;
                 maybeFinishGetMusicSearch(gen);
@@ -46389,6 +46433,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void fetchSoulseekResults(final String query) {
         if (query == null || query.trim().isEmpty()) return;
+        if (!soulseekActive()) {
+            Toast.makeText(this, getString(R.string.soulseek_reach_disabled), Toast.LENGTH_LONG).show();
+            return;
+        }
         if (!requireInternet(R.string.soulseek_wifi_required)) return;
         if (!requireReachPeerConnectivity()) return;
         soulseekLastQuery = query.trim();
@@ -46406,7 +46454,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         soulseekUiHandler.removeCallbacks(soulseekUiFlushRunnable);
         soulseekUiFlushScheduled = false;
         buildSoulseekResultsShell();
-        ensureSoulseekClient().search(soulseekLastQuery);
+        SoulseekClient client = ensureSoulseekClient();
+        if (client == null) {
+            soulseekSearchInProgress = false;
+            syncStatusBarSearchThrobber();
+            Toast.makeText(this, getString(R.string.soulseek_reach_disabled), Toast.LENGTH_LONG).show();
+            return;
+        }
+        client.search(soulseekLastQuery);
     }
 
     private void buildSoulseekResultsShell() {
