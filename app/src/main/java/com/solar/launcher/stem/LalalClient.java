@@ -287,6 +287,305 @@ public final class LalalClient {
         return separateToMp3(source, outDir, outDir, false, progress);
     }
 
+    /**
+     * 2026-07-19 — Fast vocals+instrumental via stem_separator (not full multistem).
+     * Layman: one cloud job peels the voice and the band for Now Playing.
+     * Technical: POST /split/stem_separator/ stem=vocals → download type stem + back.
+     * Reversal: use separateToMp3 only.
+     */
+    public void separateSoloToFiles(File source, File soloDir, Progress progress) throws Exception {
+        if (licenseKey.length() < 8) throw new IOException("Lalal license key missing");
+        if (source == null || !source.isFile()) throw new IOException("Source track missing");
+        if (soloDir == null) throw new IOException("Solo dir missing");
+        soloDir.mkdirs();
+
+        throwIfCancelled();
+        emit(progress, "upload", 0, "Connecting…");
+        String sourceId = upload(source);
+        throwIfCancelled();
+        emit(progress, "upload", 8, "Uploaded");
+        emit(progress, "split", 10, "Starting vocal split…");
+
+        String taskId = startStemSeparator(sourceId, "vocals");
+        throwIfCancelled();
+        Map<String, String> typed = pollStemSeparatorTracks(taskId, progress);
+        throwIfCancelled();
+        emit(progress, "download", 70, "Fetching vocals + instrumental…");
+
+        File vocalsOut = new File(soloDir, "vocals.mp3");
+        File instrOut = new File(soloDir, "instrumental.mp3");
+        String stemUrl = typed.get("stem");
+        String backUrl = typed.get("back");
+        if (stemUrl != null && stemUrl.length() > 0) {
+            download(stemUrl, vocalsOut);
+        }
+        if (backUrl != null && backUrl.length() > 0) {
+            download(backUrl, instrOut);
+        }
+        boolean gotVocals = vocalsOut.isFile() && vocalsOut.length() >= 100;
+        boolean gotInstr = instrOut.isFile() && instrOut.length() >= 100;
+        if (!gotVocals && !gotInstr) {
+            throw new IOException("Solo split returned no downloadable tracks");
+        }
+        writeTrackMarker(soloDir, source);
+        emit(progress, "ready", 100, "Ready");
+    }
+
+    /**
+     * 2026-07-19 — Poll stem_separator until done; map {@code stem}/{@code back} → URL.
+     * Layman: wait until Lalal finishes, then know which link is voice vs band.
+     * Technical: check result tracks by type. Reversal: use pollUntilAllDone label map.
+     */
+    Map<String, String> pollStemSeparatorTracks(String taskId, Progress progress) throws Exception {
+        Map<String, String> out = new HashMap<String, String>();
+        long deadline = System.currentTimeMillis() + 20L * 60L * 1000L;
+        while (System.currentTimeMillis() < deadline) {
+            throwIfCancelled();
+            JSONObject body = new JSONObject();
+            JSONArray ids = new JSONArray();
+            ids.put(taskId);
+            body.put("task_ids", ids);
+            Request req = new Request.Builder()
+                    .url(BASE + "/api/v1/check/")
+                    .header("X-License-Key", licenseKey)
+                    .header("Content-Type", "application/json; charset=utf-8")
+                    .post(RequestBody.create(
+                            MediaType.parse("application/json; charset=utf-8"), body.toString()))
+                    .build();
+            Response resp = client.newCall(req).execute();
+            String text;
+            try {
+                text = bodyString(resp);
+                if (!resp.isSuccessful()) {
+                    throw new IOException("Check HTTP " + resp.code() + ": " + text);
+                }
+            } finally {
+                resp.close();
+            }
+            JSONObject root = new JSONObject(text);
+            JSONObject resultMap = root.optJSONObject("result");
+            if (resultMap == null) throw new IOException("Check missing result: " + text);
+            JSONObject task = resultMap.optJSONObject(taskId);
+            if (task == null) {
+                Thread.sleep(2500);
+                continue;
+            }
+            String status = task.optString("status", "");
+            if ("progress".equals(status)) {
+                int pct = task.optInt("progress", 10);
+                if (progress != null) {
+                    int band = 10 + Math.max(0, Math.min(pct, 100)) / 2;
+                    emit(progress, "split", Math.min(69, band), "Separating… " + pct + "%");
+                }
+                Thread.sleep(2500);
+                continue;
+            }
+            if ("success".equals(status)) {
+                JSONObject payload = task.optJSONObject("result");
+                if (payload == null) throw new IOException("Success without result");
+                JSONArray tracks = payload.optJSONArray("tracks");
+                if (tracks == null) throw new IOException("Success without tracks");
+                for (int t = 0; t < tracks.length(); t++) {
+                    JSONObject tr = tracks.getJSONObject(t);
+                    String type = tr.optString("type", "");
+                    String url = tr.optString("url", "");
+                    if (url.isEmpty()) continue;
+                    if ("stem".equals(type) || "back".equals(type)) {
+                        out.put(type, url);
+                    }
+                }
+                return out;
+            }
+            if ("error".equals(status) || "server_error".equals(status)
+                    || "cancelled".equals(status)) {
+                String err = task.optString("error", status);
+                throw new IOException("Lalal " + status + ": " + err);
+            }
+            Thread.sleep(2500);
+        }
+        throw new IOException("Solo stem separation timed out");
+    }
+
+    /**
+     * 2026-07-19 — Single-stem stem_separator job (OpenAPI StemSeparatorSplitterPresetsV1).
+     * Layman: ask Lalal for just the vocals peel (and get the band as the leftover).
+     * Technical: POST /api/v1/split/stem_separator/. Reversal: use startMultistem.
+     */
+    String startStemSeparator(String sourceId, String stem) throws Exception {
+        if (stem == null || stem.length() == 0) {
+            throw new IOException("Empty stem");
+        }
+        JSONObject presets = new JSONObject();
+        presets.put("stem", stem);
+        presets.put("encoder_format", "mp3");
+        presets.put("splitter", "auto");
+        presets.put("extraction_level", "deep_extraction");
+
+        JSONObject body = new JSONObject();
+        body.put("source_id", sourceId);
+        body.put("presets", presets);
+
+        Request req = new Request.Builder()
+                .url(BASE + "/api/v1/split/stem_separator/")
+                .header("X-License-Key", licenseKey)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .post(RequestBody.create(
+                        MediaType.parse("application/json; charset=utf-8"), body.toString()))
+                .build();
+        Response resp = client.newCall(req).execute();
+        try {
+            String text = bodyString(resp);
+            if (!resp.isSuccessful()) {
+                throw new IOException("Stem separator HTTP " + resp.code() + ": " + text);
+            }
+            JSONObject json = new JSONObject(text);
+            String taskId = json.optString("task_id", "");
+            if (taskId.isEmpty()) throw new IOException("No task_id: " + text);
+            return taskId;
+        } finally {
+            resp.close();
+        }
+    }
+
+    /**
+     * 2026-07-19 — Solo NP cache leaf under stem_solo/lalal/v1_&lt;hex&gt;.
+     * Layman: folder that holds just vocals.mp3 and instrumental.mp3 for a song.
+     * Technical: stable basename|size key. Reversal: store beside lalal_stems only.
+     */
+    public static String soloCacheLeaf(File track) {
+        return "v1_" + cacheKeyStable(track);
+    }
+
+    /** App-private solo root: {@code cache/stem_solo/lalal/}. 2026-07-19 */
+    public static File soloProviderRoot(File appCache) {
+        File base = appCache != null ? appCache : new File(".");
+        return new File(new File(base, "stem_solo"), StemFeatures.PROVIDER_LALAL);
+    }
+
+    /** Solo leaf dir for this track (may not exist yet). 2026-07-19 */
+    public static File soloDir(File appCache, File track) {
+        return new File(soloProviderRoot(appCache), soloCacheLeaf(track));
+    }
+
+    /**
+     * Local solo file if present and owned by track. 2026-07-19
+     */
+    public static File findReadySoloFile(android.content.Context ctx, File track, SoloMode mode,
+            File appCache) {
+        if (track == null || !track.isFile() || mode == null) return null;
+        File cache = appCache != null ? appCache : (ctx != null ? ctx.getCacheDir() : null);
+        File dir = soloDir(cache, track);
+        if (dir != null && dir.isDirectory() && stemDirOwnedByTrack(dir, track)) {
+            File f = mode == SoloMode.ACAPELLA
+                    ? new File(dir, "vocals.mp3")
+                    : resolveInstrumentalFile(dir);
+            if (f != null && f.isFile() && f.length() >= 100) return f;
+        }
+        return findSoloFromFullStems(ctx, track, mode, cache);
+    }
+
+    /** Prefer instrumental.mp3 then instrumental.wav. 2026-07-19 */
+    public static File resolveInstrumentalFile(File dir) {
+        if (dir == null) return null;
+        File mp3 = new File(dir, "instrumental.mp3");
+        if (mp3.isFile() && mp3.length() >= 100) return mp3;
+        File wav = new File(dir, "instrumental.wav");
+        if (wav.isFile() && wav.length() >= 100) return wav;
+        return null;
+    }
+
+    /**
+     * Use full Stem Player pads: vocals.mp3 (acapella) or null for instrumental until bake.
+     * 2026-07-19
+     */
+    public static File findSoloFromFullStems(android.content.Context ctx, File track, SoloMode mode,
+            File appCache) {
+        if (track == null || mode == null) return null;
+        File stemDir = findReadyStemDir(ctx, track, false, appCache);
+        if (stemDir == null && ctx != null) {
+            try {
+                android.content.SharedPreferences prefs =
+                        ctx.getSharedPreferences(LalalAccount.PREFS_NAME, 0);
+                stemDir = findReadyStemDir(ctx, track,
+                        LalalAccount.isPremixExperimental(prefs), appCache);
+            } catch (Exception ignored) {}
+        }
+        if (stemDir == null) return null;
+        if (mode == SoloMode.ACAPELLA) {
+            return resolveStemFile(stemDir, "vocals");
+        }
+        File solo = soloDir(appCache, track);
+        File baked = resolveInstrumentalFile(solo);
+        if (baked != null && stemDirOwnedByTrack(solo, track)) return baked;
+        return null;
+    }
+
+    /**
+     * Bake instrumental.wav from drum+bass+melody pads into solo leaf (CPU only).
+     * 2026-07-19
+     */
+    public static File bakeInstrumentalFromFullStems(android.content.Context ctx, File track,
+            File appCache, Progress progress) throws Exception {
+        File cache = appCache != null ? appCache : (ctx != null ? ctx.getCacheDir() : null);
+        File stemDir = findReadyStemDir(ctx, track, false, cache);
+        if (stemDir == null && ctx != null) {
+            android.content.SharedPreferences prefs =
+                    ctx.getSharedPreferences(LalalAccount.PREFS_NAME, 0);
+            stemDir = findReadyStemDir(ctx, track, LalalAccount.isPremixExperimental(prefs), cache);
+        }
+        if (stemDir == null) throw new IOException("Full stems not ready");
+        java.util.ArrayList<File> parts = new java.util.ArrayList<File>();
+        File drum = resolveStemFile(stemDir, "drum");
+        if (drum == null) drum = resolveStemFile(stemDir, "drums");
+        File bass = resolveStemFile(stemDir, "bass");
+        if (drum != null) parts.add(drum);
+        if (bass != null) parts.add(bass);
+        File melWav = new File(stemDir, StemOtherPremix.MELODY_WAV);
+        if (melWav.isFile() && melWav.length() >= 100) {
+            parts.add(melWav);
+        } else {
+            File mel = resolveMelodyFile(stemDir);
+            if (mel != null) parts.add(mel);
+            for (String id : ALL_OTHER_IDS) {
+                File f = resolveStemFile(stemDir, id);
+                if (f != null && (mel == null || !f.equals(mel))) parts.add(f);
+            }
+        }
+        if (parts.isEmpty()) throw new IOException("No non-vocal stems to bake");
+        File solo = soloDir(cache, track);
+        solo.mkdirs();
+        File out = new File(solo, "instrumental.wav");
+        emit(progress, "mix", 50, "Baking instrumental…");
+        StemOtherPremix.mixToMonoWav(parts, out, null, null);
+        writeTrackMarker(solo, track);
+        File vocals = resolveStemFile(stemDir, "vocals");
+        if (vocals != null) {
+            File vOut = new File(solo, "vocals.mp3");
+            if (!vOut.isFile() || vOut.length() < 100) {
+                copyFileQuiet(vocals, vOut);
+            }
+        }
+        emit(progress, "ready", 100, "Ready");
+        return out;
+    }
+
+    private static void copyFileQuiet(File src, File dest) {
+        if (src == null || dest == null) return;
+        FileInputStream in = null;
+        FileOutputStream out = null;
+        try {
+            in = new FileInputStream(src);
+            out = new FileOutputStream(dest);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+        } catch (Exception ignored) {
+        } finally {
+            try { if (in != null) in.close(); } catch (Exception ignored) {}
+            try { if (out != null) out.close(); } catch (Exception ignored) {}
+        }
+    }
+
     private static void emit(Progress progress, String phase, int percent, String detail) {
         if (progress == null) return;
         try {
@@ -371,6 +670,7 @@ public final class LalalClient {
         }
         if (out.size() < 4) throw new IOException("publish incomplete (" + out.size() + ")");
         if (sourceTrack != null) writeTrackMarker(durableDir, sourceTrack);
+        // Tip callers: MainActivity can refresh Has Stems bit via path. 2026-07-19
         return out;
     }
 
@@ -392,6 +692,20 @@ public final class LalalClient {
                 try { out.close(); } catch (Exception ignored) {}
             }
         } catch (Exception ignored) {}
+    }
+
+    /**
+     * True when marker names this track AND the leaf folder is that track’s cache key
+     * (or a user {@code *.stems} sidecar). Blocks poisoned markers on another song’s leaf.
+     * 2026-07-19
+     */
+    public static boolean stemDirOwnedByTrack(File dir, File track) {
+        if (dir == null || track == null) return false;
+        if (!markerMatchesTrack(dir, track)) return false;
+        String leaf = dir.getName();
+        if (leaf != null && leaf.endsWith(".stems")) return true; // user sidecar
+        String key = cacheKeyStable(track);
+        return leaf != null && key != null && leaf.indexOf(key) >= 0;
     }
 
     /**
@@ -956,22 +1270,70 @@ public final class LalalClient {
     }
 
     /**
-     * Load cache for playback. Live = all files; premixExperimental forces blend if needed.
+     * Load cache for playback. Premix blends Melody; otherwise collapse to one pad/zone.
+     * Layman: Y1 only juggles four streams — many Melody files made 3-song mashups crawl.
+     * Was: live multi-Melody returned every other MP3 (7+ players/song). Reversal: return flex raw.
      * 2026-07-19
      */
     public static List<StemFile> loadCached(File dir, boolean premixExperimental) {
         List<StemFile> flex = loadStemDirFlexible(dir);
-        if (!premixExperimental) return flex;
-        int others = 0;
-        for (int i = 0; i < flex.size(); i++) {
-            if (flex.get(i).zone == 3) others++;
+        if (premixExperimental) {
+            int others = 0;
+            for (int i = 0; i < flex.size(); i++) {
+                if (flex.get(i).zone == 3) others++;
+            }
+            if (others <= 1) return flex;
+            try {
+                return premixToFourPadsStatic(flex, dir, null, null);
+            } catch (Exception e) {
+                return collapseToOnePadPerZone(flex);
+            }
         }
-        if (others <= 1) return flex;
-        try {
-            return premixToFourPadsStatic(flex, dir, null, null);
-        } catch (Exception e) {
-            return flex;
+        return collapseToOnePadPerZone(flex);
+    }
+
+    /**
+     * Keep ≤1 MediaPlayer per Stem pad (zones 0–3). Prefer melody.wav / aliases for zone 3.
+     * Layman: one file per pad so mashups stay playable on a small chip.
+     * Technical: first hit wins for 0–2; zone 3 prefers melody/other/instruments/samples then residual.
+     * Was: all OTHER_IDS as separate zone-3 players. Reversal: return input list unchanged.
+     * 2026-07-19
+     */
+    public static List<StemFile> collapseToOnePadPerZone(List<StemFile> stems) {
+        List<StemFile> out = new ArrayList<StemFile>();
+        if (stems == null || stems.isEmpty()) return out;
+        StemFile[] byZone = new StemFile[4];
+        StemFile melodyAlias = null;
+        StemFile melodyResidual = null;
+        StemFile melodyOther = null;
+        for (int i = 0; i < stems.size(); i++) {
+            StemFile s = stems.get(i);
+            if (s == null || s.file == null || !s.file.isFile()) continue;
+            int z = s.zone;
+            if (z < 0 || z > 3) z = 3;
+            if (z < 3) {
+                if (byZone[z] == null) byZone[z] = s;
+                continue;
+            }
+            String id = s.id != null ? s.id : "";
+            if ("melody".equals(id) || "other".equals(id)
+                    || "instruments".equals(id) || "samples".equals(id)
+                    || (s.file.getName() != null
+                            && s.file.getName().toLowerCase().startsWith("melody"))) {
+                if (melodyAlias == null) melodyAlias = s;
+            } else if (RESIDUAL_ID.equals(id)) {
+                if (melodyResidual == null) melodyResidual = s;
+            } else if (melodyOther == null) {
+                melodyOther = s;
+            }
         }
+        if (melodyAlias != null) byZone[3] = melodyAlias;
+        else if (melodyResidual != null) byZone[3] = melodyResidual;
+        else byZone[3] = melodyOther;
+        for (int z = 0; z < 4; z++) {
+            if (byZone[z] != null) out.add(byZone[z]);
+        }
+        return out;
     }
 
     /** @deprecated Prefer overload with premix flag (defaults live). */
@@ -1025,13 +1387,114 @@ public final class LalalClient {
             String name = cur.getName();
             if (name != null && name.length() > 0) {
                 if (name.endsWith(".stems")) return true;
-                if ("lalal_stems".equals(name) || "lalal_work".equals(name)) return true;
+                // 2026-07-19 — Solo NP cache + work/stems leaves are pads, not library songs.
+                if ("lalal_stems".equals(name) || "lalal_work".equals(name)
+                        || "lalal_solo".equals(name) || "stem_solo".equals(name)) {
+                    return true;
+                }
             }
             File parent = cur.getParentFile();
             if (parent == null || parent.equals(cur)) break;
             cur = parent;
         }
         return false;
+    }
+
+    /**
+     * True when this library track has stems on disk (never for pad/sidecar files).
+     * Layman: song is ready for Stem Player without uploading again.
+     * Technical: reject {@link #isStemLibraryArtifact} then {@link #trackStemsReady}.
+     * 2026-07-19
+     */
+    public static boolean originatingTrackHasStems(android.content.Context ctx, File track,
+            boolean premix, File appCache) {
+        if (track == null || !track.isFile()) return false;
+        if (isStemLibraryArtifact(track)) return false;
+        return trackStemsReady(ctx, track, premix, appCache);
+    }
+
+    /**
+     * Fast Has Stems index — invert from disk + cheap sidecar checks (background thread).
+     * Layman: find songs that already have stem folders without poking every track deeply.
+     * Was: per-track {@link #trackStemsReady} on UI (froze large libs). Reversal: that loop.
+     * 2026-07-19
+     */
+    public static java.util.HashSet<String> indexReadyOriginatingPaths(
+            android.content.Context ctx, java.util.List<File> libraryTracks, File appCache) {
+        java.util.HashSet<String> out = new java.util.HashSet<String>();
+        if (libraryTracks == null || libraryTracks.isEmpty()) return out;
+        // basename|size → absolute path for marker match (size required). 2026-07-19
+        java.util.HashMap<String, String> byBaseSize = new java.util.HashMap<String, String>();
+        for (int i = 0; i < libraryTracks.size(); i++) {
+            File t = libraryTracks.get(i);
+            if (t == null || !t.isFile() || isStemLibraryArtifact(t)) continue;
+            String base = trackBaseName(t).toLowerCase();
+            String path = t.getAbsolutePath();
+            byBaseSize.put(base + "|" + t.length(), path);
+            // Cheap sidecar: Song.stems next to track. 2026-07-19
+            if (userStemsReady(t)) out.add(path);
+        }
+        java.util.List<File> roots = stemCacheRoots(ctx, appCache);
+        for (int ri = 0; ri < roots.size(); ri++) {
+            File root = roots.get(ri);
+            if (root == null || !root.isDirectory()) continue;
+            File[] kids = root.listFiles();
+            if (kids == null) continue;
+            for (int ki = 0; ki < kids.length; ki++) {
+                File d = kids[ki];
+                if (d == null || !d.isDirectory()) continue;
+                if (!cacheReadyFlexible(d) && !cacheReady(d)) continue;
+                String matched = matchLibraryPathFromStemDir(d, byBaseSize);
+                if (matched != null) out.add(matched);
+            }
+        }
+        // Work dir scratch leaves. 2026-07-19
+        if (ctx != null) {
+            File workRoot = new File(ctx.getCacheDir(), "lalal_work");
+            File[] kids = workRoot.isDirectory() ? workRoot.listFiles() : null;
+            if (kids != null) {
+                for (int ki = 0; ki < kids.length; ki++) {
+                    File d = kids[ki];
+                    if (d == null || !d.isDirectory()) continue;
+                    if (!cacheReadyFlexible(d) && !cacheReady(d)) continue;
+                    String matched = matchLibraryPathFromStemDir(d, byBaseSize);
+                    if (matched != null) out.add(matched);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Resolve stem leaf → library only when marker basename+size match AND leaf hash owns track.
+     * 2026-07-19
+     */
+    private static String matchLibraryPathFromStemDir(File dir,
+            java.util.HashMap<String, String> byBaseSize) {
+        if (dir == null) return null;
+        File marker = new File(dir, TRACK_MARKER);
+        if (!marker.isFile() || marker.length() < 1) return null;
+        try {
+            FileInputStream in = new FileInputStream(marker);
+            byte[] buf = new byte[(int) Math.min(marker.length(), 512)];
+            int n = in.read(buf);
+            in.close();
+            if (n <= 0) return null;
+            String text = new String(buf, 0, n, "UTF-8");
+            String[] lines = text.split("\n");
+            if (lines.length < 2) return null;
+            String base = lines[0].trim().toLowerCase();
+            long sz = -1L;
+            try { sz = Long.parseLong(lines[1].trim()); } catch (Exception ignored) {}
+            if (sz <= 0) return null;
+            String path = byBaseSize.get(base + "|" + sz);
+            if (path == null) return null;
+            File track = new File(path);
+            if (!stemDirOwnedByTrack(dir, track)) return null;
+            return path;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /**
@@ -1063,28 +1526,119 @@ public final class LalalClient {
      * Was: only current cacheLeaf under a few roots. Reversal: drop scanStemRootsForTrack.
      * 2026-07-19
      */
+    /**
+     * Stamp marker only when this leaf already belongs to the track.
+     * Was: write on any cache hit — duration false-positives rewrote Glue as Headlock.
+     * Reversal: unconditional writeTrackMarker after hit.
+     * 2026-07-19
+     */
+    public static void writeTrackMarkerIfOwned(File dir, File track) {
+        if (dir == null || track == null) return;
+        String leaf = dir.getName();
+        String key = cacheKeyStable(track);
+        boolean leafOurs = leaf != null && key != null && leaf.indexOf(key) >= 0;
+        if (leafOurs || (leaf != null && leaf.endsWith(".stems") && markerMatchesTrack(dir, track))) {
+            writeTrackMarker(dir, track);
+        }
+    }
+
     public static File findReadyStemDir(android.content.Context ctx, File track,
             boolean preferPremix, File appCache) {
         if (track == null || !track.isFile()) return null;
-        if (userStemsReady(track)) return userStemsDir(track);
+        if (userStemsReady(track)) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "userSidecar");
+                d.put("readyDir", userStemsDir(track).getAbsolutePath());
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "hit", "H-A", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return userStemsDir(track);
+        }
         // Prefer matching mode, then opposite — never re-upload when either exists. 2026-07-19
         File hit = firstReadyAmong(stemCacheCandidates(ctx, track, preferPremix, appCache));
         if (hit != null) {
-            writeTrackMarker(hit, track); // migrate unmarked legacy leaves. 2026-07-19
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "candidatesPrefer");
+                d.put("readyDir", hit.getAbsolutePath());
+                d.put("markerOk", markerMatchesTrack(hit, track));
+                d.put("stableKey", cacheKeyStable(track));
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "hit", "H-B", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            writeTrackMarkerIfOwned(hit, track);
             return hit;
         }
         hit = firstReadyAmong(stemCacheCandidates(ctx, track, !preferPremix, appCache));
         if (hit != null) {
-            writeTrackMarker(hit, track);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "candidatesOther");
+                d.put("readyDir", hit.getAbsolutePath());
+                d.put("markerOk", markerMatchesTrack(hit, track));
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "hit", "H-B", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            writeTrackMarkerIfOwned(hit, track);
             return hit;
         }
         hit = scanStemRootsForTrack(ctx, track, appCache, preferPremix);
         if (hit != null) {
-            writeTrackMarker(hit, track);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "scanPrefer");
+                d.put("readyDir", hit.getAbsolutePath());
+                d.put("markerOk", markerMatchesTrack(hit, track));
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "hit", "H-C,H-D", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            writeTrackMarkerIfOwned(hit, track);
             return hit;
         }
         hit = scanStemRootsForTrack(ctx, track, appCache, !preferPremix);
-        if (hit != null) writeTrackMarker(hit, track);
+        if (hit != null) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "scanOther");
+                d.put("readyDir", hit.getAbsolutePath());
+                d.put("markerOk", markerMatchesTrack(hit, track));
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "hit", "H-C,H-D", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            writeTrackMarkerIfOwned(hit, track);
+        } else {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("track", track.getName());
+                d.put("path", track.getAbsolutePath());
+                d.put("branch", "miss");
+                com.solar.launcher.Debug8b0481Log.log(
+                        "LalalClient.findReadyStemDir", "miss will Lalal", "H-E", d);
+            } catch (Exception ignored) {}
+            // #endregion
+        }
         return hit;
     }
 
@@ -1169,9 +1723,10 @@ public final class LalalClient {
     }
 
     /**
-     * Walk stem roots for a ready leaf matching this track (marker, then duration).
-     * Layman: last-chance look through downloaded stem folders by song name.
-     * Technical: prefer .solar_src basename; else vocals duration ≈ track duration.
+     * Walk stem roots for a ready leaf matching this track by {@link #TRACK_MARKER} only.
+     * Layman: only reuse a stem folder if it is labeled for this song.
+     * Was: also matched by vocals duration (±2.5s) — cross-linked Headlock↔Glue.
+     * Reversal: restore duration block below.
      * 2026-07-19
      */
     public static File scanStemRootsForTrack(android.content.Context ctx, File track,
@@ -1180,9 +1735,6 @@ public final class LalalClient {
         String wantMode = premixHint ? "_premix_" : "_live_";
         File bestMarked = null;
         long bestMarkedMt = -1L;
-        File bestDur = null;
-        long bestDurMt = -1L;
-        int trackMs = probeDurationMsQuiet(track);
         java.util.List<File> roots = stemCacheRoots(ctx, appCache);
         // Also scan lalal_work. 2026-07-19
         if (ctx != null && ctx.getCacheDir() != null) {
@@ -1203,10 +1755,9 @@ public final class LalalClient {
                 File d = kids[ki];
                 if (d == null || !d.isDirectory()) continue;
                 String leaf = d.getName();
-                // Soft prefer matching live/premix in the leaf name. 2026-07-19
                 boolean modeOk = leaf != null && leaf.indexOf(wantMode) >= 0;
                 if (!cacheReady(d) && !cacheReadyFlexible(d)) continue;
-                if (markerMatchesTrack(d, track)) {
+                if (stemDirOwnedByTrack(d, track)) {
                     long mt = d.lastModified();
                     if (modeOk || bestMarked == null) {
                         if (mt >= bestMarkedMt) {
@@ -1214,22 +1765,22 @@ public final class LalalClient {
                             bestMarkedMt = mt;
                         }
                     }
-                    continue;
+                    // #region agent log
+                    try {
+                        org.json.JSONObject dlog = new org.json.JSONObject();
+                        dlog.put("track", track.getName());
+                        dlog.put("leaf", leaf);
+                        dlog.put("how", "ownedMarker");
+                        dlog.put("modeOk", modeOk);
+                        com.solar.launcher.Debug8b0481Log.log(
+                                "LalalClient.scanStemRootsForTrack", "candidate", "H-C", dlog);
+                    } catch (Exception ignored) {}
+                    // #endregion
                 }
-                // Unmarked legacy leaf: duration of vocals ≈ source track. 2026-07-19
-                if (trackMs > 1000 && stemDirDurationMatches(d, trackMs)) {
-                    long mt = d.lastModified();
-                    if (modeOk || bestDur == null) {
-                        if (mt >= bestDurMt) {
-                            bestDur = d;
-                            bestDurMt = mt;
-                        }
-                    }
-                }
+                // Duration fallback removed 2026-07-19 (H-D false positives).
             }
         }
-        if (bestMarked != null) return bestMarked;
-        return bestDur;
+        return bestMarked;
     }
 
     /**
@@ -1278,12 +1829,13 @@ public final class LalalClient {
 
     /**
      * Load sidecar user stems. Premix only when experimental flag is on.
-     * 2026-07-19
+     * Otherwise collapse to one pad/zone for Y1 player budget. 2026-07-19
      */
     public static List<StemFile> loadUserStems(File track, boolean premixExperimental) {
         File dir = userStemsDir(track);
         List<StemFile> raw = loadStemDirFlexible(dir);
-        if (raw.isEmpty() || !premixExperimental) return raw;
+        if (raw.isEmpty()) return raw;
+        if (!premixExperimental) return collapseToOnePadPerZone(raw);
         int otherCount = 0;
         for (int i = 0; i < raw.size(); i++) {
             if (raw.get(i).zone == 3) otherCount++;
@@ -1292,7 +1844,7 @@ public final class LalalClient {
         try {
             return premixToFourPadsStatic(raw, dir, null, null);
         } catch (Exception e) {
-            return raw;
+            return collapseToOnePadPerZone(raw);
         }
     }
 

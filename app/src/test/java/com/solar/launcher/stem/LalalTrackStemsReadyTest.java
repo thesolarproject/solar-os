@@ -179,6 +179,24 @@ public class LalalTrackStemsReadyTest {
         assertFalse(LalalClient.findReadyStemDir(null, track, false, appCache) == null);
     }
 
+    /** Pad files under *.stems must never count as Has Stems library rows. 2026-07-19 */
+    @Test
+    public void originatingTrackHasStemsRejectsPadArtifacts() throws Exception {
+        File song = tmp.newFile("real.mp3");
+        writeBytes(song, 250);
+        // Sidecar beside song: real.stems/ (strip extension). 2026-07-19
+        File stemsDir = LalalClient.userStemsDir(song);
+        assertTrue(stemsDir.mkdirs());
+        writeFourPads(stemsDir);
+        File pad = new File(stemsDir, "vocals.mp3");
+        writeBytes(pad, 200);
+        File appCache = tmp.newFolder("cache_origin");
+        assertTrue(LalalClient.isStemLibraryArtifact(pad));
+        assertFalse(LalalClient.originatingTrackHasStems(null, pad, false, appCache));
+        // Real song with sidecar ready still qualifies. 2026-07-19
+        assertTrue(LalalClient.originatingTrackHasStems(null, song, false, appCache));
+    }
+
     /** Four pad MP3s that satisfy cacheReadyFlexible. 2026-07-19 */
     private static void writeFourPads(File dir) throws Exception {
         writeStem(dir, "vocals.mp3");

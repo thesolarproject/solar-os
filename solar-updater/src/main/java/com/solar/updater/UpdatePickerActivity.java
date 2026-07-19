@@ -24,14 +24,14 @@ import java.util.List;
 
 /**
  * 2026-07-06 — Standalone Solar version picker (recovery / rollback path).
- * Layman: pick any published Solar build or install Rockbox-Y1 — works when Solar will not start.
- * Technical: updates.xml + OtaCompanionInstaller; JJ Get Latest removed 2026-07-11.
+ * Layman: pick any published Solar build — works when Solar will not start.
+ * Technical: updates.xml only; Rockbox/JJ companion install removed 2026-07-19.
  */
 public final class UpdatePickerActivity extends Activity {
 
     private static final int FIXED_ROWS_BEFORE_SELECTABLE = 4;
-    /** 2026-07-11 — Rockbox-Y1 only (JJ Get Latest removed from change-version / recovery picker). */
-    private static final int COMPANION_ROW_COUNT = 1;
+    /** 2026-07-19 — No companion install rows (Solar-only). Was: COMPANION_ROW_COUNT=1 Rockbox. */
+    private static final int COMPANION_ROW_COUNT = 0;
     private static final int ROW_FIRST_RELEASE = FIXED_ROWS_BEFORE_SELECTABLE + COMPANION_ROW_COUNT;
 
     private final List<SolarUpdateClient.ReleaseInfo> releases = new ArrayList<SolarUpdateClient.ReleaseInfo>();
@@ -73,15 +73,7 @@ public final class UpdatePickerActivity extends Activity {
         statusTv.setTag("status");
         root.addView(statusTv);
 
-        TextView companionHeader = row(getString(R.string.updater_companion_apps_header), false);
-        companionHeader.setTag("companion_header");
-        root.addView(companionHeader);
-
-        // Recovery path keeps Rockbox-Y1 install (no Solar prefs for experiment gate).
-        TextView rockboxRow = row(getString(R.string.updater_get_latest_rockbox), false);
-        rockboxRow.setTag("companion_rockbox");
-        root.addView(rockboxRow);
-
+        // 2026-07-19 — Companion Rockbox/JJ rows removed from recovery picker.
         focusIndex = 0;
     }
 
@@ -215,13 +207,10 @@ public final class UpdatePickerActivity extends Activity {
             return true;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-            if (focusIndex == 0) {
-                installRockboxLatest();
-            } else {
-                int relIdx = focusIndex - COMPANION_ROW_COUNT;
-                if (relIdx >= 0 && relIdx < releases.size()) {
-                    downloadAndInstall(releases.get(relIdx));
-                }
+            // 2026-07-19 — Releases only (no companion install at index 0).
+            int relIdx = focusIndex - COMPANION_ROW_COUNT;
+            if (relIdx >= 0 && relIdx < releases.size()) {
+                downloadAndInstall(releases.get(relIdx));
             }
             return true;
         }

@@ -85,8 +85,8 @@ jobs:
           else
             echo "::warning::Y1 type B ATA base unavailable — rom_type_b.zip soft-skips unless SOLAR_Y1B_BASE_ZIP is set"
           fi
-          # Y2 ATA required
-          curl -fsSIL -o /dev/null "https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom_y2.zip"
+          # Y2 base required — jj_auto y2-test (override via SOLAR_Y2_BASE_ZIP / vars)
+          curl -fsSIL -o /dev/null "https://github.com/ryan-specter/jj_auto/releases/download/y2-test/rom_y2.zip"
           # Rockbox asset cache still pulled from rockbox-y1 type-a-base (org.rockbox for Y1 heal / Y2 prep)
           curl -fsSIL -o /dev/null "https://github.com/rockbox-y1/rockbox/releases/download/type-a-base/rom.zip"
           if curl -fsSIL -o /dev/null "https://github.com/y1-community/a5-ata-rom/releases/download/0.1/rom_a5.zip"; then

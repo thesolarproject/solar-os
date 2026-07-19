@@ -17,17 +17,21 @@ public final class MediaButtonRegistrar {
 
     /** Last successful register — informational only; slot is re-claimed from JJ on every call. */
     private static volatile boolean registered;
-    /** Throttle expensive reclaim work on wheel down/up bursts; JJ steal recovery still re-arms quickly. */
+    /**
+     * 2026-07-19 — Phase C: longer throttle on wheel bursts (was 500 ms).
+     * Layman: do not re-claim the media-button slot on every dial click.
+     * Technical: skip registerMediaButtonEventReceiver when recent. Reversal: 500L.
+     */
     private static volatile long lastRegisterAtMs;
-    private static final long REGISTER_THROTTLE_MS = 500L;
+    private static final long REGISTER_THROTTLE_MS = 2000L;
 
     private MediaButtonRegistrar() {}
 
     /**
      * 2026-07-06 — Claim MEDIA_BUTTON slot for Solar wheel handoff while JJ/Rockbox is foreground.
      * Layman: JJ steals the wheel receiver on startup; Solar must take it back for remap to work.
-     * Technical: always call registerMediaButtonEventReceiver — JJ MainActivity re-registers too.
-     * Reversal: restore one-shot registered gate (wheel breaks when JJ is HOME).
+     * Technical: register when stale; skip binder work while throttle window is hot.
+     * Reversal: always call registerMediaButtonEventReceiver (no throttle).
      */
     public static void ensureRegistered(Context context) {
         if (context == null) return;
@@ -46,8 +50,6 @@ public final class MediaButtonRegistrar {
                 am.registerMediaButtonEventReceiver(cn);
                 registered = true;
                 lastRegisterAtMs = t0;
-                // Debug logging removed for performance
-                // Latency logging removed to reduce overhead
             } catch (Exception e) {
                 registered = false;
                 // #region agent log
@@ -66,5 +68,6 @@ public final class MediaButtonRegistrar {
     /** Test hook — allow re-register after unregister in unit tests. */
     static void resetForTest() {
         registered = false;
+        lastRegisterAtMs = 0L;
     }
 }

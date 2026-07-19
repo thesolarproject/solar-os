@@ -52,66 +52,13 @@ fi
 [ -d "$VENDOR/api19-arm" ] || die "missing $VENDOR/api19-arm"
 [ -f "$INIT_SRC" ] || die "missing $INIT_SRC"
 
-mkdir -p "$DST/xposed/api17-arm" "$DST/xposed/api19-arm" "$DST/init" "$DST/scripts" "$DST/companion" "$DST/thirdparty" "$DST/rockbox"
+mkdir -p "$DST/xposed/api17-arm" "$DST/xposed/api19-arm" "$DST/init" "$DST/scripts" "$DST/companion" "$DST/thirdparty"
 
-# 2026-07-06 — Rockbox Y2 compat bundle (manifest resign + staged libs + dot-rockbox); ROM build optional.
-sync_rockbox_platform_assets() {
-    local rb_dst="$DST/rockbox"
-    local cache patched work_rb
-    chmod +x "$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh" \
-        "$SCRIPT_DIR/patch-rockbox-y2.sh" \
-        "$SCRIPT_DIR/extract-rockbox-staged-assets.sh"
-    cache="$("$SCRIPT_DIR/fetch-rockbox-y1-y2-assets.sh")"
-    [ -f "$cache/org.rockbox.apk" ] && [ -f "$cache/librockbox.so" ] \
-        || die "fetch-rockbox-y1-y2-assets.sh missing org.rockbox.apk or librockbox.so"
-    work_rb="$(mktemp -d "${TMPDIR:-/tmp}/solar-rockbox-platform-XXXXXX")"
-    patched="$work_rb/org.rockbox-y2.apk"
-    "$SCRIPT_DIR/patch-rockbox-y2.sh" "$cache/org.rockbox.apk" "$patched"
-    cp "$cache/org.rockbox.apk" "$rb_dst/org.rockbox-y1.apk"
-    cp "$patched" "$rb_dst/org.rockbox-y2.apk"
-    cp "$cache/librockbox.so" "$rb_dst/librockbox-system.so"
-    rm -rf "$rb_dst/staged-libs" "$rb_dst/dot-rockbox"
-    mkdir -p "$rb_dst/staged-libs" "$rb_dst/dot-rockbox"
-    "$SCRIPT_DIR/extract-rockbox-staged-assets.sh" "$patched" "$rb_dst/staged-libs" "$rb_dst/dot-rockbox"
-    cp "$ROOT/solar-rom/system/solar-rb-launch" "$rb_dst/solar-rb-launch"
-    chmod 755 "$rb_dst/solar-rb-launch"
-    cp "$ROOT/solar-rom/system/rockbox-y2-config.cfg" "$rb_dst/rockbox-y2-config.cfg"
-    cp "$SCRIPT_DIR/sync-rockbox-libs.sh" "$rb_dst/sync-rockbox-libs.sh"
-    cp "$SCRIPT_DIR/sync-rockbox-assets.sh" "$rb_dst/sync-rockbox-assets.sh"
-    chmod 755 "$rb_dst/sync-rockbox-libs.sh" "$rb_dst/sync-rockbox-assets.sh"
-    python3 - "$rb_dst" <<'PY'
-import json, os, sys
-root = sys.argv[1]
-files = []
-def add_tree(subdir, dest_prefix, mode="644"):
-    base = os.path.join(root, subdir)
-    if not os.path.isdir(base):
-        return
-    for dirpath, _, names in os.walk(base):
-        for name in sorted(names):
-            full = os.path.join(dirpath, name)
-            rel = os.path.relpath(full, root).replace(os.sep, "/")
-            dest = dest_prefix + rel[len(subdir) + 1:]
-            files.append({"asset": "rockbox/" + rel, "dest": dest, "mode": mode})
-add_tree("staged-libs", "/system/etc/solar/rockbox-libs/", "644")
-add_tree("dot-rockbox", "/system/etc/solar/rockbox-dot-rockbox/", "644")
-for rel, dest, mode in [
-    ("solar-rb-launch", "/system/xbin/solar-rb-launch", "755"),
-    ("rockbox-y2-config.cfg", "/system/etc/solar/rockbox-y2-config.cfg", "644"),
-    ("sync-rockbox-libs.sh", "/system/etc/solar/sync-rockbox-libs.sh", "755"),
-    ("sync-rockbox-assets.sh", "/system/etc/solar/sync-rockbox-assets.sh", "755"),
-    ("librockbox-system.so", "/system/lib/librockbox.so", "644"),
-]:
-    if os.path.isfile(os.path.join(root, rel)):
-        files.append({"asset": "rockbox/" + rel, "dest": dest, "mode": mode})
-with open(os.path.join(root, "stage-index.json"), "w", encoding="utf-8") as f:
-    json.dump({"files": files}, f, separators=(",", ":"))
-print("==> Rockbox stage-index: %d files" % len(files))
-PY
-    rm -rf "$work_rb"
-    echo "==> Rockbox platform assets bundled under $rb_dst"
-}
-sync_rockbox_platform_assets
+# 2026-07-19 — Do not bundle org.rockbox APK/libs into Solar APK (Solar-only; launch-if-present).
+# Was: sync_rockbox_platform_assets fetched/patched Rockbox into assets/platform/rockbox/.
+# Reversal: restore sync_rockbox_platform_assets function + call + rockbox manifest block.
+rm -rf "$DST/rockbox"
+echo "==> Rockbox platform APK bundle skipped (Solar-only — no self-heal install)"
 
 # Vendor framework trees (app_process, XposedBridge.jar, xposed.prop).
 for api in api17-arm api19-arm; do
@@ -182,16 +129,12 @@ RB_IME_VC="$(apk_version_code "$DST/xposed/SolarRockboxIme.apk")"
 RB_COMPAT_VC="$(apk_version_code "$DST/xposed/SolarRockboxCompat.apk")"
 GC_VC="$(apk_version_code "$DST/companion/SolarGlobalContextModal.apk")"
 HELPER_VC="$(apk_version_code "$DST/companion/SolarHomeHelper.apk")"
-RB_Y1_VC="$(apk_version_code "$DST/rockbox/org.rockbox-y1.apk")"
-RB_Y2_VC="$(apk_version_code "$DST/rockbox/org.rockbox-y2.apk")"
-RB_Y1_SHA="$(sha256_file "$DST/rockbox/org.rockbox-y1.apk")"
-RB_Y2_SHA="$(sha256_file "$DST/rockbox/org.rockbox-y2.apk")"
-RB_LIB_SHA="$(sha256_file "$DST/rockbox/librockbox-system.so")"
 
 # manifest.json — parsed by PlatformPrepManifest.java at runtime.
+# 2026-07-19 — prepVersion 19: drop rockbox APK bundle (Solar-only install policy).
 cat > "$DST/manifest.json" <<EOF
 {
-  "prepVersion": 18,
+  "prepVersion": 19,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",
@@ -283,30 +226,6 @@ cat > "$DST/manifest.json" <<EOF
   "files": [
     {"asset": "init/99XposedInit.sh", "dest": "/system/etc/init.d/99XposedInit.sh", "mode": "755"}
   ],
-  "rockbox": {
-    "pkg": "org.rockbox",
-    "stageIndex": "rockbox/stage-index.json",
-    "y1Apk": {
-      "asset": "rockbox/org.rockbox-y1.apk",
-      "systemApk": "/system/app/org.rockbox.apk",
-      "device": "y1",
-      "versionCode": ${RB_Y1_VC:-1},
-      "sha256": "${RB_Y1_SHA}"
-    },
-    "y2Apk": {
-      "asset": "rockbox/org.rockbox-y2.apk",
-      "systemApk": "/system/app/org.rockbox.apk",
-      "device": "y2",
-      "versionCode": ${RB_Y2_VC:-1},
-      "sha256": "${RB_Y2_SHA}"
-    },
-    "systemLib": {
-      "asset": "rockbox/librockbox-system.so",
-      "dest": "/system/lib/librockbox.so",
-      "device": "y2",
-      "sha256": "${RB_LIB_SHA}"
-    }
-  },
   "deprecated": [
     {
       "systemApk": "/system/app/SolarContextBridge.apk",

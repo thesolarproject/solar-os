@@ -77,6 +77,18 @@ fi
 # grep -q + pipefail makes unzip SIGPIPE — count libmisc lines instead.
 rb_misc_count=$(unzip -l "$rb_apk" 2>/dev/null | grep -c 'lib/armeabi/libmisc.so' || true)
 [ "${rb_misc_count:-0}" -ge 1 ] || fail "org.rockbox.apk missing lib/armeabi/libmisc.so"
+else
+# 2026-07-19 — Default Y2: Rockbox/JJ must be absent (prep via Solar APK).
+# Was: note-only when missing. Reversal: require_path when ROCKBOX_ON_ROM=1 only.
+if debugfs -R "stat /app/org.rockbox.apk" "$sys" 2>/dev/null | grep -q 'Type: regular'; then
+    fail "org.rockbox.apk must not ship on default Y2 ROM (set SOLAR_ROM_LEGACY_ROCKBOX=1 to bake)"
+fi
+if debugfs -R "stat /app/com.themoon.y1.apk" "$sys" 2>/dev/null | grep -q 'Type: regular'; then
+    fail "com.themoon.y1.apk (JJ) must not ship on Y2 Solar ROM"
+fi
+if debugfs -R "stat /priv-app/com.themoon.y1.apk" "$sys" 2>/dev/null | grep -q 'Type: regular'; then
+    fail "priv-app/com.themoon.y1.apk (JJ) must not ship on Y2 Solar ROM"
+fi
 fi
 
 # Launcher switch + keymap scripts (Rockbox-Y1 handoff parity).

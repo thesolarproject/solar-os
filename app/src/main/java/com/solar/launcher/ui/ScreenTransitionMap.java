@@ -32,6 +32,8 @@ public final class ScreenTransitionMap {
     public static final int STATE_JELLYFIN = 32;
     /** 2026-07-18 — Lalal Stem Player. */
     public static final int STATE_STEM_PLAYER = 33;
+    /** 2026-07-19 — 3-deck Mix. */
+    public static final int STATE_MIX = 34;
 
     public enum Kind {
         /** No root animation — instant or in-place content swap. */
@@ -87,7 +89,8 @@ public final class ScreenTransitionMap {
     /** @visibleForTesting */
     public static int depth(int state) {
         if (state == STATE_MENU) return 0;
-        if (state == STATE_PLAYER || state == STATE_STEM_PLAYER || state == STATE_WIFI_KEYBOARD
+        if (state == STATE_PLAYER || state == STATE_STEM_PLAYER || state == STATE_MIX
+                || state == STATE_WIFI_KEYBOARD
                 || state == MediaSuiteHost.STATE_VIDEO_PLAYER
                 || state == MediaSuiteHost.STATE_PHOTO_VIEWER) {
             return 2;

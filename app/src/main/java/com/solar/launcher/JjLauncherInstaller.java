@@ -3,14 +3,11 @@ package com.solar.launcher;
 import android.content.Context;
 import android.util.Log;
 
-import com.solar.ota.OtaCompanionInstaller;
-
-import java.io.File;
-
 /**
- * 2026-07-06 — Download and install JJ Launcher from Solar OTA when user picks it as HOME.
- * Layman: fetches jj_latest.apk over Wi‑Fi and installs to /system/app when root allows.
- * Technical: delegates to OtaCompanionInstaller system-app staging (same as OTA version screens).
+ * 2026-07-19 — JJ presence check only (no download / system install).
+ * Layman: if JJ is already on the device you can switch to it; Solar will not fetch it.
+ * Was: OtaCompanionInstaller.installJjIfNeeded downloaded jj_latest.apk to /system/app.
+ * Reversal: restore OtaCompanionInstaller.installJjIfNeeded call.
  */
 public final class JjLauncherInstaller {
 
@@ -18,20 +15,20 @@ public final class JjLauncherInstaller {
 
     private JjLauncherInstaller() {}
 
-    /** Install JJ when missing — returns true when PM sees com.themoon.y1 afterward. */
+    /**
+     * True when com.themoon.y1 is already registered — never installs.
+     * 2026-07-19
+     */
     public static boolean ensureInstalledBlocking(Context context) {
         if (context == null) return false;
-        Context app = context.getApplicationContext();
-        com.solar.launcher.net.TlsHelper.init(app);
-        File workDir = app.getDir("update", Context.MODE_PRIVATE);
-        boolean ok = OtaCompanionInstaller.installJjIfNeeded(app, workDir);
+        boolean ok = LauncherSwitch.isJjInstalled(context);
         if (!ok) {
-            Log.w(TAG, "JJ install did not complete");
+            Log.i(TAG, "JJ not installed — Solar will not download/install it");
         }
         return ok;
     }
 
-    /** Background install — callback on worker thread. */
+    /** Background presence check — callback on worker thread. 2026-07-19 */
     public static void ensureInstalledAsync(final Context context, final InstallCallback callback) {
         if (context == null) return;
         new Thread(new Runnable() {

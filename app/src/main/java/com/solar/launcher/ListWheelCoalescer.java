@@ -44,6 +44,13 @@ final class ListWheelCoalescer {
      */
     static final long MIN_FLUSH_MS = 80L;
 
+    /**
+     * 2026-07-19 — Per-instance floor (menus use a lower value for snappier short lists).
+     * Layman: home/settings can paint a bit faster than huge song lists.
+     * Technical: defaults to {@link #MIN_FLUSH_MS}; menu coalescer sets 48. Reversal: always MIN_FLUSH_MS.
+     */
+    private long minFlushMs = MIN_FLUSH_MS;
+
     private int pendingSteps;
     private boolean flushPosted;
     private long lastOfferUptimeMs = -1L;
@@ -95,7 +102,7 @@ final class ListWheelCoalescer {
                         org.json.JSONObject d = new org.json.JSONObject();
                         d.put("sinceFlushMs", sinceFlush);
                         d.put("signed", signed);
-                        d.put("minFlushMs", MIN_FLUSH_MS);
+                        d.put("minFlushMs", minFlushMs);
                         Debug0f5debLog.probe("ListWheelCoalescer.flush", "list flush", "H-A", d);
                     } catch (Exception ignored) {}
                 }
@@ -113,13 +120,34 @@ final class ListWheelCoalescer {
         };
     }
 
+    /**
+     * 2026-07-19 — Override paint floor for this coalescer (menus use ~48 ms).
+     * Layman: short menus can update the highlight a bit more often than huge song lists.
+     * Technical: clamp ≥0. Reversal: leave default {@link #MIN_FLUSH_MS}.
+     */
+    void setMinFlushMs(long ms) {
+        minFlushMs = ms < 0L ? 0L : ms;
+    }
+
     void setLiveGate(LiveGate gate) {
         this.liveGate = gate;
     }
 
-    /** Bind list + callback (call when adapter is shown). */
+    /**
+     * Bind ListView + callback (song lists).
+     * 2026-07-19 — Delegates to {@link #bind(View, Apply)} so home/settings can reuse the same coalescer.
+     */
     void bind(ListView list, Apply apply) {
-        this.host = list;
+        bind((View) list, apply);
+    }
+
+    /**
+     * 2026-07-19 — Bind any host View (ScrollView menu, decor) for paced wheel flushes.
+     * Layman: same “merge dial clicks” helper works on short menus, not only long song lists.
+     * Technical: host posts flushRunnable; Apply moves selection. Reversal: ListView-only bind.
+     */
+    void bind(View host, Apply apply) {
+        this.host = host;
         this.apply = apply;
     }
 
@@ -239,10 +267,10 @@ final class ListWheelCoalescer {
         long wait = 0L;
         boolean immediate = forceImmediateFlush;
         forceImmediateFlush = false;
-        if (!immediate && MIN_FLUSH_MS > 0L && lastFlushUptimeMs >= 0L) {
+        if (!immediate && minFlushMs > 0L && lastFlushUptimeMs >= 0L) {
             long since = now - lastFlushUptimeMs;
-            if (since < MIN_FLUSH_MS) {
-                wait = MIN_FLUSH_MS - since;
+            if (since < minFlushMs) {
+                wait = minFlushMs - since;
             }
         }
         if (wait > 0L) {

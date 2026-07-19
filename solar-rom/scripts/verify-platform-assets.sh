@@ -50,6 +50,12 @@ for api in api17-arm api19-arm; do
     done
 done
 [ -f "$ROOT/app/src/main/assets/scripts/solar-platform-prep.sh" ] || die "missing solar-platform-prep.sh"
-chmod +x "$ROOT/solar-rom/scripts/verify-platform-rockbox-assets.sh"
-"$ROOT/solar-rom/scripts/verify-platform-rockbox-assets.sh"
+# 2026-07-19 — Rockbox APK bundle must not ship in platform assets (Solar-only).
+# Was: verify-platform-rockbox-assets.sh required org.rockbox-*.apk. Reversal: restore that call.
+if [ -d "$DST/rockbox" ]; then
+    die "stale platform/rockbox/ present — re-run sync-platform-assets.sh (Solar-only)"
+fi
+if grep -q '"rockbox"' "$DST/manifest.json"; then
+    die "manifest still has rockbox block — re-run sync-platform-assets.sh"
+fi
 echo "verify-platform-assets: OK"

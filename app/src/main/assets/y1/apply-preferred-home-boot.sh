@@ -171,8 +171,8 @@ ensure_overlay_host() {
     fi
 }
 
-ensure_rockbox_registered
-ensure_jj_registered
+# 2026-07-19 — Do not pm-install Rockbox/JJ from system APK (Solar-only).
+# Was: ensure_rockbox_registered; ensure_jj_registered. Reversal: restore those calls.
 ensure_notpipe_registered
 ensure_helper_registered
 

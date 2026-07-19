@@ -33,19 +33,19 @@ public class StemSessionTest {
         assertEquals(1, s.displaySongNumber(0));
     }
 
-    /** Switching arms does not cycle the previous arm’s song. 2026-07-19 */
+    /** Switching arms does not cycle; interacted song stays until repress. 2026-07-19 */
     @Test
     public void otherArmFocusDoesNotCycle() {
         StemSession s = new StemSession();
         s.bindTracks(fakeTracks(2));
-        // Seed: drums (zone1) already steers song 2. 2026-07-19
-        assertEquals(2, s.displaySongNumber(1));
+        assertEquals(1, s.displaySongNumber(1)); // all pads start song 1
         s.onStemKey(1); // focus drums
-        assertTrue(s.onStemKey(1)); // drums → song 1
-        assertFalse(s.onStemKey(2)); // focus bass — no cycle
+        assertTrue(s.onStemKey(1)); // drums → song 2
+        assertEquals(2, s.displaySongNumber(1));
+        assertFalse(s.onStemKey(2)); // focus bass — no cycle, still song 2
         assertEquals(2, s.activeZone());
-        assertEquals(1, s.displaySongNumber(1)); // drums still song 1
-        assertEquals(1, s.displaySongNumber(2)); // bass still song 1 (seed zone2→0)
+        assertEquals(1, s.controlSongIndex());
+        assertEquals(2, s.displaySongNumber(2));
     }
 
     /**
@@ -68,45 +68,69 @@ public class StemSessionTest {
     }
 
     /**
-     * Multi bind seeds pads across songs so raising different pads layers without cycling.
+     * Multi bind keeps all pads on song 0 — focus must not jump the interacted track.
+     * Was: seed z%N so drums started on song 2. Reversal: assert z%songCount again.
      * 2026-07-19
      */
     @Test
-    public void multiBindSeedsCrossSongPadRouting() {
+    public void multiBindSeedsAllPadsOnControlSong() {
         StemSession s = new StemSession();
         s.bindTracks(fakeTracks(2));
+        assertEquals(0, s.controlSongIndex());
         assertEquals(0, s.songIndexForZone(0));
-        assertEquals(1, s.songIndexForZone(1));
+        assertEquals(0, s.songIndexForZone(1));
         assertEquals(0, s.songIndexForZone(2));
-        assertEquals(1, s.songIndexForZone(3));
+        assertEquals(0, s.songIndexForZone(3));
         StemSession s3 = new StemSession();
         s3.bindTracks(fakeTracks(3));
         assertEquals(0, s3.songIndexForZone(0));
-        assertEquals(1, s3.songIndexForZone(1));
-        assertEquals(2, s3.songIndexForZone(2));
+        assertEquals(0, s3.songIndexForZone(1));
+        assertEquals(0, s3.songIndexForZone(2));
         assertEquals(0, s3.songIndexForZone(3));
     }
 
     /**
-     * Pads keep independent song indices so all can steer different tracks together.
-     * Cycle one pad does not rewrite other pads’ song indices or gains.
+     * Focusing another pad keeps the same interacted song; only repress cycles.
+     * Layman: two clicks to change track — never one when switching pads.
+     * 2026-07-19
+     */
+    @Test
+    public void focusOtherPadDoesNotChangeControlSong() {
+        StemSession s = new StemSession();
+        s.bindTracks(fakeTracks(3));
+        assertFalse(s.onStemKey(0)); // focus vocals — still song 1
+        assertEquals(0, s.controlSongIndex());
+        assertEquals(1, s.displaySongNumber(0));
+        assertFalse(s.onStemKey(1)); // focus drums — still song 1
+        assertEquals(1, s.activeZone());
+        assertEquals(0, s.controlSongIndex());
+        assertEquals(1, s.displaySongNumber(1));
+        assertTrue(s.onStemKey(1)); // repress drums → song 2
+        assertEquals(1, s.controlSongIndex());
+        assertEquals(2, s.displaySongNumber(1));
+        assertFalse(s.onStemKey(2)); // focus bass — stay on song 2
+        assertEquals(1, s.controlSongIndex());
+        assertEquals(2, s.displaySongNumber(2));
+    }
+
+    /**
+     * Pads share controlSongIndex while focused; cycle advances the shared track.
+     * Cycle one pad does not rewrite other pads’ gains.
      * 2026-07-19
      */
     @Test
     public void multiPadsIndependentSongIndicesActive() {
         StemSession s = new StemSession();
         s.bindTracks(fakeTracks(3));
-        // Seed already spreads 0/1/2 across pads. 2026-07-19
         assertEquals(0, s.songIndexForZone(0));
-        assertEquals(1, s.songIndexForZone(1));
-        assertEquals(2, s.songIndexForZone(2));
+        assertEquals(0, s.songIndexForZone(1));
+        assertEquals(0, s.songIndexForZone(2));
         s.song(0).gains[0] = 0.6f;
         s.song(1).gains[1] = 0.4f;
         assertFalse(s.onStemKey(0));
         assertTrue(s.onStemKey(0)); // vocals control → song 2
         assertEquals(1, s.songIndexForZone(0));
-        assertEquals(1, s.songIndexForZone(1)); // drums unchanged
-        assertEquals(2, s.songIndexForZone(2)); // bass unchanged
+        assertEquals(1, s.controlSongIndex());
         // Other songs’ gains untouched by cycle (host must not zero them). 2026-07-19
         assertEquals(0.6f, s.song(0).gains[0], 0.001f);
         assertEquals(0.4f, s.song(1).gains[1], 0.001f);

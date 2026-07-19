@@ -72,6 +72,8 @@ public final class LowMemoryGate {
      * 2026-07-18 — Also defer while Stem Player mixes (exclusive session).
      */
     public static boolean shouldDeferHeavyWork(Context context) {
+        // 2026-07-19 — Stem or Mix exclusive jam owns the CPU.
+        if (StemOrMixSession.isActive()) return true;
         if (com.solar.launcher.stem.StemPlayerHost.isSessionActive()) return true;
         return isPressured(context != null ? context : appContext);
     }

@@ -19,8 +19,8 @@ import java.io.File;
 import static org.junit.Assert.assertTrue;
 
 /**
- * 2026-07-06 — JJ + Rockbox OTA download on real Y1/Y2 hardware (TLS + URL reachability).
- * Layman: proves Wi‑Fi can fetch companion APKs the same way Settings OTA downloads do.
+ * 2026-07-19 — Presence + optional URL reachability on Y1/Y2 (Solar no longer installs companions).
+ * Was: asserted OTA download+install of JJ/Rockbox. Reversal: restore install assertions.
  */
 @RunWith(AndroidJUnit4.class)
 public class JjLauncherInstallerDeviceTest {
@@ -55,16 +55,19 @@ public class JjLauncherInstallerDeviceTest {
         android.util.Log.i("JjInstallerTest", "rockbox bytes=" + dest.length());
     }
 
+    /**
+     * 2026-07-19 — installJjIfNeeded is presence-only (never downloads).
+     * Was: asserted install after download. Reversal: restore download+assert install.
+     */
     @Test
-    public void device_installJjIfNeeded_whenDownloaded() throws Exception {
+    public void device_installJjIfNeeded_presenceOnly() throws Exception {
         Context ctx = InstrumentationRegistry.getInstrumentation().getTargetContext();
-        if (!ConnectivityHelper.isOnline(ctx) && !LauncherSwitch.isJjInstalled(ctx)) {
-            android.util.Log.w("JjInstallerTest", "offline and JJ missing — skip install");
-            return;
-        }
         File workDir = ctx.getDir("update", Context.MODE_PRIVATE);
         boolean ok = OtaCompanionInstaller.installJjIfNeeded(ctx, workDir);
-        assertTrue("JJ must be installed after installJjIfNeeded", ok);
-        assertTrue("PM must see com.themoon.y1", LauncherSwitch.isJjInstalled(ctx));
+        // True only when JJ already on device; false is success for Solar-only policy.
+        android.util.Log.i("JjInstallerTest", "installJjIfNeeded presence=" + ok
+                + " pm=" + LauncherSwitch.isJjInstalled(ctx));
+        org.junit.Assert.assertEquals(LauncherSwitch.isJjInstalled(ctx), ok);
     }
 }
+
