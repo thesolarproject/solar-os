@@ -442,10 +442,10 @@ case "$TYPE" in
         SCATTER_FILE="MT6572_Android_scatter.txt"
         ;;
     y2)
-        # 2026-07-15 — Y2 ATA (MT6582) stock base; upstream asset renamed rom.zip → rom_y2.zip.
-        # Y1 permissive su baked below. CI publishes Solar rom_y2.zip on main and nightly.
-        # Was: .../y2-ata/rom.zip (404 after y1-community release rename). Now: rom_y2.zip.
-        BASE_URL="https://github.com/y1-community/y2-ata-rom/releases/download/y2-ata/rom_y2.zip"
+        # 2026-07-19 — Default Y2 base is jj_auto y2-test (Rockbox/JJ stripped in pack).
+        # Was: y1-community/y2-ata-rom …/y2-ata/rom_y2.zip. Override: SOLAR_Y2_BASE_ZIP.
+        # Reversal: restore y1-community URL below.
+        BASE_URL="https://github.com/ryan-specter/jj_auto/releases/download/y2-test/rom_y2.zip"
         OUTPUT="${OUTPUT:-$REPO_ROOT/rom_y2.zip}"
         SCATTER_FILE="MT6582_Android_scatter.txt"
         # Fail fast before downloading Y2 base if vendored Y1 su is missing.
@@ -809,6 +809,15 @@ audit_rom_contents() {
         fi
     elif [ "$TYPE" = "y2" ]; then
         echo "audit note: Y2 org.rockbox prep-delivered via Solar APK platform bundle" >&2
+        # 2026-07-19 — Leftover Rockbox/JJ on default Y2 pack = hard fail.
+        if [ -f "$sys_mount/app/org.rockbox.apk" ] || [ -f "$sys_mount/lib/librockbox.so" ]; then
+            echo "audit fail: org.rockbox must not ship on default Y2 ROM (use SOLAR_ROM_LEGACY_ROCKBOX=1)" >&2
+            errors=$((errors + 1))
+        fi
+        if [ -f "$sys_mount/app/com.themoon.y1.apk" ] || [ -f "$sys_mount/priv-app/com.themoon.y1.apk" ]; then
+            echo "audit fail: com.themoon.y1 (JJ) must not ship on Y2 Solar ROM" >&2
+            errors=$((errors + 1))
+        fi
     elif [ "$TYPE" = "a5" ]; then
         echo "audit note: A5 omits org.rockbox bake (touch player; Solar-only)" >&2
         if [ -f "$sys_mount/app/org.rockbox.apk" ]; then
@@ -1346,6 +1355,30 @@ if [ "$TYPE" = "y2" ]; then
         install_rockbox_from_y1_base "$MOUNT_SYS"
     else
         echo "==> Y2 Rockbox — platform prep bundle (org.rockbox via Solar APK self-heal)"
+        # 2026-07-19 — Force-strip Rockbox + JJ leftovers from jj_auto / ATA base.
+        # Layman: Solar packs the OS; Rockbox comes later via APK prep, not baked in.
+        # Technical: rm system APKs/libs + userdata package trees. Reversal: LEGACY_ROCKBOX=1.
+        echo "==> Force-remove org.rockbox + com.themoon.y1 (JJ) from Y2 pack"
+        sudo rm -f "$MOUNT_SYS/app/org.rockbox.apk" "$MOUNT_SYS/lib/librockbox.so"
+        sudo rm -f "$MOUNT_SYS/app/com.themoon.y1.apk" "$MOUNT_SYS/priv-app/com.themoon.y1.apk"
+        # Catch oddly named JJ / moon launcher APKs under app/priv-app.
+        while IFS= read -r _jj; do
+            [ -n "$_jj" ] || continue
+            echo "  removing $(basename "$_jj")"
+            sudo rm -f "$_jj"
+        done < <(find "$MOUNT_SYS/app" "$MOUNT_SYS/priv-app" -maxdepth 1 \
+            \( -iname '*themoon*' -o -iname '*jj*launcher*' -o -iname 'com.themoon.y1.apk' \) \
+            2>/dev/null || true)
+        if [ -n "${MOUNT_USER:-}" ] && [ -d "$MOUNT_USER" ]; then
+            sudo rm -rf "$MOUNT_USER/data/org.rockbox" "$MOUNT_USER/data/com.themoon.y1" \
+                "$MOUNT_USER/app/org.rockbox" "$MOUNT_USER/app/com.themoon.y1" 2>/dev/null || true
+            while IFS= read -r _uapk; do
+                [ -n "$_uapk" ] || continue
+                echo "  removing userdata $(basename "$_uapk")"
+                sudo rm -f "$_uapk"
+            done < <(find "$MOUNT_USER" -iname 'com.themoon.y1.apk' -o -iname '*_launcher.apk' \
+                2>/dev/null || true)
+        fi
     fi
 elif [ "$TYPE" = "a" ] || [ "$TYPE" = "b" ]; then
     # 2026-07-15 — Y1 ATA zip may lack Rockbox; heal from rockbox-y1 asset cache.
@@ -1590,6 +1623,9 @@ done < <(find "$MOUNT_USER" -maxdepth 1 -name 'com.innioasis.*.apk' 2>/dev/null 
 sudo rm -f "$MOUNT_USER/data/com.innioasis.y1.apk"
 sudo rm -f "$MOUNT_USER/data/com.innioasis.y2.apk"
 sudo rm -f "$MOUNT_USER"/*_launcher.apk
+# 2026-07-19 — Y2 jj_auto base may leave Rockbox/JJ userdata trees; wipe always (safe on Y1).
+sudo rm -rf "$MOUNT_USER/data/org.rockbox" "$MOUNT_USER/data/com.themoon.y1" 2>/dev/null || true
+sudo rm -f "$MOUNT_USER/data/com.themoon.y1.apk" 2>/dev/null || true
 sudo rm -f "$MOUNT_USER/data/*_launcher_initialized"
 sudo rm -f "$MOUNT_USER/data/.solar_rom_home_ready"
 sudo rm -f "$MOUNT_USER/data/initialized"

@@ -42,7 +42,7 @@ SOLAR_A5_BASE_ZIP=/path/to/rom_a5.zip \
 |------|--------|------|
 | Y1 A | `rom.zip` | `y1-community/y1-ata-rom` … `/0.1/rom.zip` |
 | Y1 B | `rom_type_b.zip` | `y1-community/y1-ata-rom` … `/0.1/rom_type_b.zip` |
-| Y2 | `rom_y2.zip` | `y1-community/y2-ata-rom` … `/y2-ata/rom_y2.zip` |
+| Y2 | `rom_y2.zip` | `ryan-specter/jj_auto` … `/y2-test/rom_y2.zip` (override `SOLAR_Y2_BASE_ZIP`) |
 | A5 | `rom_a5.zip` | `y1-community/a5-ata-rom` … `/0.1/rom_a5.zip` |
 
 Requires `curl`, `unzip`, `zip`, `openssl`, `sudo`, and loop-mount support for ext4 (`e2fsprogs`).
