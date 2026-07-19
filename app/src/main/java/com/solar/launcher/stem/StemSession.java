@@ -6,10 +6,10 @@ import java.util.List;
 
 /**
  * Multi-track Stem mashup session — up to 3 songs, per-song gains/loop/chop.
- * Layman: jam three songs; each pad picks which song the wheel steers; all songs keep playing.
- * Technical: slots[0..2] + activeSongPerZone (control routing only) + SongState gains.
+ * Layman: jam three songs; first pad press focuses; same pad again changes which song you steer.
+ * Technical: slots[0..2] + controlSongIndex + activeSongPerZone (routing) + SongState gains.
  * Cycle never stops audio — host keeps one StemMixer per song always running.
- * Was: single File / replaceZoneStem swap. Reversal: one mixer + swap files on cycle.
+ * Was: cross-song pad seed made focus switch the interacted track. Reversal: seed z%N + no controlSongIndex.
  * 2026-07-19
  */
 public final class StemSession {
@@ -48,6 +48,8 @@ public final class StemSession {
     private int songCount;
     /** Which song (0..songCount-1) each zone arm is controlling. */
     private final int[] activeSongPerZone = new int[ZONE_COUNT];
+    /** Song the user is interacting with — only advances on repress of focused pad. 2026-07-19 */
+    private int controlSongIndex;
     private int activeZone;
 
     public StemSession() {
@@ -75,27 +77,37 @@ public final class StemSession {
             }
         }
         if (songCount < 1) songCount = 0;
-        // Spread pad control across songs so layering needs no cycle first. 2026-07-19
-        seedCrossSongPadRouting();
+        // All pads start on song 0 — focus never jumps the interacted track. 2026-07-19
+        controlSongIndex = 0;
+        seedPadRoutingToControlSong();
         // No arm focused yet — first stem key focuses without cycling. 2026-07-19
         activeZone = -1;
     }
 
     /**
-     * Assign each pad’s control song so 2–3 track jams layer without cycling first.
-     * Layman: Vocals may steer song 1 while Drums steers song 2 — both already running muted.
-     * Technical: activeSongPerZone[z] = z % songCount (1 song → all 0).
-     * Was: all pads locked to song 0 until cycle. Reversal: fill activeSongPerZone with 0.
+     * Point every pad at {@link #controlSongIndex} (usually 0 after bind).
+     * Layman: until you repress a focused pad, every arm steers the same song.
+     * Was: activeSongPerZone[z] = z % songCount (focus switched track). Reversal: that modulo seed.
+     * 2026-07-19
+     */
+    public void seedPadRoutingToControlSong() {
+        int s = controlSongIndex;
+        if (s < 0) s = 0;
+        if (songCount > 0 && s >= songCount) s = songCount - 1;
+        for (int z = 0; z < ZONE_COUNT; z++) activeSongPerZone[z] = s;
+    }
+
+    /**
+     * @deprecated name kept for callers; now seeds all pads to control song.
      * 2026-07-19
      */
     public void seedCrossSongPadRouting() {
-        if (songCount <= 1) {
-            for (int z = 0; z < ZONE_COUNT; z++) activeSongPerZone[z] = 0;
-            return;
-        }
-        for (int z = 0; z < ZONE_COUNT; z++) {
-            activeSongPerZone[z] = z % songCount;
-        }
+        seedPadRoutingToControlSong();
+    }
+
+    /** Song currently steered by focus/wheel (0-based). 2026-07-19 */
+    public int controlSongIndex() {
+        return controlSongIndex;
     }
 
     public int songCount() {
@@ -128,34 +140,45 @@ public final class StemSession {
     }
 
     /**
-     * Stem key: focus zone, or if already focused cycle that arm’s control song.
-     * Layman: first tap picks the pad; same pad again picks the next song for the wheel.
-     * Technical: control routing only — audio timelines keep running on every mixer.
+     * Stem key: focus zone, or if already focused advance the interacted song.
+     * Layman: one click focuses; only a second click on that same pad changes the track.
+     * Technical: focus snaps pad → controlSongIndex; cycle bumps controlSongIndex then pad.
      * Host must not call setActiveZone on key-DOWN (that armed false cycles). 2026-07-19
-     * Was: Host selectZone on DOWN → UP always cycled. Reversal: set focus on DOWN again.
+     * Was: focus left seeded per-pad song (track jumped on first focus). Reversal: that path.
      */
     public boolean onStemKey(int zone) {
         if (zone < 0 || zone >= ZONE_COUNT) return false;
         // Capture focus state before any write — returning to a pad must not cycle. 2026-07-19
         boolean alreadyFocused = StemControls.stemKeyShouldCycleSong(activeZone, zone, songCount);
         if (!alreadyFocused) {
+            // Focus only — keep interacted track; pad steers current control song. 2026-07-19
             activeZone = zone;
+            activeSongPerZone[zone] = clampSong(controlSongIndex);
             return false;
         }
         if (songCount <= 1) return false;
-        int next = (activeSongPerZone[zone] + 1) % songCount;
-        activeSongPerZone[zone] = next;
+        controlSongIndex = (controlSongIndex + 1) % songCount;
+        activeSongPerZone[zone] = controlSongIndex;
         return true;
     }
 
     /**
      * Focus a pad without cycling (stutter arm, UI restore).
-     * Layman: lights that pad; does not change which song it plays.
+     * Layman: lights that pad; keeps the same song you were already on.
      * 2026-07-19
      */
     public void setActiveZone(int zone) {
         if (zone < 0 || zone >= ZONE_COUNT) return;
         activeZone = zone;
+        activeSongPerZone[zone] = clampSong(controlSongIndex);
+    }
+
+    /** Clamp song index into 0..songCount-1 (0 when empty). 2026-07-19 */
+    private int clampSong(int s) {
+        if (songCount < 1) return 0;
+        if (s < 0) return 0;
+        if (s >= songCount) return songCount - 1;
+        return s;
     }
 
     /** Clear pad focus so next stem key is focus-only. 2026-07-19 */
