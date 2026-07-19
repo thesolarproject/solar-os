@@ -1388,26 +1388,43 @@ public final class GlobalContextOverlayService extends Service {
         interactive = false;
         chipMode = false;
         if (chipHost != null) {
-            chipHost.dismiss();
+            // Instant detach on service teardown (avoid racing removeView with dismiss anim).
+            chipHost.dismiss(false);
             chipHost = null;
         }
         activeTier = OverlayTierNames.TIER_NONE;
         sessionId = null;
         callerPackage = null;
-        if (windowManager != null && overlayRoot != null) {
-            try {
-                windowManager.removeView(overlayRoot);
-            } catch (Exception ignored) {}
-        }
-        CompanionOverlayKeyGate.setShellVisible(false);
-        overlayRoot = null;
-        panel = null;
-        titleView = null;
-        detailView = null;
-        detailScroll = null;
-        rowsHost = null;
-        if (stopService) {
-            stopSelf();
+        // 2026-07-18 — Animate panel out before remove (was instant tear-down).
+        // Reversal: removeView immediately without OverlayModalTransition.animateDismissPanelOnly.
+        final android.view.WindowManager winMgr = windowManager;
+        final FrameLayout root = overlayRoot;
+        final View panelView = panel;
+        final boolean stop = stopService;
+        Runnable finish = new Runnable() {
+            @Override
+            public void run() {
+                if (winMgr != null && root != null) {
+                    try {
+                        winMgr.removeView(root);
+                    } catch (Exception ignored) {}
+                }
+                CompanionOverlayKeyGate.setShellVisible(false);
+                overlayRoot = null;
+                panel = null;
+                titleView = null;
+                detailView = null;
+                detailScroll = null;
+                rowsHost = null;
+                if (stop) {
+                    stopSelf();
+                }
+            }
+        };
+        if (panelView != null && OverlayModalTransition.enabled(this)) {
+            OverlayModalTransition.animateDismissPanelOnly(panelView, finish);
+        } else {
+            finish.run();
         }
     }
 

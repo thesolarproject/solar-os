@@ -5,6 +5,18 @@ import org.junit.Test;
 public class SolarAutoTimeTest {
 
     @Test
+    public void wallClockImplausibleDetectsEpochRange() {
+        // Method uses System.currentTimeMillis — on CI wall clock is fine (≥2020).
+        // Just ensure the helper is callable and consistent with “not before 2020”.
+        boolean implausible = SolarAutoTime.isWallClockImplausible();
+        long now = System.currentTimeMillis();
+        boolean expect = now < 1577836800000L || now > 1893456000000L;
+        if (implausible != expect) {
+            throw new AssertionError("implausible=" + implausible + " now=" + now);
+        }
+    }
+
+    @Test
     public void ntpSelfCheck() {
         SolarNtpClient.selfCheck();
     }

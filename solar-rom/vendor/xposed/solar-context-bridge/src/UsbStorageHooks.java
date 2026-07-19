@@ -7,9 +7,11 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage.LoadPackageParam;
 
 /**
- * 2026-07-06 — SystemUI concierge: finish stock {@code UsbStorageActivity} and route to Solar.
- * Layman: PC plug-in never shows Android's USB dialog — Solar overlay or in-app USB owns it.
- * Reversal: remove hooks; {@code Y1UsbFocusHelper} USB_STATE polling becomes primary again.
+ * 2026-07-06 — SystemUI concierge: finish stock {@code UsbStorageActivity} and route to Solar
+ * — unless stock UI is preferred (skip Solar prompt, no auto-connect).
+ * Layman: by default Android’s USB screen stays; Solar only steals it when asked.
+ * Was: always finish + route (heavy wake). Reversal: remove preferStockUsbUi early return.
+ * 2026-07-19
  */
 final class UsbStorageHooks {
 
@@ -26,6 +28,18 @@ final class UsbStorageHooks {
                 protected void afterHookedMethod(MethodHookParam param) {
                     long t0 = System.nanoTime();
                     if (!(param.thisObject instanceof Activity)) return;
+                    // Stock path — leave UsbStorageActivity alone (no finish, no Solar wake).
+                    if (SolarUsbSessionPrefs.preferStockUsbUi()) {
+                        SolarContextBridge.log("UsbStorageActivity stock pass-through");
+                        // #region agent log
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("stockUi", true);
+                            BridgeAnrDebugLog.hookTiming("UsbStorageHooks.onCreate", "STOCK", t0, d);
+                        } catch (Throwable ignored) {}
+                        // #endregion
+                        return;
+                    }
                     Activity activity = (Activity) param.thisObject;
                     try {
                         activity.finish();
@@ -43,11 +57,12 @@ final class UsbStorageHooks {
                 }
             };
             XposedHookKit.hookAll(activityClass, "onCreate", finishAndRoute);
-            // Belt-and-suspenders — stock may resume after config change before finish completes.
+            // Belt-and-suspenders — only when Solar owns USB UI.
             XposedHookKit.hookAll(activityClass, "onResume", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     if (!(param.thisObject instanceof Activity)) return;
+                    if (SolarUsbSessionPrefs.preferStockUsbUi()) return;
                     try {
                         ((Activity) param.thisObject).finish();
                     } catch (Throwable ignored) {}

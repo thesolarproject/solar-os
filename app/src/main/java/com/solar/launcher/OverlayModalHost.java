@@ -1749,6 +1749,28 @@ public final class OverlayModalHost {
         ArrayList<Boolean> headers = new ArrayList<Boolean>();
         powerRowActions.clear();
 
+        // 2026-07-18 — PC host only: Turn on USB storage at top of Power list (not charger-only).
+        // Reversal: remove this block — Power stays Restart/Shutdown (+ launcher rows).
+        if (UsbHostPresence.shouldOfferEnableUsbStorageInPowerMenu(context)) {
+            headers.add(Boolean.FALSE);
+            labels.add(context.getString(R.string.usb_mass_storage_turn_on));
+            powerRowActions.add(new Runnable() {
+                @Override public void run() {
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("from", "overlay_power");
+                        com.solar.launcher.Debug0f5debLog.log(context,
+                                "OverlayModalHost.refreshPowerTier",
+                                "enable USB from power", "USB-PWR", d);
+                    } catch (Exception ignored) {}
+                    // #endregion
+                    UsbStorageOverlayReceiver.launchSolarUsbHandoff(context, true, false);
+                    dismissListener.onDismissOverlay();
+                }
+            });
+        }
+
         headers.add(Boolean.FALSE);
         labels.add(context.getString(R.string.context_restart_confirm));
         powerRowActions.add(new Runnable() {

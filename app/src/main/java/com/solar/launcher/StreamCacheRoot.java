@@ -23,7 +23,8 @@ public final class StreamCacheRoot {
         return internal != null ? internal : sd;
     }
 
-    static boolean hasSpace(File dir, long minFree) {
+    /** True when dir exists (or can be created) and has at least minFree usable bytes. */
+    public static boolean hasSpace(File dir, long minFree) {
         if (dir == null) return false;
         if (!dir.isDirectory() && !dir.mkdirs()) return false;
         return dir.getUsableSpace() >= minFree;

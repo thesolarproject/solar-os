@@ -67,9 +67,31 @@ public final class TlsHelper {
                 logI("Modern TLS enabled (API " + Build.VERSION.SDK_INT + ", conscrypt="
                         + (provider != null ? provider.getName() : "none") + ", bundledRoots="
                         + bundledRootCount() + ")");
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("api", Build.VERSION.SDK_INT);
+                    d.put("conscrypt", provider != null ? provider.getName() : "none");
+                    d.put("bundledRoots", bundledRootCount());
+                    d.put("tmfProvider", lastTmfProvider);
+                    d.put("amazonRootLoaded", amazonRootLoaded);
+                    d.put("deviceTimeMs", System.currentTimeMillis());
+                    com.solar.launcher.Debug543e15Log.log(
+                            "TlsHelper.init", "tls bootstrap", "H-CERT-B", d);
+                } catch (Throwable ignored) {}
+                // #endregion
                 scheduleTlsProbe();
             } catch (Exception e) {
                 logE("Modern TLS setup failed", e);
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("err", e.getClass().getName());
+                    d.put("msg", e.getMessage() != null ? e.getMessage() : "");
+                    com.solar.launcher.Debug543e15Log.log(
+                            "TlsHelper.init", "tls bootstrap failed", "H-CERT-C", d);
+                } catch (Throwable ignored) {}
+                // #endregion
                 try {
                     cachedClient = buildOkHttpClient();
                 } catch (Exception e2) {
@@ -117,25 +139,49 @@ public final class TlsHelper {
         }
     }
 
-    /** HEAD request; returns negotiated protocol (e.g. TLSv1.2) or null on failure. */
+    /** HEAD/GET via OkHttp — matches Stem/Lalal path (not HttpsURLConnection). 2026-07-19 */
     public static String probeProtocol(String urlStr) {
         try {
             if (!bootstrapped) init(null);
             ensureSecurityProvider();
-            java.net.URL url = new java.net.URL(urlStr);
-            HttpsURLConnection conn = (HttpsURLConnection) url.openConnection();
-            conn.setSSLSocketFactory(socketFactory());
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(20000);
-            conn.setRequestMethod("HEAD");
-            conn.connect();
-            int code = conn.getResponseCode();
-            String protocol = readNegotiatedProtocol(conn);
-            conn.disconnect();
-            if (code < 200 || code >= 400) return null;
-            return protocol;
+            okhttp3.Request req = new okhttp3.Request.Builder()
+                    .url(urlStr)
+                    .head()
+                    .build();
+            okhttp3.Response resp = client().newCall(req).execute();
+            try {
+                int code = resp.code();
+                String protocol = null;
+                if (resp.handshake() != null && resp.handshake().tlsVersion() != null) {
+                    protocol = resp.handshake().tlsVersion().javaName();
+                }
+                if (code < 200 || code >= 500) {
+                    // HEAD may 405 — still proves TLS worked.
+                    if (code == 405 && protocol != null) return protocol;
+                    return null;
+                }
+                return protocol != null ? protocol : "TLS";
+            } finally {
+                resp.close();
+            }
         } catch (Exception e) {
             logW("probeProtocol failed " + urlStr, e);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("url", urlStr);
+                d.put("err", e.getClass().getName());
+                d.put("msg", e.getMessage() != null ? e.getMessage() : "");
+                Throwable c = e.getCause();
+                if (c != null) {
+                    d.put("cause", c.getClass().getSimpleName()
+                            + ": " + (c.getMessage() != null ? c.getMessage() : ""));
+                }
+                d.put("deviceTimeMs", System.currentTimeMillis());
+                com.solar.launcher.Debug543e15Log.log(
+                        "TlsHelper.probeProtocol", "probe failed", "H-CERT-A", d);
+            } catch (Throwable ignored) {}
+            // #endregion
             return null;
         }
     }
@@ -166,7 +212,21 @@ public final class TlsHelper {
                 public void run() {
                     String le = probeProtocol("https://valid-isrgrootx1.letsencrypt.org/");
                     String t13 = probeProtocol("https://tls13.1d.pw/");
-                    logI("TLS probe LE=" + le + " tls13-only-host=" + t13);
+                    String lalal = probeProtocol("https://www.lalal.ai/");
+                    logI("TLS probe LE=" + le + " tls13-only-host=" + t13 + " lalal=" + lalal);
+                    // #region agent log
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("le", le != null ? le : org.json.JSONObject.NULL);
+                        d.put("tls13", t13 != null ? t13 : org.json.JSONObject.NULL);
+                        d.put("lalal", lalal != null ? lalal : org.json.JSONObject.NULL);
+                        d.put("amazonRootLoaded", amazonRootLoaded);
+                        d.put("tmfProvider", lastTmfProvider);
+                        d.put("deviceTimeMs", System.currentTimeMillis());
+                        com.solar.launcher.Debug543e15Log.log(
+                                "TlsHelper.scheduleTlsProbe", "probe results", "H-CERT-A", d);
+                    } catch (Throwable ignored) {}
+                    // #endregion
                 }
             }, "SolarTlsProbe").start();
         } catch (Throwable ignored) {}
@@ -217,6 +277,10 @@ public final class TlsHelper {
     }
 
     private static volatile Provider conscrypt;
+    /** Last TrustManagerFactory provider name — debug 543e15. */
+    private static volatile String lastTmfProvider = "";
+    /** True when assets amazon-root-ca-1.pem entered the merged KeyStore. */
+    private static volatile boolean amazonRootLoaded;
 
     private static Provider conscryptProvider() {
         if (conscrypt != null) return conscrypt;
@@ -264,12 +328,14 @@ public final class TlsHelper {
             return firstX509(tmf);
         }
         if (appContext != null) {
-            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            // Prefer Android/Conscrypt factory — BC X.509 parser + PKIX is flaky on API 17. 2026-07-19
+            CertificateFactory cf = certificateFactoryX509();
             for (String path : BUNDLED_ROOTS) {
                 InputStream in = null;
                 try {
                     in = appContext.getAssets().open(path);
                     ks.setCertificateEntry("le:" + path, cf.generateCertificate(in));
+                    if (path.indexOf("amazon-root-ca-1") >= 0) amazonRootLoaded = true;
                 } catch (Exception e) {
                     logW("Could not load root " + path, e);
                 } finally {
@@ -282,15 +348,52 @@ public final class TlsHelper {
         return firstX509(tmf);
     }
 
-    private static TrustManagerFactory androidPkixFactory() throws Exception {
+    /**
+     * X.509 CertificateFactory that prefers Conscrypt/AndroidOpenSSL over BouncyCastle.
+     * Layman: parse PEM roots with the same crypto stack we use for HTTPS.
+     * 2026-07-19
+     */
+    private static CertificateFactory certificateFactoryX509() throws Exception {
+        Provider c = conscryptProvider();
+        if (c != null) {
+            try {
+                return CertificateFactory.getInstance("X.509", c);
+            } catch (Exception ignored) {}
+        }
         for (String name : new String[] {"AndroidOpenSSL", "AndroidDefault", "HarmonyJSSE"}) {
             try {
                 Provider p = Security.getProvider(name);
                 if (p == null) continue;
-                return TrustManagerFactory.getInstance("PKIX", p);
+                return CertificateFactory.getInstance("X.509", p);
             } catch (Exception ignored) {}
         }
-        return TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        return CertificateFactory.getInstance("X.509");
+    }
+
+    private static TrustManagerFactory androidPkixFactory() throws Exception {
+        // Prefer Conscrypt PKIX on Y1 — stock path often lands on BC → "Could not validate certificate".
+        Provider c = conscryptProvider();
+        if (c != null) {
+            try {
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+                        TrustManagerFactory.getDefaultAlgorithm(), c);
+                lastTmfProvider = c.getName();
+                return tmf;
+            } catch (Exception ignored) {}
+        }
+        for (String name : new String[] {"AndroidOpenSSL", "AndroidDefault", "HarmonyJSSE"}) {
+            try {
+                Provider p = Security.getProvider(name);
+                if (p == null) continue;
+                TrustManagerFactory tmf = TrustManagerFactory.getInstance("PKIX", p);
+                lastTmfProvider = name;
+                return tmf;
+            } catch (Exception ignored) {}
+        }
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(
+                TrustManagerFactory.getDefaultAlgorithm());
+        lastTmfProvider = "default:" + tmf.getProvider().getName();
+        return tmf;
     }
 
     private static X509TrustManager firstX509(TrustManagerFactory tmf) {

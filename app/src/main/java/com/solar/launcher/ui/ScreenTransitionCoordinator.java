@@ -49,6 +49,13 @@ public final class ScreenTransitionCoordinator {
         return kind != ScreenTransitionMap.Kind.NONE;
     }
 
+    /**
+     * 2026-07-18 — Run push/pop/slide after one frame so status throbber can paint first.
+     * Layman: spinner shows, then the new screen builds and slides in.
+     * Technical: post apply+anim; UiBusy TRANSITION armed by caller (changeScreen).
+     * Was: applyScreenChange on calling thread before post — throbber never painted mid-build.
+     * Reversal: call applyScreenChange synchronously then outView.post(startAnim).
+     */
     public static void run(final Host host, final int from, final int to, final boolean isBack) {
         if (host == null) {
             return;
@@ -60,24 +67,16 @@ public final class ScreenTransitionCoordinator {
         final int h = host.screenHeightPx();
 
         // #region agent log
-        final long buildStartMs = System.currentTimeMillis();
-        // #endregion
-        host.applyScreenChange(to, true);
-        host.prepareTransitionBackdrop(from, to);
-        // #region agent log
+        final long scheduleMs = System.currentTimeMillis();
         try {
             JSONObject d = new JSONObject();
             d.put("from", from);
             d.put("to", to);
             d.put("kind", kind.name());
-            d.put("buildMs", System.currentTimeMillis() - buildStartMs);
-            TransitionPerfLog.log("ScreenTransitionCoordinator.run", "applyScreenChange done", "A", d);
+            d.put("busyTransition", UiBusy.isBusy(UiBusy.REASON_TRANSITION));
+            TransitionPerfLog.log("ScreenTransitionCoordinator.run", "scheduled post-frame", "H1-H4", d);
         } catch (Exception ignored) {}
         // #endregion
-
-        final View outBackdrop = host.backdropOutSlot();
-        final View inBackdrop = host.backdropCrossfadeOnly() ? host.backdropInSlot()
-                : host.backdropInSlot();
 
         final Runnable complete = new Runnable() {
             @Override
@@ -88,6 +87,8 @@ public final class ScreenTransitionCoordinator {
                 }
                 host.commitTransitionBackdrop(to);
                 host.finalizeScreenVisibility(to);
+                // Destination interactive — drop transition spinner (library may re-arm library_load).
+                UiBusy.clear(UiBusy.REASON_TRANSITION);
             }
         };
 
@@ -96,45 +97,90 @@ public final class ScreenTransitionCoordinator {
             public void run() {
                 if (host.backdropCrossfadeOnly() && kind != ScreenTransitionMap.Kind.SLIDE_UP
                         && kind != ScreenTransitionMap.Kind.SLIDE_DOWN) {
-                    ScreenTransition.animateCrossfade(outView, inView, outBackdrop, inBackdrop, complete);
+                    ScreenTransition.animateCrossfade(outView, inView, outBackdropOrNull(host),
+                            inBackdropOrNull(host), complete);
                     return;
                 }
                 switch (kind) {
                     case PUSH_FORWARD:
-                        ScreenTransition.animatePushPop(outView, inView, outBackdrop, inBackdrop,
+                        ScreenTransition.animatePushPop(outView, inView,
+                                outBackdropOrNull(host), inBackdropOrNull(host),
                                 true, w, complete);
                         break;
                     case POP_BACK:
-                        ScreenTransition.animatePushPop(outView, inView, outBackdrop, inBackdrop,
+                        ScreenTransition.animatePushPop(outView, inView,
+                                outBackdropOrNull(host), inBackdropOrNull(host),
                                 false, w, complete);
                         break;
                     case SLIDE_UP:
-                        ScreenTransition.animateSlideY(outView, inView, outBackdrop, inBackdrop,
+                        ScreenTransition.animateSlideY(outView, inView,
+                                outBackdropOrNull(host), inBackdropOrNull(host),
                                 true, h, complete);
                         break;
                     case SLIDE_DOWN:
-                        ScreenTransition.animateSlideY(outView, inView, outBackdrop, inBackdrop,
+                        ScreenTransition.animateSlideY(outView, inView,
+                                outBackdropOrNull(host), inBackdropOrNull(host),
                                 false, h, complete);
                         break;
                     case CROSSFADE:
-                        ScreenTransition.animateCrossfade(outView, inView, outBackdrop, inBackdrop, complete);
+                        ScreenTransition.animateCrossfade(outView, inView,
+                                outBackdropOrNull(host), inBackdropOrNull(host), complete);
                         break;
                     default:
                         host.applyScreenChange(to, false);
                         host.commitTransitionBackdrop(to);
                         host.finalizeScreenVisibility(to);
+                        UiBusy.clear(UiBusy.REASON_TRANSITION);
                         break;
                 }
             }
         };
 
-        // Start on the outgoing root — it is already on screen so Back feels immediate.
-        if (outView != null) {
-            outView.post(startAnim);
-        } else if (inView != null) {
-            inView.post(startAnim);
+        // One frame for UiBusy paint, then build destination + kick anim.
+        final Runnable buildThenAnim = new Runnable() {
+            @Override
+            public void run() {
+                // #region agent log
+                final long buildStartMs = System.currentTimeMillis();
+                // #endregion
+                host.applyScreenChange(to, true);
+                host.prepareTransitionBackdrop(from, to);
+                // #region agent log
+                try {
+                    JSONObject d = new JSONObject();
+                    d.put("from", from);
+                    d.put("to", to);
+                    d.put("kind", kind.name());
+                    d.put("buildMs", System.currentTimeMillis() - buildStartMs);
+                    d.put("scheduleGapMs", System.currentTimeMillis() - scheduleMs);
+                    TransitionPerfLog.log("ScreenTransitionCoordinator.run",
+                            "applyScreenChange done", "H4", d);
+                } catch (Exception ignored) {}
+                // #endregion
+                // Layout pass for incoming root before translate/alpha anim.
+                if (inView != null) {
+                    inView.post(startAnim);
+                } else {
+                    startAnim.run();
+                }
+            }
+        };
+
+        View scheduleOn = outView != null ? outView : inView;
+        if (scheduleOn != null) {
+            scheduleOn.post(buildThenAnim);
         } else {
-            startAnim.run();
+            buildThenAnim.run();
         }
+    }
+
+    /** 2026-07-18 — Backdrop out slot or null when host has none. */
+    private static View outBackdropOrNull(Host host) {
+        return host.backdropOutSlot();
+    }
+
+    /** 2026-07-18 — Backdrop in slot or null when host has none. */
+    private static View inBackdropOrNull(Host host) {
+        return host.backdropInSlot();
     }
 }

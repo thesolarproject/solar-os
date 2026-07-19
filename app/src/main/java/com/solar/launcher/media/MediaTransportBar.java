@@ -13,12 +13,14 @@ import android.widget.TextView;
 import com.solar.launcher.DeviceFeatures;
 import com.solar.launcher.R;
 import com.solar.launcher.theme.ThemeManager;
+import com.solar.launcher.ui.HardwareButtonGlyph;
 
 /**
  * Shared bottom transport strip — scrub timeline, volume-in-track pulse, optional hold-Back hint.
  * Layman: the thin bar under Now Playing / video with time, scrub, and the “hold for Options” tip.
  * Technical: one include per screen (player + video); bind via root view to avoid duplicate IDs.
- * Reversal: drop DeviceFeatures hint swap — layout default is Y1 Back-only copy again.
+ * 2026-07-18 — Options tip uses Back glyph (+ “Power” text on Y2). Was: plain string resources.
+ * Reversal: restore hint.setText(R.string.context_hold_back_*) and drop HardwareButtonGlyph call.
  */
 public final class MediaTransportBar {
     private static final long OVERLAY_FADE_MS = 200L;
@@ -48,8 +50,27 @@ public final class MediaTransportBar {
     private boolean fmNormalModeActive = false;
     private int lastVolCurrent = 0;
     private int lastVolMax = 1;
-    /** When false, never fade in the hold-Back-for-Options line (user opened context menu once). */
-    private boolean holdBackHintEnabled = true;
+    /**
+     * 2026-07-18 — Which tip the volume pulse may show.
+     * Was: boolean holdBackHintEnabled only. Now: Options → Flow → none ladder.
+     */
+    public enum HintMode {
+        NONE,
+        HOLD_BACK_OPTIONS,
+        HOLD_PLAY_FLOW
+    }
+
+    private HintMode hintMode = HintMode.HOLD_BACK_OPTIONS;
+    /** Fired once per volume session when Flow tip first fades in. */
+    public interface OnFlowHintPresentedListener {
+        void onFlowHintPresented();
+    }
+
+    private OnFlowHintPresentedListener flowHintPresentedListener;
+    /** 2026-07-18 — Ear icon at Hearing Safety display max (keep scrolling for more). */
+    private boolean lastVolShowEar;
+    /** 2026-07-18 — NP live “keep holding…” tip while Back/PP is down (not volume pulse). */
+    private boolean liveHoldHintActive;
 
     public MediaTransportBar(Context context, View transportRoot) {
         ctx = context;
@@ -64,12 +85,76 @@ public final class MediaTransportBar {
         scrubMarker = transportRoot.findViewById(R.id.transport_scrub_marker);
         volumeProgress = transportRoot.findViewById(R.id.transport_volume_progress);
         hint = transportRoot.findViewById(R.id.transport_hint);
-        // 2026-07-11 — Y2 power key also opens Options; swap tip at bind. Y1 keeps XML Back-only string.
-        // Reversal: delete this branch — inflate text stays context_hold_back_hint for both.
-        if (hint != null && DeviceFeatures.isY2()) {
-            hint.setText(R.string.context_hold_back_or_power_hint);
-        }
+        configureHintMarquee();
+        refreshHintText();
         styleScrubMarker();
+    }
+
+    /**
+     * 2026-07-18 — Larger tip + horizontal marquee for long future copy.
+     * Layman: tip text can scroll sideways when it is longer than the screen.
+     * Tech: singleLine + MARQUEE + selected while visible (API 17).
+     * Reversal: drop marquee; leave static 12sp centered label.
+     */
+    private void configureHintMarquee() {
+        if (hint == null) return;
+        hint.setSingleLine(true);
+        hint.setEllipsize(android.text.TextUtils.TruncateAt.MARQUEE);
+        hint.setMarqueeRepeatLimit(-1);
+        hint.setHorizontallyScrolling(true);
+        hint.setFocusable(true);
+        hint.setFocusableInTouchMode(true);
+        try {
+            float sp = ctx.getResources().getDimension(R.dimen.y1_transport_hint_text_size);
+            hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, sp);
+        } catch (Exception ignored) {
+            hint.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 15f);
+        }
+    }
+
+    /**
+     * 2026-07-18 — Rebuild tip spannable for current HintMode (theme tint).
+     * Layman: Options Back glyph or Flow Play/Pause glyph above the scrub bar.
+     */
+    private void refreshHintText() {
+        if (hint == null) return;
+        if (hintMode == HintMode.HOLD_PLAY_FLOW) {
+            hint.setText(HardwareButtonGlyph.holdPlayPauseOpenFlow(ctx));
+        } else if (hintMode == HintMode.HOLD_BACK_OPTIONS) {
+            hint.setText(HardwareButtonGlyph.holdBackOptionsHint(ctx, DeviceFeatures.isY2()));
+        }
+        // NONE: leave text; visibility stays gated by ensureVolumeHintVisible
+    }
+
+    /** @deprecated use {@link #setHintMode(HintMode)} — kept for older call sites. */
+    public void setHoldBackHintEnabled(boolean enabled) {
+        setHintMode(enabled ? HintMode.HOLD_BACK_OPTIONS : HintMode.NONE);
+    }
+
+    /**
+     * 2026-07-18 — Options / Flow / none tip policy from MainActivity.
+     * Reversal: setHoldBackHintEnabled(boolean) only.
+     */
+    public void setHintMode(HintMode mode) {
+        hintMode = mode != null ? mode : HintMode.NONE;
+        refreshHintText();
+        if (hintMode == HintMode.NONE) {
+            volumeHintVisible = false;
+            setHintVisible(false);
+        }
+    }
+
+    public HintMode getHintMode() {
+        return hintMode;
+    }
+
+    public void setOnFlowHintPresentedListener(OnFlowHintPresentedListener listener) {
+        flowHintPresentedListener = listener;
+    }
+
+    /** @deprecated name kept; now refreshes any active tip mode. */
+    private void refreshHoldBackHint() {
+        refreshHintText();
     }
 
     public View root() {
@@ -125,19 +210,66 @@ public final class MediaTransportBar {
     public void setHintVisible(boolean visible) {
         if (hint == null) return;
         if (!visible) {
+            if (liveHoldHintActive) return; // live hold owns the tip until hideLiveHoldHint
             hint.animate().cancel();
+            hint.setSelected(false);
             hint.setVisibility(View.GONE);
             hint.setAlpha(1f);
         }
     }
 
-    /** Suppress hold-Back hint after the user has opened the global context menu once. */
-    public void setHoldBackHintEnabled(boolean enabled) {
-        holdBackHintEnabled = enabled;
-        if (!enabled) {
-            volumeHintVisible = false;
-            setHintVisible(false);
-        }
+    /**
+     * 2026-07-18 — Show keep-holding tip immediately on NP (Back / Play-Pause down).
+     * Layman: as soon as you press, tell you to keep holding for Options or Flow.
+     * Tech: forces hint VISIBLE above scrub; does not arm volume pulse.
+     * Reversal: no-op; only volume-pulse tips remain.
+     */
+    public void showLiveHoldHint(CharSequence text) {
+        if (hint == null || text == null) return;
+        liveHoldHintActive = true;
+        hint.animate().cancel();
+        configureHintMarquee();
+        hint.setText(text);
+        hint.setVisibility(View.VISIBLE);
+        hint.setAlpha(1f);
+        hint.setSelected(true);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("len", text.length());
+            d.put("hintH", hint.getHeight());
+            d.put("rootH", root != null ? root.getHeight() : -1);
+            d.put("textSizePx", hint.getTextSize());
+            com.solar.launcher.Debug0f5debLog.log(ctx, "MediaTransportBar.showLiveHoldHint",
+                    "live hold tip on", "NP-LIVE", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    /**
+     * 2026-07-18 — Hide live hold tip; restore policy tip text (still hidden until volume).
+     */
+    public void hideLiveHoldHint() {
+        if (hint == null) return;
+        if (!liveHoldHintActive) return;
+        liveHoldHintActive = false;
+        hint.animate().cancel();
+        hint.setSelected(false);
+        hint.setVisibility(View.GONE);
+        hint.setAlpha(1f);
+        refreshHintText();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("mode", hintMode != null ? hintMode.name() : "");
+            com.solar.launcher.Debug0f5debLog.log(ctx, "MediaTransportBar.hideLiveHoldHint",
+                    "live hold tip off", "NP-LIVE", d);
+        } catch (Exception ignored) {}
+        // #endregion
+    }
+
+    public boolean isLiveHoldHintActive() {
+        return liveHoldHintActive;
     }
 
     public boolean isVolumeModeActive() {
@@ -172,6 +304,8 @@ public final class MediaTransportBar {
         if (hint != null) {
             ThemeManager.applyThemedTextStyle(hint, hintColor);
             if (font != null) hint.setTypeface(font);
+            // 2026-07-18 — Re-tint glyph after theme paint (SRC_IN colour baked into ImageSpan).
+            refreshHoldBackHint();
         }
         if (timeCurrent != null) {
             ThemeManager.applyThemedTextStyle(timeCurrent, textColor);
@@ -233,22 +367,105 @@ public final class MediaTransportBar {
 
     /** Briefly show volume in the scrub track slot (music Now Playing). */
     public void showVolumePulse(int current, int max) {
-        showVolumeInTrack(current, max, false);
+        showVolumeInTrack(current, max, false, false);
+    }
+
+    /**
+     * 2026-07-18 — NP volume pulse with optional ear at Hearing Safety max.
+     * Layman: ear means keep scrolling right for more loudness.
+     */
+    public void showVolumePulse(int current, int max, boolean showEar) {
+        showVolumeInTrack(current, max, false, showEar);
     }
 
     /** Volume replaces scrub track; on video also pulses the auto-hide overlay. */
     public void showVolumeInTrack(int current, int max) {
-        showVolumeInTrack(current, max, true);
+        showVolumeInTrack(current, max, true, false);
     }
 
-    private void showVolumeInTrack(int current, int max, boolean pulseOverlay) {
+    /** 2026-07-18 — Video / NP volume with ear cue when Hearing Safety caps. */
+    public void showVolumeInTrack(int current, int max, boolean showEar) {
+        showVolumeInTrack(current, max, true, showEar);
+    }
+
+    /**
+     * 2026-07-18 — Hearing Safety temp unlock: animate bar from 100% → ~80% as scale opens.
+     * Layman: ear fades, bar drops a bit, more room opens above for louder levels.
+     * Technical: same HW index; display re-mapped after temp unlock; ValueAnimator on progress.
+     */
+    public void showVolumeUnlockAnimation(int fromDisplay, int toDisplay, int max) {
+        if (volumeProgress == null) return;
+        if (max < 1) max = 1;
+        fromDisplay = Math.max(0, Math.min(fromDisplay, max));
+        toDisplay = Math.max(0, Math.min(toDisplay, max));
+        lastVolCurrent = toDisplay;
+        lastVolMax = max;
+        lastVolShowEar = false;
+        if (progressBar != null && progressBar.getVisibility() != View.GONE) {
+            progressBar.setVisibility(View.GONE);
+        }
+        if (scrubMarker != null && scrubMarker.getVisibility() != View.GONE) {
+            scrubMarker.setVisibility(View.GONE);
+        }
+        volumeProgress.setVisibility(View.VISIBLE);
+        volumeProgress.setMax(max);
+        volumeProgress.setProgress(fromDisplay);
+        applyVolumeProgressTheme();
+        setVolumeLabelsVisible(true, fromDisplay, max, true);
+        ensureVolumeHintVisible();
+        // Hint: keep scrolling / volume-up for more headroom (clears after pulse).
+        if (hint != null && hintMode != HintMode.NONE) {
+            try {
+                hint.setText(R.string.hearing_safety_unlock_hint);
+            } catch (Throwable ignored) {}
+        }
+        final int start = fromDisplay;
+        final int end = toDisplay;
+        final int animMax = max;
+        volumeProgress.animate().cancel();
+        android.animation.ValueAnimator va = android.animation.ValueAnimator.ofInt(start, end);
+        va.setDuration(280L);
+        va.addUpdateListener(new android.animation.ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(android.animation.ValueAnimator animation) {
+                int v = (Integer) animation.getAnimatedValue();
+                if (volumeProgress != null) volumeProgress.setProgress(v);
+                if (timeTotal != null) {
+                    timeTotal.setText(formatVolumePercent(v, animMax) + "%");
+                }
+                if (volumeIcon != null) {
+                    float t = animation.getAnimatedFraction();
+                    // Ear fades out over unlock animation.
+                    volumeIcon.setAlpha(1f - t);
+                    if (t >= 1f) {
+                        volumeIcon.setAlpha(1f);
+                        volumeIcon.setImageResource(volumeIconRes(end, animMax));
+                    }
+                }
+            }
+        });
+        va.addListener(new android.animation.AnimatorListenerAdapter() {
+            @Override
+            public void onAnimationEnd(android.animation.Animator animation) {
+                setVolumeLabelsVisible(true, end, animMax, false);
+                if (volumeIcon != null) volumeIcon.setAlpha(1f);
+            }
+        });
+        va.start();
+        if (videoOverlayMode) pulseVideoOverlay();
+        scheduleVolumeRestore();
+    }
+
+    private void showVolumeInTrack(int current, int max, boolean pulseOverlay, boolean showEar) {
         if (volumeProgress == null) return;
         if (max < 1) max = 1;
         current = Math.max(0, Math.min(current, max));
         boolean sameLevel = volumeModeActive && current == lastVolCurrent && max == lastVolMax
+                && lastVolShowEar == showEar
                 && volumeProgress.getVisibility() == View.VISIBLE;
         lastVolCurrent = current;
         lastVolMax = max;
+        lastVolShowEar = showEar;
         if (!sameLevel) {
             volumeProgress.setMax(max);
             volumeProgress.setProgress(current);
@@ -265,8 +482,13 @@ public final class MediaTransportBar {
             if (!volumeModeActive) {
                 applyVolumeProgressTheme();
             }
-            setVolumeLabelsVisible(true, current, max);
+            setVolumeLabelsVisible(true, current, max, showEar);
             ensureVolumeHintVisible();
+            if (showEar && current >= max && hint != null && hintMode != HintMode.NONE) {
+                try {
+                    hint.setText(R.string.hearing_safety_volume_ear_hint);
+                } catch (Throwable ignored) {}
+            }
         } else {
             // Still update % text if icon band unchanged.
             if (timeTotal != null) {
@@ -380,6 +602,14 @@ public final class MediaTransportBar {
 
     /** Left slot = volume icon; right slot = % — same 77dp gutters as scrub timestamps. */
     private void setVolumeLabelsVisible(boolean volumeMode, int current, int max) {
+        setVolumeLabelsVisible(volumeMode, current, max, false);
+    }
+
+    /**
+     * 2026-07-18 — When showEar, use headphone/ear icon at 100% Hearing Safety cap.
+     * Layman: ear means “safe max — keep turning for temporary unlock”.
+     */
+    private void setVolumeLabelsVisible(boolean volumeMode, int current, int max, boolean showEar) {
         volumeModeActive = volumeMode;
         if (volumeMode) {
             if (timeCurrent != null) timeCurrent.setVisibility(View.GONE);
@@ -389,7 +619,12 @@ public final class MediaTransportBar {
                 timeTotal.setVisibility(View.VISIBLE);
             }
             if (volumeIcon != null) {
-                volumeIcon.setImageResource(volumeIconRes(current, max));
+                if (showEar && current >= max) {
+                    volumeIcon.setImageResource(R.drawable.ic_headphone);
+                } else {
+                    volumeIcon.setImageResource(volumeIconRes(current, max));
+                }
+                volumeIcon.setAlpha(1f);
                 volumeIcon.setVisibility(View.VISIBLE);
             }
         } else if (fmNormalModeActive) {
@@ -438,25 +673,61 @@ public final class MediaTransportBar {
 
     /** Fade in once per volume session; stay visible while the wheel keeps adjusting. */
     private void ensureVolumeHintVisible() {
-        if (!holdBackHintEnabled || hint == null) return;
+        if (hintMode == HintMode.NONE || hint == null) return;
+        // 2026-07-18 — Live keep-holding tip owns the label until key-up.
+        if (liveHoldHintActive) return;
         hint.animate().cancel();
         if (volumeHintVisible) {
             if (hint.getVisibility() != View.VISIBLE) {
                 hint.setVisibility(View.VISIBLE);
             }
+            hint.setSelected(true);
             if (hint.getAlpha() < 1f) {
                 hint.animate().alpha(1f).setDuration(OVERLAY_FADE_MS).start();
             }
             return;
         }
         volumeHintVisible = true;
+        // 2026-07-18 — Count Flow tip shows once per volume session (first fade-in).
+        if (hintMode == HintMode.HOLD_PLAY_FLOW && flowHintPresentedListener != null) {
+            try {
+                flowHintPresentedListener.onFlowHintPresented();
+            } catch (Throwable ignored) {}
+        }
+        refreshHintText();
         hint.setVisibility(View.VISIBLE);
+        hint.setSelected(true);
         hint.setAlpha(0f);
+        // #region agent log
+        try {
+            final View scrub = scrubRow;
+            hint.post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("hintTop", hint.getTop());
+                        d.put("hintH", hint.getHeight());
+                        d.put("scrubTop", scrub != null ? scrub.getTop() : -1);
+                        d.put("scrubY", scrub != null ? scrub.getY() : -1);
+                        d.put("rootH", root != null ? root.getHeight() : -1);
+                        com.solar.launcher.Debug0f5debLog.log(ctx,
+                                "MediaTransportBar.ensureVolumeHintVisible",
+                                "hint overlay vs scrub", "NP-HINT", d);
+                    } catch (Exception ignored) {}
+                }
+            });
+        } catch (Exception ignored) {}
+        // #endregion
         hint.animate().alpha(1f).setDuration(OVERLAY_FADE_MS).start();
     }
 
     private void fadeVolumeHintOut() {
         if (hint == null || !volumeHintVisible) return;
+        if (liveHoldHintActive) {
+            volumeHintVisible = false;
+            return;
+        }
         volumeHintVisible = false;
         hint.animate().cancel();
         hint.animate()
@@ -467,8 +738,11 @@ public final class MediaTransportBar {
                             @Override
                             public void run() {
                                 if (hint != null) {
+                                    hint.setSelected(false);
                                     hint.setVisibility(View.GONE);
                                     hint.setAlpha(1f);
+                                    // 2026-07-18 — Restore Options glyph after volume/hearing tip.
+                                    refreshHoldBackHint();
                                 }
                             }
                         })

@@ -8,13 +8,18 @@ import java.util.List;
 
 /**
  * 2026-07-10 — Power-tier list rows for companion global context overlay IPC.
- * Layman: list under the chip bar is Restart and Shutdown only — Solar-only product.
+ * 2026-07-18 — Optional Enable USB Storage when a PC host is connected (not charger-only).
+ * Layman: Restart / Shutdown always; Turn on USB storage only when a computer cable is in.
  * Technical: labels + action tokens; quick bar stays local in ChipOverlayHost.
+ * Reversal: drop ACTION_ENABLE_USB row — restart + shutdown only again.
  */
 public final class PowerMenuRowCatalog {
 
     private static final String ACTION_RESTART = "restart";
     private static final String ACTION_SHUTDOWN = "shutdown";
+    /** 2026-07-18 — Turn on USB mass storage from Power list while PC host is attached. */
+    private static final String ACTION_ENABLE_USB = "enable_usb_storage";
+
     private PowerMenuRowCatalog() {}
 
     /** One power list row — label for paint, token for dispatch. */
@@ -47,7 +52,7 @@ public final class PowerMenuRowCatalog {
         return b;
     }
 
-    /** Minimal fallback when Solar main is dead — restart + shutdown only. */
+    /** Minimal fallback when Solar main is dead — restart + shutdown only (no live USB probe). */
     public static Bundle buildFallbackSnapshot(Context ctx) {
         Bundle b = new Bundle();
         b.putString(OverlayMenuSnapshotBuilder.KEY_KIND, OverlayMenuSnapshotBuilder.KIND_POWER);
@@ -78,23 +83,38 @@ public final class PowerMenuRowCatalog {
             PowerActions.shutdown(ctx);
             return true;
         }
+        if (ACTION_ENABLE_USB.equals(token)) {
+            // 2026-07-18 — Same handoff as overlay Turn on: Solar eject UI + enable UMS.
+            // Layman: Power menu Turn on USB storage starts disk mode for the PC.
+            UsbStorageOverlayReceiver.launchSolarUsbHandoff(ctx, true, false);
+            return true;
+        }
         return false;
     }
 
     private static List<Row> buildRows(Context ctx) {
         ArrayList<Row> rows = new ArrayList<Row>();
+        // Enable USB first when a PC is plugged — faster than hunting Settings.
+        if (UsbHostPresence.shouldOfferEnableUsbStorageInPowerMenu(ctx)) {
+            rows.add(new Row(ctx.getString(R.string.usb_mass_storage_turn_on), ACTION_ENABLE_USB));
+        }
         rows.add(new Row(ctx.getString(R.string.context_restart_confirm), ACTION_RESTART));
         rows.add(new Row(ctx.getString(R.string.context_shutdown_confirm), ACTION_SHUTDOWN));
         return rows;
     }
 
-    /** Unit-test hook — row count without Android Context. */
+    /** Unit-test hook — baseline row count without USB host (restart + shutdown). */
     static int powerRowCountForTest() {
         return 2;
     }
 
-    /** Unit-test hook — dispatch tokens without string resources. */
+    /** Unit-test hook — baseline dispatch tokens without string resources. */
     static String[] powerActionTokensForTest() {
         return new String[] { ACTION_RESTART, ACTION_SHUTDOWN };
+    }
+
+    /** Unit-test hook — tokens when Enable USB row is prepended. */
+    static String[] powerActionTokensWithUsbForTest() {
+        return new String[] { ACTION_ENABLE_USB, ACTION_RESTART, ACTION_SHUTDOWN };
     }
 }

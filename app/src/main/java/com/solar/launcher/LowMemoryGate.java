@@ -69,8 +69,10 @@ public final class LowMemoryGate {
     /**
      * Defer heavy background work when RAM is tight (callers reschedule).
      * Input-busy deferral stays on {@link InputPriorityGate} — combine at call site.
+     * 2026-07-18 — Also defer while Stem Player mixes (exclusive session).
      */
     public static boolean shouldDeferHeavyWork(Context context) {
+        if (com.solar.launcher.stem.StemPlayerHost.isSessionActive()) return true;
         return isPressured(context != null ? context : appContext);
     }
 

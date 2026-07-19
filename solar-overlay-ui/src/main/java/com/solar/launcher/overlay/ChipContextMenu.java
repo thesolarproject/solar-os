@@ -127,23 +127,50 @@ public final class ChipContextMenu {
         brightnessQuickIndex = brightnessIndex;
     }
 
-    /** Drop panel from root without notifying host dismiss. */
+    /** Drop panel from root; animate when transitions on (unless {@code animated} false). */
     public void dismiss() {
-        if (root != null && overlay != null) {
-            try {
-                root.removeView(overlay);
-            } catch (Exception ignored) {}
+        dismiss(true);
+    }
+
+    /**
+     * 2026-07-18 — Instant detach for re-show; animated for user Back/close.
+     * Was: always instant removeView. Reversal: single dismiss() without animated flag.
+     */
+    public void dismiss(boolean animated) {
+        final ViewGroup attach = root;
+        final FrameLayout scrim = overlay;
+        final View panelView = panel;
+        Runnable finish = new Runnable() {
+            @Override
+            public void run() {
+                if (attach != null && scrim != null) {
+                    try {
+                        attach.removeView(scrim);
+                    } catch (Exception ignored) {}
+                }
+                overlay = null;
+                panel = null;
+                titleRow = null;
+                backChip = null;
+                quickBarHost = null;
+                itemsHost = null;
+                sliderRow = null;
+                showing = false;
+                listener = null;
+                quickListener = null;
+            }
+        };
+        if (animated && panelView != null && OverlayModalTransition.enabled(context)) {
+            OverlayModalTransition.animateDismissPanelOnly(panelView, finish);
+        } else {
+            // Cancel in-flight present/dismiss so re-show is clean.
+            if (panelView != null) {
+                try {
+                    panelView.animate().cancel();
+                } catch (Throwable ignored) {}
+            }
+            finish.run();
         }
-        overlay = null;
-        panel = null;
-        titleRow = null;
-        backChip = null;
-        quickBarHost = null;
-        itemsHost = null;
-        sliderRow = null;
-        showing = false;
-        listener = null;
-        quickListener = null;
     }
 
     /**
@@ -154,7 +181,7 @@ public final class ChipContextMenu {
             boolean[] headers, boolean[] visible, Listener listListener,
             QuickItem[] quickBar, QuickBarListener qListener, boolean withQuickBar,
             boolean dialogMode) {
-        dismiss();
+        dismiss(false);
         if (attachRoot == null) return;
         this.root = attachRoot;
         this.labels = itemLabels != null ? itemLabels : new String[0];

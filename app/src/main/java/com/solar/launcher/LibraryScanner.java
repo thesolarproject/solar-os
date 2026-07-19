@@ -108,8 +108,26 @@ public final class LibraryScanner {
         t1 = System.currentTimeMillis();
         int totalFiles = audioFiles.size();
         int initialResolved = freshItems.size();
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("staleToTag", staleFiles.size());
+            d.put("freshSkip", initialResolved);
+            d.put("tagThreads", TAG_THREADS);
+            Debug543e15Log.log("LibraryScanner.scan", "tag phase begin", "B", d);
+        } catch (Exception ignored) {}
+        // #endregion
         List<TagResult> staleResults = readTagsParallel(staleFiles, prefs, cb, initialResolved, totalFiles);
         long tagReadMs = System.currentTimeMillis() - t1;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("staleTagged", staleResults.size());
+            d.put("tagReadMs", tagReadMs);
+            d.put("msPerStale", staleFiles.isEmpty() ? 0 : (tagReadMs / Math.max(1, staleFiles.size())));
+            Debug543e15Log.log("LibraryScanner.scan", "tag phase end", "B", d);
+        } catch (Exception ignored) {}
+        // #endregion
 
         t1 = System.currentTimeMillis();
         if (!staleResults.isEmpty()) {
@@ -139,13 +157,19 @@ public final class LibraryScanner {
     private static void collectRecursive(File folder, Set<String> blacklist,
             Set<String> seenPaths, List<File> out, Callback cb) {
         if (cb.isCancelled()) return;
+        // 2026-07-19 — Skip Stem Player sidecars/cache trees entirely (no pad MP3s in Songs).
+        if (com.solar.launcher.stem.LalalClient.isStemLibraryArtifact(folder)) return;
         File[] files = folder.listFiles();
         if (files == null) return;
         for (File f : files) {
             if (cb.isCancelled()) return;
             if (f.isDirectory()) {
+                // 2026-07-19 — Do not descend into Song.stems / lalal_stems / lalal_work.
+                if (com.solar.launcher.stem.LalalClient.isStemLibraryArtifact(f)) continue;
                 collectRecursive(f, blacklist, seenPaths, out, cb);
             } else if (MainActivity.isAudioFile(f) && !blacklist.contains(f.getAbsolutePath())) {
+                // 2026-07-19 — Belt: file under a stem tree (if parent check missed).
+                if (com.solar.launcher.stem.LalalClient.isStemLibraryArtifact(f)) continue;
                 seenPaths.add(f.getAbsolutePath());
                 out.add(f);
             }
@@ -172,8 +196,12 @@ public final class LibraryScanner {
             d.put("fresh", freshOut.size());
             d.put("stale", staleOut.size());
             d.put("freshYearZero", freshYearZero);
+            d.put("stalePct", files.isEmpty() ? 0
+                    : (100 * staleOut.size() / files.size()));
             Debug3b26caLog.log("LibraryScanner.partitionByFreshness",
                     "scan partition", "H1", d);
+            Debug543e15Log.log("LibraryScanner.partitionByFreshness",
+                    "fresh vs stale", "A,B,E", d);
         } catch (Exception ignored) {}
         // #endregion
     }

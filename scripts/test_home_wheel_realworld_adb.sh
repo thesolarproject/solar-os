@@ -18,16 +18,32 @@ PKG=com.solar.launcher
 ACT="$PKG/.MainActivity"
 SKIP_INSTALL=0
 SERIAL="${ANDROID_SERIAL:-}"
-ADB=(timeout 20 adb)
+
+# 2026-07-18 — Honour --skip-install / serial CLI (docs claimed it; parse was missing).
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --skip-install) SKIP_INSTALL=1; shift ;;
+    -*)
+      echo "unknown option: $1" >&2
+      exit 2
+      ;;
+    *) SERIAL="$1"; shift ;;
+  esac
+done
+
+ADB=(adb)
 if [[ -n "$SERIAL" ]]; then
-  ADB=(timeout 20 adb -s "$SERIAL")
+  ADB=(adb -s "$SERIAL")
 fi
+
+# Short ops (shell/logcat) — cap hung USB; install uses longer timeout below.
+ADB_QUICK=(timeout 20 "${ADB[@]}")
 
 log() { printf '%s\n' "$*"; }
 die() { log "FATAL: $*"; exit 1; }
 
-"${ADB[@]}" wait-for-device || die "no device"
-log "==> device: $("${ADB[@]}" get-serialno 2>/dev/null || echo unknown)"
+"${ADB_QUICK[@]}" wait-for-device || die "no device"
+log "==> device: $("${ADB_QUICK[@]}" get-serialno 2>/dev/null || echo unknown)"
 
 if [[ $SKIP_INSTALL -eq 0 ]]; then
   log "==> build + install"
@@ -35,25 +51,26 @@ if [[ $SKIP_INSTALL -eq 0 ]]; then
   ./gradlew :app:assembleDebug -q || die "build failed"
   APK=app/build/outputs/apk/debug/app-debug.apk
   [[ -f "$APK" ]] || die "missing $APK"
-  "${ADB[@]}" install -r -d "$APK" || die "install failed"
+  # 2026-07-18 — Push+pm on Y1 often exceeds 20s; was killed by ADB timeout wrapper.
+  timeout 120 "${ADB[@]}" install -r -d "$APK" || die "install failed"
 fi
 
 log "==> clear logcat + force home wheel harness"
-"${ADB[@]}" logcat -c || true
-"${ADB[@]}" shell "am force-stop $PKG" || true
+"${ADB_QUICK[@]}" logcat -c || true
+"${ADB_QUICK[@]}" shell "am force-stop $PKG" || true
 sleep 0.5
 # Flag path works even when am start extras are stripped by the launcher
-"${ADB[@]}" shell "run-as $PKG sh -c 'echo 1 > files/adb_home_wheel.flag'" 2>/dev/null \
-  || "${ADB[@]}" shell "am start -n $ACT --ez solar_adb_home_wheel true" \
+"${ADB_QUICK[@]}" shell "run-as $PKG sh -c 'echo 1 > files/adb_home_wheel.flag'" 2>/dev/null \
+  || "${ADB_QUICK[@]}" shell "am start -n $ACT --ez solar_adb_home_wheel true" \
   || true
 # Always also start with intent extra (covers both)
-"${ADB[@]}" shell "am start -n $ACT --ez solar_adb_home_wheel true --activity-single-top" || true
+"${ADB_QUICK[@]}" shell "am start -n $ACT --ez solar_adb_home_wheel true --activity-single-top" || true
 
 log "==> wait for SolarAdbTest home_wheel result (max 25s)"
 PASS=0
 FAIL=0
 for i in $(seq 1 50); do
-  LOG=$("${ADB[@]}" logcat -d -s SolarAdbTest:I 2>/dev/null || true)
+  LOG=$("${ADB_QUICK[@]}" logcat -d -s SolarAdbTest:I 2>/dev/null || true)
   if echo "$LOG" | grep -q 'PASS home_wheel'; then
     PASS=1
     break
@@ -66,7 +83,7 @@ for i in $(seq 1 50); do
 done
 
 log "==> SolarAdbTest home wheel lines"
-"${ADB[@]}" logcat -d -s SolarAdbTest:I 2>/dev/null | grep -E 'homeFocus|home_wheel|home_order|TIMING home' | tail -40 || true
+"${ADB_QUICK[@]}" logcat -d -s SolarAdbTest:I 2>/dev/null | grep -E 'homeFocus|home_wheel|home_order|TIMING home' | tail -40 || true
 
 if [[ $FAIL -eq 1 ]]; then
   log "HOME_WHEEL FAIL (in-app harness)"

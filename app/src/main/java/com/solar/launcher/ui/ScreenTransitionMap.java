@@ -30,6 +30,8 @@ public final class ScreenTransitionMap {
     // 2026-07-14: 27–30 owned by MediaSuite (video hub / YouTube / FM player); Plex/Jellyfin follow MainActivity 31/32.
     public static final int STATE_PLEX = 31;
     public static final int STATE_JELLYFIN = 32;
+    /** 2026-07-18 — Lalal Stem Player. */
+    public static final int STATE_STEM_PLAYER = 33;
 
     public enum Kind {
         /** No root animation — instant or in-place content swap. */
@@ -85,7 +87,7 @@ public final class ScreenTransitionMap {
     /** @visibleForTesting */
     public static int depth(int state) {
         if (state == STATE_MENU) return 0;
-        if (state == STATE_PLAYER || state == STATE_WIFI_KEYBOARD
+        if (state == STATE_PLAYER || state == STATE_STEM_PLAYER || state == STATE_WIFI_KEYBOARD
                 || state == MediaSuiteHost.STATE_VIDEO_PLAYER
                 || state == MediaSuiteHost.STATE_PHOTO_VIEWER) {
             return 2;

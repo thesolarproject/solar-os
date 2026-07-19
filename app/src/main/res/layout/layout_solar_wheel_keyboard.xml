@@ -5,9 +5,13 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:gravity="center"
+    android:gravity="center_horizontal|top"
     android:paddingTop="@dimen/y1_status_bar_height"
-    android:padding="15dp"
+    android:paddingLeft="15dp"
+    android:paddingRight="15dp"
+    android:paddingBottom="8dp"
+    android:clipChildren="false"
+    android:clipToPadding="false"
     android:background="#00000000">
 
     <TextView
@@ -15,7 +19,8 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:textSize="16sp"
-        android:textStyle="bold" />
+        android:textStyle="bold"
+        android:layout_marginTop="8dp" />
 
     <TextView
         android:id="@+id/tv_keyboard_input"
@@ -26,8 +31,8 @@
         android:textSize="@dimen/y1_menu_text_size"
         android:textStyle="bold"
         android:gravity="center"
-        android:layout_marginTop="10dp"
-        android:layout_marginBottom="15dp" />
+        android:layout_marginTop="8dp"
+        android:layout_marginBottom="10dp" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -77,12 +82,21 @@
             android:textSize="@dimen/y1_menu_text_size" />
     </LinearLayout>
 
+    <!-- 2026-07-18 — Legend + vertical pad so ImageSpan Back/cancel never clips. -->
+    <!-- 2026-07-18 — clipToPadding false + extra line gap so wide PP/Prev glyphs stay whole. -->
     <TextView
         android:id="@+id/tv_keyboard_hint"
-        android:layout_width="wrap_content"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="center"
+        android:gravity="center_horizontal"
+        android:includeFontPadding="true"
+        android:paddingLeft="8dp"
+        android:paddingRight="8dp"
+        android:paddingTop="6dp"
+        android:paddingBottom="8dp"
+        android:lineSpacingExtra="6dp"
+        android:lineSpacingMultiplier="1.1"
         android:text="@string/keyboard_hint"
-        android:textSize="@dimen/y1_menu_text_size"
-        android:layout_marginTop="15dp" />
+        android:textSize="12sp"
+        android:layout_marginTop="8dp" />
 </LinearLayout>

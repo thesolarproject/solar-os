@@ -17,8 +17,8 @@ public final class SessionDebugLog {
     private static final String TAG = "SolarDbg1ccb92";
     private static final String SESSION = "1ccb92";
     private static final String FILE = "debug-1ccb92.log";
-    /** On during this debug session — turn off after verification. */
-    public static volatile boolean ENABLED = true;
+    /** Off by default — NDJSON on radio/web paths still allocates when true. */
+    public static final boolean ENABLED = false;
 
     private SessionDebugLog() {}
 

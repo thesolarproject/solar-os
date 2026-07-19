@@ -12,7 +12,7 @@ public class GlobalInputPolicyTest {
     @Test
     public void powerTapPassthroughUnder500ms() {
         assertTrue(GlobalInputPolicy.shouldPassthroughPowerTap(100L));
-        assertFalse(GlobalInputPolicy.shouldPassthroughPowerTap(400L));
+        assertFalse(GlobalInputPolicy.shouldPassthroughPowerTap(300L));
     }
 
     @Test
@@ -27,7 +27,7 @@ public class GlobalInputPolicyTest {
                 GlobalInputPolicy.ROCKBOX_PKG));
         assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage(
                 GlobalInputPolicy.JJ_PKG));
-        assertEquals(420L, GlobalInputPolicy.powerModalHoldMsForPackage(
+        assertEquals(350L, GlobalInputPolicy.powerModalHoldMsForPackage(
                 "com.android.settings"));
     }
 

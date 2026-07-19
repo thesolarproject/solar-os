@@ -14,11 +14,13 @@ import android.view.animation.Interpolator;
  */
 public final class ScreenTransition {
 
-    public static final int PUSH_MS = 240;
-    public static final int PLAYER_MS = 260;
-    public static final int CROSSFADE_MS = 220;
+    // 2026-07-18 — Faster iPod push (was 200/220/180/170). Shorter = earlier wheel after OK/Back.
+    // Was: longer push felt sticky on MT6572. Reversal: restore 200/220/180/170.
+    public static final int PUSH_MS = 155;
+    public static final int PLAYER_MS = 175;
+    public static final int CROSSFADE_MS = 140;
     /** Global context modal — slightly snappier than root push. */
-    public static final int MODAL_MS = 200;
+    public static final int MODAL_MS = 140;
 
     private static final float MODAL_PANEL_START_SCALE = 0.94f;
 
@@ -287,6 +289,19 @@ public final class ScreenTransition {
 
     /** Scrim fade + panel scale/alpha for global context modal — caller must prepare first. */
     public static void animateModalPresent(final View scrim, final View panel, final Runnable onComplete) {
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("hasScrim", scrim != null);
+            d.put("hasPanel", panel != null);
+            d.put("panelW", panel != null ? panel.getWidth() : -1);
+            d.put("panelH", panel != null ? panel.getHeight() : -1);
+            d.put("modalMs", MODAL_MS);
+            com.solar.launcher.Debug0f5debLog.log(
+                    panel != null ? panel.getContext() : (scrim != null ? scrim.getContext() : null),
+                    "ScreenTransition.animateModalPresent", "present start", "MOD-B", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (scrim == null && panel == null) {
             if (onComplete != null) onComplete.run();
             return;

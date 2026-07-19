@@ -16,18 +16,19 @@ public final class MicScrollBoost {
 
     public static final float SCRATCH_FLOOR = 0.28f;
     public static final float SCRATCH_FULL = 1.8f;
-    public static final float MAX_BOOST = 1.45f;
+    public static final float MAX_BOOST = 1.50f;
     public static final float MIN_BOOST = 1.04f;
-    public static final long KEY_FRESH_MS = 180L;
+    public static final long KEY_FRESH_MS = 160L;
 
     /**
      * After last notch, if mic was in contact and is quiet this long → drop backlog only.
+     * 2026-07-17 — 45 ms (was 70): snappier stop when the finger leaves the pad mid-spin.
      */
-    public static final long LIFT_QUIET_MS = 70L;
+    public static final long LIFT_QUIET_MS = 45L;
     /** How long after a notch we still watch for lift (ms). */
-    public static final long GHOST_WATCH_MS = 280L;
+    public static final long GHOST_WATCH_MS = 260L;
     /** Live KEY grace — never treat as ghost while a notch is this fresh. */
-    public static final long LIVE_KEY_MS = 80L;
+    public static final long LIVE_KEY_MS = 55L;
 
     private float scratch;
     private float volume;
@@ -66,15 +67,26 @@ public final class MicScrollBoost {
 
     public float boost(long nowMs) {
         if (lastKeyMs < 0 || (nowMs - lastKeyMs) > KEY_FRESH_MS) return 1f;
-        if (scratch < SCRATCH_FLOOR) return 1f;
+        // Deceleration: quiet pad while KEY still "fresh" → no multi-row impulse.
+        if (scratch < SCRATCH_FLOOR || !lastSampleContact) return 1f;
         float t = (scratch - SCRATCH_FLOOR) / (SCRATCH_FULL - SCRATCH_FLOOR);
         if (t > 1f) t = 1f;
         if (t < 0f) t = 0f;
+        // Ease-out curve so firm scrapes hit MAX quickly; soft scrapes stay near MIN.
+        t = t * t * (3f - 2f * t);
         return MIN_BOOST + (MAX_BOOST - MIN_BOOST) * t;
     }
 
     public boolean isFingerContact() {
         return lastSampleContact;
+    }
+
+    /**
+     * 2026-07-18 — True if mic saw pad contact since last clear/reset (ghost-stop arm).
+     * Layman: did this spin ever make scrape noise? If not, we can't use mic to kill backlog.
+     */
+    public boolean hadContactThisSpin() {
+        return sawContactThisSpin;
     }
 
     /**
@@ -142,7 +154,8 @@ public final class MicScrollBoost {
     }
 
     private static float smoothUp(float cur, float next) {
-        if (next > cur) return cur * 0.4f + next * 0.6f;
-        return cur * 0.82f + next * 0.18f;
+        // Attack fast (accel when scrape ramps); release faster than before (decel on lift).
+        if (next > cur) return cur * 0.35f + next * 0.65f;
+        return cur * 0.55f + next * 0.45f;
     }
 }

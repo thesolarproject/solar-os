@@ -50,11 +50,31 @@ public final class PodcastIjkPlayer {
         boolean onError(PodcastIjkPlayer mp, int what, int extra);
     }
 
+    /**
+     * 2026-07-18 — Buffer fill percent (0–100) for scrub-past-buffer / status throbber.
+     * Layman: how much of the stream has arrived so far.
+     * Technical: IMediaPlayer.OnBufferingUpdateListener passthrough.
+     */
+    public interface OnBufferingUpdateListener {
+        void onBufferingUpdate(PodcastIjkPlayer mp, int percent);
+    }
+
+    /**
+     * 2026-07-18 — Decoder info (BUFFERING_START/END) for mid-play stalls.
+     * Layman: song paused to catch up on network data.
+     */
+    public interface OnInfoListener {
+        /** @return true if handled. */
+        boolean onInfo(PodcastIjkPlayer mp, int what, int extra);
+    }
+
     private final IjkMediaPlayer player;
     private float speed = 1f;
     private OnPreparedListener preparedListener;
     private OnCompletionListener completionListener;
     private OnErrorListener errorListener;
+    private OnBufferingUpdateListener bufferingUpdateListener;
+    private OnInfoListener infoListener;
     /** Last setDataSource path/url — for diagnostic media identity only. */
     private volatile String lastSourcePath = "";
 
@@ -136,6 +156,31 @@ public final class PodcastIjkPlayer {
                 return errorListener != null && errorListener.onError(PodcastIjkPlayer.this, what, extra);
             }
         });
+        // 2026-07-18 — Wire buffer + info once; reset() re-binds the same outer listeners.
+        bindBufferAndInfoListeners();
+    }
+
+    /**
+     * 2026-07-18 — Attach IJK buffer/info callbacks to the native player.
+     * Layman: keep status spinner + scrub catch-up in sync with download progress.
+     * Technical: OnBufferingUpdate + OnInfo; safe to call after reset().
+     */
+    private void bindBufferAndInfoListeners() {
+        player.setOnBufferingUpdateListener(new IMediaPlayer.OnBufferingUpdateListener() {
+            @Override
+            public void onBufferingUpdate(IMediaPlayer mp, int percent) {
+                if (bufferingUpdateListener != null) {
+                    bufferingUpdateListener.onBufferingUpdate(PodcastIjkPlayer.this, percent);
+                }
+            }
+        });
+        player.setOnInfoListener(new IMediaPlayer.OnInfoListener() {
+            @Override
+            public boolean onInfo(IMediaPlayer mp, int what, int extra) {
+                return infoListener != null
+                        && infoListener.onInfo(PodcastIjkPlayer.this, what, extra);
+            }
+        });
     }
 
     private com.solar.launcher.soulseek.SolarDeveloperImpactPing.MediaInfo podcastFailInfo(
@@ -165,6 +210,16 @@ public final class PodcastIjkPlayer {
 
     public void setOnErrorListener(OnErrorListener l) {
         errorListener = l;
+    }
+
+    /** 2026-07-18 — Buffer percent while HTTP / progressive streams fill. */
+    public void setOnBufferingUpdateListener(OnBufferingUpdateListener l) {
+        bufferingUpdateListener = l;
+    }
+
+    /** 2026-07-18 — BUFFERING_START/END and related IJK info codes. */
+    public void setOnInfoListener(OnInfoListener l) {
+        infoListener = l;
     }
 
     public void setDataSource(String path) throws IOException {
@@ -285,6 +340,8 @@ public final class PodcastIjkPlayer {
                             && errorListener.onError(PodcastIjkPlayer.this, what, extra);
                 }
             });
+            // 2026-07-18 — reset() clears native listeners; re-bind buffer/info for scrub UX.
+            bindBufferAndInfoListeners();
         } catch (IllegalStateException ignored) {}
     }
 

@@ -57,8 +57,10 @@ public class WheelPhysicsTest {
         long t = 3_000_000_000L;
         for (int i = 0; i < 5; i++) p.tick(t += 25_000_000L, 1, r);
         assertTrue(p.velocity() > 1f);
+        assertTrue(p.suppressWrapAround());
         p.tick(t + WheelPhysics.RESET_NANOS + 1, 0, r);
         assertEquals(0f, p.velocity(), 0.001f);
+        assertFalse(p.suppressWrapAround());
     }
 
     @Test public void lateNotchAfterPauseIsSingleStepNotFlywheel() {
@@ -71,5 +73,32 @@ public class WheelPhysicsTest {
         p.tick(t + WheelPhysics.RESET_NANOS + 1, 1, r);
         assertEquals(1, r.rowSteps);
         assertFalse(r.sectionJump);
+    }
+
+    @Test public void micBoostAcceleratesRampWithoutChangingDirection() {
+        WheelPhysics slow = new WheelPhysics();
+        WheelPhysics fast = new WheelPhysics();
+        WheelPhysics.Result r = new WheelPhysics.Result();
+        long t = 5_000_000_000L;
+        slow.setMicBoost(1f);
+        fast.setMicBoost(1.5f);
+        for (int i = 0; i < 3; i++) {
+            t += 30_000_000L;
+            slow.tick(t, 1, r);
+        }
+        int stepsSlow = r.rowSteps;
+        t = 6_000_000_000L;
+        for (int i = 0; i < 3; i++) {
+            t += 30_000_000L;
+            fast.tick(t, 1, r);
+        }
+        // Mic firm scrape should reach multi-row as soon as or sooner than plain spin.
+        assertTrue(r.rowSteps >= stepsSlow || r.sectionJump);
+        assertTrue(r.rowSteps > 0 || r.sectionJump);
+    }
+
+    @Test public void resetNanosIsTightForInstantStopAfterLongSpin() {
+        assertTrue(WheelPhysics.RESET_NANOS <= 120_000_000L);
+        assertTrue(WheelPhysics.RESET_NANOS >= 80_000_000L);
     }
 }

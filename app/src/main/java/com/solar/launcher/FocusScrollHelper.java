@@ -221,7 +221,17 @@ public final class FocusScrollHelper {
         if (list == null || position < 0) return;
         int count = list.getCount();
         if (count <= 0 || position >= count) return;
-        if (list.getChildCount() <= 0) return;
+        // #region agent log
+        final boolean dbg = com.solar.launcher.Debug0f5debLog.ENABLED;
+        long t0 = dbg ? android.os.SystemClock.uptimeMillis() : 0L;
+        // #endregion
+        // 2026-07-17 — Before first layout (childCount==0) still arm selection so wheel
+        // progress is not stuck at 0 until a later frame (real KEY path + inject harness).
+        if (list.getChildCount() <= 0) {
+            list.setSelection(position);
+            requestFor(list).focusAfterSelect(position, false);
+            return;
+        }
         int viewport = list.getHeight();
         float density = list.getResources().getDisplayMetrics().density;
         int pad = Math.max(1, (int) (ENSURE_VISIBLE_PAD_DP * density));
@@ -273,6 +283,25 @@ public final class FocusScrollHelper {
             if (child != null && !child.isFocused() && child.isFocusable()) {
                 child.requestFocus();
             }
+            // #region agent log
+            if (dbg) {
+                long midMs = android.os.SystemClock.uptimeMillis() - t0;
+                if (midMs >= 4L || (position % 17 == 0)) {
+                    try {
+                        org.json.JSONObject d = new org.json.JSONObject();
+                        d.put("path", "mid");
+                        d.put("pos", position);
+                        d.put("first", first);
+                        d.put("last", last);
+                        d.put("ms", midMs);
+                        d.put("count", count);
+                        com.solar.launcher.Debug0f5debLog.log(list.getContext(),
+                                "FocusScrollHelper.ensureListPositionVisible",
+                                "mid-viewport select", "H1", d);
+                    } catch (Exception ignored) {}
+                }
+            }
+            // #endregion
             return;
         }
         // 2026-07-11 — Drop old focus chrome first so the bar does not ride a recycled view.
@@ -293,6 +322,26 @@ public final class FocusScrollHelper {
         int selTop = pinBottom ? Math.max(pad, viewport - rowH - pad) : pad;
         setSelectionFromTopSuppressed(list, position, selTop);
         requestFor(list).focusAfterSelect(position, true);
+        // #region agent log
+        if (dbg) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("path", "edge");
+                d.put("pos", position);
+                d.put("first", first);
+                d.put("last", last);
+                d.put("above", above);
+                d.put("pinBottom", pinBottom);
+                d.put("laidOut", laidOut);
+                d.put("ms", android.os.SystemClock.uptimeMillis() - t0);
+                d.put("count", count);
+                d.put("children", list.getChildCount());
+                com.solar.launcher.Debug0f5debLog.log(list.getContext(),
+                        "FocusScrollHelper.ensureListPositionVisible",
+                        "edge sticky pin", "H1", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
     }
 
     /**

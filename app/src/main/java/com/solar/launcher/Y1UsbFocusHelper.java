@@ -186,7 +186,10 @@ public final class Y1UsbFocusHelper {
             hostConnected = true;
             usbConnected = true;
             UsbHostSessionPolicy.onUsbHostConnected(activity.getApplicationContext());
-            if (flapWhileDeclined || isSessionIdle()) {
+            // Stock USB UI — pause Solar reclaim/prompt so Android dialog stays (2026-07-19).
+            boolean stockUi = UsbStorageSessionFlags.preferStockUsbUi(
+                    activity.getApplicationContext());
+            if (stockUi || flapWhileDeclined || isSessionIdle()) {
                 interceptPaused = true;
                 stopUmsWatchdog();
             } else if (!userDeclinedHostSession) {
@@ -204,8 +207,11 @@ public final class Y1UsbFocusHelper {
                 d.put("flapWhileDeclined", flapWhileDeclined);
                 d.put("userDeclinedHostSession", userDeclinedHostSession);
                 d.put("interceptPaused", interceptPaused);
+                d.put("stockUi", stockUi);
                 DebugSessionLog.log("Y1UsbFocusHelper.handleUsbStateIntent",
                         "host connect", "H-USB-SESSION", d);
+                Debug543e15Log.log("Y1UsbFocusHelper.handleUsbStateIntent",
+                        "host connect", "H3", d);
             } catch (Exception ignored) {}
             // #endregion
             if (listener != null) {

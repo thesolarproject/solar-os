@@ -23,11 +23,13 @@ public class SettingLookupTest {
         assertNull(SettingLookup.prefKeyForLabel("Not A Real Setting"));
     }
 
-    /** 2026-07-11 — Menu item padding label maps for enable/disable solarConfig forms. */
+    /** 2026-07-11 — Menu item padding label maps for enable/disable/set solarConfig forms. */
     @Test
     public void menuItemPaddingLabelMaps() {
         assertEquals("menu_item_padding", SettingLookup.prefKeyForLabel("Menu Item Padding"));
         assertEquals("menu_item_padding", SettingLookup.prefKeyForLabel("menu item padding"));
+        // 2026-07-18 — underscore form used in enableMenu_Item_Padding after '_' → ' '
+        assertEquals("menu_item_padding", SettingLookup.prefKeyForLabel("Menu_Item_Padding".replace('_', ' ')));
     }
 
     /** 2026-07-11 — Show Now Playing Info ↔ show_now_playing_info / settingsShow_Now_Playing_Info. */

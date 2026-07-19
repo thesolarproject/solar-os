@@ -19,7 +19,11 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
      * ({@code com.solar.inputlogger} removed from product tree).
      * Reversal: POLICY_REV 24 + restore exclusive-capture early returns for lab package.
      */
-    public static final int POLICY_REV = 25;
+    /**
+     * 2026-07-18 — POLICY_REV 26: modal/context hold 350ms; POWER tap max 280ms (no overlap).
+     * Was: POLICY_REV 25 with 420/380. Reversal: POLICY_REV 25 + 420L holds + 380L tap max.
+     */
+    public static final int POLICY_REV = 26;
  
     /**
      * Cross-process — infinite list wrap opt-in for main Solar lists (not context/overlay modal).
@@ -27,15 +31,21 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
      */
     public static final String PROP_INFINITE_SCROLL = "persist.solar.nav.infinite_scroll";
  
-    public static final long POWER_TAP_MAX_MS = 380L;
     /**
-     * 2026-07-08 — Global modal tier (~420ms): SystemUI shells, stock apps, third-party apps.
-     * Layman: hold Back/Power about half a second to open the quick menu — taps stay taps.
-     * Technical: warmOverlayProcess + postDelayed in SystemServerHooks BACK/POWER paths.
-     * Was 130L for snappy spawn; firm hardware taps outran it and opened menus by accident.
-     * Reversal: 130L if lab wants fastest open and accepts tap→hold false positives.
+     * 2026-07-18 — Short POWER tap window must stay under modal hold (see GLOBAL_MODAL_HOLD_MS).
+     * Was 380L with 420ms modal; lowered with 350ms modal so tap and hold never overlap.
+     * Reversal: 380L only if modal returns to ≥420L.
      */
-    public static final long GLOBAL_MODAL_HOLD_MS = 420L;
+    public static final long POWER_TAP_MAX_MS = 280L;
+    /**
+     * 2026-07-18 — Global modal tier (~350ms): SystemUI shells, stock apps, third-party apps.
+     * Layman: hold Back/Power about a third of a second for the quick menu — taps stay taps.
+     * Technical: warmOverlayProcess + postDelayed in SystemServerHooks BACK/POWER paths.
+     * Was 420L (felt slow on wheel remotes); Android long-press default is ~500ms — we sit under it.
+     * Best practice: 500ms platform default; 300–400ms for secondary remote holds; &lt;250ms false-fires.
+     * Must stay above {@link #POWER_TAP_MAX_MS}. Reversal: 420L + POWER_TAP_MAX 380L.
+     */
+    public static final long GLOBAL_MODAL_HOLD_MS = 350L;
     /** @deprecated use {@link #GLOBAL_MODAL_HOLD_MS}. */
     public static final long THIRD_PARTY_MODAL_HOLD_MS = GLOBAL_MODAL_HOLD_MS;
     /**
@@ -51,15 +61,15 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     public static final long NAV_OWNED_BACK_MODAL_MS = THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS;
     /** @deprecated use {@link #backModalHoldMsForPackage}. */
     public static final long MODAL_HOLD_MS = GLOBAL_MODAL_HOLD_MS;
-    /** 2026-07-08 — OK/center long-press in stock apps — opens row context menu (~420ms). */
-    public static final long CENTER_MENU_HOLD_MS = 420L;
+    /** 2026-07-18 — OK/center long-press in stock apps — opens row context menu (~350ms). */
+    public static final long CENTER_MENU_HOLD_MS = 350L;
     /**
-     * 2026-07-08 — Solar HOME BACK hold — in-app quick/options menu (~420ms).
-     * Layman: hold Back half a second on Solar Home for the options menu; tap still goes back.
-     * Was 130L; MainActivity posted the menu before many finger-ups finished.
-     * Reversal: 130L restores ultra-snappy in-app menu (accepts tap misfires).
+     * 2026-07-18 — Solar HOME BACK hold — in-app quick/options menu (~350ms).
+     * Layman: hold Back ~⅓s on Solar for Options; tap still goes back.
+     * Was 420L; matched GLOBAL_MODAL_HOLD_MS snappier remote feel.
+     * Reversal: 420L if Options opens on clumsy taps.
      */
-    public static final long SOLAR_BACK_CONTEXT_HOLD_MS = 420L;
+    public static final long SOLAR_BACK_CONTEXT_HOLD_MS = 350L;
     /**
      * 2026-07-08 — Rescue HUD 3..2..1 arms here; finger must still be down.
      * Layman: after ~7s of holding Back, on-screen countdown begins.
@@ -151,7 +161,8 @@ public final class GlobalInputPolicy {    public static final String POLICY_REV_
     public static long overlayDismissGraceMsForPackage(String pkg) {
         if (isNavOwnedHomeLauncher(pkg)) return THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS;
         if (isThirdPartyHomeLauncher(pkg)) return THIRD_PARTY_LAUNCHER_MODAL_HOLD_MS;
-        return 210L;
+        // 2026-07-18 — Half of GLOBAL_MODAL_HOLD_MS (was 210 when hold was 420).
+        return GLOBAL_MODAL_HOLD_MS / 2L;
     }
 
     /**

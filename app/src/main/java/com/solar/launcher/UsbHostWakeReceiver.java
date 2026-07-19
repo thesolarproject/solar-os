@@ -70,6 +70,17 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
                                 }
                             } catch (Exception ignored) {}
                         }
+                        // #region agent log
+                        // 2026-07-18 — Manifest disconnect path vs charge-loss (H1/H4).
+                        try {
+                            org.json.JSONObject d = new org.json.JSONObject();
+                            d.put("deferred", defer);
+                            d.put("userSession", UsbMassStorageController.isUserSessionActive());
+                            d.put("kernelUms", UsbMassStorageController.isKernelMassStorageMode());
+                            Debug0f5debLog.log(app, "UsbHostWakeReceiver.disconnect",
+                                    "USB_STATE teardown starting", "H1,H4", d);
+                        } catch (Exception ignored) {}
+                        // #endregion
                         UsbStorageOverlayReceiver.dismissGlobalOverlayIfActive(app);
                         UsbStorageConcierge.clearOnUsbDisconnect();
                         UsbHostSessionPolicy.onUsbHostDisconnected(app);
@@ -121,6 +132,21 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
             // #endregion
             return;
         }
+        // Stock Android USB dialog — do not wake Solar MainActivity (2026-07-19).
+        if (UsbStorageSessionFlags.preferStockUsbUi(context)) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("stockUi", true);
+                d.put("skip", UsbStorageSessionFlags.shouldOfferUsbConnectPrompt(context));
+                Debug02fc83Log.log(context, "UsbHostWakeReceiver.onReceive",
+                        "stock USB UI — no Solar wake", "H-USB", d);
+                Debug543e15Log.log("UsbHostWakeReceiver.onReceive",
+                        "stock USB UI — no Solar wake", "H2", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return;
+        }
         try {
             if (!context.getPackageManager()
                     .getApplicationInfo(context.getPackageName(), 0).enabled) {
@@ -147,6 +173,8 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
             d.put("wasActive", wasActive);
             Debug02fc83Log.log(context, "UsbHostWakeReceiver.onReceive",
                     "start MainActivity evaluate", "H3", d);
+            Debug543e15Log.log("UsbHostWakeReceiver.onReceive",
+                    "start MainActivity evaluate", "H2", d);
         } catch (Exception ignored) {}
         // #endregion
         try {
@@ -163,6 +191,8 @@ public final class UsbHostWakeReceiver extends BroadcastReceiver {
      */
     static boolean shouldLaunchMainActivityForUsbHost(Context context) {
         if (context == null) return false;
+        // Stock dialog preferred — no MainActivity wake (2026-07-19).
+        if (UsbStorageSessionFlags.preferStockUsbUi(context)) return false;
         if (UsbHostSessionPolicy.hasUserDismissedThisSession(context)) return false;
         if (!UsbStorageSessionFlags.shouldOfferUsbConnectPromptAfterBootSettle(context)) return false;
         return UsbMassStorageExperiment.isEnabled(context);

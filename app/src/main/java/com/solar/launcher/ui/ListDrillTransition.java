@@ -47,12 +47,28 @@ public final class ListDrillTransition {
             if (build != null) build.run();
             return;
         }
-        if (!enabled(host.getContext())) {
-            build.run();
-            return;
-        }
-        if (animating) {
-            build.run();
+        // 2026-07-18 — Status throbber for every settings/library drill (anim on or off).
+        // Layman: spinner while the submenu list is built. Technical: REASON_TRANSITION.
+        // Was: no UiBusy on list drill — only root ScreenTransitionCoordinator felt busy.
+        // Reversal: drop begin/clear below.
+        UiBusy.beginAutoEnd(UiBusy.REASON_TRANSITION, 6_000L);
+        if (!enabled(host.getContext()) || animating) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("path", "instant");
+                d.put("forward", forward);
+                d.put("enabled", enabled(host.getContext()));
+                d.put("animating", animating);
+                com.solar.launcher.Debug0f5debLog.log(host.getContext(),
+                        "ListDrillTransition.run", "instant drill clear-same-stack", "H1", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            try {
+                build.run();
+            } finally {
+                UiBusy.clear(UiBusy.REASON_TRANSITION);
+            }
             return;
         }
         final int w = host.getWidth() > 0 ? host.getWidth() : host.getResources()
@@ -88,6 +104,7 @@ public final class ListDrillTransition {
                                                 animating = false;
                                                 host.setTranslationX(0f);
                                                 ScreenTransition.clearHardwareLayer(host);
+                                                UiBusy.clear(UiBusy.REASON_TRANSITION);
                                             }
                                         }).start();
                             }
