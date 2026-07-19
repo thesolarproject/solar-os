@@ -9,35 +9,31 @@ ROM build keeps `org.rockbox.apk` + `librockbox.so` from the rockbox-y1 base ima
 
 ## Y2 (MT6582)
 
-Y2 ATA stock base has no Rockbox. **Default (prep-delivered):** `sync-platform-assets.sh` bundles
-manifest-patched APK + staged libs into the Solar APK; `RockboxPlatformInstall` stages on first
-platform prep (no ROM-time patch chain in `build-rom.sh`). **Legacy ROM bake:** set
-`SOLAR_ROM_LEGACY_ROCKBOX=1` to restore `install_rockbox_from_y1_base()` in `build-rom.sh`.
+Y2 ATA / jj_auto stock base may ship Rockbox or JJ; **Solar pack strips both** by default
+(`build-rom.sh` force-rm unless `SOLAR_ROM_LEGACY_ROCKBOX=1`).
+
+**2026-07-19 — Solar-only:** APK platform prep does **not** install `org.rockbox` or JJ.
+Launch-if-present only (switch scripts when PM already sees the package). Was: `RockboxPlatformInstall`
+from `assets/platform/rockbox/`. Reversal: restore sync_rockbox_platform_assets + install class body.
 
 | Layer | What | Why |
 |-------|------|-----|
-| APK | Strip `android:sharedUserId` + platform sign | Y2 MTK platform cert rejects rockbox-y1 shared UID (install-time; Xposed cannot fix) |
-| Platform prep | `RockboxPlatformInstall` from `assets/platform/rockbox/` | OTA-self-healable install to `/system/app/org.rockbox.apk` + staged trees |
-| Xposed | `RockboxCompatHooks` in `SolarRockboxCompat.apk` | `Connectivity.execShell` → `/system/xbin/su -c` array exec; warm `daemonsu` on `setContext` |
-| Xposed | `RockboxKeyboardImeOkHooks` in `SolarRockboxIme.apk` | Solar IME Enter → stock OK on `RockboxKeyboardInput` search/rename dialogs |
-| Staged lib | `patch_librockbox_system.py` on bundled staged `librockbox.so` | Native `system("am start …")` → `solar-rb-launch` (Dalvik Xposed cannot hook native code) |
-| ROM / prep | `solar-rb-launch`, `rockbox-y2-config.cfg`, `Y2-Rockbox.kl`, sync scripts | Root wrapper, dual-storage, GPIO map, no-unzip bootstrap |
+| ROM pack | Strip `org.rockbox` + `com.themoon.y1` | Solar-focused Y2 image; no third-party HOME heal |
+| Xposed | `RockboxCompatHooks` in `SolarRockboxCompat.apk` | Hooks only if Rockbox already installed |
+| Xposed | `RockboxKeyboardImeOkHooks` in `SolarRockboxIme.apk` | Solar IME Enter → stock OK on Rockbox dialogs |
+| Legacy bake | `SOLAR_ROM_LEGACY_ROCKBOX=1` | Optional ROM-time Rockbox for lab |
 
-The shipped `org.rockbox.apk` keeps pristine `classes.dex` and in-APK `librockbox.so` (apktool `-s`).
+The shipped `org.rockbox.apk` on Y1 ROM keeps pristine `classes.dex` and in-APK `librockbox.so` (apktool `-s`).
 Behavioral compat updates ship in the Xposed bridge APK — rebuild with `build-context-bridge-apk.sh`.
 
-### Runtime asset bootstrap
+### Runtime asset bootstrap (when Rockbox already present)
 
 Rockbox native code loads plugins from `/data/data/org.rockbox/app_rockbox/.rockbox/`,
-but the tree is bundled inside `lib/armeabi/libmisc.so` (zip). Y2 has no `unzip` on device,
-so the ROM build **pre-extracts** assets at compile time into:
-
-- `/system/etc/solar/rockbox-libs/` — JNI `.so` files (42 codecs + libmisc); **staged `librockbox.so` is native-patched**
-- `/system/etc/solar/rockbox-dot-rockbox/` — full `.rockbox` tree including `db_folder_select.rock`
-
-Scripts (installed to `/system/etc/solar/`):
+but the tree is bundled inside `lib/armeabi/libmisc.so` (zip). When Rockbox is on `/system`
+(Y1 bake or legacy), sync scripts under `/system/etc/solar/` (and `assets/y1/` fallback) refresh libs:
 
 - **`sync-rockbox-libs.sh`** — copy staged libs into `/data/data/org.rockbox/lib/`
+
 - **`sync-rockbox-assets.sh`** — copy staged `.rockbox` → sdcard0 + `app_rockbox`; apply Y2 config
 - **`rockbox-y2-config.cfg`** — dual-storage config overlay
 

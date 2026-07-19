@@ -233,12 +233,16 @@ public final class PowerActions {
     }
 
     /**
-     * 2026-07-08 — Switch to JJ Launcher — install when needed; helper single-fire when present.
-     * Reversal: always call LauncherSwitch.switchToJj after prefs.
+     * 2026-07-19 — Switch to JJ only when already installed (no OTA fetch).
+     * Was: JjLauncherInstaller.ensureInstalledBlocking downloaded JJ. Reversal: restore install.
      */
     public static void switchToJj(final Context ctx) {
         if (ctx == null) return;
         if (!JjLauncherAvailability.isOfferVisible(ctx)) {
+            Toast.makeText(ctx, R.string.dialog_jj_unavailable, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!LauncherSwitch.isJjInstalled(ctx)) {
             Toast.makeText(ctx, R.string.dialog_jj_unavailable, Toast.LENGTH_SHORT).show();
             return;
         }
@@ -247,12 +251,6 @@ public final class PowerActions {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                if (!LauncherSwitch.isJjInstalled(ctx)) {
-                    if (!JjLauncherInstaller.ensureInstalledBlocking(ctx)) {
-                        toastOnMain(ctx, R.string.dialog_jj_failed);
-                        return;
-                    }
-                }
                 LauncherPreference.applyHomeTarget(ctx, LauncherDefault.TARGET_JJ);
                 if (helperOk) {
                     return;

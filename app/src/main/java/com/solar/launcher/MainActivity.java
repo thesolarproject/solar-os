@@ -1390,6 +1390,10 @@ public class MainActivity extends Activity {
      * Was: every notch ran focus+chrome sync. Reversal: delete field; call movers from applyWheelAccelFocus.
      */
     private final ListWheelCoalescer menuWheelCoalescer = new ListWheelCoalescer();
+    {
+        // 2026-07-19 — Home/settings/browser: snappier paint floor than 50k song lists (80→48 ms).
+        menuWheelCoalescer.setMinFlushMs(48L);
+    }
     /** Active short-menu mover while {@link #menuWheelCoalescer} flushes (home / settings / browser). */
     private WheelFocusMover pendingMenuWheelMover;
     /**
@@ -7265,7 +7269,7 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 2026-07-19 — {@code coalesce=true} paces short-menu paints via {@link #menuWheelCoalescer} (≥80 ms).
+     * 2026-07-19 — {@code coalesce=true} paces short-menu paints via {@link #menuWheelCoalescer} (≥48 ms).
      * Layman: spin home/settings fast → highlight jumps in bursts, not every single click of work.
      * Technical: offerSteps → Apply moves. Reversal: pass coalesce false (immediate mover.move).
      */
@@ -7459,7 +7463,7 @@ public class MainActivity extends Activity {
                     homeScreenOrderFocusIndex = idx;
                     if (target instanceof LinearLayout) {
                         Object tag = target.getTag();
-                        if (tag instanceof String) updateSettingsPreview((String) tag);
+                        if (tag instanceof String) scheduleSettingsPreviewUpdate((String) tag);
                     }
                 }
             }
@@ -10033,7 +10037,7 @@ public class MainActivity extends Activity {
             return true;
         }
         if (!isReachBrowseListActive()) return false;
-        // 2026-07-19 — Pace Reach browse wheel paints (≥80 ms) like home/settings.
+        // 2026-07-19 — Pace Reach browse wheel paints (≥48 ms) like home/settings.
         boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
             @Override
             public boolean move(int delta) {
@@ -31265,7 +31269,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     lastSettingsFocusIndex = targetFocusIndex;
                     if (target instanceof LinearLayout) {
                         Object tag = target.getTag();
-                        if (tag instanceof String) updateSettingsPreview((String) tag);
+                        if (tag instanceof String) scheduleSettingsPreviewUpdate((String) tag);
                     }
                 } else if (containerSettingsItems.getChildCount() > 1) {
                     containerSettingsItems.getChildAt(1).requestFocus();
@@ -32613,7 +32617,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             View first = containerSettingsItems.getChildAt(1);
             first.requestFocus();
             Object tag = first.getTag();
-            if (tag instanceof String) updateSettingsPreview((String) tag);
+            if (tag instanceof String) scheduleSettingsPreviewUpdate((String) tag);
         }
     }
 
@@ -38332,8 +38336,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         containerSettingsItems.addView(createSettingRow(RowKeys.UPDATE_CURRENT, R.string.update_current_version,
                 AppVersion.displayLabel(this)));
 
-        createCategoryHeader(getString(R.string.update_companion_apps_header));
-        appendOtaCompanionRows();
+        // 2026-07-19 — No companion apps section (Rockbox/JJ install retired).
 
         final Button loadingRow = createListButton(getString(R.string.update_checking));
         loadingRow.setEnabled(false);
@@ -38431,75 +38434,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }, "SolarUpdateCheck").start();
     }
 
-    /**
-     * 2026-07-11 — Rockbox-Y1 install only when Debug → Rockbox experiment is on.
-     * Was: also offered Get latest JJ Launcher. JJ removed from change-version menu.
-     */
-    private void appendOtaCompanionRows() {
-        if (!RockboxExperiment.isEnabled(prefs)) {
-            return;
-        }
-        Button btnRockbox = createListButton(getString(R.string.update_get_latest_rockbox));
-        btnRockbox.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                clickFeedback();
-                runOtaCompanionRockboxLatest();
-            }
-        });
-        containerSettingsItems.addView(btnRockbox);
-    }
-
-    private void runOtaCompanionRockboxLatest() {
-        if (!ConnectivityHelper.isOnline(this)) {
-            Toast.makeText(this, R.string.update_network_error, Toast.LENGTH_LONG).show();
-            return;
-        }
-        final ViewGroup otaRoot = (ViewGroup) findViewById(android.R.id.content);
-        final String dialogTitle = getString(R.string.update_get_latest_rockbox);
-        if (themedContextMenu != null && otaRoot != null) {
-            themedContextMenu.showProgressOverlay(otaRoot, dialogTitle,
-                    getString(R.string.update_companion_rockbox), 100);
-        }
-        final File workDir = getDir("update", Context.MODE_PRIVATE);
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                final OtaCompanionInstaller.Result result =
-                        OtaCompanionInstaller.installRockboxLatest(MainActivity.this, workDir,
-                                new OtaCompanionInstaller.Progress() {
-                                    @Override
-                                    public void onPhase(String phase) {
-                                        final String msg;
-                                        if ("rockbox".equals(phase)) {
-                                            msg = getString(R.string.update_companion_rockbox);
-                                        } else {
-                                            msg = getString(R.string.update_companion_installing);
-                                        }
-                                        runOnUiThread(new Runnable() {
-                                            @Override
-                                            public void run() {
-                                                if (themedContextMenu != null) {
-                                                    themedContextMenu.updateProgressOverlay(-1, msg);
-                                                }
-                                            }
-                                        });
-                                    }
-                                });
-                final boolean ok = result.rockboxApkOk || result.rockboxLibsOk;
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        dismissThemedContextMenu();
-                        Toast.makeText(MainActivity.this,
-                                ok ? R.string.update_companion_rockbox_done
-                                        : R.string.update_companion_rockbox_failed,
-                                Toast.LENGTH_LONG).show();
-                    }
-                });
-            }
-        }, "OtaRockboxLatest").start();
-    }
+    // 2026-07-19 — appendOtaCompanionRows / runOtaCompanionRockboxLatest removed (Solar-only).
+    // Was: Get latest Rockbox under Versions when experiment on. Reversal: restore those methods.
 
     private void downloadAndInstallApk(final SolarUpdateClient.ReleaseInfo release) {
         if (!BuildConfig.FEATURE_OTA_UPDATE || release == null) return;
@@ -38525,39 +38461,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             }
         });
         final String apkUrl = release.apkUrl;
-        final File companionDir = getDir("update", Context.MODE_PRIVATE);
+        // 2026-07-19 — No Rockbox/JJ companion download alongside Solar OTA.
 
         new Thread(new Runnable() {
             @Override
             public void run() {
-                Thread companionThread = new Thread(new Runnable() {
-                    @Override
-                    public void run() {
-                        OtaCompanionInstaller.downloadAll(MainActivity.this, companionDir,
-                                new OtaCompanionInstaller.Progress() {
-                                    @Override
-                                    public void onPhase(String phase) {
-                                        final String msg;
-                                        if ("jj".equals(phase)) {
-                                            msg = getString(R.string.update_companion_jj);
-                                        } else if ("rockbox".equals(phase)) {
-                                            msg = getString(R.string.update_companion_rockbox);
-                                        } else {
-                                            msg = getString(R.string.update_companion_installing);
-                                        }
-                                        runOnUiThread(new Runnable() {
-                                            @Override
-                                            public void run() {
-                                                if (themedContextMenu != null) {
-                                                    themedContextMenu.updateProgressOverlay(-1, msg);
-                                                }
-                                            }
-                                        });
-                                    }
-                                });
-                    }
-                }, "OtaCompanionDl");
-                companionThread.start();
                 try {
                     com.solar.launcher.net.TlsHelper.ensureSecurityProvider();
                     okhttp3.OkHttpClient client = com.solar.launcher.net.SolarHttp.longReadClient();
@@ -38602,23 +38510,6 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         if (updateFile.exists()) updateFile.delete();
                         throw new IllegalStateException("Incomplete download");
                     }
-                    try {
-                        companionThread.join();
-                    } catch (InterruptedException ignored) {}
-                    runOnUiThread(new Runnable() {
-                        @Override
-                        public void run() {
-                            if (themedContextMenu != null) {
-                                themedContextMenu.updateProgressOverlay(-1,
-                                        getString(R.string.update_companion_installing));
-                            }
-                        }
-                    });
-                    OtaCompanionInstaller.installDownloaded(MainActivity.this, companionDir,
-                            new OtaCompanionInstaller.Progress() {
-                                @Override
-                                public void onPhase(String phase) { /* status already shown */ }
-                            });
                     runOnUiThread(new Runnable() {
                         @Override
                         public void run() {

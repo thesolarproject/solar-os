@@ -1,5 +1,5 @@
 {
-  "prepVersion": 18,
+  "prepVersion": 19,
   "framework": {
     "api17": {
       "appProcess": "xposed/api17-arm/app_process",
@@ -31,7 +31,7 @@
       "required": true,
       "device": "y1",
       "versionCode": 1,
-      "sha256": "d55f27db6b60ac683c58ec35a47a26de12e0f003d9fbdbc0b180a10fbc52cb1e"
+      "sha256": "0e3805118318e5427c803d3d1bddfafbdd221e003ee726e03ce87f032728b00a"
     },
     {
       "pkg": "com.solar.launcher.xposed.bridge.y2",
@@ -40,7 +40,7 @@
       "required": true,
       "device": "y2",
       "versionCode": 1,
-      "sha256": "16a48651d0696ea5ef69b4a94140162706bb46c3e9cf4025273292c4f1680438"
+      "sha256": "132c5e2a25ce0bf2ba3e3e105b2f30ff73e2a808b90a202127099950b5fefd94"
     },
     {
       "pkg": "com.solar.launcher.xposed.themefont",
@@ -91,30 +91,6 @@
   "files": [
     {"asset": "init/99XposedInit.sh", "dest": "/system/etc/init.d/99XposedInit.sh", "mode": "755"}
   ],
-  "rockbox": {
-    "pkg": "org.rockbox",
-    "stageIndex": "rockbox/stage-index.json",
-    "y1Apk": {
-      "asset": "rockbox/org.rockbox-y1.apk",
-      "systemApk": "/system/app/org.rockbox.apk",
-      "device": "y1",
-      "versionCode": 1,
-      "sha256": "080173ef13cbeeb028df41439a3768d89997441b6ca204bda76043324beb71d9"
-    },
-    "y2Apk": {
-      "asset": "rockbox/org.rockbox-y2.apk",
-      "systemApk": "/system/app/org.rockbox.apk",
-      "device": "y2",
-      "versionCode": 1,
-      "sha256": "e552c57de8275da27b3888d32b426a8f96e419b5d58f8402f9b8ee49307be5cf"
-    },
-    "systemLib": {
-      "asset": "rockbox/librockbox-system.so",
-      "dest": "/system/lib/librockbox.so",
-      "device": "y2",
-      "sha256": "e4c2df0b00e8b8936c07476242e36cfd440d4aab6b642bf92481f73a4a8c9462"
-    }
-  },
   "deprecated": [
     {
       "systemApk": "/system/app/SolarContextBridge.apk",
