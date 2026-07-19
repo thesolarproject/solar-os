@@ -26,6 +26,7 @@ import android.view.Gravity;
 import android.widget.TextView;
 
 import com.solar.launcher.theme.ThemeManager;
+import com.solar.launcher.ui.HardwareButtonGlyph;
 import com.solar.launcher.DebugAgentLog;
 import com.solar.launcher.DebugF9ef0bLog;
 import com.solar.launcher.FocusScrollHelper;
@@ -339,6 +340,17 @@ public final class MediaSuiteHost {
     private final Handler videoProgressHandler = new Handler(Looper.getMainLooper());
     private boolean videoScrubActive;
     private long videoScrubMs;
+    /**
+     * 2026-07-18 — Last onBufferingUpdate percent (0–100) for stream scrub past edge.
+     * Layman: how far the video has downloaded so far.
+     */
+    private int videoBufferPercent;
+    /**
+     * 2026-07-18 — User seek target beyond current buffer; wait then catch up.
+     * Layman: where you asked to jump; we play there once enough data arrives.
+     * Technical: &lt;0 = none; else ms. Cleared on apply / cancel / stop.
+     */
+    private long videoPendingSeekMs = -1L;
 
     private File photoBrowseFolder;
     private List<File> photoFiles = new ArrayList<File>();
@@ -1486,6 +1498,7 @@ public final class MediaSuiteHost {
                 fmTuningMode
                         ? host.getString(R.string.radio_fm_tuning_active)
                         : host.getString(R.string.radio_fm_tune_click);
+        // 2026-07-18 — Settings row stays prose (String API); NP track line uses OK glyph.
         addActionRow(host.getString(R.string.radio_fm_tune_row) + " — " + tuneHint, new Runnable() {
             @Override
             public void run() {
@@ -2585,7 +2598,7 @@ public final class MediaSuiteHost {
         String titleText = cur.streamMeta();
         String artistText = "";
         String albumText = "";
-        String trackCountText = "";
+        CharSequence trackCountText = "";
         boolean showPause = false;
         int khz = 0;
 
@@ -2620,7 +2633,8 @@ public final class MediaSuiteHost {
             } else if (fmSeekBusy) {
                 trackCountText = host.getString(R.string.radio_fm_seeking);
             } else if (radioScrubMode == RadioScrubMode.TUNE_FM) {
-                trackCountText = host.getString(R.string.radio_fm_tuning_hint);
+                // 2026-07-18 — OK glyph + save; was radio_fm_tuning_hint prose.
+                trackCountText = HardwareButtonGlyph.tuningPressOkSave(host.context());
             }
             showPause = fmMuted;
             // Placeholder art once per FM session — not every bind/RDS tick.
@@ -2665,7 +2679,7 @@ public final class MediaSuiteHost {
         npBoundTitle = titleText != null ? titleText : "";
         npBoundArtist = artistText != null ? artistText : "";
         npBoundAlbum = albumText != null ? albumText : "";
-        npBoundTrack = trackCountText != null ? trackCountText : "";
+        npBoundTrack = trackCountText != null ? trackCountText.toString() : "";
         npBoundKhz = khz;
         npBoundPause = showPause;
         // Progress/volume only when scrubbing or volume may have changed — not full JNI path.
@@ -2673,10 +2687,18 @@ public final class MediaSuiteHost {
     }
 
     private static void setTextIfChanged(android.widget.TextView tv, String text) {
+        setTextIfChanged(tv, (CharSequence) text);
+    }
+
+    /** 2026-07-18 — CharSequence overload so FM tune can show OK glyph. */
+    private static void setTextIfChanged(android.widget.TextView tv, CharSequence text) {
         if (tv == null) return;
-        String t = text != null ? text : "";
+        CharSequence t = text != null ? text : "";
         CharSequence cur = tv.getText();
-        if (cur != null && t.contentEquals(cur)) return;
+        if (cur != null && t.toString().contentEquals(cur.toString())
+                && !(t instanceof android.text.Spanned)) {
+            return;
+        }
         tv.setText(t);
     }
 
@@ -3719,6 +3741,17 @@ public final class MediaSuiteHost {
         if (video == null || video.id == null || video.id.isEmpty()) return;
         youtubeNowPlayingTitle = video.title;
         youtubeNowPlayingId = video.id;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("id", video.id);
+            d.put("title", video.title != null ? video.title : "");
+            d.put("author", video.author != null ? video.author : "");
+            d.put("titleLen", video.title != null ? video.title.length() : 0);
+            com.solar.launcher.Debug0f5debLog.log(host.context(),
+                    "MediaSuiteHost.playYouTubeAudio", "play audio start", "YT-A", d);
+        } catch (Exception ignored) {}
+        // #endregion
         final int gen = ++youtubeLoadGen;
         youtubeResolvingStream = true;
         setYoutubeResolveStatus(host.getString(R.string.youtube_resolve_looking_up));
@@ -3746,8 +3779,19 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
-                youtubeResolveStatus = "";
+                setYoutubeResolveStatus("");
                 clearYouTubeResolveUi();
+                // #region agent log
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("path", savedFile != null ? savedFile.getAbsolutePath() : "");
+                    d.put("name", savedFile != null ? savedFile.getName() : "");
+                    d.put("len", savedFile != null ? savedFile.length() : 0L);
+                    d.put("npTitle", youtubeNowPlayingTitle != null ? youtubeNowPlayingTitle : "");
+                    com.solar.launcher.Debug0f5debLog.log(host.context(),
+                            "MediaSuiteHost.playYouTubeAudio.onComplete", "cache ready", "YT-B", d);
+                } catch (Exception ignored) {}
+                // #endregion
                 if (savedFile != null && savedFile.isFile()) {
                     host.playAudioFileInNowPlaying(savedFile);
                 } else {
@@ -3760,7 +3804,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
-                youtubeResolveStatus = "";
+                setYoutubeResolveStatus("");
                 clearYouTubeResolveUi();
                 toastYouTubePlayError(message);
             }
@@ -3789,7 +3833,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
-                youtubeResolveStatus = "";
+                setYoutubeResolveStatus("");
                 try {
                     youtubeStreamUrl = YouTubeResultJson.parseStreamUrl(payloadJson);
                 } catch (Exception e) {
@@ -3839,7 +3883,7 @@ public final class MediaSuiteHost {
                 if (gen != youtubeLoadGen) return;
                 youtubeResolvingStream = false;
                 youtubeLoading = false;
-                youtubeResolveStatus = "";
+                setYoutubeResolveStatus("");
                 // #region agent log
                 try {
                     org.json.JSONObject d = new org.json.JSONObject();
@@ -3874,7 +3918,18 @@ public final class MediaSuiteHost {
 
     /** 2026-07-15 — Staged status line for Play row / future HUD. */
     private void setYoutubeResolveStatus(String status) {
-        youtubeResolveStatus = status != null ? status : "";
+        String next = status != null ? status : "";
+        boolean wasBusy = youtubeResolveStatus != null && youtubeResolveStatus.length() > 0;
+        youtubeResolveStatus = next;
+        boolean nowBusy = next.length() > 0;
+        // 2026-07-18 — Status throbber while resolving / saving YouTube stream.
+        // Layman: spinner while Solar finds the stream URL. Technical: REASON_YOUTUBE_RESOLVE.
+        if (nowBusy && !wasBusy) {
+            com.solar.launcher.ui.UiBusy.beginAutoEnd(
+                    com.solar.launcher.ui.UiBusy.REASON_YOUTUBE_RESOLVE, 90_000L);
+        } else if (!nowBusy && wasBusy) {
+            com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_YOUTUBE_RESOLVE);
+        }
     }
 
     private String youtubeResolveStatusText() {
@@ -3900,7 +3955,7 @@ public final class MediaSuiteHost {
 
     /** 2026-07-14 — Refresh browse/detail after resolve failure without yanking screen. */
     private void clearYouTubeResolveUi() {
-        youtubeResolveStatus = "";
+        setYoutubeResolveStatus("");
         int state = host.getCurrentScreenState();
         if (state == STATE_YOUTUBE_BROWSE) {
             buildYouTubeBrowseUi();
@@ -3989,10 +4044,13 @@ public final class MediaSuiteHost {
         youtubeLoadGen++;
         youtubeResolvingStream = false;
         youtubeLoading = false;
-        youtubeResolveStatus = "";
+        setYoutubeResolveStatus("");
         youtubeStreamUrl = null;
         videoPlaybackYoutube = false;
         youtubeIjkFallbackPending = false;
+        // 2026-07-18 — Drop YT/video busy throbbers when engines stop.
+        com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_YOUTUBE_RESOLVE);
+        com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_MEDIA_BUFFER);
         releaseVideoPlayer();
         showVideoPlayerLayer(false);
     }
@@ -4198,7 +4256,8 @@ public final class MediaSuiteHost {
 
     private void commitVideoScrub() {
         if (!videoScrubActive || videoController == null) return;
-        videoController.seekTo(videoScrubMs);
+        // 2026-07-18 — Allow target past buffer; pending seek + buffering UI until catch-up.
+        seekVideoToTarget(videoScrubMs);
         clearVideoScrubMode(false);
     }
 
@@ -4220,9 +4279,91 @@ public final class MediaSuiteHost {
         if (dur > 0 && bar != null) {
             int pct = (int) Math.min(100, (positionMs * 100L) / dur);
             bar.setProgress(pct);
+            // Secondary = buffered fraction (IJK/MediaPlayer percent).
+            int buf = Math.max(0, Math.min(100, videoBufferPercent));
+            try {
+                bar.setSecondaryProgress(buf);
+            } catch (Throwable ignored) {}
         }
         if (cur != null) cur.setText(formatVideoTime(positionMs));
-        if (tot != null) tot.setText(dur > 0 ? formatVideoTime(dur) : "00:00");
+        if (tot != null) {
+            if (videoPendingSeekMs >= 0L) {
+                // Layman: show we’re catching up to the scrub target.
+                tot.setText(host.getString(R.string.stream_seek_buffering,
+                        formatVideoTime(videoPendingSeekMs)));
+            } else {
+                tot.setText(dur > 0 ? formatVideoTime(dur) : "00:00");
+            }
+        }
+    }
+
+    /**
+     * 2026-07-18 — Seek video; if past buffered edge, arm pending seek + status throbber.
+     * Layman: jump where you asked; if not downloaded yet, show buffering and catch up.
+     * Technical: buffer edge from videoBufferPercent × duration; pending until onBuffering covers target.
+     */
+    private void seekVideoToTarget(long targetMs) {
+        if (videoController == null || !videoController.isPrepared()) return;
+        long dur = videoDurationMs();
+        long pos = clampVideoScrubMs(targetMs, dur);
+        long bufferedEdge = videoBufferedEdgeMs(dur);
+        if (dur <= 0 || pos <= bufferedEdge + 500L || videoBufferPercent >= 99) {
+            videoPendingSeekMs = -1L;
+            com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_SEEK_BUFFER);
+            videoController.seekTo(pos);
+            updateVideoProgressUi(pos);
+            return;
+        }
+        // Past buffer — accept intent, wait for catch-up.
+        videoPendingSeekMs = pos;
+        com.solar.launcher.ui.UiBusy.beginAutoEnd(
+                com.solar.launcher.ui.UiBusy.REASON_SEEK_BUFFER, 45_000L);
+        setVideoStatusText(host.getString(R.string.stream_seek_buffering, formatVideoTime(pos)));
+        // Seek to buffer edge first so player keeps loading toward target when engine allows.
+        if (bufferedEdge > 0) {
+            try {
+                videoController.seekTo(Math.min(pos, bufferedEdge));
+            } catch (Throwable ignored) {}
+        }
+        updateVideoProgressUi(pos);
+        pulseVideoTransport();
+    }
+
+    /** Furthest ms considered buffered from last onBufferingUpdate percent. */
+    private long videoBufferedEdgeMs(long durationMs) {
+        if (durationMs <= 0) return 0L;
+        int pct = Math.max(0, Math.min(100, videoBufferPercent));
+        // 2026-07-18 — Same edge math as audio NP (StreamSeekBuffer).
+        int edge = com.solar.launcher.media.StreamSeekBuffer.edgeFromPercent(
+                (int) Math.min(Integer.MAX_VALUE, durationMs), pct);
+        return edge > 0 ? edge : 0L;
+    }
+
+    /** Apply pending seek when buffer catches the target. */
+    private void maybeCompletePendingVideoSeek() {
+        if (videoPendingSeekMs < 0L || videoController == null || !videoController.isPrepared()) {
+            return;
+        }
+        long dur = videoDurationMs();
+        long edge = videoBufferedEdgeMs(dur);
+        if (!com.solar.launcher.media.StreamSeekBuffer.pendingReady(
+                (int) Math.min(Integer.MAX_VALUE, videoPendingSeekMs),
+                (int) Math.min(Integer.MAX_VALUE, edge),
+                750,
+                videoBufferPercent)) {
+            // Still short — refresh buffering label.
+            setVideoStatusText(host.getString(R.string.stream_seek_buffering,
+                    formatVideoTime(videoPendingSeekMs)));
+            updateVideoProgressUi(videoPendingSeekMs);
+            return;
+        }
+        long target = videoPendingSeekMs;
+        videoPendingSeekMs = -1L;
+        com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_SEEK_BUFFER);
+        clearVideoStatusText();
+        videoController.seekTo(target);
+        updateVideoProgressUi(target);
+        pulseVideoTransport();
     }
 
     private void updateVideoScrubMarker() {
@@ -4388,7 +4529,7 @@ public final class MediaSuiteHost {
         setVideoStatusText(null);
     }
 
-    /** Buffering % from IJK while the first frames fill. */
+    /** Buffering % from IJK — first fill + mid-seek past buffer catch-up. */
     private VideoPlayerController.BufferingListener videoBufferingListener() {
         return new VideoPlayerController.BufferingListener() {
             @Override
@@ -4397,10 +4538,26 @@ public final class MediaSuiteHost {
                     @Override
                     public void run() {
                         if (host.getCurrentScreenState() != STATE_VIDEO_PLAYER) return;
-                        if (percent >= 100 || (videoController != null && videoController.isPlaying())) {
-                            clearVideoStatusText();
+                        // 2026-07-18 — Track buffer edge for scrub-past-buffer + secondary progress.
+                        videoBufferPercent = Math.max(0, Math.min(100, percent));
+                        if (videoPendingSeekMs >= 0L) {
+                            maybeCompletePendingVideoSeek();
                             return;
                         }
+                        if (percent >= 100 || (videoController != null && videoController.isPlaying())) {
+                            clearVideoStatusText();
+                            // 2026-07-18 — Video filled enough to play — drop media buffer throbber.
+                            com.solar.launcher.ui.UiBusy.clear(
+                                    com.solar.launcher.ui.UiBusy.REASON_MEDIA_BUFFER);
+                            // Still refresh secondary progress while playing.
+                            if (videoController != null && videoController.isPrepared()) {
+                                updateVideoProgressUi(videoController.getCurrentPosition());
+                            }
+                            return;
+                        }
+                        // Mid-buffer / first fill — keep status spinner on.
+                        com.solar.launcher.ui.UiBusy.beginAutoEnd(
+                                com.solar.launcher.ui.UiBusy.REASON_MEDIA_BUFFER, 60_000L);
                         setVideoStatusText(host.getString(R.string.youtube_resolve_buffering, percent));
                     }
                 });
@@ -4424,7 +4581,13 @@ public final class MediaSuiteHost {
                 host.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        clearVideoStatusText();
+                        com.solar.launcher.ui.UiBusy.clear(
+                                com.solar.launcher.ui.UiBusy.REASON_MEDIA_BUFFER);
+                        if (videoPendingSeekMs >= 0L) {
+                            maybeCompletePendingVideoSeek();
+                        } else {
+                            clearVideoStatusText();
+                        }
                     }
                 });
             }
@@ -4785,6 +4948,9 @@ public final class MediaSuiteHost {
     public void onVideoPlaybackStopped() {
         stopVideoProgressUpdates();
         clearVideoScrubMode(false);
+        videoPendingSeekMs = -1L;
+        videoBufferPercent = 0;
+        com.solar.launcher.ui.UiBusy.clear(com.solar.launcher.ui.UiBusy.REASON_SEEK_BUFFER);
         host.setStatusBarVisible(true);
     }
 
@@ -4812,12 +4978,15 @@ public final class MediaSuiteHost {
             moveVideoScrubCursor((int) deltaMs);
             return;
         }
-        long pos = videoController.getCurrentPosition() + deltaMs;
+        long base = videoPendingSeekMs >= 0L
+                ? videoPendingSeekMs
+                : videoController.getCurrentPosition();
+        long pos = base + deltaMs;
         if (pos < 0) pos = 0;
         long dur = videoDurationMs();
         if (dur > 0 && pos > dur) pos = dur;
-        videoController.seekTo(pos);
-        updateVideoProgressUi(pos);
+        // 2026-07-18 — Hold-seek / skip steps may land past buffer; same pending path as scrub.
+        seekVideoToTarget(pos);
         pulseVideoTransport();
     }
 
@@ -5210,6 +5379,17 @@ public final class MediaSuiteHost {
     public boolean isYoutubeBrowseLoading() {
         int st = host.getCurrentScreenState();
         return (st == STATE_YOUTUBE_BROWSE || st == STATE_YOUTUBE_DETAIL) && youtubeLoading;
+    }
+
+    /**
+     * 2026-07-18 — Host asks if video/YouTube work should keep the status spinner up.
+     * Layman: resolving a stream still counts as loading.
+     * Technical: youtubeResolvingStream / non-empty resolve status (video buffer uses UiBusy).
+     */
+    public boolean isMediaBusyForStatusThrobber() {
+        if (youtubeResolvingStream) return true;
+        if (youtubeResolveStatus != null && youtubeResolveStatus.length() > 0) return true;
+        return false;
     }
 
     private final class SimpleListAdapter extends BaseAdapter {

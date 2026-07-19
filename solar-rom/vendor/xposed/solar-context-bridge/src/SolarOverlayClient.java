@@ -487,6 +487,11 @@ public final class SolarOverlayClient {
      */
     public static void routeUsbConcierge(Context ctx, boolean umsExported) {
         if (ctx == null) return;
+        // Stock Android USB UI — never wake Solar from SystemUI hook (2026-07-19).
+        if (SolarUsbSessionPrefs.preferStockUsbUi()) {
+            SolarContextBridge.log("usbConcierge skip — stock USB UI");
+            return;
+        }
         if (!SolarUsbSessionPrefs.isUmsFeatureEnabled() && !umsExported) {
             SolarContextBridge.log("usbConcierge skip — UMS feature off");
             return;

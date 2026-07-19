@@ -20,6 +20,12 @@ public final class HearingSafetyVolume {
     public static final String PREF_ENABLED = "hearing_safety_enabled";
     /** Xposed / AudioService reads this — "1" = enforce cap, "0" = bypass OS limits. */
     public static final String PROP_ENABLED = "persist.solar.hearing_safety";
+    /**
+     * 2026-07-18 — Session temp unlock while Hearing Safety pref stays on.
+     * Layman: user kept turning volume past the ear — cap lifts until reboot / re-enable.
+     * Technical: "1" = do not clamp; Xposed {@code HearingSafetyStub} must honor this.
+     */
+    public static final String PROP_TEMP_UNLOCK = "persist.solar.hearing_safety.temp";
     /** KitKat AudioService bypass when hearing safety is off. */
     public static final String PROP_SAFE_MEDIA_BYPASS = "audio.safemedia.bypass";
 
@@ -45,6 +51,12 @@ public final class HearingSafetyVolume {
     private static volatile Boolean enabledCache;
     /** 2026-07-16 — Throttle OS EU unlock so failed up-steps do not spam root/reflection. */
     private static volatile long lastEnsureFullRangeMs;
+    /**
+     * 2026-07-18 — Session-only: extra volume-up at cap temporarily lifts the 80% limit.
+     * Layman: keep scrolling past the ear to open more loudness for this session.
+     * Technical: does not rewrite {@link #PREF_ENABLED}; cleared on setEnabled / process death.
+     */
+    private static volatile boolean temporarilyUnlocked;
 
     private HearingSafetyVolume() {}
 
@@ -60,6 +72,83 @@ public final class HearingSafetyVolume {
         return on;
     }
 
+    /**
+     * True when Hearing Safety pref is on but user temporarily unlocked past the ear.
+     * Layman: the safety switch is still on, but this session may go louder.
+     */
+    public static boolean isTemporarilyUnlocked() {
+        return temporarilyUnlocked;
+    }
+
+    /**
+     * True when the volume bar should show the ear cue (at 100% while HS enforces cap).
+     * Layman: ear means “this is the safe top — keep turning for more”.
+     * 2026-07-18 — Ear only on wired / Bluetooth (speaker is never capped by Hearing Safety).
+     */
+    public static boolean shouldShowEarAtDisplayMax(Context ctx) {
+        return isCapActive(ctx, AudioManager.STREAM_MUSIC);
+    }
+
+    /**
+     * True when Hearing Safety actually clamps this stream right now.
+     * Layman: safety is for headphones / Bluetooth, not the built-in speaker.
+     * Technical: pref on + not temp-unlocked + wired headset or A2DP (or unknown route → cap, safer).
+     * 2026-07-18 — Was: cap applied to all STREAM_MUSIC including speaker → speaker bar stuck ~80%.
+     */
+    public static boolean isCapActive(Context ctx, int streamType) {
+        if (!isEnabled(ctx) || temporarilyUnlocked) return false;
+        if (!MediaVolumeControl.isMediaVolumeStream(streamType)) return false;
+        // Speaker-only: never apply Solar 80% cap (settings copy says “headphone volume”).
+        if (isSpeakerOnlyRoute(ctx)) return false;
+        return true;
+    }
+
+    /**
+     * True when media is clearly going out the built-in speaker (no wired jack, no A2DP).
+     * Layman: phone speaker path — full volume range always.
+     */
+    public static boolean isSpeakerOnlyRoute(Context ctx) {
+        AudioManager am = audioManager(ctx);
+        if (am == null) return false;
+        try {
+            if (am.isWiredHeadsetOn()) return false;
+        } catch (Throwable ignored) {}
+        try {
+            if (am.isBluetoothA2dpOn()) return false;
+        } catch (Throwable ignored) {}
+        try {
+            if (am.isBluetoothScoOn()) return false;
+        } catch (Throwable ignored) {}
+        return true;
+    }
+
+    /**
+     * Session unlock — full hardware range until process death or Hearing Safety toggled.
+     * Layman: open the remaining 20% loudness for now without turning the setting off permanently.
+     */
+    public static void setTemporarilyUnlocked(Context ctx, boolean unlocked) {
+        temporarilyUnlocked = unlocked;
+        // 2026-07-18 — Never sync-su on volume path (was multi-second lag). Prefer reflection; async root fallback.
+        String val = unlocked ? "1" : "0";
+        if (!setSystemPropertyFast(PROP_TEMP_UNLOCK, val)) {
+            RootShell.runAsync("setprop " + PROP_TEMP_UNLOCK + " " + val);
+        }
+        if (unlocked && ctx != null) {
+            ensureFullVolumeRange(ctx.getApplicationContext());
+        }
+    }
+
+    /** In-process setprop when allowed (no su on volume wheel). */
+    private static boolean setSystemPropertyFast(String key, String value) {
+        try {
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            sp.getMethod("set", String.class, String.class).invoke(null, key, value);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /** Persisted hardware max index for Xposed volume hooks (system_server has no app prefs). */
     public static final String PROP_ABSOLUTE_MAX = "persist.solar.volume.abs_max";
 
@@ -70,11 +159,19 @@ public final class HearingSafetyVolume {
         app.getSharedPreferences(PREFS_SETTINGS, Context.MODE_PRIVATE)
                 .edit().putBoolean(PREF_ENABLED, enabled).apply();
         enabledCache = Boolean.valueOf(enabled);
+        // 2026-07-18 — Permanent toggle clears session temp unlock (fresh state).
+        temporarilyUnlocked = false;
+        if (!setSystemPropertyFast(PROP_TEMP_UNLOCK, "0")) {
+            RootShell.runAsync("setprop " + PROP_TEMP_UNLOCK + " 0");
+        }
         // 2026-07-15 — Push props + clear EU cap when off; Solar 80% clamp when on.
         // Layman: Hearing Safety ON = real volume stops at 80% HW but the bar still goes to 100%.
         syncSystemBypass(app, enabled);
         if (enabled) {
-            clampStream(app, AudioManager.STREAM_MUSIC);
+            // 2026-07-18 — Only clamp headphones/BT; speaker stays full range while pref is on.
+            if (isCapActive(app, AudioManager.STREAM_MUSIC)) {
+                clampStream(app, AudioManager.STREAM_MUSIC);
+            }
         } else {
             // 2026-07-16 — Turning safety off must unlock full hardware range immediately.
             ensureFullVolumeRange(app);
@@ -88,30 +185,58 @@ public final class HearingSafetyVolume {
         syncSystemBypass(ctx.getApplicationContext(), isEnabled(ctx));
     }
 
-    /** Hardware stream index maximum (full steps, not OS-limited reporting). */
+    /**
+     * Hardware stream index maximum (full steps).
+     * 2026-07-18 — Prefer live {@link AudioManager#getStreamMaxVolume}; grow cache when OS rises.
+     * Was: freeze first sample and inflate any reported&lt;15 to 15 → speaker bar never hit 100%
+     * when true max was lower or when OS max was honest but cache was inflated.
+     * Layman: 100% means the real top step the device will accept (after any unlock).
+     */
     public static int getAbsoluteMaxIndex(Context ctx, int streamType) {
-        if (cachedAbsoluteMax > 0) return cachedAbsoluteMax;
-        int stored = readStoredAbsoluteMax(ctx, streamType);
-        if (stored > 0) {
-            cachedAbsoluteMax = stored;
-            return stored;
-        }
         AudioManager am = audioManager(ctx);
-        int reported = am != null ? Math.max(1, am.getStreamMaxVolume(streamType)) : DEFAULT_ABSOLUTE_MAX;
-        // When OS reports a reduced max (safe volume), infer hardware max.
-        int abs = reported;
-        if (reported < DEFAULT_ABSOLUTE_MAX) {
-            abs = DEFAULT_ABSOLUTE_MAX;
+        int reported = am != null
+                ? Math.max(1, am.getStreamMaxVolume(streamType))
+                : DEFAULT_ABSOLUTE_MAX;
+        int stored = cachedAbsoluteMax > 0 ? cachedAbsoluteMax : readStoredAbsoluteMax(ctx, streamType);
+
+        // Live reported is always a valid ceiling for setStreamVolume *right now*.
+        // Keep a higher stored value only as “true HW after EU unlock” when OS temporarily
+        // reports a reduced max (classic headphone safe-media) — never invent 15 on speaker.
+        int abs;
+        if (stored > reported) {
+            // Headphone EU path often reports reduced max while HW is still higher after unlock.
+            // Speaker-only: trust live reported (do not keep a stale inflated stored max).
+            if (isSpeakerOnlyRoute(ctx)) {
+                abs = reported;
+            } else {
+                abs = stored;
+            }
+        } else {
+            abs = reported;
         }
-        cachedAbsoluteMax = abs;
-        storeAbsoluteMax(ctx, streamType, abs);
+        if (abs <= 0) abs = DEFAULT_ABSOLUTE_MAX;
+
+        if (abs != cachedAbsoluteMax) {
+            cachedAbsoluteMax = abs;
+            storeAbsoluteMax(ctx, streamType, abs);
+            // Keep Xposed abs_max in sync when we learn a new top.
+            if (abs > 0) {
+                if (!setSystemPropertyFast(PROP_ABSOLUTE_MAX, String.valueOf(abs))) {
+                    RootShell.runAsync("setprop " + PROP_ABSOLUTE_MAX + " " + abs);
+                }
+            }
+        }
         return abs;
     }
 
-    /** Top index Solar allows — full hardware max or 80% cap when hearing safety is on. */
+    /**
+     * Top index Solar allows — full hardware max, or 80% cap when Hearing Safety is
+     * actively clamping this route (headphones / BT).
+     * 2026-07-18 — Speaker always gets full abs max even if the HS pref is on.
+     */
     public static int getEffectiveMaxIndex(Context ctx, int streamType) {
         int abs = getAbsoluteMaxIndex(ctx, streamType);
-        if (!isEnabled(ctx)) return abs;
+        if (!isCapActive(ctx, streamType)) return abs;
         return Math.max(1, Math.round(abs * CAP_RATIO));
     }
 
@@ -128,45 +253,87 @@ public final class HearingSafetyVolume {
         return Math.max(0, Math.min(effectiveMax, clamped * effectiveMax / DISPLAY_MAX));
     }
 
+    /**
+     * Display 0–100 for the stream.
+     * 2026-07-18 — If we are already at the OS-reported top and HS is not capping this route,
+     * always paint 100% (fixes speaker / honest-max stranded below full bar).
+     */
     public static int getDisplayVolume(Context ctx, int streamType) {
         AudioManager am = audioManager(ctx);
         if (am == null) return 0;
         int idx = am.getStreamVolume(streamType);
-        return indexToDisplay(idx, getEffectiveMaxIndex(ctx, streamType));
+        int reportedMax = Math.max(1, am.getStreamMaxVolume(streamType));
+        int effMax = getEffectiveMaxIndex(ctx, streamType);
+        // At the live OS ceiling with no Solar cap → full bar (even if abs cache was wrong).
+        if (!isCapActive(ctx, streamType) && reportedMax > 0 && idx >= reportedMax) {
+            return DISPLAY_MAX;
+        }
+        // Prefer not exceeding live OS max for scaling when cap is off (setStreamVolume can't go higher).
+        int scaleMax = effMax;
+        if (!isCapActive(ctx, streamType) && reportedMax > 0) {
+            scaleMax = Math.min(effMax, reportedMax);
+        }
+        return indexToDisplay(idx, scaleMax);
     }
 
-    /** Step volume up/down with cap + warning; returns new stream index. */
+    /**
+     * Step volume up/down with cap + warning; returns new stream index.
+     * 2026-07-18 — Extra volume-up at Hearing Safety cap → session temp unlock (ear path).
+     * Layman: keep scrolling right / pressing volume up at the ear to open more loudness.
+     * Technical: does not raise index on unlock tick — scale re-maps so display drops ~100→80.
+     * Speaker path never temp-unlocks (no cap); stuck up-steps always try EU unlock once.
+     */
     public static int adjustStreamIndex(Context ctx, int streamType, boolean up) {
         AudioManager am = audioManager(ctx);
         if (am == null || !MediaVolumeControl.isMediaVolumeStream(streamType)) return 0;
         int cur = am.getStreamVolume(streamType);
+        int reportedMax = Math.max(1, am.getStreamMaxVolume(streamType));
         int effMax = getEffectiveMaxIndex(ctx, streamType);
+        // Never target past what we allow; also never past live OS max without unlock attempt.
+        int hardTop = Math.max(effMax, reportedMax);
         int target = cur;
         if (up && cur < effMax) {
             target = cur + 1;
         } else if (!up && cur > 0) {
             target = cur - 1;
         } else if (up && cur >= effMax) {
-            // Already at Solar-allowed top (full HW, or 80% HW when Hearing Safety is on).
-            return cur;
+            // At Solar cap on headphones/BT: one more vol-up temporarily lifts the 80% ceiling.
+            if (isCapActive(ctx, streamType)) {
+                setTemporarilyUnlocked(ctx, true);
+                // Loudness unchanged; effective max is now absolute — display will re-scale.
+                return cur;
+            }
+            // Full top already — still try OS unlock if live max is higher than index (rare).
+            if (cur < reportedMax) {
+                target = cur + 1;
+            } else if (cur < hardTop) {
+                target = cur + 1;
+            } else {
+                return cur;
+            }
         }
         setStreamIndex(ctx, streamType, target);
         int after = am.getStreamVolume(streamType);
-        // 2026-07-15 — OS EU cap often freezes index at ~80%; clear brake and retry once.
+        // OS EU / safe-media often freezes index below hardware top — clear brake and retry.
         // Layman: if the wheel won't go louder, knock off the phone's hidden volume lock.
-        // 2026-07-16 — Throttle unlock work; was re-running su/reflection on every stuck tick.
-        if (up && target > cur && after <= cur && !isEnabled(ctx)) {
+        // 2026-07-18 — Also when HS pref is on but speaker route (cap inactive), so speaker hits 100%.
+        if (up && target > cur && after <= cur && !isCapActive(ctx, streamType)) {
             long now = android.os.SystemClock.uptimeMillis();
             if (now - lastEnsureFullRangeMs >= 1500L) {
                 lastEnsureFullRangeMs = now;
                 ensureFullVolumeRange(ctx);
-                // Recompute max after unlock — OS may now report full hardware steps.
-                int newEff = getEffectiveMaxIndex(ctx, streamType);
-                if (target < newEff && target <= cur) {
-                    target = Math.min(cur + 1, newEff);
+                // Drop stale inflated abs so we re-read live max after unlock.
+                int newReported = Math.max(1, am.getStreamMaxVolume(streamType));
+                if (newReported > cachedAbsoluteMax) {
+                    cachedAbsoluteMax = newReported;
+                    storeAbsoluteMax(ctx, streamType, newReported);
                 }
-                setStreamIndex(ctx, streamType, Math.min(target, newEff));
-                after = am.getStreamVolume(streamType);
+                int newEff = getEffectiveMaxIndex(ctx, streamType);
+                int retryTarget = Math.min(cur + 1, Math.max(newEff, newReported));
+                if (retryTarget > cur) {
+                    setStreamIndex(ctx, streamType, retryTarget);
+                    after = am.getStreamVolume(streamType);
+                }
             }
         }
         return after;
@@ -178,14 +345,26 @@ public final class HearingSafetyVolume {
         if (am == null || !MediaVolumeControl.isMediaVolumeStream(streamType)) return;
         int effMax = getEffectiveMaxIndex(ctx, streamType);
         int clamped = Math.max(0, Math.min(effMax, index));
+        // Never ask OS past live max — setStreamVolume silently no-ops or clamps.
+        try {
+            int reported = Math.max(1, am.getStreamMaxVolume(streamType));
+            if (clamped > reported && !isCapActive(ctx, streamType)) {
+                ensureFullVolumeRange(ctx);
+                reported = Math.max(1, am.getStreamMaxVolume(streamType));
+            }
+            if (clamped > reported) clamped = reported;
+        } catch (Throwable ignored) {}
         MediaVolumeControl.markInternalVolumeAdjust();
         am.setStreamVolume(streamType, clamped, MediaVolumeControl.FLAGS_NO_UI);
         maybeShowWarning(ctx, streamType, clamped);
     }
 
-    /** Toast when crossing 80% of hardware max — only while hearing safety is enabled. */
+    /**
+     * Toast when crossing 80% of hardware max — only while Hearing Safety is actively capping
+     * (headphones / BT), not on speaker.
+     */
     public static void maybeShowWarning(Context ctx, int streamType, int newIndex) {
-        if (ctx == null || !isEnabled(ctx)) return;
+        if (ctx == null || !isCapActive(ctx, streamType)) return;
         int absMax = getAbsoluteMaxIndex(ctx, streamType);
         int warnIndex = Math.max(1, Math.round(absMax * WARN_ABSOLUTE_RATIO));
         if (newIndex < warnIndex) {
@@ -238,9 +417,31 @@ public final class HearingSafetyVolume {
         return Math.max(1, Math.round(absoluteMax * CAP_RATIO));
     }
 
+    /** Route-aware cap math without AudioManager (headset=true → may cap). */
+    static int effectiveMaxForRouteTest(int absoluteMax, boolean safetyOn, boolean tempUnlocked,
+            boolean speakerOnly) {
+        if (!safetyOn || tempUnlocked || speakerOnly) return absoluteMax;
+        return Math.max(1, Math.round(absoluteMax * CAP_RATIO));
+    }
+
+    /** Display when at live OS max and not capped → always 100. */
+    static int displayAtLiveMaxForTest(int index, int reportedMax, int effectiveMax, boolean capActive) {
+        if (!capActive && reportedMax > 0 && index >= reportedMax) return DISPLAY_MAX;
+        int scale = effectiveMax;
+        if (!capActive && reportedMax > 0) scale = Math.min(effectiveMax, reportedMax);
+        return indexToDisplay(index, scale);
+    }
+
     static void resetWarnStateForTest() {
         lastWarnIndex = -1;
         cachedAbsoluteMax = -1;
+        temporarilyUnlocked = false;
+        enabledCache = null;
+    }
+
+    /** Test hook — session temp unlock without SystemProperties. */
+    static void setTemporarilyUnlockedForTest(boolean unlocked) {
+        temporarilyUnlocked = unlocked;
     }
 
     private static void clampStream(Context ctx, int streamType) {
@@ -305,25 +506,40 @@ public final class HearingSafetyVolume {
      * Call from player open and volume wheel when up-step fails.
      * 2026-07-16 — After unlock, refresh absolute max so UI 100% can map to true hardware top.
      */
+    /**
+     * Re-assert full range when OS still clamps below hardware top.
+     * 2026-07-18 — Run whenever cap is inactive (speaker, or HS off, or temp unlock) — not only
+     * when the HS pref is false. Was: early-return if pref on → speaker stuck under EU lock.
+     */
     public static void ensureFullVolumeRange(Context ctx) {
-        if (ctx == null || isEnabled(ctx)) return;
+        if (ctx == null) return;
+        // Still apply OS unlock when pref is on but route is speaker (cap inactive).
+        if (isCapActive(ctx, AudioManager.STREAM_MUSIC)) return;
         Context app = ctx.getApplicationContext();
+        // Prefer full-range OS state even if HS pref is on (speaker / temp unlock).
         syncSystemBypass(app, false);
+        // Re-assert HS prop if pref is still on so Xposed knows the toggle after speaker unlock.
+        if (isEnabled(app) && !setSystemPropertyFast(PROP_ENABLED, "1")) {
+            RootShell.runAsync("setprop " + PROP_ENABLED + " 1");
+        }
         AudioManager am = audioManager(app);
         if (am == null) return;
         int reported = Math.max(1, am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
-        // Prefer the larger of stored hardware max vs what OS now reports after unlock.
-        int abs = Math.max(reported, getAbsoluteMaxIndex(app, AudioManager.STREAM_MUSIC));
-        if (reported >= DEFAULT_ABSOLUTE_MAX) {
+        // Trust live max after unlock; grow cache, never invent a higher DEFAULT on speaker.
+        int abs = reported;
+        if (reported > cachedAbsoluteMax) {
             abs = reported;
-        } else if (abs < DEFAULT_ABSOLUTE_MAX) {
-            abs = DEFAULT_ABSOLUTE_MAX;
+        } else if (cachedAbsoluteMax > reported && !isSpeakerOnlyRoute(app)) {
+            // Keep higher stored for headset after temporary OS reduction.
+            abs = cachedAbsoluteMax;
         }
         if (abs > 0 && abs != cachedAbsoluteMax) {
             cachedAbsoluteMax = abs;
             storeAbsoluteMax(app, AudioManager.STREAM_MUSIC, abs);
             // 2026-07-16 — Never canRun() here (sync su); async setprop is enough for Xposed.
-            RootShell.runAsync("setprop " + PROP_ABSOLUTE_MAX + " " + abs);
+            if (!setSystemPropertyFast(PROP_ABSOLUTE_MAX, String.valueOf(abs))) {
+                RootShell.runAsync("setprop " + PROP_ABSOLUTE_MAX + " " + abs);
+            }
         }
     }
 

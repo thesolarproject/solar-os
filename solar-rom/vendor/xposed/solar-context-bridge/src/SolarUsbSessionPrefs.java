@@ -12,6 +12,7 @@ final class SolarUsbSessionPrefs {
 
     private static final String SYSPROP_SKIP_PROMPT = "sys.solar.usb.skip_prompt";
     private static final String SYSPROP_AUTO_CONNECT = "sys.solar.usb.auto_connect";
+    private static final String SYSPROP_STOCK_UI = "sys.solar.usb.stock_ui";
     private static final String SYSPROP_Y2_UMS_EXPERIMENT = "sys.solar.ums.experiment";
     private static final String SYSPROP_BOOT_HOST_AT_BOOT = "sys.solar.usb.boot_host_at_boot";
     private static final String SYSPROP_BOOT_SETTLE_READY = "sys.solar.usb.boot_settle_ready";
@@ -20,9 +21,23 @@ final class SolarUsbSessionPrefs {
 
     private SolarUsbSessionPrefs() {}
 
-    /** False when user enabled Skip plug-in prompt in Solar USB settings. */
+    /**
+     * Leave stock UsbStorageActivity alone — skip Solar prompt and not auto-connecting.
+     * 2026-07-19
+     */
+    static boolean preferStockUsbUi() {
+        if (isAutoConnectEnabled()) return false;
+        String stock = readSysProp(SYSPROP_STOCK_UI, "");
+        if ("1".equals(stock)) return true;
+        if ("0".equals(stock)) return false;
+        // Unset props: default skip Solar prompt → stock UI (matches app DEFAULT_SKIP).
+        return !"0".equals(readSysProp(SYSPROP_SKIP_PROMPT, "1"));
+    }
+
+    /** False when user skips Solar prompt (stock or silent auto). */
     static boolean shouldOfferConnectPrompt() {
-        return !"1".equals(readSysProp(SYSPROP_SKIP_PROMPT, "0"));
+        if (preferStockUsbUi()) return false;
+        return !"1".equals(readSysProp(SYSPROP_SKIP_PROMPT, "1"));
     }
 
     /** Y1 always; Y2 needs Debug experiment sysprop before UMS prompt or hooks (2026-07-05). */

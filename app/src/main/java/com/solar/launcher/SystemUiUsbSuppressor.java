@@ -24,6 +24,18 @@ public final class SystemUiUsbSuppressor {
      */
     public static void dismissIfNeeded(final Context context) {
         if (context == null) return;
+        // Stock Android USB dialog — never BACK/HOME fight SystemUI (2026-07-19).
+        if (UsbStorageSessionFlags.preferStockUsbUi(context)) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("stockUi", true);
+                Debug543e15Log.log("SystemUiUsbSuppressor.dismissIfNeeded",
+                        "stock skip suppress", "H4", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return;
+        }
         // Xposed concierge finishes UsbStorageActivity — suppressor only for UMS lock reclaim gaps.
         if (UsbStorageConcierge.isXposedConciergeActive()
                 && !GlobalOverlayPolicy.isSolarForegroundPackage(

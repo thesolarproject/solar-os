@@ -79,13 +79,13 @@ public class A5EdgeGesturesTest {
 
     @Test
     public void holdContextAtLeastSystemLongPress() {
-        // 2026-07-15 — Must be ≥ policy (420) and typically ≥ system long-press (~500)
+        // 2026-07-18 — Must be ≥ policy (350); system long-press is ~500
         // so short taps do not open context.
         long policy = com.solar.input.policy.GlobalInputPolicy.SOLAR_BACK_CONTEXT_HOLD_MS;
         if (A5EdgeGestures.HOLD_CONTEXT_MS < policy) {
             throw new AssertionError("hold shorter than policy " + A5EdgeGestures.HOLD_CONTEXT_MS);
         }
-        if (A5EdgeGestures.HOLD_CONTEXT_MS < 420L) {
+        if (A5EdgeGestures.HOLD_CONTEXT_MS < 350L) {
             throw new AssertionError("hold too short for deliberate hold-still");
         }
     }

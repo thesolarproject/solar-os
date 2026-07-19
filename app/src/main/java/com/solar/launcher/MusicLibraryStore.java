@@ -314,6 +314,10 @@ public class MusicLibraryStore extends SolarDbHelper {
             String genre, String albumArtist, String durationMs, int trackNumber, int year) {
         if (file == null || !file.isFile()) return;
         if (trackNumber == 0) trackNumber = -1;
+        // 2026-07-19 — year 0 after ID3 means unknown, not "legacy needs re-tag".
+        // Was: stored 0 → isFresh forever false → full library re-scan every launch.
+        // Reversal: allow year=0 persist (breaks fast-path for tagless tracks).
+        if (year == 0) year = -1;
         SQLiteDatabase db = getWritableDatabase();
         SQLiteStatement st = db.compileStatement(
                 "INSERT OR REPLACE INTO tracks"

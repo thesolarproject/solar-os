@@ -100,6 +100,20 @@
     <!-- Status bar titles -->
     <string name="status_home">Home</string>
     <string name="status_now_playing">Now Playing</string>
+    <string name="status_stem_player">Stem Player</string>
+    <string name="context_action_stem_player">Stem Player</string>
+    <string name="stem_pick_status">Stem · %1$d/3 · Play to jam</string>
+    <string name="stem_pick_slot">Stem %1$d</string>
+    <string name="stem_pick_marked">Marked stem %1$d</string>
+    <string name="stem_pick_cleared">Cleared stem mark</string>
+    <string name="stem_pick_need_mark">Mark a track first (Center), then Play</string>
+    <string name="stem_player_need_file">Stem Player needs a local track file</string>
+    <string name="stem_player_need_wifi">Connect Wi‑Fi to separate stems</string>
+    <string name="settings_lalal">Stem Player (Lalal.ai)</string>
+    <string name="settings_stem_premix">Stem Melody premix (experimental)</string>
+    <string name="lalal_not_configured">Not configured (demo key)</string>
+    <string name="lalal_configured">API key set</string>
+    <string name="lalal_key_prompt">Lalal.ai API key</string>
     <string name="status_settings">Settings</string>
     <string name="status_bluetooth_scan">Bluetooth Scan</string>
     <string name="status_wifi_networks">Wi-Fi Networks</string>
@@ -313,6 +327,10 @@
     <string name="settings_hearing_safety">Hearing Safety</string>
     <string name="settings_preview_hearing_safety">When on, headphone volume is capped at 80% of the device maximum and Solar shows a hearing safety warning at that level. When off (default), Solar bypasses Android headphone volume limits and allows the full range.</string>
     <string name="hearing_safety_warning">Listening at high volume may damage your hearing.</string>
+    <!-- 2026-07-18 — Ear cue at HS max; keep scrolling / volume-up to temporarily unlock. -->
+    <string name="hearing_safety_volume_ear_hint">Keep scrolling right for more volume</string>
+    <string name="hearing_safety_unlock_hint">Hearing Safety unlocked for this session</string>
+    <string name="stream_seek_buffering">Buffering to %1$s…</string>
     <string name="settings_screen_off_control">Screen-Off Control</string>
     <string name="settings_paint_system_apps">Paint system apps with theme</string>
     <string name="settings_app_theme">Theme</string>
@@ -322,8 +340,8 @@
     <string name="settings_screen_timeout">Screen Timeout</string>
     <string name="settings_full_width_menus">Full Width Menus</string>
     <string name="settings_menu_item_padding">Menu Item Padding</string>
-    <string name="settings_menu_item_padding_hint">Left gutter on home and settings rows. Off = flush to the screen edge (iPod classic). Saved for the current theme. Themes with a mask keep padding unless the theme or you turn this off.</string>
-    <string name="settings_menu_item_padding_mask_hint">This theme uses a menu mask and has not opted into flush — padding stays on so the mask lines up. Switch theme or add settingsMenu_Item_Padding:false to flush.</string>
+    <string name="settings_menu_item_padding_hint">Left gutter on home and settings rows (on by default). Off = flush to the screen edge (iPod classic). Your choice is saved for this theme only — switching themes returns to that look’s default unless you change it there too.</string>
+    <string name="settings_menu_item_padding_mask_hint">This theme uses a menu mask and has not opted into flush — padding stays on so the mask lines up. Switch theme or add settingsMenu_Item_Padding:false / disableMenu_Item_Padding to flush.</string>
     <string name="settings_infinite_scroll">Infinite Scroll</string>
     <string name="settings_infinite_scroll_hint">At list ends, wheel wraps to the other end. Off by default.</string>
     <string name="settings_menu_transitions">Menu Transitions</string>
@@ -425,8 +443,8 @@
     <string name="settings_background">Background source</string>
     <string name="settings_usb_auto_connect">Auto-Connect</string>
     <string name="settings_preview_usb_auto_connect">Enable USB storage automatically when a PC connects.</string>
-    <string name="settings_usb_suppress_prompt">Skip Plug-In Prompt</string>
-    <string name="settings_preview_usb_suppress_prompt">Don\u2019t show USB storage prompt when a cable is connected.</string>
+    <string name="settings_usb_suppress_prompt">Use Android USB dialog</string>
+    <string name="settings_preview_usb_suppress_prompt">Let the system USB screen handle the cable (lighter). Turn off to use Solar\u2019s USB prompt.</string>
     <string name="settings_usb_turn_on">Enable Now</string>
     <string name="settings_preview_usb_turn_on">Turn on USB storage manually.</string>
     <string name="settings_background_source">Background Image Source</string>
@@ -547,7 +565,7 @@
     <string name="bt_pairing_pair">Pair</string>
     <string name="keyboard_soulseek_username">Soulseek Username</string>
     <string name="keyboard_soulseek_password">Reach Password</string>
-    <string name="keyboard_hint">Prev: delete · Play: OK\nNext: space · Hold Play: Aa / # · Wheel: pick · Center: type · Back: cancel</string>
+    <string name="keyboard_hint">[prev] delete · [play] OK · [next] space\n[play] hold Aa/# · [wheel] pick · [ok] type\n[back] cancel</string>
     <string name="keyboard_hint_a5">Vol: space / delete · Back: Enter · Hold Back: Aa / #\nFace mid: type · Wheel/face: pick · Edge flick: cancel</string>
     <string name="solar_ime_label">Solar Keyboard</string>
     <string name="solar_ime_type_hint">Type here…</string>
@@ -1292,6 +1310,12 @@
     <string name="context_hold_back_hint">Hold back button for Options</string>
     <!-- 2026-07-11 — Y2 only: power hold also opens Options; Y1 keeps context_hold_back_hint (no power key). -->
     <string name="context_hold_back_or_power_hint">Hold Back or Power for Options</string>
+    <!-- 2026-07-18 — NP transport tip after Options dismissed; glyph = Play/Pause. -->
+    <string name="flow_hold_play_pause_hint">hold — open Flow</string>
+    <!-- 2026-07-18 — Live NP tip while holding Back / Play-Pause (glyphs supply the button). -->
+    <!-- Short copy so 480px + glyph fits without cutting off mid-word. -->
+    <string name="np_keep_holding_for_options">hold — Options</string>
+    <string name="np_keep_holding_for_flow">hold — Flow</string>
     <string name="context_quick_power">Power</string>
     <string name="context_quick_queue">Queue</string>
     <string name="playlist_move_tutorial_title">Move tracks in playlist</string>
@@ -1482,7 +1506,7 @@
     <string name="settings_debug_xposed_apply_failed">Could not write Xposed module config.</string>
     <string name="settings_debug_flow_enabled">Flow Mode</string>
     <string name="settings_flow">Flow</string>
-    <string name="settings_flow_hold_play_pause_hint">Hold Play/Pause to open Flow view.</string>
+    <string name="settings_flow_hold_play_pause_hint">hold — open Flow view</string>
     <string name="settings_debug_flow_ok_library">OK → Library</string>
     <string name="settings_debug_flow_theme">Theme Decoration</string>
     <string name="settings_debug_flow_no_reflections">No Reflections</string>
@@ -1722,7 +1746,8 @@
     <string name="youtube_show_popular">Show popular suggestions</string>
     <string name="youtube_show_popular_sub">Clear search and browse trending</string>
     <string name="youtube_popular_empty">No suggestions right now. Try Search.</string>
-    <string name="youtube_loading">Loading videos…</string>
+    <!-- 2026-07-18 — Was "Loading videos…"; popular/home fetch is recommendations, not a generic list. -->
+    <string name="youtube_loading">Getting recommended videos…</string>
     <string name="youtube_empty">No videos found.</string>
     <string name="youtube_error">Could not load YouTube. Check connection and try again.</string>
     <string name="youtube_unavailable">YouTube is unavailable right now.</string>

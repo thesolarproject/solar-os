@@ -263,9 +263,10 @@ public final class ChipOverlayHost {
         dialogMode = false;
         activeMode = MODE_VOLUME;
         sliderIsVolume = true;
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        int max = am != null ? am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 15;
-        int cur = am != null ? am.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
+        // 2026-07-18 — 0–100 display (Hearing Safety maps 80% HW → 100% bar).
+        // Was: raw AudioManager max/cur — bar stuck ~80% when OS/HS capped. Reversal: raw AM.
+        int max = OverlayVolumeDisplay.getDisplayMax();
+        int cur = OverlayVolumeDisplay.getDisplayVolume(context);
         menu.show(overlayRoot, null, null, new String[0], null, null, null,
                 null, null, false, true);
         menu.showSlider(str(R.string.context_quick_volume), max, cur, true);
@@ -286,9 +287,14 @@ public final class ChipOverlayHost {
     }
 
     public void dismiss() {
+        dismiss(true);
+    }
+
+    /** 2026-07-18 — animated=false for service teardown (sync detach). */
+    public void dismiss(boolean animated) {
         handler.removeCallbacks(volumeDismiss);
         handler.removeCallbacks(toastDismiss);
-        menu.dismiss();
+        menu.dismiss(animated);
         activeMode = OverlayTierNames.TIER_NONE;
         powerMode = false;
         appMenuMode = false;
@@ -588,9 +594,9 @@ public final class ChipOverlayHost {
         networkTier = false;
         sliderIsVolume = true;
         menu.setQuickReturnIndex(QUICK_VOLUME);
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        int max = am != null ? am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 15;
-        int cur = am != null ? am.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
+        // 2026-07-18 — Display 0–100 (was raw stream max → 80% bar with Hearing Safety).
+        int max = OverlayVolumeDisplay.getDisplayMax();
+        int cur = OverlayVolumeDisplay.getDisplayVolume(context);
         menu.showSlider(str(R.string.context_quick_volume), max, cur, true);
     }
 
@@ -608,35 +614,28 @@ public final class ChipOverlayHost {
         int v = menu.sliderValue();
         if (menu.focusZone() != ChipContextMenu.FocusZone.SLIDER) return;
         if (sliderIsVolume) {
-            AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-            if (am != null) {
-                try {
-                    am.setStreamVolume(AudioManager.STREAM_MUSIC, v, 0);
-                } catch (Exception ignored) {}
-            }
+            // 2026-07-18 — Slider is 0–100 display; map to HW index (Hearing Safety aware).
+            OverlayVolumeDisplay.setFromDisplay(context, v);
         } else {
             writeBrightness(v);
         }
     }
 
     private void nudgeMusicVolume(int delta) {
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        if (am == null) return;
         try {
-            int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
-            int cur = am.getStreamVolume(AudioManager.STREAM_MUSIC);
-            int next = Math.max(0, Math.min(max, cur + delta));
-            am.setStreamVolume(AudioManager.STREAM_MUSIC, next, 0);
-            menu.updateSlider(next, max);
+            // 2026-07-18 — Step in display space; HS temp unlock at ear via OverlayVolumeDisplay.
+            int display = OverlayVolumeDisplay.adjustDisplay(context, delta > 0);
+            int max = OverlayVolumeDisplay.getDisplayMax();
+            menu.updateSlider(display, max);
             handler.removeCallbacks(volumeDismiss);
             handler.postDelayed(volumeDismiss, VOLUME_DISMISS_MS);
         } catch (Exception ignored) {}
     }
 
     private ChipContextMenu.QuickItem[] buildQuickBar() {
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        int volMax = am != null ? am.getStreamMaxVolume(AudioManager.STREAM_MUSIC) : 15;
-        int volCur = am != null ? am.getStreamVolume(AudioManager.STREAM_MUSIC) : 0;
+        // 2026-07-18 — Quick-bar volume chip uses 0–100 display (ear-level icon at HS max).
+        int volMax = OverlayVolumeDisplay.getDisplayMax();
+        int volCur = OverlayVolumeDisplay.getDisplayVolume(context);
         int bright = readBrightness();
         // 2026-07-15 — Y1-like (incl. A5) show Volume + right-end Sleep; Y2 hides both.
         boolean showVolSleep = isY1();

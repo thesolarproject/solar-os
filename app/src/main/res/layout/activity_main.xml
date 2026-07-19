@@ -501,13 +501,15 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:gravity="center"
+        android:gravity="center_horizontal|top"
         android:paddingTop="@dimen/y1_status_bar_height"
-        android:padding="15dp"
+        android:paddingLeft="15dp"
+        android:paddingRight="15dp"
+        android:paddingBottom="8dp"
         android:background="#00000000"
         android:visibility="gone">
-        <TextView android:id="@+id/tv_keyboard_ssid" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Target: My_Home_Wifi" android:textSize="16sp" android:textStyle="bold"/>
-        <TextView android:id="@+id/tv_keyboard_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/y1_menu_item_height" android:text="" android:textSize="@dimen/y1_menu_text_size" android:textStyle="bold" android:gravity="center" android:layout_marginTop="10dp" android:layout_marginBottom="15dp"/>
+        <TextView android:id="@+id/tv_keyboard_ssid" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Target: My_Home_Wifi" android:textSize="16sp" android:textStyle="bold" android:layout_marginTop="8dp"/>
+        <TextView android:id="@+id/tv_keyboard_input" android:layout_width="match_parent" android:layout_height="wrap_content" android:minHeight="@dimen/y1_menu_item_height" android:text="" android:textSize="@dimen/y1_menu_text_size" android:textStyle="bold" android:gravity="center" android:layout_marginTop="8dp" android:layout_marginBottom="10dp"/>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center">
             <TextView android:id="@+id/tv_key_pprev" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center" android:text="a" android:textSize="@dimen/y1_menu_text_size"/>
             <TextView android:id="@+id/tv_key_prev" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center" android:text="b" android:textSize="@dimen/y1_menu_text_size"/>
@@ -515,7 +517,8 @@
             <TextView android:id="@+id/tv_key_next" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center" android:text="d" android:textSize="@dimen/y1_menu_text_size"/>
             <TextView android:id="@+id/tv_key_nnext" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:gravity="center" android:text="e" android:textSize="@dimen/y1_menu_text_size"/>
         </LinearLayout>
-        <TextView android:id="@+id/tv_keyboard_hint" android:layout_width="wrap_content" android:layout_height="wrap_content" android:gravity="center" android:text="@string/keyboard_hint" android:textSize="@dimen/y1_menu_text_size" android:layout_marginTop="15dp"/>
+        <!-- 2026-07-18 — Padded legend so Back ImageSpan never clips; three glyph rows from HardwareButtonGlyph. -->
+        <TextView android:id="@+id/tv_keyboard_hint" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_horizontal" android:includeFontPadding="true" android:paddingLeft="8dp" android:paddingRight="8dp" android:paddingTop="4dp" android:paddingBottom="6dp" android:lineSpacingExtra="4dp" android:text="@string/keyboard_hint" android:textSize="12sp" android:layout_marginTop="8dp"/>
     </LinearLayout>
 
     <!-- 2026-07-11 — clipChildren false so 3D near-edge can overshoot without a flat top crop. -->
@@ -758,6 +761,8 @@
             android:textStyle="bold" />
 
         <!-- 2026-07-15 — Search throbber; never focusable (A5 DPAD must stay on menus/modals). -->
+        <!-- 2026-07-18 — Spin 2× stock (indeterminateDuration 2000 vs framework 4000) for
+             snappier waits and clearer lockup tells when the spinner freezes. -->
         <ProgressBar
             android:id="@+id/pb_status_loading"
             style="?android:attr/progressBarStyleSmall"
@@ -768,6 +773,7 @@
             android:layout_marginRight="8dp"
             android:visibility="gone"
             android:indeterminate="true"
+            android:indeterminateDuration="2000"
             android:focusable="false"
             android:focusableInTouchMode="false"
             android:clickable="false"
@@ -935,5 +941,15 @@
                 android:textSize="12sp" />
         </LinearLayout>
     </LinearLayout>
+
+
+    <!-- 2026-07-18 — Lalal Stem Player full-screen host (Activity rings UI). -->
+    <FrameLayout
+        android:id="@+id/layout_stem_player"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone"
+        android:clickable="true"
+        android:background="#FF0A0A0C" />
 
 </FrameLayout>

@@ -21,7 +21,6 @@
     "enableLCD_album_art": "false",
     "setArtwork_Perspective": "3D",
     "enableMenu_Transitions": "true",
-    "settingsMenu_Item_Padding": false,
     "settingsShow_Now_Playing_Info": false,
     "enableA5_Portrait_Mode": "true"
   },

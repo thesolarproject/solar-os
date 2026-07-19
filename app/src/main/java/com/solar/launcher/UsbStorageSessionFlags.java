@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 
 /**
  * Cross-process USB plug-in prompt prefs and overlay dismiss handoff for {@link MainActivity}.
+ * 2026-07-19 — Skip-prompt (without auto-connect) = let Android UsbStorageActivity handle it
+ * (lighter than Solar concierge wake/finish/reclaim).
  */
 public final class UsbStorageSessionFlags {
 
@@ -18,16 +20,47 @@ public final class UsbStorageSessionFlags {
 
     private UsbStorageSessionFlags() {}
 
-    /** Settings → skip plug-in prompt — sysprop + prefs; global overlay and SystemUI read sysprop (2026-07-05). */
+    /** Settings → skip Solar prompt — sysprop + prefs; Xposed reads sysprop (2026-07-05). */
     public static final String SYSPROP_SKIP_PROMPT = "sys.solar.usb.skip_prompt";
     /** Settings → auto-connect — Xposed concierge reads without stale SP (2026-07-06). */
     public static final String SYSPROP_AUTO_CONNECT = "sys.solar.usb.auto_connect";
+    /**
+     * 1 = leave stock UsbStorageActivity alone (no finish / no Solar wake).
+     * Set when skip-prompt && !auto-connect. 2026-07-19
+     */
+    public static final String SYSPROP_STOCK_UI = "sys.solar.usb.stock_ui";
+
+    /**
+     * Default On — Android owns the plug-in dialog unless user wants Solar’s prompt.
+     * Was: false (Solar always intercepted). Reversal: default false.
+     * 2026-07-19
+     */
+    public static final boolean DEFAULT_SKIP_SOLAR_PROMPT = true;
+
+    /**
+     * True when Solar must not steal USB UI — stock SystemUI dialog / MTP path only.
+     * Layman: cable in → Android asks, Solar stays out of the way (faster).
+     * 2026-07-19
+     */
+    public static boolean preferStockUsbUi(Context ctx) {
+        if (isAutoConnectEnabled(ctx)) return false;
+        if (isStockUiFromSysprop()) return true;
+        if (ctx == null) return DEFAULT_SKIP_SOLAR_PROMPT;
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        return prefs.getBoolean(PREF_USB_SUPPRESS_CONNECT_PROMPT, DEFAULT_SKIP_SOLAR_PROMPT);
+    }
+
+    /** Test hook — skip && !auto ⇒ stock. 2026-07-19 */
+    static boolean preferStockUsbUiFromPrefs(boolean skipSolarPrompt, boolean autoConnect) {
+        return skipSolarPrompt && !autoConnect;
+    }
 
     public static boolean shouldOfferUsbConnectPrompt(Context ctx) {
+        if (preferStockUsbUi(ctx)) return false;
         if (isSkipPromptFromSysprop()) return false;
-        if (ctx == null) return true;
+        if (ctx == null) return !DEFAULT_SKIP_SOLAR_PROMPT;
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        return !prefs.getBoolean(PREF_USB_SUPPRESS_CONNECT_PROMPT, false);
+        return !prefs.getBoolean(PREF_USB_SUPPRESS_CONNECT_PROMPT, DEFAULT_SKIP_SOLAR_PROMPT);
     }
 
     /**
@@ -58,8 +91,21 @@ public final class UsbStorageSessionFlags {
     public static void syncSkipPromptSysprop(Context ctx) {
         if (ctx == null) return;
         boolean skip = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getBoolean(PREF_USB_SUPPRESS_CONNECT_PROMPT, false);
+                .getBoolean(PREF_USB_SUPPRESS_CONNECT_PROMPT, DEFAULT_SKIP_SOLAR_PROMPT);
         writeSysprop(SYSPROP_SKIP_PROMPT, skip ? "1" : "0");
+        // Stock UI when skipping Solar prompt and not auto-connecting.
+        boolean stock = preferStockUsbUiFromPrefs(skip, isAutoConnectEnabled(ctx));
+        writeSysprop(SYSPROP_STOCK_UI, stock ? "1" : "0");
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("skip", skip);
+            d.put("stock", stock);
+            d.put("auto", isAutoConnectEnabled(ctx));
+            Debug543e15Log.log("UsbStorageSessionFlags.syncSkipPromptSysprop",
+                    "usb sysprops synced", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
     }
 
     /** Sync skip + auto-connect sysprops for Xposed USB concierge (2026-07-06). */
@@ -96,6 +142,10 @@ public final class UsbStorageSessionFlags {
 
     private static boolean isSkipPromptFromSysprop() {
         return isSkipPromptFromSyspropForTest(readSysprop(SYSPROP_SKIP_PROMPT));
+    }
+
+    private static boolean isStockUiFromSysprop() {
+        return "1".equals(readSysprop(SYSPROP_STOCK_UI));
     }
 
     /** getprop — no su; readable from main and :overlay (2026-07-05). */

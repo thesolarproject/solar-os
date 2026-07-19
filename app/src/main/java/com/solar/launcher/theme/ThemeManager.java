@@ -1392,10 +1392,13 @@ public class ThemeManager {
      * 2026-07-11 — Push solarConfig enable/disable/set* keys into SOLAR_SETTINGS.
      * Call after theme switch so Match NP / Backdrop / etc. follow the theme author.
      * Direct keys like settingsShow_Now_Playing_Info are read at runtime (not written here).
+     * 2026-07-18 — Menu Item Padding is runtime solarConfig only (not sticky); clear legacy global.
      * Reversal: stop calling; prefs stay user-only.
      */
     public static void applySolarConfigPrefs(Context ctx) {
         if (ctx == null) return;
+        // 2026-07-18 — Theme change: drop bare menu_item_padding so gutter reverts to default/theme.
+        clearLegacyGlobalMenuItemPaddingPref(ctx);
         JSONObject solar = solarBlock();
         if (solar == null) return;
         Map<String, Object> overrides = new HashMap<String, Object>();
@@ -1641,6 +1644,29 @@ public class ThemeManager {
         String raw = solar.optString(key, "").trim();
         if (!raw.isEmpty()) {
             return "true".equalsIgnoreCase(raw) || "1".equals(raw);
+        }
+        return solar.optBoolean(key, false);
+    }
+
+    /**
+     * 2026-07-18 — Bool parse that accepts true/false/1/0/on/off/yes/no (menu padding & theme flags).
+     * Layman: theme authors can write “on” or true either way.
+     */
+    private static boolean parseSolarBoolOnOff(JSONObject solar, String key) {
+        if (solar == null || key == null) return false;
+        Object rawObj = solar.opt(key);
+        if (rawObj instanceof Boolean) {
+            return ((Boolean) rawObj).booleanValue();
+        }
+        String raw = solar.optString(key, "").trim();
+        if (raw.isEmpty()) return solar.optBoolean(key, false);
+        if ("true".equalsIgnoreCase(raw) || "1".equals(raw)
+                || "on".equalsIgnoreCase(raw) || "yes".equalsIgnoreCase(raw)) {
+            return true;
+        }
+        if ("false".equalsIgnoreCase(raw) || "0".equals(raw)
+                || "off".equalsIgnoreCase(raw) || "no".equalsIgnoreCase(raw)) {
+            return false;
         }
         return solar.optBoolean(key, false);
     }
@@ -2148,14 +2174,18 @@ public class ThemeManager {
     }
 
     /**
-     * 2026-07-11 — solarConfig.settingsMenu_Item_Padding: false = flush menu chrome
-     * (left edge + column to screen bottom + 1px under status bar via MainActivity hosts).
-     * Missing key = keep stock 9dp left gutter and short dual-pane heights (third-party themes).
-     * Per-theme user override: SharedPreferences {@code menu_item_padding.<folder>}.
-     * Masks force padding on — desktopMask / settingMask art is sized for the guttered dual-pane.
-     * Reversal: drop key + prefs prefix; always use {@code y1_menu_left} + stock heights.
+     * 2026-07-11 — solarConfig settingsMenu_Item_Padding / enableMenu_Item_Padding:
+     * false/off = flush menu chrome; true/on = keep left gutter.
+     * 2026-07-18 — Default ON when unset. Theme change re-reads solarConfig (no sticky global pref).
+     * Forms: settingsMenu_Item_Padding, settingMenu_Item_Padding (alias),
+     * enable|disable|set Menu_Item_Padding (English label → SettingLookup).
+     * Per-theme user override only: SharedPreferences {@code menu_item_padding.<folder>}.
+     * Masks force pad when theme did not author a value (user can still override).
+     * Reversal: drop keys + prefs prefix; always use {@code y1_menu_left} + stock heights.
      */
     public static final String SOLAR_MENU_ITEM_PADDING = "settingsMenu_Item_Padding";
+    /** Typo / short alias authors may use instead of {@link #SOLAR_MENU_ITEM_PADDING}. */
+    public static final String SOLAR_MENU_ITEM_PADDING_ALIAS = "settingMenu_Item_Padding";
     /**
      * 2026-07-11 — solarConfig.settingsShow_Now_Playing_Info: home right-pane title/artist under art.
      * Opt-in (default off). Menu label "Show Now Playing Info" → this key.
@@ -2166,6 +2196,11 @@ public class ThemeManager {
     public static final String PREF_SHOW_NOW_PLAYING_INFO = "show_now_playing_info";
     /** Pref prefix; suffix is active theme folderName. true = keep gutter, false = flush left. */
     public static final String PREF_MENU_ITEM_PADDING_PREFIX = "menu_item_padding.";
+    /**
+     * 2026-07-18 — Legacy bare key written by old SettingLookup enable/disableMenu_Item_Padding.
+     * Never use for runtime; cleared on theme apply so theme switches revert to default.
+     */
+    public static final String PREF_MENU_ITEM_PADDING_LEGACY_GLOBAL = "menu_item_padding";
 
     /** Theme declares a home desktopMask path (may still fail to decode). */
     public static boolean themeDeclaresDesktopMask() {
@@ -2198,25 +2233,63 @@ public class ThemeManager {
     }
 
     /**
-     * Theme-authored default for left menu gutter.
-     * {@code false} = flush to left edge; {@code true} = keep padding; null = unset (treat as keep).
+     * Theme-authored default for left menu gutter (runtime-only — not a sticky pref).
+     * {@code false} = flush; {@code true} = pad; null = unset → effective default ON.
+     * 2026-07-18 — Reads settings* bools and enable/disable/set Menu_Item_Padding label forms.
+     * Layman: theme can say “pad” or “flush”; if silent, Solar pads.
+     * Technical: no SharedPreferences write; theme change re-evaluates solarConfig of new theme.
      */
     public static Boolean themeDefaultMenuItemPadding() {
         JSONObject solar = solarBlock();
-        if (solar == null || !solar.has(SOLAR_MENU_ITEM_PADDING)) return null;
-        return parseSolarBool(solar, SOLAR_MENU_ITEM_PADDING);
+        if (solar == null) return null;
+        // Direct settings* keys (bool / "true" / "on" / "false" / "off").
+        if (solar.has(SOLAR_MENU_ITEM_PADDING)) {
+            return Boolean.valueOf(parseSolarBoolOnOff(solar, SOLAR_MENU_ITEM_PADDING));
+        }
+        if (solar.has(SOLAR_MENU_ITEM_PADDING_ALIAS)) {
+            return Boolean.valueOf(parseSolarBoolOnOff(solar, SOLAR_MENU_ITEM_PADDING_ALIAS));
+        }
+        // enableMenu_Item_Padding / disableMenu_Item_Padding / setMenu_Item_Padding
+        java.util.Iterator<String> keys = solar.keys();
+        while (keys.hasNext()) {
+            String rawKey = keys.next();
+            if (rawKey == null) continue;
+            String operation = null;
+            String remainder = rawKey;
+            if (rawKey.length() > 6 && rawKey.regionMatches(true, 0, "enable", 0, 6)) {
+                operation = "enable";
+                remainder = rawKey.substring(6);
+            } else if (rawKey.length() > 7 && rawKey.regionMatches(true, 0, "disable", 0, 7)) {
+                operation = "disable";
+                remainder = rawKey.substring(7);
+            } else if (rawKey.length() > 3 && rawKey.regionMatches(true, 0, "set", 0, 3)) {
+                operation = "set";
+                remainder = rawKey.substring(3);
+            } else {
+                continue;
+            }
+            String label = remainder.replace('_', ' ');
+            if (!"menu_item_padding".equals(SettingLookup.prefKeyForLabel(label))) continue;
+            if ("enable".equals(operation)) return Boolean.TRUE;
+            if ("disable".equals(operation)) return Boolean.FALSE;
+            // setMenu_Item_Padding: value true/false/on/off
+            return Boolean.valueOf(parseSolarBoolOnOff(solar, rawKey));
+        }
+        return null;
     }
 
     /**
      * Effective left gutter for home or settings list host.
-     * Order: per-theme user override → explicit solarConfig → masks force pad → default pad on.
-     * Theme authors who set {@code settingsMenu_Item_Padding:false} own mask alignment.
+     * Order: per-theme user Appearance override → theme solarConfig → default ON.
+     * 2026-07-18 — Theme change does not carry prior theme gutter; only this theme’s override key.
+     * Layman: new theme starts padded unless the author or you chose flush for that look.
      */
     public static boolean isMenuItemPaddingEnabled(android.content.SharedPreferences prefs,
             boolean forSettings) {
         ThemeEntry t = getCurrentTheme();
         String folder = t != null ? t.folderName : "";
         String key = menuItemPaddingPrefKey(folder);
+        // User Appearance toggle for this theme folder only.
         if (prefs != null && prefs.contains(key)) {
             return prefs.getBoolean(key, true);
         }
@@ -2224,29 +2297,46 @@ public class ThemeManager {
         if (themeDef != null) {
             return themeDef.booleanValue();
         }
-        // 2026-07-11 — No author preference: keep gutter when a dual-pane mask is declared.
-        if (forSettings ? themeDeclaresSettingMask() : themeDeclaresDesktopMask()) {
-            return true;
-        }
+        // 2026-07-11 / 2026-07-18 — Unset → pad (masks also need gutter; default ON either way).
         return true;
     }
 
     /**
      * True when Appearance cannot flush because a mask is present and the theme did not
-     * opt into flush (and the user has not overridden).
+     * author a pad value (and the user has not overridden).
      */
     public static boolean menuItemPaddingForcedByMask(boolean forSettings) {
         if (themeDefaultMenuItemPadding() != null) return false;
         return forSettings ? themeDeclaresSettingMask() : themeDeclaresDesktopMask();
     }
 
-    /** Save user choice for the active theme folder only. */
+    /**
+     * Save user choice for the active theme folder only.
+     * Layman: “remember my padding pick for this look.” Other themes keep their own.
+     */
     public static void setMenuItemPaddingOverride(android.content.SharedPreferences prefs,
             boolean paddingEnabled) {
         if (prefs == null) return;
         ThemeEntry t = getCurrentTheme();
         String folder = t != null ? t.folderName : "";
         prefs.edit().putBoolean(menuItemPaddingPrefKey(folder), paddingEnabled).commit();
+    }
+
+    /**
+     * 2026-07-18 — Drop legacy global menu_item_padding so theme switches start from default/theme.
+     * Layman: changing theme forgets a sticky old on/off that was not tied to one look.
+     * Technical: remove bare key; keep menu_item_padding.&lt;folder&gt; user overrides.
+     */
+    public static void clearLegacyGlobalMenuItemPaddingPref(android.content.Context ctx) {
+        if (ctx == null) return;
+        try {
+            android.content.SharedPreferences prefs =
+                    ctx.getApplicationContext().getSharedPreferences("SOLAR_SETTINGS",
+                            android.content.Context.MODE_PRIVATE);
+            if (prefs.contains(PREF_MENU_ITEM_PADDING_LEGACY_GLOBAL)) {
+                prefs.edit().remove(PREF_MENU_ITEM_PADDING_LEGACY_GLOBAL).apply();
+            }
+        } catch (Throwable ignored) {}
     }
 
     /**
@@ -3340,7 +3430,7 @@ public class ThemeManager {
             availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
             if ((getHomeMenuTextColorNormal() & 0xFFFFFF) != 0x000000) throw new AssertionError("ipod-ish home text");
             if ((getHomeMenuTextColorSelected() & 0xFFFFFF) != 0xFFFFFF) throw new AssertionError("ipod-ish home selected");
-            // 2026-07-11 — Menu gutter: unset=on; solarConfig false=flush; masks only gate when unset.
+            // 2026-07-11 / 2026-07-18 — Menu gutter: unset=on; solarConfig false=flush; enable form works.
             if (themeDefaultMenuItemPadding() != null) throw new AssertionError("padding unset");
             if (!isMenuItemPaddingEnabled(null, false)) throw new AssertionError("default padding on");
             ipod.put("desktopMask", "@mask.png");
@@ -3353,6 +3443,24 @@ public class ThemeManager {
             if (Boolean.TRUE.equals(themeDefaultMenuItemPadding())) throw new AssertionError("theme wants flush");
             if (isMenuItemPaddingEnabled(null, false)) throw new AssertionError("author false wins over mask");
             if (menuItemPaddingForcedByMask(false)) throw new AssertionError("no mask lock when author set");
+            // enableMenu_Item_Padding / on alias / typo settingMenu_Item_Padding
+            ipod.put("solarConfig", new JSONObject().put("enableMenu_Item_Padding", "on"));
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (!Boolean.TRUE.equals(themeDefaultMenuItemPadding())) {
+                throw new AssertionError("enableMenu_Item_Padding on");
+            }
+            ipod.put("solarConfig", new JSONObject().put("disableMenu_Item_Padding", true));
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (isMenuItemPaddingEnabled(null, false)) throw new AssertionError("disableMenu_Item_Padding");
+            ipod.put("solarConfig", new JSONObject().put(SOLAR_MENU_ITEM_PADDING_ALIAS, "true"));
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (!Boolean.TRUE.equals(themeDefaultMenuItemPadding())) {
+                throw new AssertionError("settingMenu_Item_Padding alias");
+            }
+            ipod.remove("solarConfig");
+            availableThemes.set(0, new ThemeEntry("/tmp", "ipod", "ipod", ipod));
+            if (themeDefaultMenuItemPadding() != null) throw new AssertionError("cleared solar → unset");
+            if (!isMenuItemPaddingEnabled(null, false)) throw new AssertionError("default on after clear");
             if (!"menu_item_padding.Cupertino".equals(menuItemPaddingPrefKey("Cupertino"))) {
                 throw new AssertionError("pref key folder");
             }

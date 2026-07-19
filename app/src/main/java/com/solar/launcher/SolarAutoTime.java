@@ -247,6 +247,11 @@ public final class SolarAutoTime {
                 if (!isAutoEnabled(prefs)) return;
                 // No Wi‑Fi wake: only sync if the device is already online.
                 if (!ConnectivityHelper.isOnline(app)) return;
+                // Epoch/1970 clocks break HTTPS — always attempt NTP (ignore min interval). 2026-07-19
+                if (isWallClockImplausible()) {
+                    syncNow(app, prefs, true);
+                    return;
+                }
                 syncNow(app, prefs, false);
             }
         }, "SolarAutoTimeBoot").start();
@@ -351,13 +356,10 @@ public final class SolarAutoTime {
             utcMs = SolarNtpClient.queryUtcEpochMs("pool.ntp.org");
         }
         if (utcMs <= 0L) return;
-        // Sanity: reject absurd times (before 2015 or >20y ahead)
+        // Sanity: reject absurd NTP answers; when device clock is epoch, still accept 2020–2035. 2026-07-19
         long min = 1420070400000L; // 2015-01-01
-        long max = System.currentTimeMillis() + MAX_SKEW_APPLY_MS;
-        if (utcMs < min || utcMs > max + MAX_SKEW_APPLY_MS) {
-            // still allow far-future if device clock is 1970
-            if (utcMs < min) return;
-        }
+        long maxCap = 2051222400000L; // 2035-01-01
+        if (utcMs < min || utcMs > maxCap) return;
         if (applyUtcEpochRoot(utcMs)) {
             String server = hosts.length > 0 ? hosts[0] : "pool.ntp.org";
             prefs.edit()
@@ -469,8 +471,24 @@ public final class SolarAutoTime {
     }
 
     /**
+     * True when wall clock is before 2020 or absurd — TLS certs (Lalal etc.) will fail.
+     * Layman: phone thinks it is 1970 → HTTPS says certificates are “not yet valid”.
+     * 2026-07-19
+     */
+    public static boolean isWallClockImplausible() {
+        long now = System.currentTimeMillis();
+        // 2020-01-01 UTC
+        if (now < 1577836800000L) return true;
+        // More than ~2 years past build-ish ceiling (keeps runaway RTC detectable).
+        if (now > 1893456000000L) return true; // 2030-01-01
+        return false;
+    }
+
+    /**
      * Root: set wall clock to absolute UTC epoch. Display uses the IANA zone (DST-aware).
      * Public for Date &amp; Time Apply (must use RootShell paths, not bare {@code su}).
+     * 2026-07-19 — Prefer busybox {@code yyyy.MM.dd-HH:mm:ss}; toolbox date rejects year 2026
+     * on some Y1 kernels ({@code settimeofday Invalid argument}) and leaves the clock at epoch.
      */
     public static boolean applyUtcEpochRoot(long utcEpochMs) {
         if (utcEpochMs <= 0L) return false;
@@ -487,24 +505,47 @@ public final class SolarAutoTime {
         posix.setTimeZone(TimeZone.getTimeZone("UTC"));
         SimpleDateFormat iso = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
         iso.setTimeZone(TimeZone.getTimeZone("UTC"));
+        // Busybox — works on Y1 when toolbox settimeofday rejects 2026. 2026-07-19
+        SimpleDateFormat busy = new SimpleDateFormat("yyyy.MM.dd-HH:mm:ss", Locale.US);
+        busy.setTimeZone(TimeZone.getTimeZone("UTC"));
         SimpleDateFormat ymdFmt = new SimpleDateFormat("yyyyMMdd", Locale.US);
         ymdFmt.setTimeZone(TimeZone.getTimeZone("UTC"));
         String ymd = ymdFmt.format(d);
         String f1 = toolbox.format(d);
         String f2 = posix.format(d);
         String f3 = iso.format(d);
+        String fBusy = busy.format(d);
         // Disable Android auto_time so our clock sticks; write RTC.
+        // Try busybox first — toolbox date can fail Invalid argument for 2026 on MT6572.
         String cmd = "settings put global auto_time 0; settings put system auto_time 0; "
-                + "date -u -s " + f1 + "; "
+                + "busybox date -u -s " + fBusy + " 2>/dev/null || date -u -s " + fBusy + " 2>/dev/null; "
                 + "if [ \"$(date -u +%Y%m%d)\" != \"" + ymd + "\" ]; then "
-                + "  date -u " + f2 + "; "
+                + "  date -u -s " + f1 + "; "
                 + "  if [ \"$(date -u +%Y%m%d)\" != \"" + ymd + "\" ]; then "
-                + "    date -u -s \"" + f3 + "\"; "
+                + "    date -u " + f2 + "; "
+                + "    if [ \"$(date -u +%Y%m%d)\" != \"" + ymd + "\" ]; then "
+                + "      date -u -s \"" + f3 + "\"; "
+                + "    fi; "
                 + "  fi; "
                 + "fi; "
-                + "hwclock -w -u 2>/dev/null; hwclock -w 2>/dev/null; sync";
+                + "hwclock -w -u 2>/dev/null; hwclock -w 2>/dev/null; "
+                + "busybox hwclock -w -u 2>/dev/null; sync; "
+                + "test \"$(date -u +%Y%m%d)\" = \"" + ymd + "\"";
         // All Solar targets are rooted — allow A5 setuid su.
-        return RootShell.run(cmd, true);
+        boolean ok = RootShell.run(cmd, true);
+        // #region agent log
+        try {
+            org.json.JSONObject dlog = new org.json.JSONObject();
+            dlog.put("utcEpochMs", utcEpochMs);
+            dlog.put("ymd", ymd);
+            dlog.put("ok", ok);
+            dlog.put("nowAfter", System.currentTimeMillis());
+            dlog.put("implausibleBefore", isWallClockImplausible());
+            com.solar.launcher.Debug543e15Log.log(
+                    "SolarAutoTime.applyUtcEpochRoot", "set wall clock", "H-CERT-A", dlog);
+        } catch (Throwable ignored) {}
+        // #endregion
+        return ok;
     }
 
     /** Root: persist IANA timezone (tzdata applies DST transitions automatically). */

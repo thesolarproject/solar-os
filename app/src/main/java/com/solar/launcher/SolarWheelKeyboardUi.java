@@ -7,7 +7,9 @@ import android.view.VelocityTracker;
 import android.view.View;
 import android.widget.TextView;
 
+import com.solar.launcher.DeviceFeatures;
 import com.solar.launcher.theme.ThemeManager;
+import com.solar.launcher.ui.HardwareButtonGlyph;
 
 /**
  * 2026-07-05 — Binds the shared full-screen wheel keyboard layout to a controller.
@@ -97,6 +99,16 @@ public final class SolarWheelKeyboardUi {
             tvHint.setTextSize(TypedValue.COMPLEX_UNIT_PX, menuTextPx * 0.85f);
             tvHint.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.NORMAL);
             ThemeManager.applyThemedTextStyle(tvHint, ThemeManager.getHintTextColor());
+            // 2026-07-18 — Y1/Y2: glyph legend (Prev/Play/Next/Wheel/OK/Back). A5 keeps setHintText(a5).
+            // Reversal: remove branch — XML @string/keyboard_hint stays as inflate default.
+            if (!DeviceFeatures.isA5()) {
+                tvHint.setIncludeFontPadding(true);
+                tvHint.setLineSpacing(
+                        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 6f,
+                                context.getResources().getDisplayMetrics()),
+                        1.1f);
+                tvHint.setText(HardwareButtonGlyph.keyboardHint(context));
+            }
         }
         if (tvInput != null) {
             android.graphics.drawable.Drawable bg = ThemeManager.getItemRowBackgroundScaled(

@@ -21,6 +21,20 @@ public class UsbStorageSessionFlagsTest {
     }
 
     @Test
+    public void preferStockUsbUiWhenSkipAndNotAuto() {
+        // Skip Solar prompt + no auto-connect → leave Android USB dialog alone.
+        if (!UsbStorageSessionFlags.preferStockUsbUiFromPrefs(true, false)) {
+            throw new AssertionError("stock UI expected");
+        }
+        if (UsbStorageSessionFlags.preferStockUsbUiFromPrefs(true, true)) {
+            throw new AssertionError("auto-connect uses Solar silent path");
+        }
+        if (UsbStorageSessionFlags.preferStockUsbUiFromPrefs(false, false)) {
+            throw new AssertionError("Solar prompt path is not stock");
+        }
+    }
+
+    @Test
     public void usbPromptNeverUsesGlobalOverlay() {
         // Solar MainActivity is the sole USB UI host (July-2 restore).
         if (UsbStorageOverlayReceiver.shouldUseGlobalOverlayPromptForTest(null)) {

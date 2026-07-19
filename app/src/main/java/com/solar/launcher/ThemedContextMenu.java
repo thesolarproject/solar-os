@@ -348,7 +348,11 @@ public final class ThemedContextMenu {
             org.json.JSONObject d = new org.json.JSONObject();
             d.put("branch", "inAppAnim");
             d.put("modalTransition", com.solar.launcher.ui.ModalTransition.enabled(context));
+            d.put("systemOverlayMode", systemOverlayMode);
+            d.put("sysAnimOff", com.solar.launcher.ui.ScreenTransition.systemAnimationsDisabled(context));
             DebugMenuLog.log("ThemedContextMenu.addOverlayWithPresentAnim", "present", "H1", d);
+            com.solar.launcher.Debug0f5debLog.log(context,
+                    "ThemedContextMenu.addOverlayWithPresentAnim", "present gate", "MOD-A", d);
         } catch (Exception ignored) {}
         // #endregion
         if (ModalTransition.enabled(context)) {
@@ -3478,16 +3482,45 @@ public final class ThemedContextMenu {
     }
 
     public void updateVolumeSlider(int value, int max) {
+        updateVolumeSlider(value, max, false);
+    }
+
+    /**
+     * 2026-07-18 — Volume strip uses 0–100 display units; optional ear at Hearing Safety max.
+     * Layman: ear on the volume chip means “safe top — keep scrolling for more”.
+     * Technical: showEar swaps quick-chip icon to headphone; bar max is always display max (100).
+     * Reversal: call updateVolumeSlider(v, max) only (no ear overload).
+     */
+    public void updateVolumeSlider(int value, int max, boolean showEar) {
         sliderMax = Math.max(1, max);
         sliderValue = Math.max(0, Math.min(value, sliderMax));
         if (sliderBar != null) {
             sliderBar.setMax(sliderMax);
             sliderBar.setProgress(sliderValue);
         }
-        int iconRes = volumeIconResForLevel(sliderValue, sliderMax);
+        int iconRes = (showEar && sliderValue >= sliderMax)
+                ? R.drawable.ic_headphone
+                : volumeIconResForLevel(sliderValue, sliderMax);
         if (iconRes != volumeQuickIconRes) {
             volumeQuickIconRes = iconRes;
             updateQuickChipIconRes(volumeQuickIndex, iconRes);
+        }
+        // Hint in slider label when ear is active (volume-only HUD / focused volume strip).
+        if (sliderLabel != null && showEar && sliderValue >= sliderMax) {
+            try {
+                String base = context.getString(R.string.context_quick_volume);
+                String hint = context.getString(R.string.hearing_safety_volume_ear_hint);
+                sliderLabel.setText(base + " — " + hint);
+            } catch (Throwable ignored) {}
+        } else if (sliderLabel != null && !showEar) {
+            // Restore plain volume title when leaving ear state (unlock / lower volume).
+            try {
+                CharSequence cur = sliderLabel.getText();
+                String base = context.getString(R.string.context_quick_volume);
+                if (cur != null && cur.toString().startsWith(base)) {
+                    sliderLabel.setText(base);
+                }
+            } catch (Throwable ignored) {}
         }
     }
 

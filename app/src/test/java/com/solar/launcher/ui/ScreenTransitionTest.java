@@ -95,7 +95,7 @@ public class ScreenTransitionTest {
 
     @Test
     public void modalConstants() {
-        assertEquals(200, ScreenTransition.MODAL_MS);
+        assertEquals(140, ScreenTransition.MODAL_MS);
     }
 
     @Test
@@ -105,7 +105,9 @@ public class ScreenTransitionTest {
 
     @Test
     public void updatedPacingConstants() {
-        assertEquals(240, ScreenTransition.PUSH_MS);
-        assertEquals(260, ScreenTransition.PLAYER_MS);
+        // 2026-07-17 — Snappier push so wheel is live sooner after Back/OK.
+        assertEquals(155, ScreenTransition.PUSH_MS);
+        assertEquals(175, ScreenTransition.PLAYER_MS);
+        assertEquals(140, ScreenTransition.CROSSFADE_MS);
     }
 }

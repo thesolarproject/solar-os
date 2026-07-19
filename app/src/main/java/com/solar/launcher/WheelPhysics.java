@@ -11,20 +11,25 @@ package com.solar.launcher;
 public final class WheelPhysics {
     /**
      * Gap after last notch that zeros momentum (finger parked / let go).
-     * ~150 ms — shorter than a slow deliberate notch so late-delivered events do not
-     * inherit flywheel from a finished spin.
+     * 2026-07-17 — 110 ms (was 150): after a long track-list spin, late events must not
+     * inherit multi-row flywheel. Still longer than a deliberate slow notch (~150–200 ms).
      */
-    public static final long RESET_NANOS = 150_000_000L;
+    public static final long RESET_NANOS = 110_000_000L;
     /**
      * Velocity at which section/letter jump mode engages.
      * Must sit below steady-state spin (impulse / (1 − decay@~40ms)) so rapid dial
      * actually enters letter-jump on large libraries instead of plateauing forever.
+     * 2026-07-17 — 3.05 with RESET=110ms + impulse 1.28: steady ~3.3 so letter-jump engages.
      */
-    public static final float SECTION_THRESHOLD = 3.35f;
+    public static final float SECTION_THRESHOLD = 3.05f;
     /** Max rows per KEY notch before section mode (keep modest to limit backlog). */
     public static final int MAX_ROW_STEPS = 4;
-    /** Impulse added each notch (higher = snappier ramp). */
-    public static final float NOTCH_IMPULSE = 1.18f;
+    /**
+     * Impulse added each notch (higher = snappier ramp).
+     * 2026-07-17 — 1.28 with mic boost: firm scrapes enter multi-row sooner without
+     * needing a huge backlog once the finger lifts.
+     */
+    public static final float NOTCH_IMPULSE = 1.28f;
 
     private static final float[] DECAY = {
             1.00000000f, 0.978f, 0.956f, 0.935f, 0.914f, 0.894f, 0.874f, 0.855f,
@@ -108,6 +113,22 @@ public final class WheelPhysics {
 
     public float velocity() {
         return velocity;
+    }
+
+    /**
+     * 2026-07-18 — True while flywheel still has momentum (Rockbox REPEAT — no wrap).
+     * Layman: finger is still spinning / just spun — don’t jump from last row to first.
+     * Technical: velocity above creep after a KEY notch within RESET window.
+     */
+    public boolean isInAccel() {
+        return velocity >= 0.35f || lastDirection != 0 && velocity > 0.08f;
+    }
+
+    /**
+     * 2026-07-18 — Accel or multi-row stride — menus must clamp, not wrap.
+     */
+    public boolean suppressWrapAround() {
+        return isInAccel() || velocity >= SECTION_THRESHOLD * 0.5f;
     }
 
     static float decay(long elapsedNanos) {

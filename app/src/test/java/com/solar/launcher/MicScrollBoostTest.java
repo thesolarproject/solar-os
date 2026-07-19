@@ -80,6 +80,25 @@ public class MicScrollBoostTest {
     }
 
     @Test
+    public void boostDecelsToOneWhenScratchDropsWhileKeyFresh() {
+        MicScrollBoost b = new MicScrollBoost();
+        long t0 = 50_000L;
+        b.onHardwareNotch(t0);
+        b.onFeatures(1.5f, 1.2f, 1.4f);
+        float firm = b.boost(t0 + 20);
+        assertTrue(firm > 1.1f);
+        // Lift / quiet pad — decel: boost returns 1 even though KEY is still "fresh".
+        b.onFeatures(0.01f, 0.01f, 0.01f);
+        assertEquals(1f, b.boost(t0 + 40), 0.001f);
+    }
+
+    @Test
+    public void liftQuietIsSnappyAfterLongSpin() {
+        assertTrue(MicScrollBoost.LIFT_QUIET_MS <= 50L);
+        assertTrue(MicScrollBoost.LIVE_KEY_MS <= 60L);
+    }
+
+    @Test
     public void outsideWatchWindowNeverDrops() {
         MicScrollBoost b = new MicScrollBoost();
         long t0 = 40_000L;

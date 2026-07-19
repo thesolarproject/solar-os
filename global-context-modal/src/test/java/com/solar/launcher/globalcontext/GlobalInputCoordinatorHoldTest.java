@@ -18,7 +18,7 @@ public final class GlobalInputCoordinatorHoldTest {
     public void passthroughAtZeroMsIsTrueForUpPathOnly() {
         assertTrue(GlobalInputPolicy.shouldPassthroughPowerTap(0L));
         assertTrue(GlobalInputPolicy.shouldPassthroughPowerTap(100L));
-        assertFalse(GlobalInputPolicy.shouldPassthroughPowerTap(420L));
+        assertFalse(GlobalInputPolicy.shouldPassthroughPowerTap(350L));
     }
 
     /** 2026-07-14 — Solar-only POWER menu; 3P/Rockbox use stock GlobalActions. */
@@ -34,7 +34,7 @@ public final class GlobalInputCoordinatorHoldTest {
     public void holdDownArmsModalTierNotPassthroughGate() {
         // Contract: passthrough is evaluated on UP at holdMs; DOWN must never skip arming.
         assertTrue(GlobalInputPolicy.shouldPassthroughPowerTap(0L));
-        assertEquals(420L, GlobalInputPolicy.powerModalHoldMsForPackage("com.android.settings"));
+        assertEquals(350L, GlobalInputPolicy.powerModalHoldMsForPackage("com.android.settings"));
         assertEquals(300L, GlobalInputPolicy.powerModalHoldMsForPackage("org.rockbox"));
     }
 }

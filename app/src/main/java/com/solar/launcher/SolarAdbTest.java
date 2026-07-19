@@ -69,4 +69,17 @@ final class SolarAdbTest {
                 + " id=" + (id != null ? id : "")
                 + " label=" + (label != null ? label : ""));
     }
+
+    /**
+     * Track list selection after a real wheel notch (All Songs / virtual lists).
+     * scripts/test_list_wheel_realuser_adb.sh greps these lines after adb input keyevent.
+     */
+    static void listPos(int pos, int count, int screen, int pending) {
+        Log.i(TAG, "listPos pos=" + pos + " count=" + count
+                + " screen=" + screen + " pending=" + pending);
+    }
+
+    static void nav(String phase, String detail) {
+        Log.i(TAG, "nav " + phase + (detail != null && detail.length() > 0 ? " " + detail : ""));
+    }
 }

@@ -21,6 +21,12 @@ public class PowerMenuRowCatalogTest {
     }
 
     @Test
+    public void powerActionTokensWithUsbPrependEnable() {
+        assertArrayEquals(new String[] { "enable_usb_storage", "restart", "shutdown" },
+                PowerMenuRowCatalog.powerActionTokensWithUsbForTest());
+    }
+
+    @Test
     public void dispatchRejectsNullContextAndOutOfRangeIndex() {
         assertFalse(PowerMenuRowCatalog.dispatch(null, 0));
         assertFalse(PowerMenuRowCatalog.dispatch(null, -1));

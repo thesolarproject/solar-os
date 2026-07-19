@@ -23,6 +23,8 @@ final class VolumePanelHooks {
     private static final String PROP_INTERNAL_ADJUST = "persist.solar.volume.internal";
     /** Matches {@code com.solar.launcher.HearingSafetyVolume#PROP_ENABLED}. */
     private static final String PROP_HEARING_SAFETY = "persist.solar.hearing_safety";
+    /** Matches {@code com.solar.launcher.HearingSafetyVolume#PROP_TEMP_UNLOCK}. */
+    private static final String PROP_HEARING_SAFETY_TEMP = "persist.solar.hearing_safety.temp";
     /** Matches {@code com.solar.launcher.HearingSafetyVolume#PROP_ABSOLUTE_MAX}. */
     private static final String PROP_ABSOLUTE_MAX = "persist.solar.volume.abs_max";
     private static final float CAP_RATIO = 0.80f;
@@ -228,7 +230,11 @@ final class VolumePanelHooks {
                     if (param.args.length < 2) return;
                     int stream = param.args[0] instanceof Integer ? (Integer) param.args[0] : -1;
                     if (!MediaVolumeControlStub.isMediaStream(stream)) return;
-                    // 2026-07-16 — Always enforce Hearing Safety cap; Solar app also clamps.
+                    // 2026-07-18 — Only clamp when Hearing Safety is actively capping (HS on,
+                    // not temp-unlocked). Was: always min(index, abs) even with HS off — if
+                    // abs_max prop was low, volume could never reach true hardware top.
+                    // Speaker route: never clamp (headphone safety only).
+                    if (!HearingSafetyStub.shouldClampMedia()) return;
                     int index = param.args[1] instanceof Integer ? (Integer) param.args[1] : 0;
                     int eff = HearingSafetyStub.effectiveMaxIndex();
                     if (index > eff) {
@@ -346,8 +352,20 @@ final class VolumePanelHooks {
     static final class HearingSafetyStub {
         static int effectiveMaxIndex() {
             int abs = absoluteMaxIndex();
-            if (!isSafetyEnabled()) return abs;
+            // 2026-07-18 — Session temp unlock (extra vol-up past ear) lifts cap without clearing pref.
+            if (!isSafetyEnabled() || isTempUnlocked()) return abs;
             return Math.max(1, Math.round(abs * CAP_RATIO));
+        }
+
+        /**
+         * 2026-07-18 — True when STREAM_MUSIC should be clamped to 80% HW.
+         * Layman: headphones / BT only — speaker always full range.
+         * Technical: HS prop on + not temp-unlocked + not speaker-only route.
+         */
+        static boolean shouldClampMedia() {
+            if (!isSafetyEnabled() || isTempUnlocked()) return false;
+            if (isSpeakerOnlyRoute()) return false;
+            return true;
         }
 
         static boolean isSafetyEnabled() {
@@ -357,6 +375,41 @@ final class VolumePanelHooks {
                 Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_HEARING_SAFETY, "0");
                 return "1".equals(String.valueOf(v));
             } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        /** Matches HearingSafetyVolume.PROP_TEMP_UNLOCK — "1" = session unlock. */
+        static boolean isTempUnlocked() {
+            try {
+                Class<?> sp = getSystemPropertiesClass();
+                if (sp == null) return false;
+                Object v = XposedHelpers.callStaticMethod(sp, "get", PROP_HEARING_SAFETY_TEMP, "0");
+                return "1".equals(String.valueOf(v));
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+
+        /** Speaker-only: no wired jack, no A2DP/SCO — matches HearingSafetyVolume.isSpeakerOnlyRoute. */
+        static boolean isSpeakerOnlyRoute() {
+            try {
+                // Prefer AudioSystem statics (available in system_server without Context).
+                Class<?> as = Class.forName("android.media.AudioSystem");
+                // DEVICE_STATE_AVAILABLE = 1
+                final int AVAIL = 1;
+                // DEVICE_OUT_WIRED_HEADSET=0x4, HEADPHONE=0x8, BLUETOOTH_A2DP=0x80, A2DP_HEADPHONES=0x100, A2DP_SPEAKER=0x200
+                int[] devices = new int[] { 0x4, 0x8, 0x80, 0x100, 0x200, 0x10 /* SCO */ };
+                for (int d : devices) {
+                    Object st = XposedHelpers.callStaticMethod(as, "getDeviceConnectionState", d, "");
+                    if (st instanceof Integer && ((Integer) st) == AVAIL) {
+                        return false;
+                    }
+                }
+                return true;
+            } catch (Throwable ignored) {
+                // Fallback: AudioManager from ServiceManager context is hard — if unknown, cap
+                // (safer for headphones) only when HS is on.
                 return false;
             }
         }
@@ -376,7 +429,7 @@ final class VolumePanelHooks {
         }
 
         static void clampCurrentMediaLevel(Object audioService, int stream) {
-            if (!isSafetyEnabled() || audioService == null) return;
+            if (!shouldClampMedia() || audioService == null) return;
             try {
                 int cur = (Integer) XposedHelpers.callMethod(audioService, "getStreamVolume", stream);
                 int eff = effectiveMaxIndex();

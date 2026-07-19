@@ -35,7 +35,8 @@ public class SettingLookup {
         put("usb auto connect", "usb_auto_connect");
         put("skip plug-in prompt", "usb_suppress_connect_prompt");
         put("auto-connect", "usb_auto_connect");
-        // 2026-07-11 — Label form for enable/disableMenu_Item_Padding; runtime uses per-theme keys.
+        // 2026-07-11 — Label form for enable/disable/setMenu_Item_Padding.
+        // 2026-07-18 — Pref id is sentinel only; ThemeManager reads solarConfig at runtime (no sticky write).
         put("menu item padding", "menu_item_padding");
         // 2026-07-11 — Home right-pane NP title/artist; also solarConfig.settingsShow_Now_Playing_Info.
         put("show now playing info", "show_now_playing_info");
@@ -116,6 +117,13 @@ public class SettingLookup {
             String label = remainder.replace('_', ' ');
             String prefKey = prefKeyForLabel(label);
             if (prefKey == null) continue; // Unknown setting — skip
+            // 2026-07-18 — Menu Item Padding: never sticky-write. ThemeManager.themeDefaultMenuItemPadding
+            // reads enable/disable/set + settingsMenu_Item_Padding at runtime so theme changes revert.
+            // Layman: padding follows the theme file, not an old on/off left in settings storage.
+            // Reversal: remove this continue; write menu_item_padding global again (broken across themes).
+            if ("menu_item_padding".equals(prefKey)) {
+                continue;
+            }
             if (skipLcd3dFromTheme
                     && ("now_playing_lcd_art".equals(prefKey)
                     || "now_playing_3d_album_art".equals(prefKey)
@@ -154,10 +162,21 @@ public class SettingLookup {
             } else if ("disable".equals(operation)) {
                 value = false;
             } else {
-                // "set" — use the provided value if boolean, otherwise skip
+                // "set" — boolean or on/off/true/false strings
                 Object v = e.getValue();
                 if (v instanceof Boolean) {
                     value = (Boolean) v;
+                } else if (v instanceof String) {
+                    String s = ((String) v).trim();
+                    if ("true".equalsIgnoreCase(s) || "1".equals(s)
+                            || "on".equalsIgnoreCase(s) || "yes".equalsIgnoreCase(s)) {
+                        value = true;
+                    } else if ("false".equalsIgnoreCase(s) || "0".equals(s)
+                            || "off".equalsIgnoreCase(s) || "no".equalsIgnoreCase(s)) {
+                        value = false;
+                    } else {
+                        continue;
+                    }
                 } else {
                     continue;
                 }

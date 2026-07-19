@@ -79,3 +79,6 @@ session_data/
 **/secrets.local
 **/secrets.local.*
 
+# Solar Designer — local developer GUI tool only (never ship to users)
+/solar-designer/
+

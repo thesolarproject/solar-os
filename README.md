@@ -4,12 +4,13 @@
 
 # Solar
 
-Custom firmware and launcher for the **Innioasis Y1** and **Y2** — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).
+Custom firmware and launcher for the **Innioasis Y1** and **Y2** — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), **Stem Player** (stem separation powered by [Lalal.ai](https://www.lalal.ai)), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).
 
 **Full usage and developer guides:** [docs/README.md](docs/README.md)
 
 ## Features
 
+- **Stem Player** — Gen1-style vocal / drums / bass / melody mixing with the scroll wheel; separate local library tracks via **Lalal.ai** stem separation, cache stems on device, and mash up one to three songs
 - **Reach** — search, play and download music from Deezer and Soulseek
 - **Podcasts** — search and download episodes to your Y1 over the internet
 - **Quick menu** — global context menu for playback, queue, Wi‑Fi, Bluetooth, and more from any screen
@@ -94,5 +95,10 @@ Extract [rom.zip](https://github.com/thesolarproject/solar/releases/latest/downl
 # How to leave feedback and report issues.
 
 Please leave your feedback and issue reports in the [Issues Tracker](https://github.com/thesolarproject/solar/issues)
+
+## Developers
+
+Local **Solar Designer** (1:1 GUI simulator / agent bridge) lives at `solar-designer/` and is gitignored — clone the tree or create it locally, then `cd solar-designer && npm install && npm start`. See `solar-designer/README.md` when present.
+
 # solar-os
 # solar-os

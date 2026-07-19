@@ -73,6 +73,10 @@ public final class RowKeys {
     public static final String SOULSEEK = "settings.soulseek";
     public static final String DEEZER = "settings.deezer";
     public static final String AUTO_FETCH = "settings.auto_fetch";
+    /** 2026-07-18 — Lalal.ai license key for Stem Player. */
+    public static final String LALAL = "settings.lalal";
+    /** 2026-07-19 — Experimental Melody premix (default off = live multi-player). */
+    public static final String STEM_PREMIX = "settings.stem_premix";
     public static final String LIBRARY_BROWSE = "settings.library_browse";
     public static final String LIB_SPLIT_CREDITS = "library.split_credits";
     public static final String LIB_NORM_ALBUM = "library.norm_album";
@@ -334,6 +338,8 @@ public final class RowKeys {
         if (REACH.equals(rowKey)) return R.string.settings_reach;
         if (SOULSEEK.equals(rowKey)) return R.string.settings_soulseek;
         if (DEEZER.equals(rowKey)) return R.string.settings_deezer;
+        if (LALAL.equals(rowKey)) return R.string.settings_lalal;
+        if (STEM_PREMIX.equals(rowKey)) return R.string.settings_stem_premix;
         if (AUTO_FETCH.equals(rowKey)) return R.string.settings_auto_fetch;
         if (LIBRARY_BROWSE.equals(rowKey)) return R.string.settings_library_browse;
         if (LIB_SPLIT_CREDITS.equals(rowKey)) return R.string.lib_split_credits;

@@ -163,6 +163,7 @@ public class SolarWebServer extends Thread {
                             "<h2>🎧 Solar Wireless Upload</h2>" +
                             "<p><a href='/browse' style='color:#0ff'>Browse &amp; download files →</a></p>" +
                             "<p><a href='/deezer' style='color:#0ff'>Deezer account setup →</a></p>" +
+                            "<p><a href='/lalal' style='color:#0ff'>Stem Player (Lalal.ai) API key →</a></p>" +
                             "<p><a href='/navidrome' style='color:#0ff'>Navidrome server setup →</a></p>" +
                             "<p><a href='/plex' style='color:#0ff'>Plex server setup →</a></p>" +
                             "<p><a href='/jellyfin' style='color:#0ff'>Jellyfin server setup →</a></p>" +
@@ -269,6 +270,37 @@ public class SolarWebServer extends Thread {
                             msg = ok ? "✅ Deezer login verified!" : "❌ Saved ARL but login test failed. Check the cookie.";
                         }
                         writeDeezerSetupPage(os, msg);
+                    }
+                }
+                else if (path.equals("/lalal") || path.startsWith("/lalal?")) {
+                    // 2026-07-18 — Paste Lalal.ai license key from PC (Deezer-style).
+                    if (method.equals("GET")) {
+                        writeLalalSetupPage(os, null);
+                    } else if (method.equals("POST")) {
+                        byte[] body = readBody(is, contentLength);
+                        String bodyStr = new String(body, "UTF-8");
+                        String key = formValue(bodyStr, "key");
+                        String premix = formValue(bodyStr, "premix");
+                        String msg;
+                        SharedPreferences prefs = context.getSharedPreferences(
+                                com.solar.launcher.stem.LalalAccount.PREFS_NAME, Context.MODE_PRIVATE);
+                        if (premix != null && premix.length() > 0) {
+                            // Toggle experimental Melody premix from PC page.
+                            boolean on = com.solar.launcher.stem.LalalAccount
+                                    .togglePremixExperimental(prefs);
+                            msg = on
+                                    ? "Melody premix On (experimental)."
+                                    : "Melody live multi-player (default).";
+                        } else if (key == null || key.trim().length() < 8) {
+                            com.solar.launcher.stem.LalalAccount.saveUserKey(prefs, "");
+                            msg = "Cleared — using bundled demo key.";
+                        } else {
+                            com.solar.launcher.stem.LalalAccount.saveUserKey(prefs, key.trim());
+                            msg = com.solar.launcher.stem.LalalAccount.isUserConfigured(prefs)
+                                    ? "Saved your Lalal.ai API key."
+                                    : "Key too short or matches demo — still on demo.";
+                        }
+                        writeLalalSetupPage(os, msg);
                     }
                 }
                 else if (method.equals("GET") && path.equals("/scan_stats")) {
@@ -807,6 +839,65 @@ public class SolarWebServer extends Thread {
                     "<option value='flac'" + ("flac".equals(quality) ? " selected" : "") + ">FLAC (Premium)</option></select>" +
                     "<button type='submit'>Save &amp; Test</button></form></div>" +
                     "<p><a href='/'>← Back to upload</a></p></body></html>";
+            String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
+            os.write(response.getBytes("UTF-8"));
+        }
+
+        /**
+         * PC page to set Lalal.ai license for Stem Player.
+         * Layman: paste your key here so the device can split songs into stems.
+         * 2026-07-18
+         */
+        private void writeLalalSetupPage(OutputStream os, String message) throws java.io.IOException {
+            SharedPreferences prefs = context.getSharedPreferences(
+                    com.solar.launcher.stem.LalalAccount.PREFS_NAME, Context.MODE_PRIVATE);
+            boolean configured = com.solar.launcher.stem.LalalAccount.isUserConfigured(prefs);
+            String status = configured ? "Configured (your key)" : "Not configured (demo key)";
+            String msgHtml = message != null
+                    ? "<p style='color:#0f0'>" + htmlEscape(message) + "</p>" : "";
+            String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>" +
+                    "<title>Solar Stem Player (Lalal.ai)</title><style>" +
+                    "body{font-family:sans-serif;background:#111;color:#fff;padding:20px;text-align:left;max-width:560px;margin:0 auto;}" +
+                    "h2,h3{text-align:center;} code,pre{background:#1a1a1a;padding:2px 6px;border-radius:4px;}" +
+                    "pre{padding:12px;overflow:auto;font-size:13px;}" +
+                    "input,button{font-size:16px;padding:10px;margin:5px 0;width:100%;max-width:400px;box-sizing:border-box;}" +
+                    "button{background:#00ffff;color:#000;border:none;font-weight:bold;cursor:pointer;}" +
+                    ".box{background:#222;padding:20px;border-radius:10px;margin:10px auto;max-width:520px;}" +
+                    "ul{color:#ccc;} a{color:#0ff;}</style></head><body>" +
+                    "<h2>Stem Player · Lalal.ai</h2>" +
+                    "<p style='color:#aaa;text-align:center'>Solar ships a demo key. Paste your own license from " +
+                    "<a href='https://www.lalal.ai/' target='_blank'>lalal.ai</a> to use your quota — or skip the cloud and use your own stem files (below).</p>" +
+                    "<div class='box'><p>Status: <b>" + htmlEscape(status) + "</b></p>" +
+                    msgHtml +
+                    "<form method='POST' action='/lalal'>" +
+                    "<input type='text' name='key' placeholder='Paste Lalal.ai API / license key' autocomplete='off'>" +
+                    "<button type='submit'>Save</button></form>" +
+                    "<form method='POST' action='/lalal' style='margin-top:8px'>" +
+                    "<input type='hidden' name='key' value=''>" +
+                    "<button type='submit'>Reset to demo key</button></form></div>" +
+                    "<div class='box'>" +
+                    "<h3>Prepare your own stems</h3>" +
+                    "<p>Next to <code>My Song.mp3</code>, create folder <code>My Song.stems/</code> with MP3s:</p>" +
+                    "<pre>My Song.mp3\nMy Song.stems/\n  vocals.mp3\n  drums.mp3   (or drum.mp3)\n  bass.mp3\n  melody.mp3  (or other.mp3)</pre>" +
+                    "<p>Melody pad aliases: <code>melody</code>, <code>other</code>, <code>instruments</code>, <code>samples</code>.</p>" +
+                    "<p>Or Lalal multistem names (API allows only these six): <code>vocals</code>, " +
+                    "<code>drum</code>, <code>bass</code>, <code>piano</code>, " +
+                    "<code>electric_guitar</code>, <code>acoustic_guitar</code>. " +
+                    "Solar also keeps the leftover <code>no_multistem</code> residual on the Melody pad. " +
+                    "Default: play Melody stems live (synced volumes/loops). " +
+                    "Experimental premix (one WAV) is a Settings toggle. " +
+                    "Sidecar-only extras: <code>synthesizer</code>, <code>strings</code>, <code>wind</code>.</p>" +
+                    "<form method='POST' action='/lalal' style='margin-top:12px'>" +
+                    "<input type='hidden' name='premix' value='" +
+                    (com.solar.launcher.stem.LalalAccount.isPremixExperimental(prefs) ? "0" : "1") + "'>" +
+                    "<button type='submit'>Toggle Melody premix (now: " +
+                    (com.solar.launcher.stem.LalalAccount.isPremixExperimental(prefs) ? "On" : "Off") +
+                    ")</button></form>" +
+                    "<p>Open Stem Player on that track — Solar loads the folder first (no upload). " +
+                    "Full guide: <code>docs/using-solar/stem-player.md</code> in the Solar repo.</p>" +
+                    "</div>" +
+                    "<p style='text-align:center'><a href='/'>← Back to upload</a></p></body></html>";
+            // 2026-07-19 — User stem naming guide on /lalal. Was: key form only. Reversal: drop .box guide.
             String response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n" + html;
             os.write(response.getBytes("UTF-8"));
         }

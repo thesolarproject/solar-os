@@ -23,10 +23,11 @@ channel = meta.get("channel", "stable")
 sha = meta.get("short_sha", "")
 
 label = "nightly" if channel == "nightly" else "main"
-print("> **Solar** is a custom firmware and launcher for the Innioasis Y1 — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).")
+print("> **Solar** is a custom firmware and launcher for the Innioasis Y1 — a full interface replacement with podcast downloads, a global quick menu, **Reach** (Deezer + Soulseek), **Stem Player** (stem separation powered by [Lalal.ai](https://www.lalal.ai)), Y1 theme support, and **Rockbox-Y1** on the same ROM (switch without reboot).")
 print()
 print("### Features")
 print()
+print("- 🎛️ **Stem Player** — Gen1-style vocal/drums/bass/melody mixing on the wheel; separate local tracks with **Lalal.ai** stem separation (cache local stems; mash up 1–3 songs)")
 print("- 🎵 **Reach** — search, play and download music from Deezer and Soulseek")
 print("- 🎙️ **Podcasts** — search and download episodes to your Y1 over the internet")
 print("- ⚡ **Quick menu** — global context menu for playback, queue, Wi‑Fi, Bluetooth, and more")
