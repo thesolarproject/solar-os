@@ -417,6 +417,11 @@ public final class ExternalInputHandoff {
     private static volatile String cachedFgPkg;
     private static volatile long cachedFgAtMs;
     private static final long FG_CACHE_MS = 450L;
+    /**
+     * 2026-07-19 — Phase C: longer TTL while handoff remaps third-party wheel (fewer AMS probes).
+     * Was: always FG_CACHE_MS (450) when Solar lacks window focus. Reversal: drop HANDOFF branch.
+     */
+    private static final long FG_CACHE_HANDOFF_MS = 1200L;
     /** Longer TTL while Solar home owns the wheel — USB modal must stay responsive (2026-07-06). */
     private static final long FG_CACHE_SOLAR_FOCUS_MS = 2500L;
     /** Overlay modal active — avoid getRunningTasks IPC storms on :overlay/main looper (2026-07-06). */
@@ -433,6 +438,9 @@ public final class ExternalInputHandoff {
             ttl = FG_CACHE_OVERLAY_MS;
         } else if (solar != null && solar.hasWindowFocus()) {
             ttl = FG_CACHE_SOLAR_FOCUS_MS;
+        } else if (dpadMode != MODE_OFF) {
+            // Phase C: third-party handoff path — cache FG longer across wheel bursts.
+            ttl = FG_CACHE_HANDOFF_MS;
         } else {
             ttl = FG_CACHE_MS;
         }

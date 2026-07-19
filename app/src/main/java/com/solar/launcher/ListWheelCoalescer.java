@@ -117,9 +117,21 @@ final class ListWheelCoalescer {
         this.liveGate = gate;
     }
 
-    /** Bind list + callback (call when adapter is shown). */
+    /**
+     * Bind ListView + callback (song lists).
+     * 2026-07-19 — Delegates to {@link #bind(View, Apply)} so home/settings can reuse the same coalescer.
+     */
     void bind(ListView list, Apply apply) {
-        this.host = list;
+        bind((View) list, apply);
+    }
+
+    /**
+     * 2026-07-19 — Bind any host View (ScrollView menu, decor) for paced wheel flushes.
+     * Layman: same “merge dial clicks” helper works on short menus, not only long song lists.
+     * Technical: host posts flushRunnable; Apply moves selection. Reversal: ListView-only bind.
+     */
+    void bind(View host, Apply apply) {
+        this.host = host;
         this.apply = apply;
     }
 

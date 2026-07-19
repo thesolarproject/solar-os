@@ -17,14 +17,33 @@ import java.io.FileWriter;
 public final class PlayQueueStore {
     private static final String FILE = "play_queue.json";
 
+    /** Last restored seek ms (-1 = unset). */
+    public static volatile int lastRestoredSeekMs = -1;
+    /** Last restored playing flag. */
+    public static volatile boolean lastRestoredPlaying;
+    /** Last restored epoch from disk. */
+    public static volatile long lastRestoredEpoch;
+
     private PlayQueueStore() {}
 
     public static void save(Context ctx, PlayQueue queue) {
+        save(ctx, queue, -1, false, AsyncPlayQueueWriter.memoryEpoch());
+    }
+
+    /**
+     * Persist queue + playback resume fields.
+     * 2026-07-19 — seekMs/playing/epoch for kill-relaunch resume.
+     */
+    public static void save(Context ctx, PlayQueue queue, int seekMs, boolean playing, long epoch) {
         if (ctx == null || queue == null) return;
-        saveToDir(ctx.getFilesDir(), queue);
+        saveToDir(ctx.getFilesDir(), queue, seekMs, playing, epoch);
     }
 
     static void saveToDir(File dir, PlayQueue queue) {
+        saveToDir(dir, queue, -1, false, 0L);
+    }
+
+    static void saveToDir(File dir, PlayQueue queue, int seekMs, boolean playing, long epoch) {
         if (dir == null || queue == null) return;
         try {
             JSONArray arr = new JSONArray();
@@ -51,7 +70,6 @@ public final class PlayQueueStore {
                         o.put("navidromeCover", q.navidromeCoverArtId);
                     }
                 } else if (q.kind == PlayQueue.ItemKind.PLEX_STREAM) {
-                    // 2026-07-14: Persist Plex stream slot (meta fields shared with Navidrome shape).
                     o.put("plexId", q.navidromeSongId);
                     o.put("plexTitle", q.navidromeTitle);
                     o.put("plexArtist", q.navidromeArtist);
@@ -59,7 +77,6 @@ public final class PlayQueueStore {
                     if (q.navidromeCoverArtId != null && !q.navidromeCoverArtId.isEmpty()) {
                         o.put("plexCover", q.navidromeCoverArtId);
                     }
-                    // 2026-07-15: Resume needs Part.key so cold start can still direct-stream.
                     if (q.plexMediaPartKey != null && !q.plexMediaPartKey.isEmpty()) {
                         o.put("plexPartKey", q.plexMediaPartKey);
                     }
@@ -80,6 +97,10 @@ public final class PlayQueueStore {
             JSONObject root = new JSONObject();
             root.put("index", queue.index());
             root.put("items", arr);
+            // 2026-07-19 — Resume fields + epoch for async writer restore guard.
+            if (seekMs >= 0) root.put("seekMs", seekMs);
+            root.put("playing", playing);
+            if (epoch > 0) root.put("epoch", epoch);
             File f = new File(dir, FILE);
             File tmp = new File(dir, FILE + ".tmp");
             BufferedWriter w = new BufferedWriter(new FileWriter(tmp));
@@ -187,7 +208,29 @@ public final class PlayQueueStore {
             if (items.isEmpty()) return false;
             savedIndex = Math.max(0, Math.min(savedIndex, items.size() - 1));
             queue.setAll(items, savedIndex);
+            lastRestoredSeekMs = root.optInt("seekMs", -1);
+            lastRestoredPlaying = root.optBoolean("playing", false);
+            lastRestoredEpoch = root.optLong("epoch", 0L);
             return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Lightweight: true if play_queue.json exists and has ≥1 item (no full parse of paths).
+     * Was: full JSON parse via persistedItemCount on every save. Reversal: that method body.
+     * 2026-07-19
+     */
+    public static boolean hasPersistedQueue(Context ctx) {
+        if (ctx == null) return false;
+        File f = new File(ctx.getFilesDir(), FILE);
+        if (!f.isFile() || f.length() < 8) return false;
+        try {
+            BufferedReader r = new BufferedReader(new FileReader(f));
+            String first = r.readLine();
+            r.close();
+            return first != null && first.contains("\"items\"");
         } catch (Exception e) {
             return false;
         }

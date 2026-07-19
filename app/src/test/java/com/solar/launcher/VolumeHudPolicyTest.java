@@ -48,4 +48,18 @@ public class VolumeHudPolicyTest {
             throw new AssertionError("menu");
         }
     }
+
+    @Test
+    public void inlineVolumeScreen_stemAndMix() {
+        // STATE_STEM_PLAYER=33, STATE_MIX=34
+        if (!VolumeHudPolicy.isInlineVolumeScreen(33, 3, 21, 33, 34)) {
+            throw new AssertionError("stem");
+        }
+        if (!VolumeHudPolicy.isInlineVolumeScreen(34, 3, 21, 33, 34)) {
+            throw new AssertionError("mix");
+        }
+        if (VolumeHudPolicy.isInlineVolumeScreen(2, 3, 21, 33, 34)) {
+            throw new AssertionError("browser");
+        }
+    }
 }

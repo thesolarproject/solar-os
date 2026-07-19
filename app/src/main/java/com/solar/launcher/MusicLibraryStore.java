@@ -247,6 +247,7 @@ public class MusicLibraryStore extends SolarDbHelper {
         java.util.HashMap<String, Track> out = new java.util.HashMap<String, Track>();
         if (files == null || files.isEmpty()) return out;
         migrateLegacyZeroTrackNumbers();
+        migrateLegacyZeroYears();
         final int chunk = 400;
         for (int start = 0; start < files.size(); start += chunk) {
             int end = Math.min(files.size(), start + chunk);
@@ -289,6 +290,7 @@ public class MusicLibraryStore extends SolarDbHelper {
     /** True when cached row matches current file stat — skip MediaMetadataRetriever. */
     public boolean isFresh(File file) {
         migrateLegacyZeroTrackNumbers();
+        migrateLegacyZeroYears();
         if (file == null || !file.isFile()) return false;
         Track t = get(file.getAbsolutePath());
         if (t == null) return false;
@@ -303,6 +305,31 @@ public class MusicLibraryStore extends SolarDbHelper {
         legacyTrackNumbersMigrated = true;
         SQLiteDatabase db = getWritableDatabase();
         db.execSQL("UPDATE tracks SET track_number = -1 WHERE track_number = 0");
+    }
+
+    private static volatile boolean legacyYearsMigrated;
+
+    /**
+     * One-shot: year=0 legacy rows → −1 so isFresh / getFreshBatch stop forcing full walks.
+     * Was: year==0 always stale. Reversal: skip this UPDATE.
+     * 2026-07-19
+     */
+    public void migrateLegacyZeroYears() {
+        if (legacyYearsMigrated) return;
+        legacyYearsMigrated = true;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            db.execSQL("UPDATE tracks SET year = " + YEAR_UNKNOWN_SCANNED + " WHERE year = 0");
+        } catch (Exception ignored) {}
+    }
+
+    /** Remove one track row after user delete — no full-card scan. 2026-07-19 */
+    public void deletePath(String path) {
+        if (path == null || path.isEmpty()) return;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            db.delete("tracks", "path=?", new String[] { path });
+        } catch (Exception ignored) {}
     }
 
     public void upsert(File file, String title, String artist, String album,

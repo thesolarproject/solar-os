@@ -158,7 +158,9 @@ public final class StemControls {
     }
 
     /** Hold delay before hip-hop stutter starts (short press = focus/cycle). 2026-07-19 */
-    public static final long STEM_STUTTER_HOLD_MS = 220L;
+    // Was: 220ms — normal taps often exceeded it → stutter ate focus/cycle (no song switch).
+    // Reversal: STEM_STUTTER_HOLD_MS = 220L.
+    public static final long STEM_STUTTER_HOLD_MS = 480L;
 
     /** Default chop step for hold-stutter (1/8 bar). 2026-07-19 */
     public static final int DEFAULT_STUTTER_CHOP_STEP = 2;

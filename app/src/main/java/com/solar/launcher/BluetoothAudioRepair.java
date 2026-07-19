@@ -306,10 +306,16 @@ final class BluetoothAudioRepair {
      * 2026-07-14 — Push music out the BT speaker path without touching loudness.
      * Was: also raised STREAM_MUSIC to ≥75% max when quiet — track/A2DP repair felt like
      * volume shooting to full. Reversal: setStreamVolume(..., preserve floor (max*3)/4, 0).
+     * 2026-07-19 — Rate-limit HAL knob spray (min 2.5s between calls).
      */
+    private static volatile long lastForceA2dpAtMs;
+
     @SuppressWarnings("deprecation")
     static void forceA2dpRoute(Context context, AudioManager audioManager) {
         if (audioManager == null) return;
+        long now = System.currentTimeMillis();
+        if (now - lastForceA2dpAtMs < 2500L) return;
+        lastForceA2dpAtMs = now;
         try { audioManager.setMode(AudioManager.MODE_NORMAL); } catch (Exception ignored) {}
         try { audioManager.setSpeakerphoneOn(false); } catch (Exception ignored) {}
         try { audioManager.stopBluetoothSco(); } catch (Exception ignored) {}

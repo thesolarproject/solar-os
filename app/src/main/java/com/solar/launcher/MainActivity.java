@@ -256,6 +256,8 @@ public class MainActivity extends Activity {
     static final int STATE_JELLYFIN = 32;
     /** 2026-07-18 — Lalal.ai Stem Player (four synced stems). */
     static final int STATE_STEM_PLAYER = 33;
+    /** 2026-07-19 — 3-deck Mix (full tracks; replaces NP while active). */
+    static final int STATE_MIX = 34;
     private static final int KEYBOARD_WIFI = 0;
     private static final int KEYBOARD_SOULSEEK_USER = 1;
     private static final int KEYBOARD_SOULSEEK_PASS = 2;
@@ -337,6 +339,8 @@ public class MainActivity extends Activity {
         public String albumArtist;
         public int trackNumber;
         public int year;
+        /** -1 unknown, 0 no stems, 1 has stems — avoids FS probe every bind. 2026-07-19 */
+        public int hasStemsBit = -1;
 
         public SongItem(File f, String t, String a, String al, String g) {
             this(f, t, a, al, g, "", 0, 0);
@@ -355,6 +359,21 @@ public class MainActivity extends Activity {
             albumArtist = aa != null ? aa.trim() : "";
             trackNumber = tr;
             this.year = year > 0 ? year : 0;
+        }
+
+        /** Cached Has Stems check — set bit when known (download complete / first probe). 2026-07-19 */
+        public boolean hasStemsCached(android.content.Context ctx, boolean premix, File appCache) {
+            if (hasStemsBit == 1) return true;
+            if (hasStemsBit == 0) return false;
+            File f = file;
+            if (f == null || com.solar.launcher.stem.LalalClient.isStemLibraryArtifact(f)) {
+                hasStemsBit = 0;
+                return false;
+            }
+            boolean yes = com.solar.launcher.stem.LalalClient.originatingTrackHasStems(
+                    ctx, f, premix, appCache);
+            hasStemsBit = yes ? 1 : 0;
+            return yes;
         }
     }
     // 💡 [초고속 엔진] 수천 곡을 버티기 위한 재활용 리스트뷰와 기존 스크롤뷰
@@ -443,19 +462,42 @@ public class MainActivity extends Activity {
     private FrameLayout layoutSettingsMode;
     private View layoutBluetoothMode, layoutWifiMode, layoutWifiKeyboard;
     private View layoutPlayerMode;
-    /** 2026-07-18 — Full-screen Stem Player rings host. */
+    /** 2026-07-18 — Full-screen Stem Player rings host (also hosts Mix face). */
     private FrameLayout layoutStemPlayer;
     private com.solar.launcher.stem.StemPlayerHost stemPlayerHost;
+    /** 2026-07-19 — 3-deck Mix host (shares layout_stem_player FrameLayout). */
+    private com.solar.launcher.mix.MixPlayerHost mixPlayerHost;
     /** Tracks handed to Stem Player across changeScreen (1–3). 2026-07-19 */
     private final java.util.ArrayList<File> pendingStemTrackFiles = new java.util.ArrayList<File>();
+    /** Tracks for Mix attach (slots 0..2; nulls allowed). 2026-07-19 */
+    private final File[] pendingMixTracks = new File[com.solar.launcher.mix.MixSession.DECK_COUNT];
+    /** Assign-browse slots before Mix starts. 2026-07-19 */
+    private final File[] mixAssignSlots = new File[com.solar.launcher.mix.MixSession.DECK_COUNT];
+    /** True while Music browse assigns Mix PREV/NEXT/PLAY. 2026-07-19 */
+    private boolean mixAssignMode;
+    /** Mid-mix reassign: deck index to replace, or -1 for pre-start assign. 2026-07-19 */
+    private int mixReassignDeck = -1;
+    /** Screen to restore when leaving Mix assign at library root. 2026-07-19 */
+    private int mixAssignReturnScreen = STATE_MENU;
     /** Library marks for Stem mashup (max 3). Was: single pendingStemTrackFile. 2026-07-19 */
     private final java.util.ArrayList<File> stemMashupMarks = new java.util.ArrayList<File>();
     /** True while browsing Music to mark Stem tracks 1–3. 2026-07-19 */
     private boolean stemPickMode;
     /** Screen to restore when leaving stem pick at library root. 2026-07-19 */
     private int stemPickReturnScreen = STATE_MENU;
-    /** STREAM_MUSIC index saved while Stem session forces max. -1 = none. 2026-07-19 */
+    /** STREAM_MUSIC index saved while Stem/Mix session forces max. -1 = none. 2026-07-19 */
     private int stemSavedMusicVolume = -1;
+    /** Hold-Play start Mix while in assign browse. 2026-07-19 */
+    private long mixAssignPlayDownAt;
+    private boolean mixAssignPlayHoldStarted;
+    private final Runnable mixAssignPlayHoldRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (!mixAssignMode || mixReassignDeck >= 0) return;
+            mixAssignPlayHoldStarted = true;
+            confirmMixAssignAndOpen();
+        }
+    };
     /** @deprecated use pendingStemTrackFiles — kept for single-file callers. */
     private File pendingStemTrackFile;
     private View layoutBrightnessMode, layoutStorageMode, layoutWebServerMode;
@@ -684,6 +726,8 @@ public class MainActivity extends Activity {
     private Runnable themePreviewPending;
     private static final long THEME_PREVIEW_DEBOUNCE_MS = 200L;
     private int libraryScanGen = 0;
+    /** Cancels stale Has Stems background index. 2026-07-19 */
+    private int hasStemsBrowseGen = 0;
     private int activeLibraryScanGen = 0;
     private final PlaybackCoordinator playback = new PlaybackCoordinator();
     private MediaSuiteHost mediaSuite;
@@ -1135,8 +1179,9 @@ public class MainActivity extends Activity {
             if (!backKeyHeld) return;
             backLongPressHandled = true;
             // 2026-07-18 — Stem Player: exit is Hold PREV/NEXT (not long BACK).
+            // 2026-07-19 — Mix same: BACK reassigns; dual PREV+NEXT exits.
             // Was: long BACK called requestExit. Reversal: restore requestExit here.
-            if (currentScreenState == STATE_STEM_PLAYER) {
+            if (currentScreenState == STATE_STEM_PLAYER || currentScreenState == STATE_MIX) {
                 return;
             }
             // 2026-07-10 — solar_home_* lives on companion/WM; themedContextMenu.isShowing is false.
@@ -1341,6 +1386,24 @@ public class MainActivity extends Activity {
     /** 2026-07-16 — Merge rapid wheel notches for long song lists (one move per frame). */
     private final ListWheelCoalescer listWheelCoalescer = new ListWheelCoalescer();
     /**
+     * 2026-07-19 — Same paced flush for home/settings/browser ScrollView menus (≥80 ms paint floor).
+     * Was: every notch ran focus+chrome sync. Reversal: delete field; call movers from applyWheelAccelFocus.
+     */
+    private final ListWheelCoalescer menuWheelCoalescer = new ListWheelCoalescer();
+    /** Active short-menu mover while {@link #menuWheelCoalescer} flushes (home / settings / browser). */
+    private WheelFocusMover pendingMenuWheelMover;
+    /**
+     * 2026-07-19 — Wheel notches while ScreenTransition/drill/handoff animates — apply after anim ends.
+     * Was: swallow and drop dial motion (~150 ms dead zone). Reversal: clear field; keep swallow-only.
+     */
+    private int pendingAnimWheelSignedSteps;
+    private final Runnable flushPendingAnimWheelRunnable = new Runnable() {
+        @Override
+        public void run() {
+            flushPendingAnimWheelSteps();
+        }
+    };
+    /**
      * 2026-07-18 — Rockbox frame-drop: skip preview/art while spinning; catch up on idle.
      * Was: every notch could refresh dual-pane preview. Now: selection always moves; paint waits.
      */
@@ -1351,6 +1414,35 @@ public class MainActivity extends Activity {
      * Technical: one Runnable; flushed from {@link #onListWheelScrollIdle}.
      */
     private Runnable pendingIdleArtRefresh;
+    /**
+     * 2026-07-19 — NP title override while playing Instrumental / Acapella solo file.
+     * Layman: show “Song (Instrumental)” instead of the stem file’s raw name.
+     * Technical: set by playSoloStemMode; applied after ID3 bind. Reversal: always use tags.
+     */
+    private String soloNpTitleOverride;
+    /**
+     * 2026-07-19 — Status-bar copy while solo cloud split runs (throbber + title).
+     * Layman: “Getting instrumental…” while you stay on the list.
+     * Technical: checked first in getStatusBarContextTitle. Reversal: null always.
+     */
+    private String soloBusyStatusTitle;
+    /**
+     * 2026-07-19 — Settings dual-pane preview key deferred until dial idle (Rockbox talk-delay).
+     * Was: updateSettingsPreview on every focus move (StatFs/icons/marquee hitch).
+     */
+    private String pendingSettingsPreviewKey;
+    private final Runnable settingsPreviewApplyRunnable = new Runnable() {
+        @Override
+        public void run() {
+            String key = pendingSettingsPreviewKey;
+            if (key != null && currentScreenState == STATE_SETTINGS) {
+                updateSettingsPreview(key);
+                if (A5PortraitChrome.usePortraitChrome(MainActivity.this)) {
+                    syncA5BottomStripFromSettings(key);
+                }
+            }
+        }
+    };
     /** 2026-07-16 — Precomputed song subtitles (guest scan once per list open, not per getView). */
     private String[] songListSubtitleCache;
     private boolean songListGuestOnlyCached;
@@ -1428,6 +1520,10 @@ public class MainActivity extends Activity {
     private com.solar.launcher.jellyfin.JellyfinSettingsHost jellyfinSettingsHost;
     private com.solar.launcher.scrobble.ScrobbleSettingsHost scrobbleSettingsHost;
     private int audiobookPendingResumeMs;
+    /** Kill/relaunch seek restore for music/podcast (−1 = none). 2026-07-19 */
+    private int queuePendingResumeMs = -1;
+    /** One-shot auto-start after cold restore when disk said playing. 2026-07-19 */
+    private boolean queuePendingResumePlaying;
     private NavidromeScreenHost navidromeScreenHost;
     private PlexScreenHost plexScreenHost;
     private com.solar.launcher.jellyfin.JellyfinScreenHost jellyfinScreenHost;
@@ -1855,6 +1951,10 @@ public class MainActivity extends Activity {
      * Reversal: remove call sites; YT audio + Deezer dual-play returns.
      */
     private void stopCompetingAudioEngines() {
+        // 2026-07-19 — Claim STREAM_MUSIC focus so FM/BT peers duck/pause.
+        try {
+            SolarAudioFocus.request(getApplicationContext());
+        } catch (Exception ignored) {}
         if (mediaSuite != null) {
             mediaSuite.stopVideoAndYoutubeStream();
             // FM chip + Wi‑Fi session must not sit under music/Deezer.
@@ -2065,6 +2165,11 @@ public class MainActivity extends Activity {
     private Runnable clockTask = new Runnable() {
         @Override
         public void run() {
+            // 2026-07-19 — Stem/Mix exclusive: skip heavy title ticks so pads stay snappy.
+            if (StemOrMixSession.isActive()) {
+                clockHandler.postDelayed(this, 2000);
+                return;
+            }
             updateStatusBarTitle();
             clockHandler.postDelayed(this, 1000);
         }
@@ -2075,6 +2180,11 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             try {
+                // 2026-07-19 — Stem/Mix jam owns CPU — pause NP progress redraws.
+                if (StemOrMixSession.isActive()) {
+                    progressHandler.postDelayed(this, 2000);
+                    return;
+                }
                 // 2026-07-15 — Off-NP + user typing: skip progress thrash; wake after idle.
                 // Layman: YouTube search keys beat redrawing a hidden progress bar.
                 // Keep live updates on Now Playing / video / active Reach partial.
@@ -5040,6 +5150,17 @@ public class MainActivity extends Activity {
         if (currentScreenState == STATE_MENU && focusedHomeMenuIndex >= 0) {
             scheduleHomeMenuPreviewUpdate(focusedHomeMenuIndex);
         }
+        // 2026-07-19 — Settings preview catch-up after spin (was mid-spin StatFs/icon thrash).
+        if (currentScreenState == STATE_SETTINGS && pendingSettingsPreviewKey != null) {
+            if (containerSettingsItems != null) {
+                containerSettingsItems.removeCallbacks(settingsPreviewApplyRunnable);
+                containerSettingsItems.post(settingsPreviewApplyRunnable);
+            } else {
+                settingsPreviewApplyRunnable.run();
+            }
+        }
+        // 2026-07-19 — Marquee only after pause so spin does not start N marquees.
+        enableFocusedRowMarqueeAfterIdle();
         Runnable art = pendingIdleArtRefresh;
         pendingIdleArtRefresh = null;
         if (art != null) {
@@ -5052,6 +5173,23 @@ public class MainActivity extends Activity {
                 && themeBrowserFocus < themeBrowserRows.size()) {
             ThemeBrowser.Row row = themeBrowserRows.get(themeBrowserFocus);
             if (row != null) scheduleThemeRowPreviewNow(row);
+        }
+    }
+
+    /**
+     * 2026-07-19 — Start marquee on the focused row once the dial is quiet.
+     * Layman: while spinning, titles stay truncated; when you pause, the focused line scrolls.
+     * Technical: re-apply home style / enableMarquee on focused TextView. Reversal: always marquee on focus.
+     */
+    private void enableFocusedRowMarqueeAfterIdle() {
+        if (currentScreenState == STATE_MENU && focusedHomeMenuIndex >= 0) {
+            applyHomeMenuRowStyleAt(focusedHomeMenuIndex, true);
+            return;
+        }
+        View foc = getCurrentFocus();
+        if (foc instanceof TextView) {
+            enableMarquee((TextView) foc);
+            foc.setSelected(true);
         }
     }
 
@@ -5557,7 +5695,8 @@ public class MainActivity extends Activity {
         layout.setPadding(hPad, 0, hPad, 0);
         final int rowKind = Y1_ROW_MENU;
         int rowW = y1ActiveRowWidthPx();
-        layout.setBackground(getY1RowBackground(false, rowW, rowKind));
+        // 2026-07-19 — StateListDrawable once; focus flips selected (was setBackground every focus).
+        layout.setBackground(getY1RowStateBackground(rowW, rowKind));
 
         TextView tvLeft = new TextView(this);
         tvLeft.setTag(TAG_REARRANGE_LABEL);
@@ -5612,11 +5751,18 @@ public class MainActivity extends Activity {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
                 int w = y1ActiveRowWidthPx();
-                layout.setBackground(getY1RowBackground(hasFocus, w, rowKind));
+                if (!(layout.getBackground() instanceof android.graphics.drawable.StateListDrawable)) {
+                    layout.setBackground(getY1RowStateBackground(w, rowKind));
+                }
+                layout.setSelected(hasFocus);
                 ThemeManager.applyThemedTextStyle(tvLeft, hasFocus
                         ? y1RowTextColorSelected(rowKind) : y1RowTextColorNormal(rowKind));
                 tvLeft.setSelected(hasFocus);
-                if (hasFocus) enableMarquee(tvLeft);
+                if (hasFocus && !scrollIdleGate.isSpinning()) enableMarquee(tvLeft);
+                else {
+                    tvLeft.setEllipsize(TextUtils.TruncateAt.END);
+                    tvLeft.setHorizontallyScrolling(false);
+                }
                 if (onFocusExtra != null) onFocusExtra.onFocusChange(v, hasFocus);
             }
         });
@@ -7111,10 +7257,20 @@ public class MainActivity extends Activity {
      * Firm wheel scrape (mic) multiplies steps; direction still from KEY only.
      */
     private boolean applyWheelAccelFocus(int keyCode, WheelFocusMover mover) {
-        return applyWheelAccelFocus(keyCode, null, mover);
+        return applyWheelAccelFocus(keyCode, null, mover, false);
     }
 
     private boolean applyWheelAccelFocus(int keyCode, KeyEvent event, WheelFocusMover mover) {
+        return applyWheelAccelFocus(keyCode, event, mover, false);
+    }
+
+    /**
+     * 2026-07-19 — {@code coalesce=true} paces short-menu paints via {@link #menuWheelCoalescer} (≥80 ms).
+     * Layman: spin home/settings fast → highlight jumps in bursts, not every single click of work.
+     * Technical: offerSteps → Apply moves. Reversal: pass coalesce false (immediate mover.move).
+     */
+    private boolean applyWheelAccelFocus(int keyCode, KeyEvent event, WheelFocusMover mover,
+            boolean coalesce) {
         if (mover == null) return false;
         int dir = Y1InputKeys.isWheelUp(keyCode) ? -1
                 : (Y1InputKeys.isWheelDown(keyCode) ? 1 : 0);
@@ -7126,6 +7282,12 @@ public class MainActivity extends Activity {
         if (isStaleWheelEvent(event)) {
             wheelPhysics.reset();
             wheelPhysics.setMicBoost(1f);
+            if (coalesce) {
+                ensureMenuWheelCoalescerBound();
+                pendingMenuWheelMover = mover;
+                menuWheelCoalescer.armImmediateFlush();
+                return menuWheelCoalescer.offerSteps(dir);
+            }
             return mover.move(dir);
         }
         long nowMs = android.os.SystemClock.uptimeMillis();
@@ -7134,6 +7296,10 @@ public class MainActivity extends Activity {
             wheelPhysics.reset();
             listWheelReverseEpochEventTime = event != null
                     ? event.getEventTime() : nowMs;
+            if (coalesce) {
+                menuWheelCoalescer.dropPending();
+                menuWheelCoalescer.armImmediateFlush();
+            }
             // #region agent log
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -7175,13 +7341,86 @@ public class MainActivity extends Activity {
                 d.put("sinceMenuMs", sinceMenu);
                 d.put("signed", signed);
                 d.put("key", keyCode);
+                d.put("coalesce", coalesce);
                 Debug0f5debLog.probe("MainActivity.applyWheelAccelFocus", "menu wheel apply",
                         "H-C", d);
             } catch (Exception ignored) {}
         }
         // #endregion
+        if (coalesce) {
+            ensureMenuWheelCoalescerBound();
+            pendingMenuWheelMover = mover;
+            return menuWheelCoalescer.offerSteps(signed);
+        }
         // Single multi-step move — home supports |delta|>1; looping re-ran scroll/preview N times.
         return mover.move(signed);
+    }
+
+    /**
+     * 2026-07-19 — Bind {@link #menuWheelCoalescer} to a live host View for postDelayed flushes.
+     * Layman: pick any on-screen list container so the paced highlight timer can run.
+     * Technical: prefer menuScroll / settings container / browser / decor. Reversal: n/a helper.
+     */
+    private void ensureMenuWheelCoalescerBound() {
+        View host = null;
+        if (currentScreenState == STATE_MENU && menuScroll != null) {
+            host = menuScroll;
+        } else if (currentScreenState == STATE_SETTINGS && containerSettingsItems != null) {
+            host = containerSettingsItems;
+        } else if (containerBrowserItems != null && containerBrowserItems.getVisibility() == View.VISIBLE) {
+            host = containerBrowserItems;
+        }
+        if (host == null && getWindow() != null) {
+            host = getWindow().getDecorView();
+        }
+        if (host == null) return;
+        menuWheelCoalescer.bind(host, new ListWheelCoalescer.Apply() {
+            @Override
+            public boolean applySteps(int signedSteps) {
+                WheelFocusMover m = pendingMenuWheelMover;
+                return m != null && m.move(signedSteps);
+            }
+        });
+    }
+
+    /**
+     * 2026-07-19 — Poll until transition ends, then apply queued wheel steps.
+     * Layman: wait for the slide to finish, then move the highlight by how far you turned.
+     * Technical: postDelayed 16 ms while animating. Reversal: drop queue; swallow-only again.
+     */
+    private void scheduleFlushPendingAnimWheel() {
+        View decor = getWindow() != null ? getWindow().getDecorView() : null;
+        if (decor == null) return;
+        decor.removeCallbacks(flushPendingAnimWheelRunnable);
+        decor.post(flushPendingAnimWheelRunnable);
+    }
+
+    /** Apply {@link #pendingAnimWheelSignedSteps} once nav animations are clear. */
+    private void flushPendingAnimWheelSteps() {
+        if (ScreenTransition.isAnimating() || ListDrillTransition.isAnimating()
+                || FlowPlayerHandoff.isHandoffAnimating()) {
+            View decor = getWindow() != null ? getWindow().getDecorView() : null;
+            if (decor != null) {
+                decor.removeCallbacks(flushPendingAnimWheelRunnable);
+                decor.postDelayed(flushPendingAnimWheelRunnable, 16L);
+            }
+            return;
+        }
+        int steps = pendingAnimWheelSignedSteps;
+        pendingAnimWheelSignedSteps = 0;
+        if (steps == 0) return;
+        scrollIdleGate.markActivity();
+        ensureScrollIdleGateListener();
+        if (currentScreenState == STATE_MENU) {
+            moveHomeMenuFocus(steps);
+        } else if (currentScreenState == STATE_SETTINGS && !isThemeListActive()
+                && !isConversationThreadActive() && !isReachBrowseListActive()) {
+            moveSettingsListFocus(steps);
+        } else if (isBrowserScrollMenuScreen()) {
+            moveBrowserScrollFocus(steps);
+        } else if (listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE) {
+            listWheelCoalescer.offerSteps(steps);
+        }
     }
 
     private void restoreHomeScreenEditorFocus(final int targetFocusIndex) {
@@ -9751,7 +9990,7 @@ public class MainActivity extends Activity {
                 public boolean move(int delta) {
                     return moveHomeMenuFocus(delta);
                 }
-            });
+            }, true);
             if (moved) clickFeedback();
             return true; // consume even at edge so focused row cannot steal DPAD
         }
@@ -9762,7 +10001,7 @@ public class MainActivity extends Activity {
                 public boolean move(int delta) {
                     return moveSettingsListFocus(delta);
                 }
-            });
+            }, true);
             if (moved) clickFeedback();
             return true;
         }
@@ -9794,15 +10033,19 @@ public class MainActivity extends Activity {
             return true;
         }
         if (!isReachBrowseListActive()) return false;
-        int delta = Y1InputKeys.isWheelUp(keyCode) ? -1 : 1;
-        boolean moved = moveReachBrowseListFocus(delta) || ensureReachBrowseListFocus();
+        // 2026-07-19 — Pace Reach browse wheel paints (≥80 ms) like home/settings.
+        boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+            @Override
+            public boolean move(int delta) {
+                return moveReachBrowseListFocus(delta) || ensureReachBrowseListFocus();
+            }
+        }, true);
         if (moved) clickFeedback();
         // #region agent log
         if (event.getRepeatCount() == 0) {
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
                 d.put("keyCode", keyCode);
-                d.put("delta", delta);
                 d.put("moved", moved);
                 d.put("screen", settingsSubScreenKey);
                 DebugSessionLog.log("MainActivity.handleReachSettingsWheelKeyDown",
@@ -10238,7 +10481,8 @@ public class MainActivity extends Activity {
             ThemeManager.applyThemedTextStyle(label, focused
                     ? y1RowTextColorSelected(rowKind) : y1RowTextColorNormal(rowKind));
             label.setSelected(focused);
-            if (focused) enableMarquee(label);
+            // 2026-07-19 — Skip marquee start while spinning (animation tax every notch).
+            if (focused && !scrollIdleGate.isSpinning()) enableMarquee(label);
             else {
                 label.setEllipsize(TextUtils.TruncateAt.END);
                 label.setHorizontallyScrolling(false);
@@ -10252,7 +10496,7 @@ public class MainActivity extends Activity {
             else if (!t.isEmpty())
                 ThemeManager.applyThemedTextStyle(value, focused
                         ? y1RowTextColorSelected(rowKind) : y1RowTextColorNormal(rowKind));
-            enableMarquee(value);
+            if (!scrollIdleGate.isSpinning()) enableMarquee(value);
         }
         if (arrow != null) arrow.setVisibility(focused ? View.VISIBLE : View.GONE);
     }
@@ -10566,7 +10810,12 @@ public class MainActivity extends Activity {
                 if (hasFocus) {
                     focusedHomeMenuIndex = idx;
                     updateStatusBarTitle();
-                    updateHomeMenuPreview(idx);
+                    // 2026-07-19 — Was sync updateHomeMenuPreview; raced deferred path + hitch every notch.
+                    // Layman: highlight moves now; cover pane waits for dial pause.
+                    // Technical: idle-gate + schedule only. Reversal: call updateHomeMenuPreview(idx) here.
+                    scrollIdleGate.markActivity();
+                    ensureScrollIdleGateListener();
+                    scheduleHomeMenuPreviewUpdate(idx);
                 }
                 refreshHomeMenuRowStyles();
             }
@@ -10782,6 +11031,24 @@ public class MainActivity extends Activity {
         containerHomeMenuItems.removeCallbacks(homePreviewApplyRunnable);
         // Slight delay so a burst of notches only paints the final row's art.
         containerHomeMenuItems.postDelayed(homePreviewApplyRunnable, 48L);
+    }
+
+    /**
+     * 2026-07-19 — Defer settings dual-pane preview until dial idle (same contract as home art).
+     * Layman: spinning settings only moves the blue bar; icons/storage text catch up when you pause.
+     * Technical: stash key + ScrollIdleGate; skip StatFs while spinning. Reversal: call updateSettingsPreview sync.
+     */
+    private void scheduleSettingsPreviewUpdate(String rowKey) {
+        if (rowKey == null) return;
+        pendingSettingsPreviewKey = rowKey;
+        scrollIdleGate.markActivity();
+        ensureScrollIdleGateListener();
+        if (containerSettingsItems == null) return;
+        containerSettingsItems.removeCallbacks(settingsPreviewApplyRunnable);
+        if (scrollIdleGate.isSpinning() || wheelPhysics.suppressWrapAround()) {
+            return; // onListWheelScrollIdle paints once
+        }
+        containerSettingsItems.postDelayed(settingsPreviewApplyRunnable, 48L);
     }
 
     private boolean shouldShowNowPlayingPreviewArt() {
@@ -11371,6 +11638,10 @@ public class MainActivity extends Activity {
     }
 
     private String getStatusBarContextTitle() {
+        // 2026-07-19 — Solo Instrumental/Acapella wait copy overrides screen title while busy.
+        if (soloBusyStatusTitle != null && soloBusyStatusTitle.length() > 0) {
+            return soloBusyStatusTitle;
+        }
         switch (currentScreenState) {
             case STATE_MENU:
                 return getString(R.string.status_home);
@@ -11378,9 +11649,16 @@ public class MainActivity extends Activity {
                 if (stemPickMode) {
                     return getString(R.string.stem_pick_status, stemMashupMarks.size());
                 }
+                if (mixAssignMode) {
+                    if (mixReassignDeck >= 0) {
+                        return getString(R.string.mix_reassign_pick, mixReassignDeck + 1);
+                    }
+                    return getString(R.string.mix_assign_status);
+                }
                 return browserStatusTitle != null ? browserStatusTitle : getString(R.string.status_library_main);
             case STATE_PLAYER: return getString(R.string.status_now_playing);
             case STATE_STEM_PLAYER: return getString(R.string.status_stem_player);
+            case STATE_MIX: return getString(R.string.status_mix);
             case STATE_SETTINGS: return resolveSettingsSubTitle();
             case STATE_BLUETOOTH: return getString(R.string.status_bluetooth_scan);
             case STATE_WIFI: return getString(R.string.status_wifi_networks);
@@ -12618,10 +12896,11 @@ public class MainActivity extends Activity {
         // 2026-07-15 — Tell Xposed / :overlay to skip global volume HUD on NP/video (inline pulse).
         // Was: SolarUiState prop never written. Reversal: delete this setNowPlayingScreen call.
         SolarUiState.setNowPlayingScreen(VolumeHudPolicy.isInlineVolumeScreen(state,
-                STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER));
+                STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER,
+                STATE_STEM_PLAYER, STATE_MIX));
         // 2026-07-16 — Entering NP: drop OS EU ~80% lock when Hearing Safety is off (async-safe).
         if (state == STATE_PLAYER || state == MediaSuiteHost.STATE_VIDEO_PLAYER
-                || state == STATE_STEM_PLAYER) {
+                || state == STATE_STEM_PLAYER || state == STATE_MIX) {
             HearingSafetyVolume.ensureFullVolumeRange(this);
         }
         refreshBlockingOverlayVisible();
@@ -12651,15 +12930,29 @@ public class MainActivity extends Activity {
         }
         layoutPlayerMode.setVisibility(state == STATE_PLAYER ? View.VISIBLE : View.GONE);
         if (layoutStemPlayer != null) {
-            layoutStemPlayer.setVisibility(state == STATE_STEM_PLAYER ? View.VISIBLE : View.GONE);
+            layoutStemPlayer.setVisibility(
+                    (state == STATE_STEM_PLAYER || state == STATE_MIX) ? View.VISIBLE : View.GONE);
         }
         if (state != STATE_STEM_PLAYER && stemPlayerHost != null) {
             stemPlayerHost.detach();
+        }
+        // Mid-mix library reassign keeps decks alive under the browser. 2026-07-19
+        // Was: always detach on leave MIX → audio died during BACK reassign.
+        if (state != STATE_MIX && mixPlayerHost != null
+                && !(mixAssignMode && mixReassignDeck >= 0)) {
+            mixPlayerHost.detach();
         }
         // Leaving library clears stem pick (unless entering Stem Player). 2026-07-19
         if (stemPickMode && state != STATE_BROWSER && state != STATE_STEM_PLAYER) {
             stemPickMode = false;
             stemMashupMarks.clear();
+        }
+        // Leaving library clears Mix assign (unless entering Mix). 2026-07-19
+        if (mixAssignMode && state != STATE_BROWSER && state != STATE_MIX) {
+            mixAssignMode = false;
+            mixReassignDeck = -1;
+            java.util.Arrays.fill(mixAssignSlots, null);
+            progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
         }
         // #region agent log
         try {
@@ -12783,6 +13076,16 @@ public class MainActivity extends Activity {
         }
         if (state == STATE_STEM_PLAYER) {
             ensureStemPlayerAttached(pendingStemTrackFiles);
+        }
+        if (state == STATE_MIX) {
+            // Resume after reassign browse — do not reload if decks still live. 2026-07-19
+            if (mixPlayerHost != null && com.solar.launcher.mix.MixPlayerHost.isSessionActive()) {
+                if (layoutStemPlayer != null) {
+                    layoutStemPlayer.setVisibility(View.VISIBLE);
+                }
+            } else {
+                ensureMixPlayerAttached(pendingMixTracks);
+            }
         }
         layoutSettingsMode.setVisibility(state == STATE_SETTINGS ? View.VISIBLE : View.GONE);
         layoutBluetoothMode.setVisibility(state == STATE_BLUETOOTH ? View.VISIBLE : View.GONE);
@@ -13649,6 +13952,21 @@ public class MainActivity extends Activity {
             }
             return true;
         }
+        // 2026-07-19 — Stem/Mix exclusive input BEFORE volume HUD, overlay, and context menu.
+        // Layman: while Stem or Mix is up, only those pads get the buttons.
+        // Was: Stem keys after overlay/context → lag / double BACK. Reversal: delete this block.
+        if (event != null && (currentScreenState == STATE_STEM_PLAYER || currentScreenState == STATE_MIX)
+                && !mixAssignMode) {
+            if (dispatchStemOrMixExclusiveKey(event)) {
+                return true;
+            }
+        }
+        // 2026-07-19 — Mix assign browse owns PREV/NEXT/PLAY bind (+ hold PLAY start).
+        if (event != null && mixAssignMode && currentScreenState == STATE_BROWSER) {
+            if (handleMixAssignKey(event)) {
+                return true;
+            }
+        }
         // 2026-07-11 — Post-remap volume (NP edges / emulator / family pin) → Solar volume HUD.
         // 2026-07-15 — Y2/A5 on NP/video: transport pulse only; if a context modal is open, replace
         // it with the compact volume bar (in-app or global shell).
@@ -13660,7 +13978,8 @@ public class MainActivity extends Activity {
                 final boolean hwVolDevice = DeviceFeatures.isY2() || DeviceFeatures.isA5()
                         || EmulatorInputMap.isEmulator();
                 final boolean inlineVol = VolumeHudPolicy.isInlineVolumeScreen(currentScreenState,
-                        STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER);
+                        STATE_PLAYER, MediaSuiteHost.STATE_VIDEO_PLAYER,
+                        STATE_STEM_PLAYER, STATE_MIX);
                 final boolean inAppModal = themedContextMenuOwnsKeys();
                 final boolean globalModal = shouldRouteKeysToGlobalChipOverlay();
                 final boolean showHud = VolumeHudPolicy.shouldShowCompactVolumeHud(
@@ -13831,6 +14150,22 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 || FlowPlayerHandoff.isHandoffAnimating())
                 && event.getAction() == KeyEvent.ACTION_DOWN
                 && !Y1InputKeys.isBackKey(event.getKeyCode())) {
+            // 2026-07-19 — Queue wheel steps across anim (was swallow → ~150 ms dead zone).
+            // Layman: dial clicks during slide still count; highlight catches up when the slide ends.
+            // Technical: accumulate signed steps; flush when !isAnimating. Back never queued.
+            if (Y1InputKeys.isWheelKey(event.getKeyCode())) {
+                int dir = Y1InputKeys.isWheelUp(event.getKeyCode()) ? -1
+                        : (Y1InputKeys.isWheelDown(event.getKeyCode()) ? 1 : 0);
+                if (dir != 0) {
+                    pendingAnimWheelSignedSteps += dir;
+                    if (pendingAnimWheelSignedSteps > ListWheelCoalescer.MAX_STEPS_PER_FLUSH) {
+                        pendingAnimWheelSignedSteps = ListWheelCoalescer.MAX_STEPS_PER_FLUSH;
+                    } else if (pendingAnimWheelSignedSteps < -ListWheelCoalescer.MAX_STEPS_PER_FLUSH) {
+                        pendingAnimWheelSignedSteps = -ListWheelCoalescer.MAX_STEPS_PER_FLUSH;
+                    }
+                    scheduleFlushPendingAnimWheel();
+                }
+            }
             // #region agent log
             if (Y1InputKeys.isWheelKey(event.getKeyCode()) || Y1InputKeys.isVolumeUpKey(event.getKeyCode())
                     || Y1InputKeys.isVolumeDownKey(event.getKeyCode())
@@ -13844,6 +14179,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     d.put("listDrill", ListDrillTransition.isAnimating());
                     d.put("flowHandoff", FlowPlayerHandoff.isHandoffAnimating());
                     d.put("reverseHandoff", reverseHandoffInProgress);
+                    d.put("queuedWheelSteps", pendingAnimWheelSignedSteps);
                     DebugF0e28cLog.log(this, "MainActivity.dispatchKeyEvent",
                             "nav blocked by anim", "H-A", d);
                     com.solar.launcher.flow.FlowBackDebugLog.log(
@@ -13890,37 +14226,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return true;
         }
         // 2026-07-18 — Stem Player owns Center/Prev/Next/Play/Wheel/Back (DOWN+UP for holds).
+        // 2026-07-19 — Early exclusive path above; keep late block as safety net only.
         // Was: Center went to sleep/context; Prev/Next scrubbed. Reversal: delete this block.
         if (event != null && currentScreenState == STATE_STEM_PLAYER && stemPlayerHost != null) {
-            int sk = event.getKeyCode();
-            // Pad gains own loudness — ignore hardware volume while Stem is open. 2026-07-19
-            if (Y1InputKeys.isVolumeUpKey(sk) || Y1InputKeys.isVolumeDownKey(sk)) {
-                return true;
-            }
-            if (Y1InputKeys.isWheelUp(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
-                stemPlayerHost.onWheel(1);
-                clickFeedback();
-                return true;
-            }
-            if (Y1InputKeys.isWheelDown(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
-                stemPlayerHost.onWheel(-1);
-                clickFeedback();
-                return true;
-            }
-            if (Y1InputKeys.isBackKey(sk)
-                    || isCenterKey(sk)
-                    || isMediaPlayPauseKey(sk)
-                    || isMediaSkipKey(sk)
-                    || sk == KeyEvent.KEYCODE_DPAD_LEFT
-                    || sk == KeyEvent.KEYCODE_DPAD_RIGHT
-                    || sk == KeyEvent.KEYCODE_ENTER) {
-                // Always consume — host may return false on unused ACTION_UP.
-                stemPlayerHost.onKey(sk, event);
-                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                    clickFeedback();
-                }
-                return true;
-            }
+            return dispatchStemOrMixExclusiveKey(event);
+        }
+        if (event != null && currentScreenState == STATE_MIX && mixPlayerHost != null) {
+            return dispatchStemOrMixExclusiveKey(event);
         }
         // Center/OK activates focus; Play/Pause is transport (except keyboard — charset/OK there).
         if (isCenterKey(event.getKeyCode())) {
@@ -17682,11 +17994,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     }
                     refreshSettingsRowInline(rowKey);
                     if (!isFullWidthMenus && !settingsBrowseFullWidth) {
-                        updateSettingsPreview(rowKey);
+                        // 2026-07-19 — Defer dual-pane; inline ✓ still updates immediately.
+                        scheduleSettingsPreviewUpdate(rowKey);
                     }
-                    // 2026-07-11 — Mirror settings preview into A5 bottom strip.
+                    // 2026-07-11 — Mirror settings preview into A5 bottom strip (also deferred).
                     if (A5PortraitChrome.usePortraitChrome(MainActivity.this)) {
-                        syncA5BottomStripFromSettings(rowKey);
+                        scheduleSettingsPreviewUpdate(rowKey);
                     }
                 }
             }
@@ -18985,9 +19298,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return SoulseekAccount.displayLabel(SoulseekAccount.load(prefs));
         }
         if (RowKeys.LALAL.equals(rowKey)) {
-            return com.solar.launcher.stem.LalalAccount.settingsStatusLabel(prefs,
+            // 2026-07-19 — Status + opt-in hint so dual-pane explains unlock.
+            String status = com.solar.launcher.stem.LalalAccount.settingsStatusLabel(prefs,
                     getString(R.string.lalal_not_configured),
                     getString(R.string.lalal_configured));
+            return status + "\n\n" + getString(R.string.settings_lalal_hint);
         }
         if (RowKeys.STEM_PREMIX.equals(rowKey)) {
             return stateOnOff(com.solar.launcher.stem.LalalAccount.isPremixExperimental(prefs));
@@ -19420,7 +19735,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 applyY1ListRowStyle(layout, hasFocus, tvLeft, showArrow ? null : tvRight,
                         showArrow ? rowArrow : null, Y1_ROW_MENU);
                 if (hasFocus && currentScreenState == STATE_SETTINGS && rowKey != null) {
-                    updateSettingsPreview(rowKey);
+                    // 2026-07-19 — Was sync updateSettingsPreview on every focus.
+                    scheduleSettingsPreviewUpdate(rowKey);
                     applyHomeShortcutConnectivityHint(layout, rowKey, true);
                 } else if (!hasFocus) {
                     applyHomeShortcutConnectivityHint(layout, rowKey, false);
@@ -20277,7 +20593,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             lastSettingsFocusIndex = landed;
             Object tag = landedView.getTag();
             if (tag instanceof String && currentScreenState == STATE_SETTINGS) {
-                updateSettingsPreview((String) tag);
+                // 2026-07-19 — Was sync updateSettingsPreview (StatFs/icons every notch).
+                scheduleSettingsPreviewUpdate((String) tag);
             }
             if (settingsScrollView instanceof ScrollView) {
                 FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, landedView);
@@ -20301,10 +20618,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
                 lastSettingsFocusIndex = i;
                 Object tag = next.getTag();
-                // 2026-07-18 — Skip preview paint while flywheel still hot.
-                if (tag instanceof String && currentScreenState == STATE_SETTINGS
-                        && !wheelPhysics.suppressWrapAround()) {
-                    updateSettingsPreview((String) tag);
+                // 2026-07-19 — Defer preview (was sync when flywheel cool).
+                if (tag instanceof String && currentScreenState == STATE_SETTINGS) {
+                    scheduleSettingsPreviewUpdate((String) tag);
                 }
                 if (settingsScrollView instanceof ScrollView) {
                     FocusScrollHelper.ensureChildVisible((ScrollView) settingsScrollView, next);
@@ -20474,7 +20790,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 && isViewDescendantOf(focNow, containerBrowserItems);
         boolean focusValidBefore = inBrowseRows || isFocusValidForCurrentScreen();
         if (!focusValidBefore) ensureBrowserListFocus();
-        boolean moved = moveBrowserScrollFocus(Y1InputKeys.isWheelUp(keyCode) ? -1 : 1);
+        // 2026-07-19 — Coalesce browser ScrollView wheel like home/settings (≥80 ms paint floor).
+        boolean moved = applyWheelAccelFocus(keyCode, event, new WheelFocusMover() {
+            @Override
+            public boolean move(int delta) {
+                return moveBrowserScrollFocus(delta);
+            }
+        }, true);
         // #region agent log
         if (event.getRepeatCount() == 0) {
             try {
@@ -22843,15 +23165,69 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void ensurePlaybackQueueSyncedFromStoreSync() {
         PlayQueue fromDisk = new PlayQueue();
         if (!PlayQueueStore.restore(getApplicationContext(), fromDisk) || fromDisk.isEmpty()) return;
-        int memSize = playback.unifiedQueue().size();
-        if (!playback.hasAnyQueue() || fromDisk.size() > memSize) {
+        boolean memEmpty = !playback.hasAnyQueue();
+        if (AsyncPlayQueueWriter.shouldRestoreFromDisk(memEmpty, PlayQueueStore.lastRestoredEpoch)) {
             playback.restoreQueueState(fromDisk.items(), fromDisk.index());
+            AsyncPlayQueueWriter.noteRestoredEpoch(PlayQueueStore.lastRestoredEpoch);
+            armQueueResumeFromStore(memEmpty);
             syncNowPlayingHomeVisibility();
             refreshRestoredQueuePreview();
         }
     }
 
-    /** Reload persisted queue when memory is empty or disk has more items (SD mount after restart). */
+    /**
+     * Capture seek/playing from last disk restore for prepare-time apply.
+     * Layman: remembers where you left off after force-stop.
+     * 2026-07-19
+     */
+    private void armQueueResumeFromStore(boolean wasEmpty) {
+        queuePendingResumeMs = PlayQueueStore.lastRestoredSeekMs;
+        queuePendingResumePlaying = wasEmpty && PlayQueueStore.lastRestoredPlaying;
+        if (queuePendingResumePlaying) {
+            isPausedByHand = false;
+            clockHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    tryResumeRestoredPlayback();
+                }
+            }, 600L);
+        } else if (queuePendingResumeMs > 0) {
+            isPausedByHand = true;
+        }
+    }
+
+    /** Auto-prepare current music/podcast after kill while playing. 2026-07-19 */
+    private void tryResumeRestoredPlayback() {
+        if (!queuePendingResumePlaying) return;
+        queuePendingResumePlaying = false;
+        if (!playback.hasAnyQueue() || StemOrMixSession.isActive()) return;
+        if (playback.isMusicActive() && !playback.musicPlaylist().isEmpty()) {
+            prepareMusicTrack(playback.musicIndex());
+        }
+    }
+
+    /**
+     * Apply kill-relaunch seek once after MediaPlayer/IJK prepared.
+     * Was: seek only for audiobooks. Reversal: drop queuePendingResumeMs branch.
+     * 2026-07-19
+     */
+    private void applyQueueResumeSeekMs(android.media.MediaPlayer mp) {
+        if (mp == null || queuePendingResumeMs <= 0) return;
+        try {
+            mp.seekTo(queuePendingResumeMs);
+        } catch (Exception ignored) {}
+        queuePendingResumeMs = -1;
+    }
+
+    private void applyQueueResumeSeekMs(com.solar.launcher.podcast.PodcastIjkPlayer mp) {
+        if (mp == null || queuePendingResumeMs <= 0) return;
+        try {
+            mp.seekTo(queuePendingResumeMs);
+        } catch (Exception ignored) {}
+        queuePendingResumeMs = -1;
+    }
+
+    /** Reload persisted queue when memory is empty or disk epoch is newer. 2026-07-19 */
     private void ensurePlaybackQueueSyncedFromStoreAsync() {
         new Thread(new Runnable() {
             @Override
@@ -22859,25 +23235,19 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 final PlayQueue fromDisk = new PlayQueue();
                 final boolean hasDisk = PlayQueueStore.restore(getApplicationContext(), fromDisk);
                 final int missing = PlayQueueStore.countMissingPaths(getApplicationContext());
+                final long diskEpoch = PlayQueueStore.lastRestoredEpoch;
 
                 runOnUiThreadSafe(new Runnable() {
                     @Override
                     public void run() {
                         if (hasDisk && !fromDisk.isEmpty()) {
-                            int memSize = playback.unifiedQueue().size();
-                            if (!playback.hasAnyQueue() || fromDisk.size() > memSize) {
+                            boolean memEmpty = !playback.hasAnyQueue();
+                            if (AsyncPlayQueueWriter.shouldRestoreFromDisk(memEmpty, diskEpoch)) {
                                 playback.restoreQueueState(fromDisk.items(), fromDisk.index());
+                                AsyncPlayQueueWriter.noteRestoredEpoch(diskEpoch);
+                                armQueueResumeFromStore(memEmpty);
                                 syncNowPlayingHomeVisibility();
                                 refreshRestoredQueuePreview();
-                                // #region agent log
-                                try {
-                                    org.json.JSONObject d = new org.json.JSONObject();
-                                    d.put("fromDisk", fromDisk.size());
-                                    d.put("wasMem", memSize);
-                                    d.put("index", fromDisk.index());
-                                    QueueDebugLog.log("MainActivity.ensurePlaybackQueueSyncedFromStore", "restored from store", "H7", d);
-                                } catch (Exception ignored) {}
-                                // #endregion
                             }
                         }
                         if (missing > 0) {
@@ -25673,17 +26043,24 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void persistPlaybackQueue() {
         // ponytail: failed mount-time restore leaves memory empty while play_queue.json still has items — never wipe disk.
         if (!playback.hasAnyQueue()
-                && PlayQueueStore.persistedItemCount(getApplicationContext()) > 0) {
+                && PlayQueueStore.hasPersistedQueue(getApplicationContext())) {
             return;
         }
-        PlayQueueStore.save(getApplicationContext(), playback.unifiedQueue());
+        int seek = -1;
+        boolean playing = false;
+        try {
+            seek = activeAudioPositionMs();
+            playing = isActiveAudioPlaying();
+        } catch (Exception ignored) {}
+        AsyncPlayQueueWriter.bumpEpoch();
+        AsyncPlayQueueWriter.scheduleSave(getApplicationContext(), playback.unifiedQueue(),
+                seek, playing);
         syncNowPlayingHomeVisibility();
     }
 
     /** Coalesce rapid queue edits (context-menu move) into one disk write. */
     private void persistPlaybackQueueDebounced() {
-        persistQueueHandler.removeCallbacks(persistQueueDebouncedRunnable);
-        persistQueueHandler.postDelayed(persistQueueDebouncedRunnable, PERSIST_QUEUE_DEBOUNCE_MS);
+        persistPlaybackQueue();
     }
 
     private void restorePlaybackQueue() {
@@ -25882,6 +26259,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (globalPpLongFlowHandled || currentScreenState == STATE_FLOW) return;
         if (globalPpKeyDownAt <= 0) return;
         if (System.currentTimeMillis() - globalPpKeyDownAt < FLOW_LAUNCH_HOLD_MS) return;
+        // 2026-07-19 — Never open Flow while Stem/Mix assign owns the library.
+        if (mixAssignMode || stemPickMode || StemOrMixSession.isActive()) {
+            clearFlowHoldThrobber();
+            return;
+        }
         // 2026-07-15 — Song lists: long PP jumps to next letter only when list is title-sorted.
         if (currentScreenState == STATE_BROWSER && currentBrowserMode == BROWSER_VIRTUAL_SONGS
                 && listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE
@@ -25972,6 +26354,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             } else if (stemPickMode && currentScreenState == STATE_BROWSER) {
                 // Play confirms marked Stem tracks. 2026-07-19
                 confirmStemPickAndOpen();
+                clickFeedback();
+            } else if (mixAssignMode && currentScreenState == STATE_BROWSER) {
+                // Play short/hold handled in handleMixAssignKey — swallow here. 2026-07-19
                 clickFeedback();
             } else if (currentScreenState != STATE_FLOW) {
                 // Always transport — never handleCenterShortClick from play/pause (2026-07-10).
@@ -26723,6 +27108,18 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
      */
     private void showThemedContextMenu() {
         if (themedContextMenu == null) return;
+        // Mix/Stem pick: OK navigates library; never open global context. 2026-07-19
+        if (mixAssignMode || stemPickMode) {
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("mix", mixAssignMode);
+                d.put("stem", stemPickMode);
+                Debug8b0481Log.log("MainActivity.showThemedContextMenu", "blocked pick mode", "H-MIX-OK", d);
+            } catch (Exception ignored) {}
+            // #endregion
+            return;
+        }
         if (layoutLoadingOverlay != null && layoutLoadingOverlay.getVisibility() == View.VISIBLE) return;
         // 2026-07-18 — Menu is opening: drop hold spinner so user knows they can release.
         // Was: throbber until KEY_UP — looked like “keep holding” after Options already painted.
@@ -27019,14 +27416,54 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     playOrPauseMusic();
                 }
             });
-            // 2026-07-19 — Stem Player opens library pick (mark 1–3, Play to jam).
-            if (com.solar.launcher.stem.LalalAccount.hasUsableKey(prefs)) {
+            // 2026-07-19 — Stem Player / Mix require user API key opt-in (not demo).
+            if (com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
                 addContextAction(getString(R.string.context_action_stem_player), new Runnable() {
                     @Override
                     public void run() {
                         enterStemPickBrowse();
                     }
                 });
+            }
+            // 2026-07-19 — Start Mix from NP (pre-fill slot 1 from current track when possible).
+            if (com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
+                addContextAction(getString(R.string.context_action_start_mix), new Runnable() {
+                    @Override
+                    public void run() {
+                        File cur = null;
+                        if (!playback.musicPlaylist().isEmpty()) {
+                            cur = playback.musicPlaylist().get(playback.musicIndex());
+                        }
+                        enterMixAssignBrowse(-1, cur);
+                    }
+                });
+            }
+            // 2026-07-19 — Play Instrumental / Acapella from Now Playing (opt-in or local).
+            if (!playback.musicPlaylist().isEmpty()) {
+                final File npSoloSrc = playback.musicPlaylist().get(playback.musicIndex());
+                if (npSoloSrc != null && npSoloSrc.isFile()) {
+                    File cacheDir = getCacheDir();
+                    final File instrLocal = com.solar.launcher.stem.LalalClient.findReadySoloFile(
+                            this, npSoloSrc, com.solar.launcher.stem.SoloMode.INSTRUMENTAL, cacheDir);
+                    final File acapLocal = com.solar.launcher.stem.LalalClient.findReadySoloFile(
+                            this, npSoloSrc, com.solar.launcher.stem.SoloMode.ACAPELLA, cacheDir);
+                    if (com.solar.launcher.stem.StemFeatures.showSoloMenu(prefs, instrLocal != null)) {
+                        addContextAction(getString(R.string.context_action_play_instrumental), new Runnable() {
+                            @Override
+                            public void run() {
+                                playSoloStemMode(npSoloSrc, com.solar.launcher.stem.SoloMode.INSTRUMENTAL);
+                            }
+                        });
+                    }
+                    if (com.solar.launcher.stem.StemFeatures.showSoloMenu(prefs, acapLocal != null)) {
+                        addContextAction(getString(R.string.context_action_play_acapella), new Runnable() {
+                            @Override
+                            public void run() {
+                                playSoloStemMode(npSoloSrc, com.solar.launcher.stem.SoloMode.ACAPELLA);
+                            }
+                        });
+                    }
+                }
             }
             // 2026-07-14 — A5: Scrubbing is opt-in (OK is play/pause; face L/R skip unless scrubbing).
             // Layman: pick Scrubbing, then face L/R (or wheel) nudge the seek cursor; OK commits.
@@ -29917,9 +30354,22 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void handleBackShortPress() {
         if (currentScreenState == STATE_STEM_PLAYER && stemPlayerHost != null) {
-            // Short BACK selects Vocals zone — does not leave Stem Player.
+            // Short BACK = Vocals pad — must send DOWN+UP or focus/cycle never runs. 2026-07-19
+            // Was: ACTION_DOWN only (stutter armed, no onStemKey). Reversal: DOWN-only KeyEvent.
+            long now = android.os.SystemClock.uptimeMillis();
             stemPlayerHost.onKey(KeyEvent.KEYCODE_BACK,
-                    new KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK));
+                    new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
+            stemPlayerHost.onKey(KeyEvent.KEYCODE_BACK,
+                    new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
+            clickFeedback();
+            return;
+        }
+        if (currentScreenState == STATE_MIX && mixPlayerHost != null && !mixAssignMode) {
+            long now = android.os.SystemClock.uptimeMillis();
+            mixPlayerHost.onKey(KeyEvent.KEYCODE_BACK,
+                    new KeyEvent(now, now, KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BACK, 0));
+            mixPlayerHost.onKey(KeyEvent.KEYCODE_BACK,
+                    new KeyEvent(now, now, KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0));
             clickFeedback();
             return;
         }
@@ -30108,6 +30558,14 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     stemPickMode = false;
                     stemMashupMarks.clear();
                     changeScreen(stemPickReturnScreen, true);
+                } else if (mixAssignMode) {
+                    // Cancel Mix assign — restore Mix face or prior screen. 2026-07-19
+                    int ret = mixAssignReturnScreen;
+                    mixAssignMode = false;
+                    mixReassignDeck = -1;
+                    java.util.Arrays.fill(mixAssignSlots, null);
+                    progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
+                    changeScreen(ret >= 0 ? ret : STATE_MENU, true);
                 } else {
                     changeScreen(STATE_MENU, true);
                 }
@@ -30141,8 +30599,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             } else if ("PLAYLIST".equals(virtualQueryType)) {
                                 currentBrowserMode = BROWSER_PLAYLISTS;
                                 buildPlaylistsUI();
-                            } else if (virtualQueryType.equals("ALL") || "RECENT".equals(virtualQueryType)) {
+                            } else if (virtualQueryType.equals("ALL") || "RECENT".equals(virtualQueryType)
+                                    || "HAS_STEMS".equals(virtualQueryType)) {
                                 // 2026-07-15 — Recently Added backs to library root like All Songs.
+                                // 2026-07-19 — Has Stems keeps stemPickMode (in-pick filter).
+                                // Was: cleared pick mode on Back from Has Stems.
                                 currentBrowserMode = BROWSER_ROOT;
                                 buildFileBrowserUI();
                             } else if ("GENRE".equals(virtualQueryType)) {
@@ -30478,7 +30939,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** Theme row chrome for standalone XML buttons (scan, server toggle) and list rows. */
     private void configureY1ThemedButton(final Button btn, final int rowKind) {
         int rowW = listRowWidthPx > 0 ? listRowWidthPx : y1ActiveRowWidthPx();
-        btn.setBackground(getY1RowBackground(false, rowW, rowKind));
+        // 2026-07-19 — StateListDrawable once; focus flips selected state (was setBackground every focus).
+        btn.setBackground(getY1RowStateBackground(rowW, rowKind));
         btn.setTypeface(ThemeManager.getCustomFont(), android.graphics.Typeface.BOLD);
         btn.setSoundEffectsEnabled(false);
         btn.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX,
@@ -30516,11 +30978,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     } catch (Exception ignored) {}
                 }
                 // #endregion
-                btn.setBackground(getY1RowBackground(hasFocus, w, rowKind));
+                // 2026-07-19 — Flip selected on StateListDrawable; rebuild only if missing.
+                if (!(btn.getBackground() instanceof android.graphics.drawable.StateListDrawable)) {
+                    btn.setBackground(getY1RowStateBackground(w, rowKind));
+                }
+                btn.setSelected(hasFocus);
                 ThemeManager.applyThemedTextStyle(btn, hasFocus
                         ? y1RowTextColorSelected(rowKind) : y1RowTextColorNormal(rowKind));
-                btn.setSelected(hasFocus);
-                if (hasFocus) showFastScrollLetter(btn.getText().toString());
+                if (hasFocus) {
+                    if (!scrollIdleGate.isSpinning()) enableMarquee(btn);
+                    showFastScrollLetter(btn.getText().toString());
+                } else {
+                    btn.setEllipsize(TextUtils.TruncateAt.END);
+                    btn.setHorizontallyScrolling(false);
+                }
             }
         });
 
@@ -31871,6 +32342,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         containerSettingsItems.addView(btnVideo);
 
         // 2026-07-18 — Lalal Stem Player API key (demo bundled; shows Not configured until user sets).
+        // 2026-07-19 — Opt-in unlocks Stem / Mix / Instrumental / Acapella; hint in preview pane.
         LinearLayout btnLalal = createSettingsRow(RowKeys.LALAL, R.string.settings_lalal, false);
         btnLalal.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -38662,6 +39134,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     private void startLibraryScan(final boolean userInitiated) {
         if (libraryScanRunning) return;
         if (isUsbMassStorageUiLocked()) return;
+        // 2026-07-19 — Exclusive Stem/Mix: refuse scans so decode/mix is not starved.
+        if (StemOrMixSession.isActive()) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("userInitiated", userInitiated);
+                Debug8b0481Log.log("MainActivity.startLibraryScan", "refused stem/mix session", "H5", d);
+            } catch (Exception ignored) {}
+            return;
+        }
         libraryScanRunning = true;
         isCustomScanning = customLibrary.isEmpty();
         libraryScanTrackCount = 0;
@@ -38677,14 +39158,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             Debug898913Log.logAlways("MainActivity.startLibraryScan", "scan started", "H1", d);
             Debug383b4eLog.log(this, "MainActivity.startLibraryScan", "scan started", "B,C", d);
             Debug543e15Log.log("MainActivity.startLibraryScan", "scan started", "D", d);
+            Debug8b0481Log.log("MainActivity.startLibraryScan", "scan started", "H5", d);
         } catch (Exception ignored) {}
         // #endregion
-        runOnUiThread(new Runnable() {
-            @Override
-            public void run() {
-                acquireBlockingOverlay(OVERLAY_LIB_SCAN, getString(R.string.library_scanning));
-            }
-        });
+        // Cold-start / background: no full-screen block until a real filesystem walk. 2026-07-19
+        // Was: overlay on every boot while SQLite hydrate + art gap check (~20s jank).
+        // Reversal: always acquire OVERLAY_LIB_SCAN here.
+        if (userInitiated) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    acquireBlockingOverlay(OVERLAY_LIB_SCAN, getString(R.string.library_scanning));
+                }
+            });
+        }
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -38708,6 +39195,16 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
         if (!userInitiated && tryFinishScanFromFreshCache(gen, userInitiated)) {
             return;
+        }
+        // Full walk needed — show blocking overlay (skipped for silent cold-start fast-path). 2026-07-19
+        if (!userInitiated) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (libraryScanGen != gen) return;
+                    acquireBlockingOverlay(OVERLAY_LIB_SCAN, getString(R.string.library_scanning));
+                }
+            });
         }
         final java.util.HashSet<String> seenPaths = MusicLibraryStore.newKeepSet();
         final java.util.ArrayList<SongItem> scanned = new java.util.ArrayList<SongItem>();
@@ -38771,11 +39268,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             d.put("scanned", scanned.size());
             d.put("ms", scanMs);
             d.put("roots", rootIndex);
+            d.put("userInitiated", userInitiated);
             Debug898913Log.logAlways("MainActivity.runLibraryScanWorker",
                     "parallel scan done", "H3,H4", d);
             Debug383b4eLog.log(MainActivity.this, "MainActivity.runLibraryScanWorker",
                     "parallel scan done", "B,C", d);
             Debug543e15Log.log("MainActivity.runLibraryScanWorker", "all roots done", "B,C,D", d);
+            Debug8b0481Log.log("MainActivity.runLibraryScanWorker", "full walk done", "H5", d);
         } catch (Exception ignored) {}
         // #endregion        // Perf log: full scan timing is recorded after album-art ingest below.
         store.deleteExcept(seenPaths);
@@ -38899,7 +39398,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     private void markArtCacheReadyStamp() {
         if (prefs == null) return;
-        prefs.edit().putInt(PREF_ART_CACHE_READY_TRACKS, customLibrary.size()).apply();
+        int n = customLibrary.size();
+        // 2026-07-19 — Never persist 0 (poisoned “ready” vs empty lib).
+        if (n <= 0) return;
+        prefs.edit().putInt(PREF_ART_CACHE_READY_TRACKS, n).apply();
     }
 
     /**
@@ -38910,69 +39412,39 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         final MusicLibraryStore store = MusicLibraryStore.getInstance(getApplicationContext());
         purgeStaleLibraryPaths(store);
         if (customLibrary.isEmpty()) return false;
-        int staleTrackCount = 0;
-        int zeroTrackNumCount = 0;
-        int legacyYearRows = 0;
+        // One-shot year=0 → −1 so fast-path sticks. 2026-07-19
+        store.migrateLegacyZeroYears();
+        java.util.ArrayList<File> files = new java.util.ArrayList<File>(customLibrary.size());
         synchronized (customLibrary) {
             for (SongItem item : customLibrary) {
                 if (item == null || item.file == null || !item.file.isFile()) return false;
-                MusicLibraryStore.Track row = store.get(item.file.getAbsolutePath());
-                if (row != null && row.trackNumber == 0) zeroTrackNumCount++;
-                if (row != null && row.year == 0) legacyYearRows++;
-                if (!store.isFresh(item.file)) staleTrackCount++;
+                files.add(item.file);
             }
         }
-        boolean hasGaps = albumArtCacheHasGaps();
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("gen", gen);
-            d.put("userInitiated", userInitiated);
-            d.put("libSize", customLibrary.size());
-            d.put("staleTracks", staleTrackCount);
-            d.put("zeroTrackNum", zeroTrackNumCount);
-            d.put("legacyYearRows", legacyYearRows);
-            d.put("hasGaps", hasGaps);
-            d.put("artReadyStamp", prefs != null
-                    ? prefs.getInt(PREF_ART_CACHE_READY_TRACKS, -1) : -1);
-            Debug3b26caLog.log("MainActivity.tryFinishScanFromFreshCache",
-                    staleTrackCount == 0 ? "fast-path eligible" : "full walk required", "H1,H5", d);
-            Debug383b4eLog.log(MainActivity.this, "MainActivity.tryFinishScanFromFreshCache",
-                    staleTrackCount == 0 && legacyYearRows == 0
-                            ? "fast-path eligible" : "full walk required", "B,C", d);
-            boolean fastPath = staleTrackCount == 0 && legacyYearRows == 0;
-            d.put("fastPathWouldTake", fastPath);
-            d.put("blockedByYearZero", legacyYearRows > 0);
-            d.put("blockedByStale", staleTrackCount > 0);
-            Debug543e15Log.log("MainActivity.tryFinishScanFromFreshCache",
-                    fastPath ? "fast-path eligible" : "full walk required", "A,E", d);
-            // #region agent log
-            Debug391bb9Log.note("scan-fast", fastPath ? "H-SCAN-OK" : "H-SCAN-YEAR0",
-                    legacyYearRows + staleTrackCount);
-            // #endregion
-        } catch (Exception ignored) {}
-        // #endregion
-        if (staleTrackCount > 0) return false;
-        // 2026-07-06: force full walk while any DB row still has legacy year=0 sentinel.
-        if (legacyYearRows > 0) return false;
-        if (!hasGaps) {
-            if (libraryScanGen != gen) return true;
-            runOnUiThread(new Runnable() {
-                @Override
-                public void run() {
-                    finishLibraryScan(gen, userInitiated);
-                }
-            });
-            return true;
+        long tFresh0 = System.currentTimeMillis();
+        java.util.HashMap<String, MusicLibraryStore.Track> freshMap = store.getFreshBatch(files);
+        int staleTrackCount = files.size() - freshMap.size();
+        long freshMs = System.currentTimeMillis() - tFresh0;
+        // 2026-07-19 — Stamp 0 is a poison value (empty-lib mark); treat as unset.
+        // Was: readyTracks==0 ≠ libSize → expensive FlowCatalog gap walk every boot.
+        int artStamp = prefs != null ? prefs.getInt(PREF_ART_CACHE_READY_TRACKS, -1) : -1;
+        if (artStamp == 0) {
+            clearArtCacheReadyStamp();
+            artStamp = -1;
         }
+        boolean stampMatches = artStamp > 0 && artStamp == customLibrary.size();
+        if (staleTrackCount > 0) return false;
         if (libraryScanGen != gen) return true;
+        // Finish UI immediately — do not sync-walk album covers on the scan critical path. 2026-07-19
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
                 finishLibraryScan(gen, userInitiated);
             }
         });
-        scheduleAlbumArtIngestAsync(gen);
+        if (!stampMatches) {
+            scheduleAlbumArtIngestAsync(gen);
+        }
         return true;
     }
 
@@ -38999,7 +39471,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         if (pendingAlbumArtCacheRebuild) return true;
         if (prefs != null) {
             int readyTracks = prefs.getInt(PREF_ART_CACHE_READY_TRACKS, -1);
-            if (readyTracks >= 0 && readyTracks == customLibrary.size()) {
+            // 2026-07-19 — Stamp 0 means “never ready” (poison); clear so next mark can stick.
+            if (readyTracks == 0) {
+                clearArtCacheReadyStamp();
+                return true;
+            }
+            if (readyTracks > 0 && readyTracks == customLibrary.size()) {
                 // #region agent log
                 try {
                     org.json.JSONObject d = new org.json.JSONObject();
@@ -39048,6 +39525,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     /** Pre-scale album art to 240px JPEG on internal storage for fast Flow navigation. */
     private void buildAlbumArtCacheAfterScan(int gen) {
         if (libraryScanGen != gen) return;
+        // 2026-07-19 — Exclusive Stem/Mix: skip art ingest until jam ends.
+        if (StemOrMixSession.isActive()) return;
+        // Stamp-skip: library size matches last successful ingest. 2026-07-19
+        int artStamp = prefs != null ? prefs.getInt(PREF_ART_CACHE_READY_TRACKS, -1) : -1;
+        if (artStamp > 0 && artStamp == customLibrary.size()) {
+            return;
+        }
         // 2026-07-06: Idle-gate — defer ingest while Flow owns the carousel (no visual change).
         long flowWaitUntil = System.currentTimeMillis() + 30000L;
         while (libraryScanGen == gen && currentScreenState == STATE_FLOW
@@ -39059,16 +39543,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 return;
             }
         }
-        if (libraryScanGen != gen) return;
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("gen", gen);
-            d.put("libSize", customLibrary.size());
-            Debug898913Log.log("MainActivity.buildAlbumArtCacheAfterScan",
-                    "art cache ingest start", "H1", d);
-        } catch (Exception ignored) {}
-        // #endregion
+        if (libraryScanGen != gen || StemOrMixSession.isActive()) return;
         final File artDir = com.solar.launcher.flow.AlbumArtCache.cacheDir(getApplicationContext());
         final File flowDir = com.solar.launcher.flow.FlowThumbCache.cacheDir(getApplicationContext());
         final com.solar.launcher.flow.FlowCoverResolver.Host host =
@@ -39089,11 +39564,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         final boolean multiTrack = prefs != null && prefs.getBoolean(PREF_FLOW_MULTI_TRACK_ALBUMS, false);
         List<com.solar.launcher.flow.FlowItem> albums = com.solar.launcher.flow.FlowCatalog.buildAlbums(
                 flowLibraryRows(), libraryBrowsePrefs, policyTracksFromLibrary(), multiTrack);
-        long t0 = System.currentTimeMillis();
-        int built = 0;
-        final int albumTotal = albums.size();
+        // Missing keys only — skip albums already on disk. 2026-07-19
+        java.util.ArrayList<com.solar.launcher.flow.FlowItem> missing =
+                new java.util.ArrayList<com.solar.launcher.flow.FlowItem>();
         for (com.solar.launcher.flow.FlowItem item : albums) {
-            if (libraryScanGen != gen) return;
             if (item == null || item.coverKey == null || item.coverKey.isEmpty()) continue;
             if (com.solar.launcher.flow.AlbumArtCache.has(artDir, item.coverKey)) {
                 int flowPx = com.solar.launcher.flow.FlowThumbCache.DEFAULT_THUMB_PX;
@@ -39107,34 +39581,63 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
                 continue;
             }
-            com.solar.launcher.flow.FlowCoverResolver.resolveFromTracks(
-                    host.tracksForCover(item), host, com.solar.launcher.flow.AlbumArtCache.THUMB_PX,
-                    item.coverKey, artDir, flowDir);
-            built++;
-            if (built % 12 == 0) {
-                final int done = built;
-                runOnUiThread(new Runnable() {
+            missing.add(item);
+        }
+        if (missing.isEmpty()) {
+            markArtCacheReadyStamp();
+            return;
+        }
+        final int albumTotal = missing.size();
+        final java.util.concurrent.atomic.AtomicInteger built =
+                new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.ExecutorService pool =
+                java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            java.util.ArrayList<java.util.concurrent.Future<?>> futures =
+                    new java.util.ArrayList<java.util.concurrent.Future<?>>();
+            for (final com.solar.launcher.flow.FlowItem item : missing) {
+                futures.add(pool.submit(new Runnable() {
                     @Override
                     public void run() {
-                        if (libraryScanGen != gen || !libraryScanRunning) return;
-                        setLoadingOverlayText(getString(R.string.library_art_cache_progress, done, albumTotal));
+                        if (libraryScanGen != gen || StemOrMixSession.isActive()) return;
+                        if (LowMemoryGate.shouldDeferHeavyWork(MainActivity.this)
+                                && !StemOrMixSession.isActive()) {
+                            // Still allow under mild pressure if not Stem/Mix; abort on exclusive.
+                        }
+                        if (StemOrMixSession.isActive()) return;
+                        com.solar.launcher.flow.FlowCoverResolver.resolveFromTracks(
+                                host.tracksForCover(item), host,
+                                com.solar.launcher.flow.AlbumArtCache.THUMB_PX,
+                                item.coverKey, artDir, flowDir);
+                        int n = built.incrementAndGet();
+                        if (n % 12 == 0) {
+                            final int done = n;
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (libraryScanGen != gen || !libraryScanRunning) return;
+                                    setLoadingOverlayText(getString(
+                                            R.string.library_art_cache_progress, done, albumTotal));
+                                }
+                            });
+                        }
                     }
-                });
+                }));
             }
+            for (java.util.concurrent.Future<?> f : futures) {
+                try {
+                    f.get();
+                } catch (Exception ignored) {}
+                if (libraryScanGen != gen || StemOrMixSession.isActive()) {
+                    pool.shutdownNow();
+                    return;
+                }
+            }
+        } finally {
+            pool.shutdown();
         }
-        // #region agent log
-        try {
-            org.json.JSONObject d = new org.json.JSONObject();
-            d.put("built", built);
-            d.put("albums", albums.size());
-            d.put("ms", System.currentTimeMillis() - t0);
-            Debug3b26caLog.log("MainActivity.buildAlbumArtCacheAfterScan",
-                    "ingest complete", "H6", d);
-        } catch (Exception ignored) {}
-        // #endregion
-        if (!albumArtCacheHasGaps()) {
-            markArtCacheReadyStamp();
-        }
+        // Stamp from library size after missing-only pass — no second catalog rebuild. 2026-07-19
+        markArtCacheReadyStamp();
     }
 
     /** Package-visible for unit tests — survives activity recreate after reset. */
@@ -39292,11 +39795,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         } catch (Exception ignored) {}
         // #endregion
         requestSoulseekShareRescan();
-        if (soulseekActive() && soulseekSharingEnabled) {
+        if (soulseekActive() && soulseekSharingEnabled
+                && !LowMemoryGate.shouldDeferHeavyWork(this)) {
             updateSoulseekSharePolicy();
         }
         refreshLibraryBrowseIfVisible();
         // 2026-07-16 — Skip Flow precook under RAM pressure (catalog bake piles on post-scan).
+        // 2026-07-19 — Also defer while Stem/Mix exclusive (LowMemoryGate).
         // Still refresh browser / toast below. Reversal: always precook.
         if (flowScreenHost != null) {
             if (LowMemoryGate.shouldDeferHeavyWork(this)) {
@@ -39523,6 +40028,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 if ("GENRE".equals(virtualQueryType)) return getString(R.string.path_library_genre, virtualQueryValue);
                 if ("YEAR".equals(virtualQueryType)) return getString(R.string.path_library_year, virtualQueryValue);
                 if ("FAVORITES".equals(virtualQueryType)) return getString(R.string.path_library_favorites);
+                if ("HAS_STEMS".equals(virtualQueryType)) return getString(R.string.path_library_has_stems);
                 if ("PLAYLIST".equals(virtualQueryType)) return getString(R.string.path_library_playlist, virtualQueryValue);
                 return getString(R.string.path_library_section, virtualQueryValue);
             default:
@@ -40974,8 +41480,48 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     openFlow(FlowLaunchRequest.picker(STATE_BROWSER));
                 }
             });
-            if (isFlowEnabled()) {
+            // Stem pick browse: hide Flow + Mix + Stem Player; show Has Stems filter. 2026-07-19
+            // Was: hub Has Stems opened freeze-prone full probe. Reversal: that hub wiring.
+            if (isFlowEnabled() && !stemPickMode) {
                 containerBrowserItems.addView(btnFlow);
+            }
+
+            // 2026-07-19 — Stem / Mix hub rows require user API key opt-in (not demo).
+            if (com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
+                if (!stemPickMode) {
+                    // Normal Music hub — enter Stem pick at library root. 2026-07-19
+                    Button btnStemPlayer = createListButton(getString(R.string.browser_stem_player));
+                    btnStemPlayer.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            clickFeedback();
+                            enterStemPickBrowse();
+                        }
+                    });
+                    containerBrowserItems.addView(btnStemPlayer);
+                } else {
+                    // In-pick filter — ready pads only (fast async). 2026-07-19
+                    Button btnHasStems = createListButton(getString(R.string.browser_has_stems));
+                    btnHasStems.setOnClickListener(new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            clickFeedback();
+                            enterHasStemsBrowse();
+                        }
+                    });
+                    containerBrowserItems.addView(btnHasStems);
+                }
+            }
+            if (!stemPickMode && com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
+                Button btnMix = createListButton(getString(R.string.mix_open));
+                btnMix.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        clickFeedback();
+                        enterMixAssignBrowse(-1, null);
+                    }
+                });
+                containerBrowserItems.addView(btnMix);
             }
 
             // 2026-07-15 — Music hub YouTube (audio → music NP); Videos → YouTube stays video.
@@ -41671,7 +42217,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         MusicLibraryStore.getInstance(this).setFavorite(path, on);
         if (on) favoritePaths.add(path);
         else favoritePaths.remove(path);
-        if (currentBrowserMode == BROWSER_FAVORITES) buildVirtualSongsForFavorites();
+        // Favorites browse needs row drop; elsewhere LED/check only. 2026-07-19
+        if (currentBrowserMode == BROWSER_FAVORITES) {
+            buildVirtualSongsForFavorites();
+        } else if (listVirtualSongs != null
+                && listVirtualSongs.getAdapter() instanceof android.widget.BaseAdapter) {
+            ((android.widget.BaseAdapter) listVirtualSongs.getAdapter()).notifyDataSetChanged();
+        }
     }
 
     private boolean isMusicFavorite(File audio) {
@@ -41689,7 +42241,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 if (audio.delete()) {
                     favoritePaths.remove(path);
                     MusicLibraryStore.getInstance(MainActivity.this).setFavorite(path, false);
-                    startLibraryScan(false);
+                    pruneDeletedLibraryTracks(java.util.Collections.singletonList(path));
                 }
             }
         });
@@ -41710,15 +42262,50 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                         if (song.file != null) doomed.add(song.file);
                     }
                 }
+                java.util.ArrayList<String> paths = new java.util.ArrayList<String>();
                 for (File f : doomed) {
                     String path = f.getAbsolutePath();
                     f.delete();
                     favoritePaths.remove(path);
                     MusicLibraryStore.getInstance(MainActivity.this).setFavorite(path, false);
+                    paths.add(path);
                 }
-                startLibraryScan(false);
+                pruneDeletedLibraryTracks(paths);
             }
         });
+    }
+
+    /**
+     * Drop deleted paths from RAM + SQLite without a full card walk.
+     * Was: startLibraryScan(false) after every delete. Reversal: that call.
+     * 2026-07-19
+     */
+    private void pruneDeletedLibraryTracks(java.util.List<String> paths) {
+        if (paths == null || paths.isEmpty()) return;
+        MusicLibraryStore store = MusicLibraryStore.getInstance(getApplicationContext());
+        java.util.HashSet<String> doomed = new java.util.HashSet<String>(paths);
+        synchronized (customLibrary) {
+            for (int i = customLibrary.size() - 1; i >= 0; i--) {
+                SongItem s = customLibrary.get(i);
+                if (s != null && s.file != null && doomed.contains(s.file.getAbsolutePath())) {
+                    customLibrary.remove(i);
+                }
+            }
+        }
+        for (String p : paths) {
+            store.deletePath(p);
+        }
+        invalidateSongPathIndex();
+        clearArtCacheReadyStamp();
+        clearArtistOwnAlbumCache();
+        refreshLibraryCategoryIndex();
+        if (flowScreenHost != null) {
+            flowScreenHost.invalidateCatalogCache();
+        }
+        refreshLibraryBrowseIfVisible();
+        if (currentScreenState == STATE_BROWSER) {
+            refreshBrowserAfterLibraryScan();
+        }
     }
     // 💡 [추가] 아티스트/앨범 리스트 전용 10개 돌려막기 어댑터!
     private class CategoryListAdapter extends android.widget.BaseAdapter {
@@ -42584,12 +43171,46 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 }
             });
         }
-        // 2026-07-19 — Stem Player → library pick mode (not immediate open).
-        if (com.solar.launcher.stem.LalalAccount.hasUsableKey(prefs)) {
+        // 2026-07-19 — Stem Player / Mix / Instrumental / Acapella (opt-in or local solo cache).
+        if (com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
             addContextAction(getString(R.string.context_action_stem_player), new Runnable() {
                 @Override
                 public void run() {
                     enterStemPickBrowse();
+                }
+            });
+        }
+        File cacheDir = getCacheDir();
+        final File instrLocal = com.solar.launcher.stem.LalalClient.findReadySoloFile(
+                this, trackFile, com.solar.launcher.stem.SoloMode.INSTRUMENTAL, cacheDir);
+        final File acapLocal = com.solar.launcher.stem.LalalClient.findReadySoloFile(
+                this, trackFile, com.solar.launcher.stem.SoloMode.ACAPELLA, cacheDir);
+        if (com.solar.launcher.stem.StemFeatures.showSoloMenu(prefs, instrLocal != null)) {
+            final File srcInstr = trackFile;
+            addContextAction(getString(R.string.context_action_play_instrumental), new Runnable() {
+                @Override
+                public void run() {
+                    playSoloStemMode(srcInstr, com.solar.launcher.stem.SoloMode.INSTRUMENTAL);
+                }
+            });
+        }
+        if (com.solar.launcher.stem.StemFeatures.showSoloMenu(prefs, acapLocal != null)) {
+            final File srcAcap = trackFile;
+            addContextAction(getString(R.string.context_action_play_acapella), new Runnable() {
+                @Override
+                public void run() {
+                    playSoloStemMode(srcAcap, com.solar.launcher.stem.SoloMode.ACAPELLA);
+                }
+            });
+        }
+        // 2026-07-19 — Start Mix with this song in slot 1 (opt-in).
+        if (trackFile != null && trackFile.isFile()
+                && com.solar.launcher.stem.StemFeatures.showCloudStemMenus(prefs)) {
+            final File mixSeed = trackFile;
+            addContextAction(getString(R.string.context_action_start_mix), new Runnable() {
+                @Override
+                public void run() {
+                    enterMixAssignBrowse(-1, mixSeed);
                 }
             });
         }
@@ -43424,11 +44045,20 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             browserStatusTitle = getString(R.string.status_library_all_songs);
         } else if ("RECENT".equals(virtualQueryType)) {
             browserStatusTitle = getString(R.string.browser_recently_added);
+        } else if ("HAS_STEMS".equals(virtualQueryType)) {
+            browserStatusTitle = stemPickMode
+                    ? getString(R.string.stem_pick_status, stemMashupMarks.size())
+                    : getString(R.string.status_has_stems);
         } else {
             browserStatusTitle = getString(R.string.status_path, virtualQueryValue);
         }
         updateStatusBarTitle();
         updateLibraryBreadcrumb();
+        // Has Stems: off-thread invert index — never O(n) trackStemsReady on UI. 2026-07-19
+        if ("HAS_STEMS".equals(virtualQueryType)) {
+            startHasStemsBrowseAsync();
+            return;
+        }
         // Loading placeholder adapter (disabled until bind finishes).
         java.util.List<SongItem> placeholder = new ArrayList<SongItem>();
         listVirtualSongs.setAdapter(new SongListAdapter(placeholder, false));
@@ -43451,11 +44081,106 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         });
     }
 
+    /**
+     * Placeholder then background Has Stems index — keeps wheel responsive.
+     * 2026-07-19
+     */
+    private void startHasStemsBrowseAsync() {
+        scrollViewBrowser.setVisibility(View.VISIBLE);
+        listVirtualSongs.setVisibility(View.GONE);
+        containerBrowserItems.removeAllViews();
+        Button loading = createListButton(getString(R.string.has_stems_loading));
+        loading.setEnabled(false);
+        containerBrowserItems.addView(loading);
+        UiBusy.beginAutoEnd(UiBusy.REASON_LIBRARY_LOAD, 15000L);
+        final int gen = ++hasStemsBrowseGen;
+        final android.content.Context app = getApplicationContext();
+        final File appCache = getCacheDir();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                java.util.ArrayList<SongItem> snap = new java.util.ArrayList<SongItem>();
+                java.util.ArrayList<File> files = new java.util.ArrayList<File>();
+                synchronized (customLibrary) {
+                    for (SongItem s : customLibrary) {
+                        if (s == null || s.file == null) continue;
+                        snap.add(s);
+                        files.add(s.file);
+                    }
+                }
+                java.util.HashSet<String> ready =
+                        com.solar.launcher.stem.LalalClient.indexReadyOriginatingPaths(
+                                app, files, appCache);
+                final java.util.ArrayList<SongItem> matched = new java.util.ArrayList<SongItem>();
+                for (int i = 0; i < snap.size(); i++) {
+                    SongItem s = snap.get(i);
+                    if (s == null || s.file == null) continue;
+                    String path = s.file.getAbsolutePath();
+                    if (s.hasStemsBit == 1 || ready.contains(path)) {
+                        s.hasStemsBit = 1;
+                        matched.add(s);
+                    } else if (s.hasStemsBit < 0) {
+                        s.hasStemsBit = 0;
+                    }
+                }
+                sortSongItems(matched, false);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        UiBusy.end(UiBusy.REASON_LIBRARY_LOAD);
+                        if (hasStemsBrowseGen != gen) return;
+                        if (!"HAS_STEMS".equals(virtualQueryType)
+                                || currentBrowserMode != BROWSER_VIRTUAL_SONGS) {
+                            return;
+                        }
+                        bindHasStemsBrowseResults(matched);
+                    }
+                });
+            }
+        }, "HasStemsIndex").start();
+    }
+
+    /** Bind Has Stems list after background index. 2026-07-19 */
+    private void bindHasStemsBrowseResults(java.util.List<SongItem> targetSongs) {
+        virtualSongList.clear();
+        currentScrollIndexList.clear();
+        if (targetSongs == null || targetSongs.isEmpty()) {
+            scrollViewBrowser.setVisibility(View.VISIBLE);
+            listVirtualSongs.setVisibility(View.GONE);
+            containerBrowserItems.removeAllViews();
+            Button hint = createListButton(getString(R.string.has_stems_empty));
+            hint.setEnabled(false);
+            containerBrowserItems.addView(hint);
+            return;
+        }
+        for (SongItem s : targetSongs) {
+            virtualSongList.add(s.file);
+            currentScrollIndexList.add(s.title);
+        }
+        scrollViewBrowser.setVisibility(View.GONE);
+        listVirtualSongs.setVisibility(View.VISIBLE);
+        listVirtualSongs.setEnabled(true);
+        setSongListAdapter(targetSongs, false);
+        listVirtualSongs.post(new Runnable() {
+            @Override
+            public void run() {
+                if (listVirtualSongs.getChildCount() > 0) {
+                    listVirtualSongs.getChildAt(0).requestFocus();
+                }
+            }
+        });
+    }
+
     /** 2026-07-15/18 — Filter/sort/bind virtual songs (post-frame). */
     private void buildVirtualSongsNow() {
         virtualSongList.clear();
         currentScrollIndexList.clear();
         final List<SongItem> targetSongs = new ArrayList<>();
+        // HAS_STEMS uses startHasStemsBrowseAsync — never sync probe here. 2026-07-19
+        if ("HAS_STEMS".equals(virtualQueryType)) {
+            startHasStemsBrowseAsync();
+            return;
+        }
         for (SongItem song : customLibrary) {
             boolean match = false;
             // RECENT mirrors ALL content — full library, then date-sorted below.
@@ -51398,10 +52123,25 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     private void playTrackList(List<File> playlist, int startIndex, String activePlaylistName) {
+        playTrackList(playlist, startIndex, activePlaylistName, null);
+    }
+
+    /**
+     * 2026-07-19 — {@code soloTitleOverride} non-null keeps Instrumental/Acapella NP title.
+     * Was: always clear to file name / ID3. Reversal: drop 4th arg; always null.
+     */
+    private void playTrackList(List<File> playlist, int startIndex, String activePlaylistName,
+            String soloTitleOverride) {
+        this.soloNpTitleOverride = soloTitleOverride;
         // Stem pick: Center marks 1–3 instead of Now Playing. 2026-07-19
         if (stemPickMode && playlist != null && startIndex >= 0 && startIndex < playlist.size()) {
             File markFile = playlist.get(startIndex);
             if (tryStemPickMarkTrack(markFile)) return;
+        }
+        // Mix assign: Center never plays / never commits a deck — PREV/NEXT/PLAY only. 2026-07-19
+        // Was: mixReassignDeck>=0 + Center → fadeReplace. Reversal: that playTrackList block.
+        if (mixAssignMode) {
+            return;
         }
         // 2026-07-18 — Status spinner until prepare paints a ready track (NP track-to-track lag).
         // Layman: spinning while the next song loads so skip does not feel stuck.
@@ -51419,7 +52159,11 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
         if (!playback.musicPlaylist().isEmpty()) {
             File track = playback.musicPlaylist().get(playback.musicIndex());
-            tvPlayerTitle.setText(track.getName());
+            if (soloNpTitleOverride != null) {
+                tvPlayerTitle.setText(soloNpTitleOverride);
+            } else {
+                tvPlayerTitle.setText(track.getName());
+            }
             tvPlayerArtist.setText(getString(R.string.reach_loading_track));
             clearNowPlayingAlbumLine();
             playerProgress.setProgress(0);
@@ -51657,6 +52401,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             // 제목 화면에 표시
             if (t != null && !t.trim().isEmpty()) tvPlayerTitle.setText(t);
             else tvPlayerTitle.setText(safeFileName);
+            applySoloNpTitleOverride();
 
             // 가수 / 앨범 — separate Now Playing lines
             if (a != null && !a.trim().isEmpty()) {
@@ -51854,6 +52599,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             if (preparedTags.title != null && !preparedTags.title.trim().isEmpty()) {
                                 tvPlayerTitle.setText(preparedTags.title);
                             }
+                            applySoloNpTitleOverride();
                             if (preparedTags.artist != null && !preparedTags.artist.trim().isEmpty()) {
                                 tvPlayerArtist.setText(preparedTags.artist);
                             }
@@ -51879,9 +52625,13 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                             if (audiobookPendingResumeMs > 0) {
                                 try { mp.seekTo(audiobookPendingResumeMs); } catch (Exception ignored) {}
                                 audiobookPendingResumeMs = 0;
+                            } else {
+                                applyQueueResumeSeekMs(mp);
                             }
                             mp.start();
                             applyPlaybackSpeed();
+                        } else {
+                            applyQueueResumeSeekMs(mp);
                         }
                         syncNowPlayingHomeVisibility();
                         updatePlayerUI();
@@ -51982,8 +52732,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                                 } catch (Exception ignored) {
                                 }
                                 audiobookPendingResumeMs = 0;
+                            } else {
+                                applyQueueResumeSeekMs(mp);
                             }
                             mp.start();
+                        } else {
+                            applyQueueResumeSeekMs(mp);
                         }
                         syncNowPlayingHomeVisibility();
                         updatePlayerUI();
@@ -52054,7 +52808,12 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 public void onPrepared(MediaPlayer mp) {
                     try {
                         tvPlayerTimeTotal.setText(formatTime(mp.getDuration()));
-                        if (!isPausedByHand) mp.start();
+                        if (!isPausedByHand) {
+                            applyQueueResumeSeekMs(mp);
+                            mp.start();
+                        } else {
+                            applyQueueResumeSeekMs(mp);
+                        }
                         updatePlayerUI();
                     } catch (Exception ignored) {
                     }
@@ -54185,31 +54944,10 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         }
 
         // 2026-07-18 — Stem Player: wheel = armed stem / loop; keys include UP for holds.
-        if (currentScreenState == STATE_STEM_PLAYER && stemPlayerHost != null) {
-            if (Y1InputKeys.isVolumeUpKey(keyCode) || Y1InputKeys.isVolumeDownKey(keyCode)) {
-                // Pads own mix — leave STREAM_MUSIC at max. 2026-07-19
-                return true;
-            }
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (Y1InputKeys.isWheelUp(keyCode)) {
-                    stemPlayerHost.onWheel(1);
-                    clickFeedback();
-                    return true;
-                }
-                if (Y1InputKeys.isWheelDown(keyCode)) {
-                    stemPlayerHost.onWheel(-1);
-                    clickFeedback();
-                    return true;
-                }
-            }
-            // Pass DOWN + UP so Center/Prev/Next holds work.
-            if (stemPlayerHost.onKey(keyCode, event)) {
-                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                    clickFeedback();
-                }
-                return true;
-            }
-            return true;
+        // 2026-07-19 — Mix same exclusive path.
+        if ((currentScreenState == STATE_STEM_PLAYER && stemPlayerHost != null)
+                || (currentScreenState == STATE_MIX && mixPlayerHost != null)) {
+            return dispatchStemOrMixExclusiveKey(event);
         }
 
         if (currentScreenState == STATE_WEBSERVER || currentScreenState == STATE_DEEZER_SETUP) {
@@ -54394,7 +55132,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     public boolean move(int delta) {
                         return moveSettingsListFocus(delta);
                     }
-                })) {
+                }, true)) {
                     clickFeedback();
                 }
                 return true;
@@ -54406,7 +55144,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     public boolean move(int delta) {
                         return moveHomeMenuFocus(delta);
                     }
-                });
+                }, true);
                 // #region agent log
                 if (event.getRepeatCount() == 0) {
                     try {
@@ -54438,7 +55176,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     public boolean move(int delta) {
                         return moveBrowserScrollFocus(delta);
                     }
-                });
+                }, true);
                 // #region agent log
                 if (event.getRepeatCount() == 0) {
                     try {
@@ -54894,8 +55632,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     protected void onStop() {
         super.onStop();
         try {
-            persistQueueHandler.removeCallbacks(persistQueueDebouncedRunnable);
             persistPlaybackQueue();
+            AsyncPlayQueueWriter.flushNow();
         } catch (Exception ignored) {}
     }
 
@@ -54911,6 +55649,9 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
         stopSettingsPreviewVerticalMarquee();
         try {
             persistPlaybackQueue();
+        } catch (Exception ignored) {}
+        try {
+            SolarAudioFocus.abandon(getApplicationContext());
         } catch (Exception ignored) {}
         super.onDestroy();
         clockHandler.removeCallbacks(clockTask);
@@ -55420,7 +56161,8 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             final KeyEvent event = intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
             if (event == null) return;
             final Context app = context.getApplicationContext();
-            // 2026-07-06 — Re-claim slot before handle; JJ onCreate may have stolen it (H2).
+            // 2026-07-19 — Phase C: ensureRegistered throttled to 2s — skip binder on every notch.
+            // Was: call on every MEDIA_BUTTON (JJ reclaim). Still reclaims when throttle expires.
             MediaButtonRegistrar.ensureRegistered(app);
             final MainActivity activity = MainActivity.instance;
             // #region agent log
@@ -57787,21 +58529,185 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
 
     /**
      * Open Music library in stem pick mode — Center marks 1–3, Play opens Stem Player.
+     * Lands on Music hub root (Has Stems filter available; Flow/Mix/Stem Player hidden).
+     * Was: jumped straight into HAS_STEMS full probe. Reversal: enterHasStemsBrowse alias.
      * 2026-07-19
      */
-    private void enterStemPickBrowse() {
-        if (!com.solar.launcher.stem.LalalAccount.hasUsableKey(prefs)) {
+    /**
+     * 2026-07-19 — Re-apply Instrumental/Acapella NP title after ID3 bind.
+     * Layman: keep “Song (Instrumental)” even when tags load later.
+     * Technical: only if soloNpTitleOverride set. Reversal: no-op.
+     */
+    private void applySoloNpTitleOverride() {
+        if (soloNpTitleOverride == null || soloNpTitleOverride.length() == 0) return;
+        if (tvPlayerTitle != null) tvPlayerTitle.setText(soloNpTitleOverride);
+    }
+
+    /**
+     * Originating display title for solo NP suffix (library ID3 or file name).
+     * 2026-07-19
+     */
+    private String originatingTitleForSolo(File source) {
+        if (source == null) return "";
+        SongItem si = findSongItem(source);
+        if (si != null && si.title != null && si.title.trim().length() > 0) {
+            return si.title.trim();
+        }
+        String n = source.getName();
+        int dot = n.lastIndexOf('.');
+        return dot > 0 ? n.substring(0, dot) : n;
+    }
+
+    /**
+     * Play Instrumental or Acapella on normal Now Playing.
+     * Layman: peel voice or band, then play like any other song with a title suffix.
+     * Technical: local cache hit → immediate play; miss needs opt-in + Wi‑Fi + provider ensure.
+     * Was: Stem Player only. Reversal: remove method + context rows.
+     * 2026-07-19
+     */
+    private void playSoloStemMode(final File sourceTrack, final com.solar.launcher.stem.SoloMode mode) {
+        if (sourceTrack == null || !sourceTrack.isFile() || mode == null) {
             Toast.makeText(this, R.string.stem_player_need_file, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        dismissThemedContextMenu();
+        final File cache = getCacheDir();
+        File local = com.solar.launcher.stem.LalalClient.findReadySoloFile(
+                this, sourceTrack, mode, cache);
+        if (local != null && local.isFile()) {
+            String title = com.solar.launcher.stem.SoloStemTitles.displayTitle(
+                    originatingTitleForSolo(sourceTrack), mode);
+            playTrackList(java.util.Collections.singletonList(local), 0, null, title);
+            return;
+        }
+        // Full pads present: bake instrumental offline (no Wi‑Fi). 2026-07-19
+        boolean canBakeOffline = mode == com.solar.launcher.stem.SoloMode.INSTRUMENTAL
+                && (com.solar.launcher.stem.LalalClient.findReadyStemDir(
+                        this, sourceTrack, false, cache) != null
+                || com.solar.launcher.stem.LalalClient.findReadyStemDir(
+                        this, sourceTrack,
+                        com.solar.launcher.stem.LalalAccount.isPremixExperimental(prefs),
+                        cache) != null);
+        boolean canUseFullVocals = mode == com.solar.launcher.stem.SoloMode.ACAPELLA
+                && com.solar.launcher.stem.LalalClient.findSoloFromFullStems(
+                        this, sourceTrack, mode, cache) != null;
+        if (canBakeOffline || canUseFullVocals) {
+            startSoloEnsureJob(sourceTrack, mode, cache, /*needNetwork*/ false);
+            return;
+        }
+        if (!com.solar.launcher.stem.StemFeatures.isOptedIn(prefs)) {
+            Toast.makeText(this, R.string.solo_stem_need_opt_in, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!ConnectivityHelper.isOnline(this)) {
+            Toast.makeText(this, R.string.solo_stem_need_wifi, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        startSoloEnsureJob(sourceTrack, mode, cache, /*needNetwork*/ true);
+    }
+
+    /**
+     * Background ensureSolo → playTrackList; throbber + status copy while waiting.
+     * 2026-07-19
+     */
+    private void startSoloEnsureJob(final File sourceTrack, final com.solar.launcher.stem.SoloMode mode,
+            final File cache, boolean needNetwork) {
+        final com.solar.launcher.stem.StemSeparatorProvider provider =
+                com.solar.launcher.stem.StemFeatures.activeProvider(prefs);
+        // Offline bake/full-vocals can run without opt-in when pads already exist.
+        final com.solar.launcher.stem.StemSeparatorProvider sep = provider != null
+                ? provider
+                : new com.solar.launcher.stem.LalalStemSeparator(
+                        com.solar.launcher.stem.LalalAccount.effectiveKey(prefs));
+        if (needNetwork && provider == null) {
+            Toast.makeText(this, R.string.solo_stem_need_opt_in, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        soloBusyStatusTitle = mode == com.solar.launcher.stem.SoloMode.INSTRUMENTAL
+                ? getString(R.string.solo_stem_getting_instrumental)
+                : getString(R.string.solo_stem_getting_acapella);
+        com.solar.launcher.ui.UiBusy.beginAutoEnd(
+                com.solar.launcher.ui.UiBusy.REASON_DOWNLOAD, 600_000L);
+        updateStatusBarTitle();
+        final File src = sourceTrack;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File out = null;
+                String err = null;
+                try {
+                    out = sep.ensureSolo(MainActivity.this, src, mode, cache, null);
+                } catch (Exception e) {
+                    err = e.getMessage();
+                }
+                final File audio = out;
+                final String failMsg = err;
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        soloBusyStatusTitle = null;
+                        com.solar.launcher.ui.UiBusy.clear(
+                                com.solar.launcher.ui.UiBusy.REASON_DOWNLOAD);
+                        updateStatusBarTitle();
+                        if (audio == null || !audio.isFile() || audio.length() < 100) {
+                            Toast.makeText(MainActivity.this,
+                                    failMsg != null && failMsg.length() > 0
+                                            ? failMsg
+                                            : getString(R.string.solo_stem_failed),
+                                    Toast.LENGTH_SHORT).show();
+                            return;
+                        }
+                        String title = com.solar.launcher.stem.SoloStemTitles.displayTitle(
+                                originatingTitleForSolo(src), mode);
+                        playTrackList(java.util.Collections.singletonList(audio), 0, null, title);
+                    }
+                });
+            }
+        }, "solo-stem").start();
+    }
+
+    private void enterStemPickBrowse() {
+        if (!com.solar.launcher.stem.StemFeatures.isOptedIn(prefs)) {
+            Toast.makeText(this, R.string.solo_stem_need_opt_in, Toast.LENGTH_SHORT).show();
             return;
         }
         stemMashupMarks.clear();
         stemPickMode = true;
         stemPickReturnScreen = currentScreenState;
         dismissThemedContextMenu();
-        currentBrowserMode = BROWSER_ROOT;
         changeScreen(STATE_BROWSER);
+        currentBrowserMode = BROWSER_ROOT;
+        buildFileBrowserUI();
         updateStatusBarTitle();
         Toast.makeText(this, getString(R.string.stem_pick_status, 0), Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Open Has Stems list — originating tracks with pads already on disk; Center marks 1–3, Play jams.
+     * Layman: only songs that already have Stem Player files ready (from within stem pick).
+     * 2026-07-19
+     */
+    private void enterHasStemsBrowse() {
+        if (!com.solar.launcher.stem.StemFeatures.isOptedIn(prefs)) {
+            Toast.makeText(this, R.string.solo_stem_need_opt_in, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // Stay in pick mode — do not clear marks when opening the filter. 2026-07-19
+        if (!stemPickMode) {
+            stemMashupMarks.clear();
+            stemPickMode = true;
+            stemPickReturnScreen = currentScreenState;
+        }
+        dismissThemedContextMenu();
+        changeScreen(STATE_BROWSER);
+        currentBrowserMode = BROWSER_VIRTUAL_SONGS;
+        virtualQueryType = "HAS_STEMS";
+        virtualQueryValue = "";
+        virtualQueryArtist = "";
+        buildVirtualSongs();
+        updateStatusBarTitle();
+        Toast.makeText(this, getString(R.string.stem_pick_status, stemMashupMarks.size()),
+                Toast.LENGTH_SHORT).show();
     }
 
     /**
@@ -57813,6 +58719,15 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return false;
         }
         int n = toggleStemMashupMark(track);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("name", track.getName());
+            d.put("path", track.getAbsolutePath());
+            d.put("markCount", n);
+            Debug8b0481Log.log("MainActivity.tryStemPickMarkTrack", "marked", "H-A", d);
+        } catch (Exception ignored) {}
+        // #endregion
         Toast.makeText(this,
                 n > 0 ? getString(R.string.stem_pick_marked, n)
                         : getString(R.string.stem_pick_cleared),
@@ -57848,7 +58763,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             return;
         }
         java.util.ArrayList<File> marks = new java.util.ArrayList<File>(stemMashupMarks);
-        stemPickMode = false;
+        // Keep stemPickMode until openStemPlayer succeeds (Wi‑Fi gate may abort). 2026-07-19
         openStemPlayer(marks);
     }
 
@@ -57905,6 +58820,30 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
     }
 
     /**
+     * Cache Has Stems bit when pads exist — list binds skip FS probes.
+     * 2026-07-19
+     */
+    private void markHasStemsBits(java.util.List<File> tracks) {
+        if (tracks == null || tracks.isEmpty()) return;
+        boolean premix = com.solar.launcher.stem.LalalAccount.isPremixExperimental(prefs);
+        java.util.HashSet<String> paths = new java.util.HashSet<String>();
+        for (File f : tracks) {
+            if (f != null && com.solar.launcher.stem.LalalClient.trackStemsReady(
+                    this, f, premix, getCacheDir())) {
+                paths.add(f.getAbsolutePath());
+            }
+        }
+        if (paths.isEmpty()) return;
+        synchronized (customLibrary) {
+            for (SongItem s : customLibrary) {
+                if (s != null && s.file != null && paths.contains(s.file.getAbsolutePath())) {
+                    s.hasStemsBit = 1;
+                }
+            }
+        }
+    }
+
+    /**
      * Open Stem Player for 1–3 tracks (mashup). Gains start mute — jam from silence.
      * 2026-07-19
      */
@@ -57921,6 +58860,7 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
             Toast.makeText(this, R.string.stem_player_need_file, Toast.LENGTH_SHORT).show();
             return;
         }
+        markHasStemsBits(ok);
         // needLal: tracks with no live/premix cache (cross-mode probe). 2026-07-19
         // Was: anyLocal bool — same gate, clearer count for mashup offline trim.
         int needLal = 0;
@@ -57932,34 +58872,59 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                 needLal++;
             }
         }
-        // Offline: need Wi‑Fi only when every pick still needs Lalal. 2026-07-19
-        if (!ConnectivityHelper.isOnline(this) && needLal == ok.size()) {
-            Toast.makeText(this, R.string.stem_player_need_wifi, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (!ConnectivityHelper.isOnline(this) && needLal > 0) {
-            // Drop picks that still need cloud when offline. 2026-07-19
-            java.util.ArrayList<File> localOnly = new java.util.ArrayList<File>();
-            for (int i = 0; i < ok.size(); i++) {
+        boolean online = ConnectivityHelper.isOnline(this);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("markCount", ok.size());
+            d.put("needLal", needLal);
+            d.put("online", online);
+            for (int i = 0; i < ok.size() && i < 3; i++) {
                 File f = ok.get(i);
-                if (com.solar.launcher.stem.LalalClient.trackStemsReady(
-                        this, f, premix, getCacheDir())) {
-                    localOnly.add(f);
-                }
+                boolean ready = f != null && com.solar.launcher.stem.LalalClient.trackStemsReady(
+                        this, f, premix, getCacheDir());
+                d.put("t" + i, f != null ? f.getName() : "null");
+                d.put("ready" + i, ready);
             }
-            ok = localOnly;
-            if (ok.isEmpty()) {
-                Toast.makeText(this, R.string.stem_player_need_wifi, Toast.LENGTH_SHORT).show();
-                return;
-            }
+            Debug8b0481Log.log("MainActivity.openStemPlayer", "mashup gate", "H-MIX1", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        // Offline + any cloud work: do NOT silently drop — that left mashups as song-count 1. 2026-07-19
+        // Was: trim to localOnly and open anyway. Reversal: localOnly trim block below.
+        if (!online && needLal > 0) {
+            Toast.makeText(this,
+                    needLal == ok.size()
+                            ? getString(R.string.stem_player_need_wifi)
+                            : getString(R.string.stem_player_need_wifi_partial, needLal),
+                    Toast.LENGTH_LONG).show();
+            // Stay in pick mode so user can connect Wi‑Fi and Play again. 2026-07-19
+            stemPickMode = true;
+            return;
         }
         // Exclusive session: kill FM/video/music engines for mix CPU. 2026-07-19
         try {
             stopCompetingAudioEngines();
         } catch (Exception ignored) {}
+        try {
+            cancelLibraryScanGracefully("stem_session");
+        } catch (Exception ignored) {}
+        stemPickMode = false;
         pendingStemTrackFiles.clear();
         pendingStemTrackFiles.addAll(ok);
         pendingStemTrackFile = ok.get(0);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("okCount", ok.size());
+            d.put("needLal", needLal);
+            d.put("online", online);
+            for (int i = 0; i < ok.size() && i < 3; i++) {
+                File f = ok.get(i);
+                d.put("t" + i, f != null ? f.getName() : "null");
+            }
+            Debug8b0481Log.log("MainActivity.openStemPlayer", "opening mashup", "H-MIX1", d);
+        } catch (Exception ignored) {}
+        // #endregion
         changeScreen(STATE_STEM_PLAYER);
     }
 
@@ -58069,6 +59034,388 @@ if (OverlayKeyGate.isOverlayNavigationKey(code) || Y1InputKeys.isBackKey(code)) 
                     });
         }
         stemPlayerHost.attach(this, layoutStemPlayer, tracks);
+        // Exclusive jam: stop library scan so mix CPU stays free. 2026-07-19
+        try {
+            cancelLibraryScanGracefully("stem_session");
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Stem/Mix sole key owner — wheel/pads/BACK/volume swallow.
+     * Call before overlay and context menu. 2026-07-19
+     */
+    private boolean dispatchStemOrMixExclusiveKey(KeyEvent event) {
+        if (event == null) return false;
+        int sk = event.getKeyCode();
+        if (currentScreenState == STATE_STEM_PLAYER && stemPlayerHost != null) {
+            if (Y1InputKeys.isVolumeUpKey(sk) || Y1InputKeys.isVolumeDownKey(sk)) {
+                return true;
+            }
+            if (Y1InputKeys.isWheelUp(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
+                stemPlayerHost.onWheel(1);
+                clickFeedback();
+                return true;
+            }
+            if (Y1InputKeys.isWheelDown(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
+                stemPlayerHost.onWheel(-1);
+                clickFeedback();
+                return true;
+            }
+            if (Y1InputKeys.isBackKey(sk)
+                    || isCenterKey(sk)
+                    || isMediaPlayPauseKey(sk)
+                    || isMediaSkipKey(sk)
+                    || sk == KeyEvent.KEYCODE_DPAD_LEFT
+                    || sk == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || sk == KeyEvent.KEYCODE_ENTER) {
+                stemPlayerHost.onKey(sk, event);
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    clickFeedback();
+                }
+                return true;
+            }
+            // Swallow all other keys while Stem exclusive. 2026-07-19
+            return true;
+        }
+        if (currentScreenState == STATE_MIX && mixPlayerHost != null) {
+            if (Y1InputKeys.isVolumeUpKey(sk) || Y1InputKeys.isVolumeDownKey(sk)) {
+                return true;
+            }
+            if (Y1InputKeys.isWheelUp(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
+                mixPlayerHost.onWheel(1);
+                clickFeedback();
+                return true;
+            }
+            if (Y1InputKeys.isWheelDown(sk) && event.getAction() == KeyEvent.ACTION_DOWN) {
+                mixPlayerHost.onWheel(-1);
+                clickFeedback();
+                return true;
+            }
+            if (Y1InputKeys.isBackKey(sk)
+                    || isCenterKey(sk)
+                    || isMediaPlayPauseKey(sk)
+                    || isMediaSkipKey(sk)
+                    || sk == KeyEvent.KEYCODE_DPAD_LEFT
+                    || sk == KeyEvent.KEYCODE_DPAD_RIGHT
+                    || sk == KeyEvent.KEYCODE_ENTER) {
+                mixPlayerHost.onKey(sk, event);
+                if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                    clickFeedback();
+                }
+                return true;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Open Music library to assign Mix slots (PREV/NEXT/PLAY) or reassign one deck.
+     * @param reassignDeck -1 = new Mix; 0..2 = mid-session replace
+     * @param seed optional pre-fill for slot 0
+     * 2026-07-19
+     */
+    private void enterMixAssignBrowse(int reassignDeck, File seed) {
+        // 2026-07-19 — Mix needs user API key opt-in (cloud stems / future providers).
+        if (!com.solar.launcher.stem.StemFeatures.isOptedIn(prefs)) {
+            Toast.makeText(this, R.string.solo_stem_need_opt_in, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        mixAssignMode = true;
+        mixReassignDeck = reassignDeck;
+        mixAssignReturnScreen = currentScreenState == STATE_MIX ? STATE_MIX : currentScreenState;
+        java.util.Arrays.fill(mixAssignSlots, null);
+        if (reassignDeck < 0 && seed != null && seed.isFile()) {
+            com.solar.launcher.mix.MixAssignSlots.bind(mixAssignSlots, 0, seed);
+        }
+        mixAssignPlayDownAt = 0;
+        mixAssignPlayHoldStarted = false;
+        progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
+        dismissThemedContextMenu();
+        currentBrowserMode = BROWSER_ROOT;
+        changeScreen(STATE_BROWSER);
+        updateStatusBarTitle();
+        if (reassignDeck >= 0) {
+            Toast.makeText(this, getString(R.string.mix_reassign_pick, reassignDeck + 1),
+                    Toast.LENGTH_SHORT).show();
+        } else {
+            Toast.makeText(this, R.string.mix_assign_status, Toast.LENGTH_SHORT).show();
+            if (seed != null && seed.isFile()) {
+                Toast.makeText(this, getString(R.string.mix_assign_slot, 1), Toast.LENGTH_SHORT).show();
+            }
+        }
+    }
+
+    /** Focused library audio file, or null. 2026-07-19 */
+    private File focusedMixAssignableTrack() {
+        try {
+            if (listVirtualSongs != null && listVirtualSongs.getVisibility() == View.VISIBLE) {
+                int pos = listVirtualSongs.getSelectedItemPosition();
+                if (pos < 0) pos = listVirtualSongs.getCheckedItemPosition();
+                Object item = listVirtualSongs.getItemAtPosition(pos);
+                if (item instanceof SongItem && ((SongItem) item).file != null) {
+                    File f = ((SongItem) item).file;
+                    if (f.isFile() && isAudioFile(f)) return f;
+                }
+            }
+            View focused = getCurrentFocus();
+            if (focused != null && focused.getTag() instanceof SongItem) {
+                SongItem s = (SongItem) focused.getTag();
+                if (s.file != null && s.file.isFile() && isAudioFile(s.file)) return s.file;
+            }
+            if (focused != null && focused.getTag() instanceof File) {
+                File f = (File) focused.getTag();
+                if (f.isFile() && isAudioFile(f)) return f;
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    /**
+     * Mix assign browse keys: PREV/NEXT/PLAY bind decks; hold PLAY starts; Center navigates only.
+     * Layman: OK opens Artists/Albums; deck buttons pick the track under the focus.
+     * Was: Center mid-reassign commit + fall-through to context. Reversal: that Center branch.
+     * 2026-07-19
+     */
+    private boolean handleMixAssignKey(KeyEvent event) {
+        if (!mixAssignMode || currentScreenState != STATE_BROWSER || event == null) return false;
+        int code = event.getKeyCode();
+        int action = event.getAction();
+
+        // #region agent log
+        if (action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("code", code);
+                d.put("reassign", mixReassignDeck);
+                d.put("isCenter", isCenterKey(code));
+                d.put("focused", focusedMixAssignableTrack() != null
+                        ? focusedMixAssignableTrack().getName() : "");
+                Debug8b0481Log.log("MainActivity.handleMixAssignKey", "key", "H-MIX-OK", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
+
+        // Center/OK: hierarchy drill only — on a track, remind PREV/NEXT/PLAY. 2026-07-19
+        if (isCenterKey(code)) {
+            if (action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+                File f = focusedMixAssignableTrack();
+                if (f != null) {
+                    Toast.makeText(this, R.string.mix_assign_use_pads, Toast.LENGTH_SHORT).show();
+                    clickFeedback();
+                    return true;
+                }
+                // Not on a track — let normal Center open Artists/Albums/folders.
+                return false;
+            }
+            // Consume DOWN so long-OK cannot arm context mid-assign.
+            return true;
+        }
+
+        if (SolarPadKeys.isScrollWheel(code)) {
+            // Wheel scrolls the song list — not deck-3 bind. 2026-07-19
+            return false;
+        }
+
+        // Mid-mix reassign: PREV/NEXT/PLAY all commit focused file to that deck. 2026-07-19
+        if (mixReassignDeck >= 0) {
+            boolean pad = isMediaPrevKey(code) || isMediaNextKey(code)
+                    || SolarPadKeys.isPadPlayKey(code);
+            if (pad && action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+                File f = focusedMixAssignableTrack();
+                if (f == null) {
+                    Toast.makeText(this, R.string.mix_assign_use_pads, Toast.LENGTH_SHORT).show();
+                    return true;
+                }
+                final int deck = mixReassignDeck;
+                mixAssignMode = false;
+                mixReassignDeck = -1;
+                changeScreen(STATE_MIX);
+                if (mixPlayerHost != null) {
+                    mixPlayerHost.fadeReplaceDeck(deck, f);
+                }
+                clickFeedback();
+                return true;
+            }
+            if (SolarPadKeys.isPadPlayKey(code) || SolarPadKeys.isTruePlayPause(code)
+                    || isMediaPrevKey(code) || isMediaNextKey(code)) {
+                return true; // consume DOWN / repeats
+            }
+            return false;
+        }
+
+        if (isMediaPrevKey(code) && action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+            File f = focusedMixAssignableTrack();
+            if (f != null) {
+                int slot = com.solar.launcher.mix.MixAssignSlots.bind(mixAssignSlots, 0, f);
+                Toast.makeText(this, getString(R.string.mix_assign_slot, slot), Toast.LENGTH_SHORT).show();
+                updateStatusBarTitle();
+                clickFeedback();
+            } else {
+                Toast.makeText(this, R.string.mix_assign_use_pads, Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        }
+        if (isMediaNextKey(code) && action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+            File f = focusedMixAssignableTrack();
+            if (f != null) {
+                int slot = com.solar.launcher.mix.MixAssignSlots.bind(mixAssignSlots, 1, f);
+                Toast.makeText(this, getString(R.string.mix_assign_slot, slot), Toast.LENGTH_SHORT).show();
+                updateStatusBarTitle();
+                clickFeedback();
+            } else {
+                Toast.makeText(this, R.string.mix_assign_use_pads, Toast.LENGTH_SHORT).show();
+            }
+            return true;
+        }
+        if (SolarPadKeys.isPadPlayKey(code)) {
+            if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                mixAssignPlayDownAt = System.currentTimeMillis();
+                mixAssignPlayHoldStarted = false;
+                progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
+                progressHandler.postDelayed(mixAssignPlayHoldRunnable,
+                        com.solar.launcher.mix.MixAssignSlots.HOLD_PLAY_START_MS);
+                return true;
+            }
+            if (action == KeyEvent.ACTION_UP) {
+                progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
+                if (mixAssignPlayHoldStarted) {
+                    mixAssignPlayHoldStarted = false;
+                    mixAssignPlayDownAt = 0;
+                    return true;
+                }
+                mixAssignPlayDownAt = 0;
+                File f = focusedMixAssignableTrack();
+                if (f != null) {
+                    int slot = com.solar.launcher.mix.MixAssignSlots.bind(mixAssignSlots, 2, f);
+                    Toast.makeText(this, getString(R.string.mix_assign_slot, slot), Toast.LENGTH_SHORT).show();
+                    updateStatusBarTitle();
+                    clickFeedback();
+                } else {
+                    Toast.makeText(this, R.string.mix_assign_use_pads, Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private void confirmMixAssignAndOpen() {
+        if (!com.solar.launcher.mix.MixAssignSlots.canStart(mixAssignSlots)) {
+            Toast.makeText(this, R.string.mix_assign_need_slot, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        openMixPlayer(mixAssignSlots);
+    }
+
+    /** Open Mix with up to 3 track slots (nulls skipped). 2026-07-19 */
+    private void openMixPlayer(File[] slots) {
+        java.util.Arrays.fill(pendingMixTracks, null);
+        int n = 0;
+        if (slots != null) {
+            for (int i = 0; i < pendingMixTracks.length && i < slots.length; i++) {
+                File f = slots[i];
+                if (f != null && f.isFile()) {
+                    pendingMixTracks[i] = f;
+                    n++;
+                }
+            }
+        }
+        if (n == 0) {
+            Toast.makeText(this, R.string.mix_assign_need_slot, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            stopCompetingAudioEngines();
+        } catch (Exception ignored) {}
+        try {
+            cancelLibraryScanGracefully("mix_session");
+        } catch (Exception ignored) {}
+        mixAssignMode = false;
+        mixReassignDeck = -1;
+        progressHandler.removeCallbacks(mixAssignPlayHoldRunnable);
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("slots", n);
+            Debug8b0481Log.log("MainActivity.openMixPlayer", "opening mix", "H-MIX", d);
+        } catch (Exception ignored) {}
+        // #endregion
+        changeScreen(STATE_MIX);
+    }
+
+    private void ensureMixPlayerAttached(File[] tracks) {
+        if (layoutStemPlayer == null) return;
+        if (mixPlayerHost == null) {
+            mixPlayerHost = new com.solar.launcher.mix.MixPlayerHost(
+                    new com.solar.launcher.mix.MixPlayerHost.HostCallbacks() {
+                        @Override
+                        public SharedPreferences prefs() {
+                            return MainActivity.this.prefs;
+                        }
+
+                        @Override
+                        public android.content.Context appContext() {
+                            return getApplicationContext();
+                        }
+
+                        @Override
+                        public void setStatusTitle(String title) {
+                            // Status bar clock row is device clock — Mix title via getStatusBarContextTitle.
+                        }
+
+                        @Override
+                        public void onExitMixPlayer() {
+                            changeScreen(STATE_PLAYER);
+                        }
+
+                        @Override
+                        public void onRequestReassign(int deckIndex) {
+                            enterMixAssignBrowse(deckIndex, null);
+                        }
+
+                        @Override
+                        public void pauseMainMusic() {
+                            try {
+                                if (mediaPlayer != null && mediaPlayer.isPlaying()) {
+                                    mediaPlayer.pause();
+                                }
+                            } catch (Exception ignored) {}
+                            updatePlayerStatusIndicators();
+                        }
+
+                        @Override
+                        public void stopCompetingAudio() {
+                            try {
+                                stopCompetingAudioEngines();
+                            } catch (Exception ignored) {
+                                pauseMainMusic();
+                            }
+                        }
+
+                        @Override
+                        public void toast(String msg) {
+                            if (msg != null) {
+                                Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+                            }
+                        }
+
+                        @Override
+                        public void onMixSessionVolumeEnter() {
+                            enterStemSessionFullVolume();
+                        }
+
+                        @Override
+                        public void onMixSessionVolumeExit() {
+                            exitStemSessionFullVolume();
+                        }
+                    });
+        }
+        mixPlayerHost.attach(layoutStemPlayer, tracks);
+        try {
+            cancelLibraryScanGracefully("mix_session");
+        } catch (Exception ignored) {}
     }
 
     private void openFlow(FlowLaunchRequest req) {

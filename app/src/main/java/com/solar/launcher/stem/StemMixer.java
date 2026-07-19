@@ -101,10 +101,14 @@ public final class StemMixer {
         }
     };
 
+    private int loopTickSample;
     private final Runnable loopTick = new Runnable() {
         @Override
         public void run() {
             if (released || !looping || !started) return;
+            // #region agent log
+            long tLoop0 = android.os.SystemClock.uptimeMillis();
+            // #endregion
             try {
                 for (int i = 0; i < playerCount; i++) {
                     int z = playerZones[i];
@@ -140,6 +144,19 @@ public final class StemMixer {
                     } catch (Exception ignored) {}
                 }
             } catch (Exception ignored) {}
+            // #region agent log
+            loopTickSample++;
+            if (loopTickSample == 1 || loopTickSample % 50 == 0) {
+                try {
+                    org.json.JSONObject d = new org.json.JSONObject();
+                    d.put("players", playerCount);
+                    d.put("costMs", android.os.SystemClock.uptimeMillis() - tLoop0);
+                    d.put("n", loopTickSample);
+                    com.solar.launcher.Debug8b0481Log.log(
+                            "StemMixer.loopTick", "loopTick sample", "H2", d);
+                } catch (Exception ignored) {}
+            }
+            // #endregion
             main.postDelayed(this, 40);
         }
     };
@@ -203,6 +220,20 @@ public final class StemMixer {
         return msPerBar;
     }
 
+    /** How many MediaPlayers/IJK pads this mixer owns (incl. multi Melody). 2026-07-19 */
+    public int getPlayerCount() {
+        return playerCount;
+    }
+
+    /** Pads on one zone — Melody often >1 when live multi-other. 2026-07-19 */
+    public int countPlayersForZone(int zone) {
+        int n = 0;
+        for (int i = 0; i < playerCount; i++) {
+            if (playerZones[i] == zone) n++;
+        }
+        return n;
+    }
+
     public float getTargetRate() {
         return targetRate;
     }
@@ -264,10 +295,12 @@ public final class StemMixer {
         if (stems == null || stems.isEmpty()) {
             throw new IOException("Need stem files");
         }
+        // Cap IJK path too — same one-pad-per-zone budget. 2026-07-19
+        List<LalalClient.StemFile> collapsed = LalalClient.collapseToOnePadPerZone(stems);
         List<LalalClient.StemFile> ok = new ArrayList<LalalClient.StemFile>();
         boolean[] zoneHit = new boolean[STEM_COUNT];
-        for (int i = 0; i < stems.size(); i++) {
-            LalalClient.StemFile s = stems.get(i);
+        for (int i = 0; i < collapsed.size(); i++) {
+            LalalClient.StemFile s = collapsed.get(i);
             if (s == null || s.file == null || !s.file.isFile()) continue;
             int z = s.zone;
             if (z < 0 || z >= STEM_COUNT) z = 3;
@@ -408,10 +441,12 @@ public final class StemMixer {
         if (stems == null || stems.isEmpty()) {
             throw new IOException("Need stem files");
         }
+        // Cap at one stream per pad — live multi-Melody was 7 players/song on Y1. 2026-07-19
+        List<LalalClient.StemFile> collapsed = LalalClient.collapseToOnePadPerZone(stems);
         List<LalalClient.StemFile> ok = new ArrayList<LalalClient.StemFile>();
         boolean[] zoneHit = new boolean[STEM_COUNT];
-        for (int i = 0; i < stems.size(); i++) {
-            LalalClient.StemFile s = stems.get(i);
+        for (int i = 0; i < collapsed.size(); i++) {
+            LalalClient.StemFile s = collapsed.get(i);
             if (s == null || s.file == null || !s.file.isFile()) continue;
             int z = s.zone;
             if (z < 0 || z >= STEM_COUNT) z = 3;
@@ -454,6 +489,20 @@ public final class StemMixer {
         } else {
             bassBodyPath = null;
         }
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("players", playerCount);
+            d.put("wantBody", wantBody);
+            d.put("z0", countPlayersForZone(0));
+            d.put("z1", countPlayersForZone(1));
+            d.put("z2", countPlayersForZone(2));
+            d.put("z3", countPlayersForZone(3));
+            d.put("stemList", stems != null ? stems.size() : 0);
+            com.solar.launcher.Debug8b0481Log.log(
+                    "StemMixer.load", "players after load", "H1", d);
+        } catch (Exception ignored) {}
+        // #endregion
     }
 
     private void wirePrepared(MediaPlayer mp, final int zone) {

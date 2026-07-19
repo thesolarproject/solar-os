@@ -31,7 +31,7 @@ public class StemBpmTest {
 
     @Test
     public void stutterHoldMsIsShort() {
-        assertTrue(StemControls.STEM_STUTTER_HOLD_MS < 400L);
-        assertTrue(StemControls.STEM_STUTTER_HOLD_MS >= 150L);
+        assertTrue(StemControls.STEM_STUTTER_HOLD_MS < 600L);
+        assertTrue(StemControls.STEM_STUTTER_HOLD_MS >= 350L);
     }
 }

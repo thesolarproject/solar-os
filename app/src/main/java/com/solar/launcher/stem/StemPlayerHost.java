@@ -32,7 +32,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class StemPlayerHost {
     private static final long EXIT_HOLD_MS = 500L;
 
-    /** True while Stem Player UI is attached — defer heavy library work. 2026-07-18 */
+    /** True while Stem Player UI is attached — also mirrored on StemOrMixSession. 2026-07-19 */
     private static volatile boolean sessionActive;
 
     public interface HostCallbacks {
@@ -183,7 +183,11 @@ public final class StemPlayerHost {
         this.host = host;
     }
 
-    /** Library/art scanners should pause while Stem Player mixes. */
+    /**
+     * True while Stem Player UI is attached.
+     * Prefer {@link com.solar.launcher.StemOrMixSession#isActive()} for Stem+Mix shared gates.
+     * 2026-07-19
+     */
     public static boolean isSessionActive() {
         return sessionActive;
     }
@@ -202,6 +206,7 @@ public final class StemPlayerHost {
     public View attach(Context ctx, ViewGroup parent, List<File> trackFiles) {
         detach();
         sessionActive = true;
+        com.solar.launcher.StemOrMixSession.setActive(true);
         try {
             host.onStemSessionVolumeEnter();
         } catch (Exception ignored) {}
@@ -308,6 +313,10 @@ public final class StemPlayerHost {
         jobGen.incrementAndGet();
         boolean wasActive = sessionActive;
         sessionActive = false;
+        // Mix may still own the exclusive gate — only clear if Mix is not up. 2026-07-19
+        if (!com.solar.launcher.mix.MixPlayerHost.isSessionActive()) {
+            com.solar.launcher.StemOrMixSession.setActive(false);
+        }
         if (wasActive) {
             try {
                 host.onStemSessionVolumeExit();
@@ -391,6 +400,7 @@ public final class StemPlayerHost {
         if (event == null) return false;
         int action = event.getAction();
         // #region agent log
+        final long keyT0 = android.os.SystemClock.uptimeMillis();
         if (action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
             try {
                 org.json.JSONObject d = new org.json.JSONObject();
@@ -399,8 +409,14 @@ public final class StemPlayerHost {
                 d.put("loading", loading);
                 d.put("hasMixer", hasMixers());
                 d.put("activeZone", activeZone);
+                d.put("songs", mixers != null ? mixers.length : 0);
                 com.solar.launcher.Debug543e15Log.log(
                         "StemPlayerHost.onKey", "key UP while stem open", "A", d);
+                // Sparse input latency probe for 3-song lag. 2026-07-19
+                if (mixers != null && mixers.length >= 2) {
+                    com.solar.launcher.Debug8b0481Log.log(
+                            "StemPlayerHost.onKey", "key UP multi", "H2", d);
+                }
             } catch (Exception ignored) {}
         }
         // #endregion
@@ -530,9 +546,9 @@ public final class StemPlayerHost {
             return true;
         }
 
-        // PLAY (bottom) = Melody — hold stutter; Center is dial-only above. 2026-07-19
-        if (keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE || keyCode == 85
-                || keyCode == KeyEvent.KEYCODE_MEDIA_PLAY) {
+        // PLAY (bottom) = Melody — hold stutter; Center is dial-only above.
+        // Never MEDIA_PLAY (126) — that is the Y1 wheel. 2026-07-19
+        if (com.solar.launcher.SolarPadKeys.isPadPlayKey(keyCode)) {
             if (action == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 beginStemHold(3);
                 return true;
@@ -545,6 +561,21 @@ public final class StemPlayerHost {
             return true;
         }
 
+        // #region agent log
+        // Dead branch for stem keys (they return earlier); kept for non-stem fallthrough. 2026-07-19
+        if (mixers != null && mixers.length >= 2
+                && action == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("keyCode", keyCode);
+                d.put("costMs", android.os.SystemClock.uptimeMillis() - keyT0);
+                d.put("songs", mixers.length);
+                d.put("fallthrough", true);
+                com.solar.launcher.Debug8b0481Log.log(
+                        "StemPlayerHost.onKey", "key fallthrough multi", "H2", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
         return false;
     }
 
@@ -594,6 +625,9 @@ public final class StemPlayerHost {
      * 2026-07-19
      */
     private void onStemKey(int zone) {
+        // #region agent log
+        long t0 = android.os.SystemClock.uptimeMillis();
+        // #endregion
         // Decide cycle from session focus BEFORE any host write. 2026-07-19
         boolean willCycle = StemControls.stemKeyShouldCycleSong(
                 session.activeZone(), zone, session.songCount());
@@ -614,13 +648,42 @@ public final class StemPlayerHost {
         boolean cycled = session.onStemKey(zone);
         activeZone = session.activeZone();
         armed = true;
+        // #region agent log
+        try {
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("zone", zone);
+            d.put("cycled", cycled);
+            d.put("songs", session.songCount());
+            d.put("songForZone", session.songIndexForZone(zone));
+            d.put("costMs", android.os.SystemClock.uptimeMillis() - t0);
+            com.solar.launcher.Debug8b0481Log.log(
+                    "StemPlayerHost.onStemKey", "stem key after session", "H-CYCLE", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (cycled && session.isMulti()) {
             // Control routing only — timelines keep running. 2026-07-19
-            host.toast("Song " + session.displaySongNumber(zone));
+            String name = session.trackDisplayNameForZone(zone);
+            if (name == null || name.length() == 0) {
+                name = "Song " + session.displaySongNumber(zone);
+            }
+            host.toast(name);
         }
         syncHostFromActiveSong();
         selectZone(activeZone);
         updateInteractedTrackTitle();
+        // #region agent log
+        if (session.songCount() >= 2) {
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("zone", zone);
+                d.put("cycled", cycled);
+                d.put("songs", session.songCount());
+                d.put("costMs", android.os.SystemClock.uptimeMillis() - t0);
+                com.solar.launcher.Debug8b0481Log.log(
+                        "StemPlayerHost.onStemKey", "stem key cost", "H2", d);
+            } catch (Exception ignored) {}
+        }
+        // #endregion
     }
 
     /**
@@ -973,10 +1036,10 @@ public final class StemPlayerHost {
                         ? LalalClient.findReadyStemDir(ctx, tf, premix, host.appCacheDir())
                         : null;
                 d.put("dir", hit != null ? hit.getName() : "");
-                com.solar.launcher.Debug543e15Log.log(
+                com.solar.launcher.Debug8b0481Log.log(
                         "StemPlayerHost.startJob",
                         ready ? "cache-hit skip Lalal" : "need Lalal separate",
-                        "LOCAL",
+                        "H-MIX1",
                         d);
             } catch (Exception ignored) {}
             // #endregion
@@ -991,8 +1054,8 @@ public final class StemPlayerHost {
             d.put("trackCount", jobTracks.size());
             d.put("premix", premix);
             d.put("keyLen", key != null ? key.length() : 0);
-            com.solar.launcher.Debug543e15Log.log(
-                    "StemPlayerHost.startJob", "local stem check", "B", d);
+            com.solar.launcher.Debug8b0481Log.log(
+                    "StemPlayerHost.startJob", "local stem check", "H-MIX1", d);
         } catch (Exception ignored) {}
         // #endregion
         if (allLocal) {
@@ -1161,14 +1224,31 @@ public final class StemPlayerHost {
                     d);
         } catch (Exception ignored) {}
         // #endregion
+        List<LalalClient.StemFile> cached = null;
         if (readyDir != null) {
             if (LalalClient.userStemsReady(src)
                     && readyDir.equals(LalalClient.userStemsDir(src))) {
-                return LalalClient.loadUserStems(src, premix);
+                cached = LalalClient.loadUserStems(src, premix);
+            } else {
+                cached = LalalClient.loadCached(readyDir, premix);
+                if (cached == null || cached.isEmpty()) {
+                    cached = LalalClient.loadStemDirFlexible(readyDir);
+                }
             }
-            List<LalalClient.StemFile> cached = LalalClient.loadCached(readyDir, premix);
-            if (cached != null && !cached.isEmpty()) return cached;
-            cached = LalalClient.loadStemDirFlexible(readyDir);
+            // #region agent log
+            try {
+                org.json.JSONObject d = new org.json.JSONObject();
+                d.put("srcName", src != null ? src.getName() : "");
+                d.put("srcPath", src != null ? src.getAbsolutePath() : "");
+                d.put("readyDir", readyDir.getAbsolutePath());
+                d.put("stem0", cached != null && !cached.isEmpty() && cached.get(0).file != null
+                        ? cached.get(0).file.getAbsolutePath() : "");
+                d.put("count", cached != null ? cached.size() : 0);
+                d.put("markerOk", LalalClient.markerMatchesTrack(readyDir, src));
+                com.solar.launcher.Debug8b0481Log.log(
+                        "StemPlayerHost.resolveStemsForTrack", "loaded cache", "H-A,H-B,H-C,H-D", d);
+            } catch (Exception ignored) {}
+            // #endregion
             if (cached != null && !cached.isEmpty()) return cached;
         }
         // #region agent log
@@ -1389,6 +1469,41 @@ public final class StemPlayerHost {
         loading = false;
         songFinished = false;
         syncAllSongGainsToMixers();
+        // Multi: open one pad per song a little so both timelines are audible without cycling first.
+        // Layman: you hear a hint of each marked track; wheel still owns the mix.
+        // Was: all gains 0 → felt like “only song 1 plays”. Reversal: skip seed block.
+        // 2026-07-19
+        if (session.isMulti()) {
+            for (int s = 0; s < session.songCount(); s++) {
+                StemSession.SongState st = session.song(s);
+                if (st == null) continue;
+                int z = s % StemMixer.STEM_COUNT;
+                if (st.gains[z] < 0.01f) st.gains[z] = 0.4f;
+            }
+            syncAllSongGainsToMixers();
+        }
+        // #region agent log
+        try {
+            int totalPlayers = 0;
+            int z3 = 0;
+            if (mixers != null) {
+                for (int i = 0; i < mixers.length; i++) {
+                    StemMixer m = mixers[i];
+                    if (m == null) continue;
+                    totalPlayers += m.getPlayerCount();
+                    z3 += m.countPlayersForZone(3);
+                }
+            }
+            org.json.JSONObject d = new org.json.JSONObject();
+            d.put("songs", mixers != null ? mixers.length : 0);
+            d.put("totalPlayers", totalPlayers);
+            d.put("melodyPlayers", z3);
+            d.put("playingAll", true);
+            d.put("seededMultiGains", session.isMulti());
+            com.solar.launcher.Debug8b0481Log.log(
+                    "StemPlayerHost.onAllMixersReady", "mashup player budget", "H1,H3", d);
+        } catch (Exception ignored) {}
+        // #endregion
         if (mixers != null) {
             for (int i = 0; i < mixers.length; i++) {
                 StemMixer m = mixers[i];

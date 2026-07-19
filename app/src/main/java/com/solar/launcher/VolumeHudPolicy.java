@@ -27,4 +27,14 @@ public final class VolumeHudPolicy {
     public static boolean isInlineVolumeScreen(int screenState, int playerState, int videoPlayerState) {
         return screenState == playerState || screenState == videoPlayerState;
     }
+
+    /**
+     * Stem / Mix own pad gains — skip compact volume HUD (same idea as NP inline).
+     * 2026-07-19
+     */
+    public static boolean isInlineVolumeScreen(int screenState, int playerState,
+            int videoPlayerState, int stemPlayerState, int mixPlayerState) {
+        return screenState == playerState || screenState == videoPlayerState
+                || screenState == stemPlayerState || screenState == mixPlayerState;
+    }
 }

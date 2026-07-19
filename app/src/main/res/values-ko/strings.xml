@@ -72,6 +72,12 @@
     <string name="status_home">홈</string>
     <string name="status_now_playing">지금 재생 중</string>
     <string name="status_stem_player">스템 플레이어</string>
+    <string name="browser_stem_player">스템 플레이어</string>
+    <string name="browser_has_stems">스템 있음</string>
+    <string name="status_has_stems">스템 있음</string>
+    <string name="path_library_has_stems">스템 있음</string>
+    <string name="has_stems_empty">분리된 트랙이 없습니다 — Stem Player로 분리하세요</string>
+    <string name="has_stems_loading">스템 트랙 불러오는 중…</string>
     <string name="context_action_stem_player">스템 플레이어</string>
     <string name="stem_pick_status">스템 · %1$d/3 · 재생으로 시작</string>
     <string name="stem_pick_slot">스템 %1$d</string>
